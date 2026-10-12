@@ -59,11 +59,15 @@ test('policy rejects malformed maps and non-registry distributions', () => {
 
 test('checked-in policy applies to the snapshot and future online versions', async () => {
   const policy = JSON.parse(await readFile(new URL('../configs/agent-catalog-policy.json', import.meta.url), 'utf8'));
+  assert.deepEqual(policy.versionPins, { 'claude-acp': '0.87.0', 'codex-acp': '2.1.1' });
   const registry = JSON.parse(await readFile(new URL('../resources/acp-registry.snapshot.json', import.meta.url), 'utf8'));
   for (const version of ['0.73.0', '0.75.1']) {
     const claude = registry.agents.find((entry) => entry.id === 'claude-acp');
     claude.version = version;
     claude.distribution.npx.package = `@agentclientprotocol/claude-agent-acp@${version}`;
+    const codex = registry.agents.find((entry) => entry.id === 'codex-acp');
+    codex.version = version;
+    codex.distribution.npx.package = `@agentclientprotocol/codex-acp@${version}`;
     const catalog = buildAgentCatalog(registry, 'fixed', policy);
     for (const agent of registry.agents.filter((entry) => BUILTIN_AGENT_IDS.includes(entry.id))) {
       const result = catalog.agents.find((entry) => entry.id === agent.id);

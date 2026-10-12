@@ -60,6 +60,15 @@ pub(crate) fn apply_session_execution_policy(
     method: &str,
     params: &mut Value,
 ) -> Result<()> {
+    apply_session_execution_policy_for_surface(agent_capabilities, method, params, false)
+}
+
+pub(crate) fn apply_session_execution_policy_for_surface(
+    agent_capabilities: Option<&Value>,
+    method: &str,
+    params: &mut Value,
+    allow_background: bool,
+) -> Result<()> {
     if !is_session_options_method(method)
         || !agent_capabilities.is_some_and(supports_claude_code_session_options)
     {
@@ -75,6 +84,14 @@ pub(crate) fn apply_session_execution_policy(
     let options = options
         .as_object_mut()
         .ok_or_else(|| InvalidSessionOptions::expected("options", "object"))?;
+    if allow_background {
+        options.entry(THINKING_OPTION).or_insert_with(|| {
+            json!({
+                "type": THINKING_TYPE_ADAPTIVE, "display": THINKING_DISPLAY_SUMMARIZED,
+            })
+        });
+        return Ok(());
+    }
     let tools = options
         .entry("disallowedTools")
         .or_insert_with(|| json!([]));
@@ -142,11 +159,28 @@ pub fn spawn_adapter(
     let adapter = resolve_adapter(config)?;
     let executable = platform_adapter_command(&adapter.command);
     let resolved_env = resolved_adapter_env(&config.env);
-    let resolved_command =
-        resolve_command_with_path(&executable, resolved_env.get("PATH").map(String::as_str));
-    let mut command = background_command(&resolved_command);
+    let mut command = match crate::npx_cache::cached_launch(
+        config,
+        &adapter.args,
+        cwd,
+        &resolved_env,
+    ) {
+        Some(launch) => {
+            tracing::debug!(script = %launch.script.display(), "launching cached npx adapter directly");
+            let mut command = background_command(&launch.node);
+            command.arg(&launch.script).args(&launch.args);
+            command
+        }
+        None => {
+            let mut command = background_command(resolve_command_with_path(
+                &executable,
+                resolved_env.get("PATH").map(String::as_str),
+            ));
+            command.args(&adapter.args);
+            command
+        }
+    };
     command
-        .args(&adapter.args)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -208,7 +242,7 @@ fn normalize_args(args: &[String]) -> Vec<String> {
 }
 
 #[cfg(windows)]
-fn platform_adapter_command(command: &str) -> String {
+pub(crate) fn platform_adapter_command(command: &str) -> String {
     if command.eq_ignore_ascii_case("npx") {
         "npx.cmd".to_string()
     } else {
@@ -217,11 +251,13 @@ fn platform_adapter_command(command: &str) -> String {
 }
 
 #[cfg(not(windows))]
-fn platform_adapter_command(command: &str) -> String {
+pub(crate) fn platform_adapter_command(command: &str) -> String {
     command.to_string()
 }
 
-fn resolved_adapter_env(config_env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+pub(crate) fn resolved_adapter_env(
+    config_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
     let mut env = config_env.clone();
     let configured_path = configured_path(&env);
     if let Some(path) = resolved_child_path(configured_path.map(OsStr::new)) {
@@ -252,7 +288,7 @@ fn remove_configured_path_keys(env: &mut BTreeMap<String, String>) {
     }
 }
 
-fn resolve_command_with_path(command: &str, path: Option<&str>) -> String {
+pub(crate) fn resolve_command_with_path(command: &str, path: Option<&str>) -> String {
     if !command_requires_path_lookup(command) {
         return command.to_string();
     }
@@ -401,6 +437,35 @@ mod tests {
     }
 
     #[test]
+    fn direct_session_policy_allows_background_without_changing_workflow_defaults() {
+        for method in [
+            "session/new",
+            "session/load",
+            "session/resume",
+            "session/fork",
+        ] {
+            let mut params = json!({"cwd":"D:/work"});
+            super::apply_session_execution_policy_for_surface(
+                Some(&claude_code_capabilities()),
+                method,
+                &mut params,
+                true,
+            )
+            .unwrap();
+            let options = params.pointer("/_meta/claudeCode/options").unwrap();
+            assert!(options.get("disallowedTools").is_none());
+            assert!(options.get("env").is_none());
+            assert_eq!(options["thinking"]["type"], "adaptive");
+            apply_session_execution_policy(Some(&claude_code_capabilities()), method, &mut params)
+                .unwrap();
+            assert_eq!(
+                params.pointer("/_meta/claudeCode/options/disallowedTools"),
+                Some(&json!(["Monitor"]))
+            );
+        }
+    }
+
+    #[test]
     fn session_policy_follows_negotiated_claude_code_capability() {
         let mut params = json!({ "cwd": "D:/work" });
         apply_session_execution_policy(
@@ -475,7 +540,7 @@ mod tests {
         let adapter_bin = temp.path().join("adapter-bin");
         fs::create_dir_all(&adapter_bin).unwrap();
         let executable_name = if cfg!(windows) { "npx.exe" } else { "npx" };
-        fs::write(adapter_bin.join(executable_name), "").unwrap();
+        fs::write(adapter_bin.join(executable_name), "native-binary").unwrap();
 
         let path = std::env::join_paths([adapter_bin.clone()]).unwrap();
         let resolved = resolve_command_with_path("npx", Some(path.to_str().unwrap()));

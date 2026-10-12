@@ -113,33 +113,16 @@ impl FromStr for RuntimeLogLevel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Whether the hosting process can route pending prompt interactions
+/// (elicitation, permission requests) to a person. This is a property of the
+/// host, not of a run: a run resumed in the desktop app becomes interactive.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ConsoleThemeName {
-    GoldBand,
-    Nord,
-    Dracula,
-    Cyber,
-    Onyx,
-    Mist,
-    HighContrast,
-}
-
-impl FromStr for ConsoleThemeName {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "gold-band" => Ok(Self::GoldBand),
-            "nord" => Ok(Self::Nord),
-            "dracula" => Ok(Self::Dracula),
-            "cyber" => Ok(Self::Cyber),
-            "onyx" => Ok(Self::Onyx),
-            "mist" => Ok(Self::Mist),
-            "high-contrast" => Ok(Self::HighContrast),
-            _ => Err(anyhow!("unsupported console theme: {value}")),
-        }
-    }
+pub enum InteractionMode {
+    #[default]
+    Interactive,
+    /// No responder exists; pending interactions are settled immediately.
+    Unattended,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -683,7 +666,6 @@ fn default_agent_icon() -> String {
 pub struct DesktopUpdateBadgeState {
     pub settings_entry_seen_version: Option<String>,
     pub settings_advanced_seen_version: Option<String>,
-    pub announcement_closed_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -811,6 +793,7 @@ pub const DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS: u64 = 10_000;
 pub const DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE: usize = 96;
 pub const DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT: usize = 3;
 pub const DEFAULT_ACP_CHAT_RESOURCE_CACHE_SESSION_COUNT: usize = 8;
+pub const DEFAULT_BROWSER_HIDDEN_RELEASE_SECS: u64 = 3600;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -886,7 +869,6 @@ pub struct SettingsConfig {
     pub log_prompts: Option<bool>,
     pub log_provider_command: Option<bool>,
     pub log_retention_days: Option<u64>,
-    pub console_theme: Option<ConsoleThemeName>,
     pub appearance: Option<AppearancePreference>,
     pub personalization: Option<PersonalizationPreference>,
     pub desktop_language: Option<DesktopLanguage>,
@@ -1397,6 +1379,11 @@ pub struct StateConfig {
     pub conversation_pins: Vec<ConversationPin>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub conversation_run_modes: std::collections::HashMap<String, ConversationRunModeEntry>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::remote_image_trust::RemoteImageTrust::is_empty"
+    )]
+    pub remote_image_trust: crate::remote_image_trust::RemoteImageTrust,
     // —— 远程来源持久化状态（程序写入/恢复）：multica_runtime_ids 为 multica 适配器注册索引，
     //    其余为中立模型（远程来源解耦设计 §4.6，写入时即翻译，存储内无方言）——
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1427,6 +1414,7 @@ pub struct ProjectAppConfig {
     pub acp_chat_event_page_size: Option<usize>,
     pub acp_chat_event_window_page_count: Option<usize>,
     pub acp_chat_resource_cache_session_count: Option<usize>,
+    pub browser_hidden_release_secs: Option<u64>,
     pub acp_raw_max_size_bytes: Option<u64>,
     pub acp_raw_target_size_bytes: Option<u64>,
     pub acp_session_foreground_lease_ttl_secs: Option<u64>,
@@ -1436,6 +1424,8 @@ pub struct ProjectAppConfig {
     pub acp_adapter_connection_idle_ttl_secs: Option<u64>,
     pub acp_max_idle_session_runtimes: Option<usize>,
     pub acp_max_idle_adapter_connections: Option<usize>,
+    pub acp_session_sweep_interval_secs: Option<u64>,
+    pub acp_direct_background_stop_grace_secs: Option<u64>,
     pub acp_timeline_compact_max_size_bytes: Option<u64>,
     pub acp_timeline_compact_patch_ratio: Option<usize>,
     pub conversation_auto_title_max_chars: Option<usize>,
@@ -1824,10 +1814,11 @@ pub struct ProviderDiagnosticSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
     pub log_level: RuntimeLogLevel,
+    #[serde(default)]
+    pub interaction_mode: InteractionMode,
     pub log_prompts: bool,
     pub log_provider_command: bool,
     pub log_retention_days: u64,
-    pub console_theme: ConsoleThemeName,
     pub appearance: AppearancePreference,
     pub personalization: PersonalizationPreference,
     pub desktop_language: DesktopLanguage,
@@ -1845,6 +1836,7 @@ pub struct RuntimeConfig {
     pub acp_chat_event_page_size: usize,
     pub acp_chat_event_window_page_count: usize,
     pub acp_chat_resource_cache_session_count: usize,
+    pub browser_hidden_release_secs: u64,
     pub acp_raw_max_size_bytes: u64,
     pub acp_raw_target_size_bytes: u64,
     pub acp_session_foreground_lease_ttl_secs: u64,
@@ -1854,6 +1846,10 @@ pub struct RuntimeConfig {
     pub acp_adapter_connection_idle_ttl_secs: u64,
     pub acp_max_idle_session_runtimes: usize,
     pub acp_max_idle_adapter_connections: usize,
+    /// Retention sweep cadence shared by Direct and Workflow sessions.
+    pub acp_session_sweep_interval_secs: u64,
+    /// How long a background Direct episode keeps its Stop control after activity.
+    pub acp_direct_background_stop_grace_secs: u64,
     pub acp_timeline_compact_max_size_bytes: u64,
     pub acp_timeline_compact_patch_ratio: usize,
     pub conversation_auto_title_max_chars: usize,
@@ -1896,10 +1892,10 @@ impl Default for RuntimeConfig {
         );
         let base = Self {
             log_level: RuntimeLogLevel::Info,
+            interaction_mode: InteractionMode::Interactive,
             log_prompts: false,
             log_provider_command: true,
             log_retention_days: 30,
-            console_theme: ConsoleThemeName::GoldBand,
             appearance: AppearancePreference::default(),
             personalization: PersonalizationPreference::default(),
             desktop_language: DesktopLanguage::ZhCn,
@@ -1917,6 +1913,7 @@ impl Default for RuntimeConfig {
             acp_chat_event_page_size: DEFAULT_ACP_CHAT_EVENT_PAGE_SIZE,
             acp_chat_event_window_page_count: DEFAULT_ACP_CHAT_EVENT_WINDOW_PAGE_COUNT,
             acp_chat_resource_cache_session_count: DEFAULT_ACP_CHAT_RESOURCE_CACHE_SESSION_COUNT,
+            browser_hidden_release_secs: DEFAULT_BROWSER_HIDDEN_RELEASE_SECS,
             acp_raw_max_size_bytes: 5 * 1024 * 1024,
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
             acp_session_foreground_lease_ttl_secs: 90,
@@ -1926,6 +1923,8 @@ impl Default for RuntimeConfig {
             acp_adapter_connection_idle_ttl_secs: 600,
             acp_max_idle_session_runtimes: 8,
             acp_max_idle_adapter_connections: 4,
+            acp_session_sweep_interval_secs: 60,
+            acp_direct_background_stop_grace_secs: 10,
             acp_timeline_compact_max_size_bytes: 8 * 1024 * 1024,
             acp_timeline_compact_patch_ratio: 4,
             conversation_auto_title_max_chars: DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS,
@@ -1970,9 +1969,6 @@ impl RuntimeConfig {
         }
         if let Some(log_retention_days) = settings.log_retention_days {
             self.log_retention_days = log_retention_days;
-        }
-        if let Some(console_theme) = settings.console_theme {
-            self.console_theme = console_theme;
         }
         if let Some(appearance) = &settings.appearance {
             self.appearance = appearance.clone();
@@ -2063,6 +2059,12 @@ impl RuntimeConfig {
         {
             self.acp_chat_resource_cache_session_count = acp_chat_resource_cache_session_count;
         }
+        if let Some(secs) = app_config
+            .browser_hidden_release_secs
+            .filter(|value| *value > 0)
+        {
+            self.browser_hidden_release_secs = secs;
+        }
         if let Some(acp_raw_max_size_bytes) = app_config.acp_raw_max_size_bytes {
             self.acp_raw_max_size_bytes = acp_raw_max_size_bytes;
         }
@@ -2116,6 +2118,18 @@ impl RuntimeConfig {
             .filter(|value| *value > 0)
         {
             self.acp_max_idle_adapter_connections = value;
+        }
+        if let Some(value) = app_config
+            .acp_session_sweep_interval_secs
+            .filter(|value| *value > 0)
+        {
+            self.acp_session_sweep_interval_secs = value;
+        }
+        if let Some(value) = app_config
+            .acp_direct_background_stop_grace_secs
+            .filter(|value| *value > 0)
+        {
+            self.acp_direct_background_stop_grace_secs = value;
         }
         if let Some(value) = app_config
             .acp_timeline_compact_max_size_bytes
@@ -2204,7 +2218,7 @@ impl RuntimeConfig {
 mod tests {
     use super::{
         AcpAdapterConfig, AppearancePreference, BrowserPreferences, BrowserSearchEngine,
-        ColorSchemePreference, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
+        ColorSchemePreference, ConversationDirectConfig, ConversationRunMode,
         ConversationRunModeEntry, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS,
         DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
         DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
@@ -2272,38 +2286,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_console_theme_names() {
-        assert!(matches!(
-            ConsoleThemeName::from_str("gold-band").unwrap(),
-            ConsoleThemeName::GoldBand
-        ));
-        assert!(matches!(
-            ConsoleThemeName::from_str("nord").unwrap(),
-            ConsoleThemeName::Nord
-        ));
-        assert!(matches!(
-            ConsoleThemeName::from_str("dracula").unwrap(),
-            ConsoleThemeName::Dracula
-        ));
-        assert!(matches!(
-            ConsoleThemeName::from_str("cyber").unwrap(),
-            ConsoleThemeName::Cyber
-        ));
-        assert!(matches!(
-            ConsoleThemeName::from_str("onyx").unwrap(),
-            ConsoleThemeName::Onyx
-        ));
-        assert!(matches!(
-            ConsoleThemeName::from_str("mist").unwrap(),
-            ConsoleThemeName::Mist
-        ));
-        assert!(matches!(
-            ConsoleThemeName::from_str("high-contrast").unwrap(),
-            ConsoleThemeName::HighContrast
-        ));
-    }
-
-    #[test]
     fn parses_desktop_preferences() {
         assert!(matches!(
             serde_json::from_str::<ColorSchemePreference>("\"light\"").unwrap(),
@@ -2333,15 +2315,15 @@ mod tests {
     }
 
     #[test]
-    fn defaults_console_theme_to_gold_band() {
+    fn runtime_config_defaults() {
         let config = RuntimeConfig::default();
-        assert!(matches!(config.console_theme, ConsoleThemeName::GoldBand));
         assert_eq!(config.appearance, AppearancePreference::default());
         assert!(matches!(config.desktop_language, DesktopLanguage::ZhCn));
         assert_eq!(config.personalization, PersonalizationPreference::default());
         assert_eq!(config.acp_chat_event_page_size, 96);
         assert_eq!(config.acp_chat_event_window_page_count, 3);
         assert_eq!(config.acp_chat_resource_cache_session_count, 8);
+        assert_eq!(config.browser_hidden_release_secs, 3600);
     }
 
     #[test]
@@ -2518,7 +2500,6 @@ mod tests {
     #[test]
     fn settings_config_roundtrips_json() {
         let settings = SettingsConfig {
-            console_theme: Some(ConsoleThemeName::Nord),
             appearance: Some(AppearancePreference {
                 schema_version: 2,
                 theme_id: "builtin.tech-neutral".to_string(),
@@ -2538,7 +2519,6 @@ mod tests {
         };
         let json = serde_json::to_string_pretty(&settings).unwrap();
         let roundtripped: SettingsConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(roundtripped.console_theme, Some(ConsoleThemeName::Nord));
         assert_eq!(roundtripped.appearance, settings.appearance);
         assert_eq!(roundtripped.personalization, settings.personalization);
         assert_eq!(roundtripped.desktop_language, Some(DesktopLanguage::En));
@@ -2555,7 +2535,6 @@ mod tests {
             desktop_update_badges: DesktopUpdateBadgeState {
                 settings_entry_seen_version: Some("1.2.3".to_string()),
                 settings_advanced_seen_version: Some("1.2.3".to_string()),
-                announcement_closed_version: Some("1.2.2".to_string()),
             },
             desktop_available_update: Some(DesktopAvailableUpdate {
                 version: "1.2.3".to_string(),
@@ -2602,7 +2581,6 @@ mod tests {
     #[test]
     fn apply_settings_overrides_defaults() {
         let config = RuntimeConfig::default().apply_settings(&SettingsConfig {
-            console_theme: Some(ConsoleThemeName::Nord),
             appearance: Some(AppearancePreference {
                 schema_version: 2,
                 theme_id: "builtin.tech-neutral".to_string(),
@@ -2620,7 +2598,6 @@ mod tests {
             log_level: Some(RuntimeLogLevel::Trace),
             ..SettingsConfig::default()
         });
-        assert_eq!(config.console_theme, ConsoleThemeName::Nord);
         assert_eq!(config.appearance.theme_id, "builtin.tech-neutral");
         assert_eq!(config.appearance.color_scheme, ColorSchemePreference::Dark);
         assert_eq!(config.desktop_language, DesktopLanguage::En);
@@ -2711,7 +2688,6 @@ mod tests {
             desktop_update_badges: DesktopUpdateBadgeState {
                 settings_entry_seen_version: Some("1.2.3".to_string()),
                 settings_advanced_seen_version: Some("1.2.3".to_string()),
-                announcement_closed_version: Some("1.2.2".to_string()),
             },
             desktop_available_update: Some(DesktopAvailableUpdate {
                 version: "1.2.3".to_string(),
@@ -2744,7 +2720,6 @@ mod tests {
     #[test]
     fn empty_settings_keeps_defaults() {
         let config = RuntimeConfig::default().apply_settings(&SettingsConfig::default());
-        assert_eq!(config.console_theme, ConsoleThemeName::GoldBand);
         assert_eq!(config.appearance, AppearancePreference::default());
         assert_eq!(config.desktop_language, DesktopLanguage::ZhCn);
         assert_eq!(config.personalization, PersonalizationPreference::default());
@@ -2762,6 +2737,7 @@ mod tests {
             acp_chat_event_page_size: Some(240),
             acp_chat_event_window_page_count: Some(4),
             acp_chat_resource_cache_session_count: Some(6),
+            browser_hidden_release_secs: Some(60),
             conversation_auto_title_max_chars: Some(20),
             conversation_inline_content_max_bytes: Some(32_000),
             conversation_inline_image_max_bytes: Some(1024 * 1024),
@@ -2774,6 +2750,7 @@ mod tests {
         assert_eq!(config.acp_chat_event_page_size, 240);
         assert_eq!(config.acp_chat_event_window_page_count, 4);
         assert_eq!(config.acp_chat_resource_cache_session_count, 6);
+        assert_eq!(config.browser_hidden_release_secs, 60);
         assert_eq!(config.conversation_auto_title_max_chars, 20);
         assert_eq!(config.conversation_inline_content_max_bytes, 32_000);
         assert_eq!(config.conversation_inline_image_max_bytes, 1024 * 1024);
@@ -2788,12 +2765,14 @@ mod tests {
             acp_chat_event_page_size: Some(0),
             acp_chat_event_window_page_count: Some(0),
             acp_chat_resource_cache_session_count: Some(0),
+            browser_hidden_release_secs: Some(0),
             ..Default::default()
         });
 
         assert_eq!(config.acp_chat_event_page_size, 96);
         assert_eq!(config.acp_chat_event_window_page_count, 3);
         assert_eq!(config.acp_chat_resource_cache_session_count, 8);
+        assert_eq!(config.browser_hidden_release_secs, 3600);
     }
 
     #[test]
@@ -2913,7 +2892,6 @@ mod tests {
     #[test]
     fn full_roundtrip_from_settings_and_state() {
         let settings = SettingsConfig {
-            console_theme: Some(ConsoleThemeName::Nord),
             appearance: Some(AppearancePreference {
                 schema_version: 2,
                 theme_id: "builtin.tech-neutral".to_string(),
@@ -2932,7 +2910,6 @@ mod tests {
             desktop_update_badges: DesktopUpdateBadgeState {
                 settings_entry_seen_version: Some("1.2.3".to_string()),
                 settings_advanced_seen_version: Some("1.2.3".to_string()),
-                announcement_closed_version: Some("1.2.2".to_string()),
             },
             desktop_available_update: Some(DesktopAvailableUpdate {
                 version: "1.2.3".to_string(),
@@ -2945,7 +2922,6 @@ mod tests {
         let config = RuntimeConfig::default()
             .apply_settings(&settings)
             .apply_state(&state);
-        assert_eq!(config.console_theme, ConsoleThemeName::Nord);
         assert_eq!(config.appearance.theme_id, "builtin.tech-neutral");
         assert_eq!(config.appearance.color_scheme, ColorSchemePreference::Dark);
         assert_eq!(config.desktop_language, DesktopLanguage::En);
