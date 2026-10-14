@@ -538,6 +538,16 @@ mod tests {
         assert!(zh.contains("同一行"));
         assert!(en.contains("```completion-output"));
         assert!(en.contains("on the same line"));
+        // 工作流分支（开发设计 §12.59）：提取只读终态节点 attempt，但协议此前未赋予该节点
+        // 「整体交付总结」职责——收尾节点只写自己节点的产物（如仅一条 SQL），真正的构建/
+        // 部署/测试要点被覆盖丢失。必须锁定：整个工作项的综合总结 + 优先构建/部署/测试要点 +
+        // 不可得时简要总结兜底 + 不得只写本节点产物。两语言均锁定。
+        assert!(zh.contains("整个工作项"));
+        assert!(zh.contains("不得只写你自己节点的产物"));
+        assert!(zh.contains("简要总结"));
+        assert!(en.contains("entire work item"));
+        assert!(en.contains("do not limit the block to your own node's output"));
+        assert!(en.contains("brief summary"));
     }
 
     #[test]
