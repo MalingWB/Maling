@@ -19,6 +19,7 @@ mod feedback;
 mod git_state_monitor;
 mod i18n;
 mod im_runtime;
+mod im_scan_session;
 mod image_actions;
 mod memory;
 mod metrics;
@@ -46,11 +47,11 @@ use commands::{
     check_update_manual, choose_workspace, clear_desktop_avatar, connect_multica,
     continue_conversation_runtime, continue_run, create_agent, create_profile, create_task,
     delete_agent, delete_auto_template, delete_conversation_queued_prompt, delete_mcp_server,
-    delete_profile, delete_skill, delete_workflow_template, disconnect_multica, doctor_agent, fetch_agent_model_config,
-    execute_git_mutation, get_acp_activity_detail, get_acp_image, get_acp_raw_frames,
-    get_acp_session, get_acp_tool_detail, get_agent_binding_usage, get_agent_command_catalog,
-    get_agent_registry, get_app_bootstrap, get_auto_templates, get_file_comparison,
-    get_git_branch_picker_snapshot, get_git_capability, get_git_commit_detail,
+    delete_profile, delete_skill, delete_workflow_template, disconnect_multica, doctor_agent,
+    execute_git_mutation, fetch_agent_model_config, get_acp_activity_detail, get_acp_image,
+    get_acp_raw_frames, get_acp_session, get_acp_tool_detail, get_agent_binding_usage,
+    get_agent_command_catalog, get_agent_registry, get_app_bootstrap, get_auto_templates,
+    get_file_comparison, get_git_branch_picker_snapshot, get_git_capability, get_git_commit_detail,
     get_git_commit_reachability, get_git_commit_review, get_git_commit_review_statistics,
     get_git_comparison, get_git_history, get_git_operation, get_github_capability,
     get_github_issue, get_github_operation, get_github_pull_request, get_log_page,
@@ -90,14 +91,15 @@ use commands_conversation::{
     get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_workspaces,
     get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
     list_scheduled_execution_history, list_scheduled_tasks, materialize_conversation_attachments,
-    pin_conversation, set_conversation_resident, preflight_conversation_execution_plan_save,
+    pin_conversation, preflight_conversation_execution_plan_save,
     recover_conversation_execution_plan_operation, remove_conversation_workspace,
     reorder_pinned_conversations, rerun_conversation_task, run_scheduled_task_now,
     save_conversation_execution_plan, save_conversation_preference, save_conversation_run_mode,
     save_desktop_ui_mode, save_last_conversation_workspace, save_scheduled_runtime_settings,
-    search_conversation_tasks, set_scheduled_task_enabled, show_conversation_attachment,
-    show_conversation_message_attachment, stat_attachment_files, sync_conversation_workspace,
-    unpin_conversation, update_scheduled_task, update_task_metadata, validate_conversation_create,
+    search_conversation_tasks, set_conversation_resident, set_scheduled_task_enabled,
+    show_conversation_attachment, show_conversation_message_attachment, stat_attachment_files,
+    sync_conversation_workspace, unpin_conversation, update_scheduled_task, update_task_metadata,
+    validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
@@ -426,6 +428,9 @@ fn run() -> anyhow::Result<()> {
             im_runtime::start_wecom_scan_authorization,
             im_runtime::complete_wecom_scan_authorization,
             im_runtime::cancel_wecom_scan_authorization,
+            im_runtime::start_feishu_scan_authorization,
+            im_runtime::complete_feishu_scan_authorization,
+            im_runtime::cancel_feishu_scan_authorization,
             im_runtime::set_im_channel_enabled,
             im_runtime::save_im_notification_preferences,
             im_runtime::reset_im_channel_binding,
