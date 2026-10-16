@@ -242,6 +242,49 @@ describe('remote skill sync dialog', () => {
     expect(mocks.pullRemoteSkills).toHaveBeenCalledWith('ws-1', ['s-exists']);
   });
 
+  it('reload in flight → sync disabled, stale selection cleared, submit only after fresh list lands', async () => {
+    const { container, root } = renderDialog();
+    await act(async () => {
+      root.render(
+        <RemoteSkillSyncDialog open onOpenChange={() => {}} onFinished={() => {}} />,
+      );
+    });
+    await flushEffects();
+
+    // 首次加载完成：默认勾选新增项，同步按钮可用。
+    expect(syncButton(container).disabled).toBe(false);
+
+    // 手动重载：列表请求挂起期间，旧选择不得留在后台被提交——按钮必须禁用。
+    let resolveReload!: (list: unknown) => void;
+    mocks.listRemoteSkills.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveReload = resolve; }),
+    );
+    const reload = [...container.querySelectorAll('button')].find(
+      (b) => b.getAttribute('aria-label') === `${BASE}.reload`,
+    );
+    expect(reload).toBeTruthy();
+    await act(async () => { reload!.click(); });
+    await flushEffects();
+
+    expect(syncButton(container).disabled).toBe(true);
+    await act(async () => { syncButton(container).click(); });
+    expect(mocks.pullRemoteSkills).not.toHaveBeenCalled();
+
+    // 重载完成：以新列表重建默认勾选后按钮恢复，提交的是新选择而非挂起期的旧选择。
+    await act(async () => {
+      resolveReload([
+        { id: 's-new', name: 'New One', description: '', localState: 'new' },
+        { id: 's-exists', name: 'Old One', description: '', localState: 'exists' },
+      ]);
+    });
+    await flushEffects();
+    expect(syncButton(container).disabled).toBe(false);
+    await act(async () => { syncButton(container).click(); });
+    await flushEffects();
+    expect(mocks.pullRemoteSkills).toHaveBeenCalledTimes(1);
+    expect(mocks.pullRemoteSkills).toHaveBeenCalledWith('ws-1', ['s-new']);
+  });
+
   it('not connected → source selector + inline connect entry; connected via dialog refetches settings', async () => {
     // 首次设置拉取返回未连接态；连接成功后的重拉返回已连接（beforeEach 默认值）。
     mocks.getMulticaSettings.mockResolvedValueOnce({

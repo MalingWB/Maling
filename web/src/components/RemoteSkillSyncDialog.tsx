@@ -108,10 +108,12 @@ export function RemoteSkillSyncDialog({
   }, [open, settings]);
 
   // 工作空间确定/切换/手动重载后加载列表：新增默认勾选，已存在默认不勾选（避免误覆盖）。
+  // 加载开始即清空旧选择——挂起期间列表是上一份的，旧选择留在后台会被误提交到新工作空间。
   useEffect(() => {
     if (!open || !workspaceId) return;
     let cancelled = false;
     setLoadingList(true);
+    setSelected({});
     setError(null);
     listRemoteSkills(workspaceId)
       .then((list) => {
@@ -149,7 +151,8 @@ export function RemoteSkillSyncDialog({
   }
 
   async function handleSync() {
-    if (selectedIds.length === 0 || !workspaceId) return;
+    // 列表加载中不提交：此时勾选属于上一份列表，提交会同步到错误的工作空间/内容集。
+    if (loadingList || selectedIds.length === 0 || !workspaceId) return;
     setPulling(true);
     setError(null);
     try {
@@ -329,7 +332,7 @@ export function RemoteSkillSyncDialog({
             <Button
               type="button"
               size="sm"
-              disabled={pulling || selectedIds.length === 0}
+              disabled={pulling || loadingList || selectedIds.length === 0}
               onClick={() => void handleSync()}
             >
               {pulling ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
