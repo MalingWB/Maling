@@ -1214,5 +1214,10 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **实现**：纯提示词（`remote_task_completion_protocol.md` zh-CN/en 按执行模式分化）：direct 分支门控语义不变；新增工作流分支（凭「前序链路/工作流上下文」自我识别）——如实声明不门控 + 只有收尾节点的块传递下游 + 收尾节点判定（产出即最终交付）+ 内容必须是**整个工作项**的交付总结（综合前序产出与附件，优先构建产物/部署地址/变更范围/测试要点，不可得时简要总结兜底，不得只写本节点产物）。零代码/管线改动；契约测试锁定中英锚点。
   - **验证**：契约测试扩展后全绿；内网工作流场景待打包实测。曾评估「读侧无块时回溯聚合各节点块」兜底，对本次案例无帮助，暂缓（避免为假设性失效加机制）。
 
+- [x] **M5-bt**（2026-10-16）PR review 六项处置——skill 目录链接拒绝打包 + 备份清扫 recovery-first + 续跑 run_mode 事实源 + 同步弹窗加载期门控 + 常驻文案五语言补齐（开发设计 §12.60 改动五十八）：
+  - **问题（PR 负责人审批六项）**：① 跨项目误投递（不修——remote_task_id 服务端分配全局唯一，客户端只维护任务↔远程绑定，项目归属是用户决策）；② skill 根目录是目录链接（symlink/junction）时顺着链接把库外内容整体上传；③ 更新崩溃后重试先删唯一备份且前缀清扫可误删名字相近 skill 的备份；④ 续跑登记 run_mode 用本次 UI 选定而非任务实际执行模式；⑤ 列表刷新挂起期旧选择仍可提交同步；⑥ 五语言「常驻会话」文案缺失致翻译检查红。
+  - **实现**：② `resolve_own_skill_dir` 双防护——入口目录 `is_symlink()`（Windows 覆盖 junction）拒绝 + canonical 落点必须在库内；③ `remove_stale_bundle_staging` 精确解析残留名（`my-skill` 不再匹配 `my-skill-v2-777`）+ backup recovery-first（唯一副本恢复回 target，`write_bundle_instance` 据此按覆盖语义完成本次写入）；④ `resumed_run_mode` helper——续跑登记取被续 run 持久化 `ConversationMetadata.run_mode`，读不到回退本次请求选定并 WARN；⑤ `RemoteSkillSyncDialog` 列表 effect 开始清空旧选择 + 同步按钮/守卫补 `loadingList`；⑥ `conversation.sidebar` 常驻五键补 zh-TW/ja-JP/ko-KR/pt-BR/es。定性：②③④⑤好设计+实现不完善，⑥新增键漏维护五语言。
+  - **验证**：五项均最小失败测试先行后转绿（`multica::local_skills::` 19 过 / core `skill::` 23 过 / desktop `multica::` 167 过 / 弹窗 4 过 / `i18n-loading` 2 红转 7 绿）；clippy 与 tsc 零错误；全量 web 套件 22 例失败经 stash 对照确认为 HEAD 既有、与本批无关。
+
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

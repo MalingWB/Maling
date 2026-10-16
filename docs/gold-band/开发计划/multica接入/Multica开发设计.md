@@ -2604,6 +2604,28 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.60 改动五十八：PR review 六项处置——skill 目录链接拒绝打包、备份清扫 recovery-first、续跑 run_mode 事实源、同步弹窗加载期门控、常驻文案五语言补齐（M5-bt，2026-10-16）
+
+**背景**：feature_multica PR 负责人审批六项发现，处置：五项实现（②③④⑤⑥）、一项不修（①，用户结论）。
+
+**① 不修（用户结论）**：「甲项目结果发乙项目」依赖两个任务的 remote_task_id 撞号，而 remote_task_id 为服务端分配、不同任务 ID 各异；客户端侧任务本就不与项目绑定，只维护任务↔远程任务绑定，项目归属是用户决策事项，无需客户端按项目隔离。
+
+**实现②（skill 根目录是目录链接时拒绝打包）**：`resolve_own_skill_dir`（推送/导入上报解析 skill 目录的唯一入口）新增两道防护——入口目录 `is_symlink()` 整体拒绝（Windows 上 std 同时覆盖 symlink 与 junction，错误按 failed 上报 server 可见）；canonical 化 root 与 dir 后要求 `real_dir.starts_with(real_root)`（防中间目录链接把入口重定向到库外）。子条目 symlink 由 `collect_files_recursive` 既有跳过逻辑覆盖；本地 skill 删除路径的 `name` 来自扫描器输出（扫描器跳过链接目录）不受影响。根因定性：好设计（入口名称合法性校验）+ 实现不完整（未校验最终打开位置）。
+
+**实现③（备份清扫 recovery-first + 名字精确匹配）**：`remove_stale_bundle_staging` 重构——名字解析从「前缀匹配」改为精确解析 `.{mstaging|mbackup}-{skill_dir_name}-{纯数字 pid}`（`my-skill` 不再误删 `my-skill-v2-777` 的残留）；backup 残留 recovery-first：**swap 提交前它是旧内容的唯一副本**（target 已改名过去），目标目录缺失（崩溃点在两次 rename 之间）→ 改名回 target 还原崩溃前状态，目标目录存在（swap 已提交）→ 先删 SKILL.md（对扫描器不可见）再整体删除；staging 残留照旧删除（从不是唯一副本）。清扫返回是否发生恢复，`write_bundle_instance` 据此把本次写入按覆盖语义走 swap——即便调用方因崩溃后 target 缺失而按新建分类进入（pull 重试的真实路径：扫描器看不到 `.mbackup-*` 目录 → 误判新建），恢复出的目录正是本次更新要替换的旧内容；不翻转则 rename(staging→target) 会撞已恢复目录而失败。多份 backup 残留恢复首个、其余按已提交残留删除。根因定性：原子 swap 设计正确 + 崩溃恢复路径缺失（无条件删除唯一副本）。远程改名导致重试目录名漂移的残留（新旧实现同样匹配不到）不回归——不可见、无数据损失、待同名 skill 下次写入清理。
+
+**实现④（续跑登记 run_mode 事实源）**：续跑分支登记 `ActiveRemoteRun.run_mode` 从快照本次请求 `input.run_mode` 改为被续 run 持久化的 canonical `ConversationMetadata.run_mode`（`task_dir/authoring/conversation.json`，`resumed_run_mode` helper；词表同 `REMOTE_RUN_MODE_DIRECT`，`ConversationRunMode::as_str` 的 direct/workflow/auto）；读不到（极老任务/元数据损坏）回退本次请求选定并 WARN。`run_continue_background` 不换模式，续跑的实际执行模式即创建时模式；完成门控（bridge 只认 direct）按 UI 选定快照会「未交付即完成」或「已交付仍运行中」。Fresh 分支不动（新 run 确实以 input.run_mode 创建）。否决的替代：把 run_mode 冗余进 `RemoteTaskConversation` 索引——违反单一事实源（元数据已权威）。根因定性：好设计（M5-bp 模式快照）+ 实现不完善（续跑快照了错误的事实源）。
+
+**实现⑤（同步弹窗加载期防误提交）**：`RemoteSkillSyncDialog` 列表 effect 开始即清空旧选择（挂起期列表仍是上一份的，旧选择留在后台会被提交到新工作空间）；同步按钮 disabled 条件与 `handleSync` 守卫均补 `loadingList`。根因：按钮仅凭选中数与 pulling 判可用，加载中旧选择依旧可提交。
+
+**实现⑥（常驻文案五语言补齐）**：`conversation.sidebar.{keepResident,releaseResident,keepResidentHint,releaseResidentHint,resident}` 五键此前只维护了 en/zh-CN，补 zh-TW/ja-JP/ko-KR/pt-BR/es（与 en/zh-CN 同位）。保留英文词 Agent 不翻译；zh-TW 用台湾术语（工作階段/點選）。
+
+**方案自评审**：五项均为最小根因修复，零新抽象/状态机/持久字段/依赖（③复用同一清扫点升级语义，④为读取既有 canonical 数据的 helper）。性能——②的防护是每次导入上报一次的两次 metadata/canonicalize 系统调用（非热路径）；③清扫的精确解析替代字符串前缀比较、无额外 I/O；④续跑登记点一次文件读取（续跑本身是重操作）；⑤⑥无运行时开销。
+
+**验证结果**：均最小失败测试先行后转绿——② `resolve_rejects_skill_root_that_is_a_directory_link`（junction 根 + 库外目标 + 普通目录对照）修复前红（`unwrap_err` 收到 Ok）、修复后绿，`multica::local_skills::` 19 测全绿；③ `sweep_recovers_sole_backup_when_target_missing` + `sweep_matches_exact_skill_dir_name_only` 修复前红（唯一备份被删、相近名残留被误删）、修复后绿，既有 `bundle_write_sweeps_crash_leftovers_across_pids` 在新语义下保持绿（同时固化「恢复→覆盖」端到端路径），core `skill::` 23 测全绿；④ `resumed_run_mode_*` 两测（编译红 E0425 → 绿；夹具首次跑暴露 camelCase 字段名写错、按断言红修正），desktop `multica::` 167 测全绿；⑤ 新用例「reload in flight → sync disabled, stale selection cleared」修复前红（挂起期按钮可点且会调 `pullRemoteSkills`）、修复后绿，该文件 4 测全绿；⑥ `i18n-loading` 由 2 红转 7 绿。`cargo clippy --bin gold-band-desktop` 零错误；`tsc -p web/tsconfig.build.json` 零错误。全量 web 套件存在 22 例失败，经 stash 对照确认为 HEAD（97e8c533）既有、与本批改动无关。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）
