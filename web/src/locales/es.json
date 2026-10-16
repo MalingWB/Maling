@@ -2935,7 +2935,12 @@
         "removeTask": "Quitar de la lista",
         "removeTaskHint": "Solo se quita de la lista de este lado; al actualizar vuelve a aparecer",
         "removeTaskTerminalHint": "Elimina el registro local de finalización; no volverá a aparecer al actualizar"
-      }
+      },
+      "keepResident": "Mantener la sesión activa",
+      "releaseResident": "Permitir el cierre de la sesión",
+      "keepResidentHint": "Active la permanencia cuando el Agent tenga tareas programadas u otros trabajos de larga duración, para que la sesión no se cierre al quedar inactiva",
+      "releaseResidentHint": "La sesión es permanente y no se cerrará por inactividad. Haga clic para permitir el cierre",
+      "resident": "Sesión mantenida activa"
     },
     "composer": {
       "remoteNeedLocalWorkspace": "Añada un espacio de trabajo local antes de ejecutar un requisito",

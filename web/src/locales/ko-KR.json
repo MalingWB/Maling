@@ -2935,7 +2935,12 @@
         "removeTask": "목록에서 제거",
         "removeTaskHint": "이 쪽 목록에서만 제거되며, 새로 고치면 다시 나타납니다",
         "removeTaskTerminalHint": "로컬 완료 기록을 함께 삭제하며, 새로 고쳐도 다시 나타나지 않습니다"
-      }
+      },
+      "keepResident": "세션 상시 유지",
+      "releaseResident": "상시 유지 해제",
+      "keepResidentHint": "Agent에 예약 작업 등 오래 실행되는 작업이 있으면 상시 유지를 켜서 세션이 유휴 상태일 때 회수되지 않도록 하세요",
+      "releaseResidentHint": "상시 유지 중입니다. 유휴 상태여도 회수되지 않습니다. 클릭하여 상시 유지를 해제하세요",
+      "resident": "상시 유지 세션"
     },
     "composer": {
       "remoteNeedLocalWorkspace": "요구사항을 실행하기 전에 로컬 워크스페이스를 추가해 주세요",

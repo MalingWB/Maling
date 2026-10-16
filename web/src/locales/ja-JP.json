@@ -2935,7 +2935,12 @@
         "removeTask": "リストから削除",
         "removeTaskHint": "この側のリストから削除されるだけです。更新すると復元されます",
         "removeTaskTerminalHint": "ローカルの完了記録を削除します。更新しても再表示されません"
-      }
+      },
+      "keepResident": "セッションを常駐",
+      "releaseResident": "常駐を解除",
+      "keepResidentHint": "Agent に定時タスクなど長時間実行する作業がある場合は常駐を有効にし、アイドル時にセッションが回収されないようにしてください",
+      "releaseResidentHint": "常駐中のため、アイドル時に回収されません。クリックして常駐を解除します",
+      "resident": "常駐セッション"
     },
     "composer": {
       "remoteNeedLocalWorkspace": "要件を実行する前に、ローカルワークスペースを追加してください",
