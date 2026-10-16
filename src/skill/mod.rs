@@ -487,9 +487,9 @@ impl SkillManager {
     ///
     /// 原子性：staged 目录与目标目录同父（同卷 rename），先写支撑文件、**最后写 SKILL.md**
     /// ——SKILL.md 写入前崩溃的残留对扫描器不可见；swap 任一步失败回滚到写前状态。
-    /// 崩溃兜底：写入开始时按前缀清扫本 skill 的 staging/backup 残留（任意 pid，见
-    /// [`remove_stale_bundle_staging`]）；提交后的 backup 清理失败时先删其 SKILL.md
-    /// 使残留对扫描器不可见。
+    /// 崩溃兜底：写入开始时清扫本 skill 的 staging/backup 残留（任意 pid、名字精确匹配，
+    /// backup 先恢复后删除，见 [`remove_stale_bundle_staging`]）；提交后的 backup 清理失败时
+    /// 先删其 SKILL.md 使残留对扫描器不可见。
     pub fn write_bundle_instance(
         &self,
         name: &str,
@@ -533,11 +533,14 @@ impl SkillManager {
             .as_ref()
             .map(|dir| self.synced_agent_types_for_directory(dir.as_str(), source, workspace_path));
 
-        // staged / backup 固定名含 pid；写入前按前缀清扫本 skill 的崩溃残留（任意 pid）。
+        // staged / backup 固定名含 pid；写入前清扫本 skill 的崩溃残留（任意 pid，名字精确
+        // 匹配）。backup 残留 recovery-first：唯一副本恢复回 target 时，本次写入按覆盖
+        // 语义走 swap——恢复出的目录正是本次更新要替换的旧内容（即便调用方因崩溃后
+        // target 缺失而按新建分类进入）。
         let parent = target_dir
             .parent()
             .ok_or_else(|| anyhow::anyhow!("invalid skill directory: {}", target_dir.as_str()))?;
-        remove_stale_bundle_staging(parent, skill_dir_name);
+        let recovered_backup = remove_stale_bundle_staging(parent, skill_dir_name);
         let staging = parent.join(format!(".mstaging-{skill_dir_name}-{}", std::process::id()));
         let backup = parent.join(format!(".mbackup-{skill_dir_name}-{}", std::process::id()));
 
@@ -546,7 +549,7 @@ impl SkillManager {
             return Err(error);
         }
 
-        let is_overwrite = current_dir.is_some();
+        let is_overwrite = current_dir.is_some() || recovered_backup;
         if is_overwrite {
             if let Err(error) = fs::rename(target_dir.as_std_path(), backup.as_std_path()) {
                 let _ = fs::remove_dir_all(staging.as_std_path());
@@ -1187,24 +1190,73 @@ fn validate_support_file_path(rel_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// 本 skill 的 staging/backup 崩溃残留清扫（**按前缀、不限 pid**）：进程在 swap 完成前崩溃后
-/// 重启，pid 已变，pid 隔离的清扫永远够不到残留；其中含 SKILL.md 的残留（staging 已写完
-/// SKILL.md、backup 的 SKILL.md 删除失败）对 [`scan_skills_dir`] 可见。单实例 app + 拉取
-/// 弹窗 UI 串行化保证不存在并发写同一 skill 的在飞 staging 被误删。
-fn remove_stale_bundle_staging(parent: &Utf8Path, skill_dir_name: &str) {
-    let staging_prefix = format!(".mstaging-{skill_dir_name}-");
-    let backup_prefix = format!(".mbackup-{skill_dir_name}-");
+/// 本 skill 的 staging/backup 崩溃残留清扫（**名字精确匹配、不限 pid**）：进程在 swap 完成
+/// 前崩溃后重启，pid 已变，pid 隔离的清扫永远够不到残留。残留分两类处理：
+/// - staging：从不是唯一副本，直接删除（含 SKILL.md 的形态对 [`scan_skills_dir`] 可见）。
+/// - backup：**recovery-first**——在 swap 提交前它是旧内容的唯一副本（target 已改名过去），
+///   目标目录缺失（崩溃点在两次 rename 之间）→ 改名回 target，把状态还原为「崩溃前」，
+///   由调用方按覆盖语义完成本次写入；目标目录存在（swap 已提交）→ 陈旧残留，删除（先删
+///   SKILL.md 使其对扫描器不可见，再整体删除）。
+///
+/// 多份 backup 残留时（极小概率）恢复首个、其余按已提交残留删除。单实例 app + 拉取弹窗
+/// UI 串行化保证不存在并发写同一 skill 的在飞 staging 被误删。
+///
+/// 返回是否发生了「backup 恢复回 target」——此时调用方必须按覆盖语义走 swap（即便调用方
+/// 按新建分类进入：恢复出的目录就是本次更新要替换的旧内容）。
+fn remove_stale_bundle_staging(parent: &Utf8Path, skill_dir_name: &str) -> bool {
     let Ok(entries) = fs::read_dir(parent.as_std_path()) else {
-        return;
+        return false;
     };
+    let mut recovered = false;
     for entry in entries.flatten() {
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        if name.starts_with(&staging_prefix) || name.starts_with(&backup_prefix) {
-            let _ = fs::remove_dir_all(entry.path());
+        match parse_stale_bundle_entry(&name, skill_dir_name) {
+            // staging 残留：从不是唯一副本，直接删。
+            Some(false) => {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+            Some(true) => {
+                let target = parent.join(skill_dir_name);
+                if target.is_dir() {
+                    // swap 已提交：backup 是陈旧残留。先删 SKILL.md（对扫描器不可见）再整体删。
+                    let _ = fs::remove_file(entry.path().join(SKILL_FILE_NAME));
+                    let _ = fs::remove_dir_all(entry.path());
+                } else if !recovered {
+                    // 崩溃点在两次 rename 之间：唯一副本改名回 target（还原崩溃前状态）。
+                    if let Err(error) = fs::rename(entry.path(), target.as_std_path()) {
+                        debug!("skill bundle backup recovery failed: {error}");
+                    } else {
+                        recovered = true;
+                    }
+                } else {
+                    // 已恢复过一份：其余按陈旧残留删除。
+                    let _ = fs::remove_file(entry.path().join(SKILL_FILE_NAME));
+                    let _ = fs::remove_dir_all(entry.path());
+                }
+            }
+            None => {}
         }
     }
+    recovered
+}
+
+/// 解析崩溃残留名：`.mstaging-{skill_dir_name}-{pid}` / `.mbackup-{skill_dir_name}-{pid}`
+/// （pid 为纯数字，格式见 [`write_bundle_instance`]）。返回是否为 backup；不匹配——含名字
+/// 相近的其他 skill，如 `my-skill` 清扫时不匹配 `my-skill-v2-777`——返回 `None`。
+fn parse_stale_bundle_entry(name: &str, skill_dir_name: &str) -> Option<bool> {
+    let (is_backup, rest) = if let Some(rest) = name.strip_prefix(".mbackup-") {
+        (true, rest)
+    } else {
+        (false, name.strip_prefix(".mstaging-")?)
+    };
+    // 目录名与 pid 以最后一个 `-` 分界（目录名自身可含 `-`）；pid 必须非空纯数字。
+    let (head, pid) = rest.rsplit_once('-')?;
+    if head != skill_dir_name || pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(is_backup)
 }
 
 /// staged 目录写入：先写支撑文件（按需建父目录），**最后写 SKILL.md**——SKILL.md 写入前
@@ -2162,6 +2214,72 @@ compatibility: claude-code-only
         // 清扫发生在写入前，正常落盘不受残留影响。
         assert!(skills_root.join("demo-skill").join("SKILL.md").is_file());
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sweep_recovers_sole_backup_when_target_missing() {
+        // 崩溃点在「target→backup 之后、提交之前」：backup 是旧内容的**唯一副本**（target
+        // 已改名过去），清扫必须先恢复（改名回 target）而非删除——否则本次更新再失败，
+        // 旧内容永久丢失。
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let backup = parent.join(".mbackup-my-skill-4242");
+        fs::create_dir_all(backup.as_std_path()).unwrap();
+        fs::write(
+            backup.join("SKILL.md").as_std_path(),
+            "---\nname: my-skill\n---\nsole copy",
+        )
+        .unwrap();
+
+        remove_stale_bundle_staging(&parent, "my-skill");
+
+        assert!(!backup.exists(), "backup residue must be consumed");
+        assert_eq!(
+            fs::read_to_string(parent.join("my-skill").join("SKILL.md").as_std_path())
+                .unwrap(),
+            "---\nname: my-skill\n---\nsole copy",
+            "sole backup must be recovered into the target dir, not deleted"
+        );
+    }
+
+    #[test]
+    fn sweep_matches_exact_skill_dir_name_only() {
+        // 名字精确匹配：清扫 my-skill 不得触碰 my-skill-v2 的残留——前缀匹配会把名字
+        // 相近 skill 的唯一备份一并误删；自己的 staging 残留照常删除。
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        for name in [
+            ".mbackup-my-skill-v2-777",
+            ".mstaging-my-skill-v2-777",
+            ".mstaging-my-skill-555",
+        ] {
+            let dir = parent.join(name);
+            fs::create_dir_all(dir.as_std_path()).unwrap();
+            fs::write(dir.join("SKILL.md").as_std_path(), "x").unwrap();
+        }
+        // my-skill 自身目标在位（backup 只可能是已提交的陈旧残留 → 删除语义）。
+        fs::create_dir_all(parent.join("my-skill").as_std_path()).unwrap();
+        fs::write(parent.join("my-skill").join("SKILL.md").as_std_path(), "cur").unwrap();
+
+        remove_stale_bundle_staging(&parent, "my-skill");
+
+        assert!(
+            parent.join(".mbackup-my-skill-v2-777").is_dir(),
+            "similarly-named skill's backup must not be touched"
+        );
+        assert!(
+            parent.join(".mstaging-my-skill-v2-777").is_dir(),
+            "similarly-named skill's staging must not be touched"
+        );
+        assert!(
+            !parent.join(".mstaging-my-skill-555").exists(),
+            "own staging residue must still be swept"
+        );
+        // 自身目标不受清扫影响。
+        assert_eq!(
+            fs::read_to_string(parent.join("my-skill").join("SKILL.md").as_std_path()).unwrap(),
+            "cur"
+        );
     }
 
     #[test]
