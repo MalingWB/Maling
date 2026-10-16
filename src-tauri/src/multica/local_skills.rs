@@ -273,7 +273,18 @@ fn file_len(path: &Path) -> Result<u64, String> {
 /// skill_key 是**服务端控制的文件系统路径输入**（码灵上报的 key 恒为裸目录名，但异常/恶意回传
 /// `../`、分隔符、`.` 时不得触达库外路径）：分隔符与 `.`/`..` 整体拒绝（防路径穿越），
 /// 再要求目录真实存在于全局库内，否则按 `skill not found` 语义上报。
+/// 入口目录本身是目录链接（symlink/junction）时整体拒绝——入口名称合法 ≠ 最终打开的位置合法，
+/// 顺着链接读会把库外内容整体上传；此外用 canonical 真实落点兜底，确保目录仍在库内
+/// （防中间目录链接把入口重定向到库外）。子条目的 symlink 由 collect_files_recursive 跳过。
 pub fn resolve_own_skill_dir(skill_key: &str) -> Result<camino::Utf8PathBuf, String> {
+    resolve_skill_dir_under_root(&GoldBandPaths::global_skills_dir(), skill_key)
+}
+
+/// 根下解析（目录参数化，单测不依赖真实 home）：语法拒绝 + 目录链接拒绝 + 存在性与落点检查。
+fn resolve_skill_dir_under_root(
+    root: &Utf8Path,
+    skill_key: &str,
+) -> Result<camino::Utf8PathBuf, String> {
     if skill_key.is_empty()
         || skill_key.contains('/')
         || skill_key.contains('\\')
@@ -282,9 +293,26 @@ pub fn resolve_own_skill_dir(skill_key: &str) -> Result<camino::Utf8PathBuf, Str
     {
         return Err(format!("skill not found: {skill_key}"));
     }
-    let dir = GoldBandPaths::global_skills_dir().join(skill_key);
+    let dir = root.join(skill_key);
+    // Windows 上 is_symlink 同时覆盖 symlink 与 junction。
+    if dir.is_symlink() {
+        return Err(format!(
+            "skill dir is a directory link (not bundled): {skill_key}"
+        ));
+    }
     if !dir.is_dir() {
         return Err(format!("skill not found: {skill_key}"));
+    }
+    let real_root = root
+        .canonicalize_utf8()
+        .map_err(|e| format!("read skill library root failed: {e}"))?;
+    let real_dir = dir
+        .canonicalize_utf8()
+        .map_err(|e| format!("read skill dir failed for {skill_key}: {e}"))?;
+    if !real_dir.starts_with(&real_root) {
+        return Err(format!(
+            "skill dir resolves outside the skill library: {skill_key}"
+        ));
     }
     Ok(dir)
 }
@@ -843,6 +871,55 @@ mod tests {
         }
         // 库内不存在的目录名同样按 not found 拒绝。
         assert!(resolve_own_skill_dir("definitely-not-exist-dir").is_err());
+    }
+
+    /// 测试用目录链接（Windows：先试 symlink_dir，无特权时回退 junction——mklink /J 无需
+    /// 管理员；Unix：symlink）。与 `src/git.rs` 测试同款。
+    fn create_test_directory_link(target: &Path, link: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(target, link).is_ok() {
+                return;
+            }
+            let output = gold_band::process::background_command("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "failed to create test junction: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_rejects_skill_root_that_is_a_directory_link() {
+        // 根目录本身就是目录链接（symlink/junction）时必须拒绝打包：链接目标在库外时，
+        // 顺着链接读会把库外内容整体上传（入口名称合法 ≠ 最终打开的位置合法）。
+        // 子条目的 symlink 跳过（collect_files_recursive）覆盖不到「根即链接」。
+        let tmp = tempfile::tempdir().unwrap();
+        let base = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let root = base.join("skills");
+        fs::create_dir_all(root.as_std_path()).unwrap();
+        // 库外目录：含 SKILL.md，若被打包即泄露。
+        let outside = base.join("outside");
+        fs::create_dir_all(outside.as_std_path()).unwrap();
+        fs::write(outside.join("SKILL.md").as_std_path(), "---\nname: leak\n---\nsecret").unwrap();
+        create_test_directory_link(outside.as_std_path(), root.join("leaky-skill").as_std_path());
+
+        let err = resolve_skill_dir_under_root(&root, "leaky-skill").unwrap_err();
+        assert!(err.contains("directory link"), "{err}");
+
+        // 对照组：库内普通目录照常解析。
+        fs::create_dir_all(root.join("normal").as_std_path()).unwrap();
+        fs::write(root.join("normal").join("SKILL.md").as_std_path(), "x").unwrap();
+        assert!(resolve_skill_dir_under_root(&root, "normal").is_ok());
     }
 
     #[test]
