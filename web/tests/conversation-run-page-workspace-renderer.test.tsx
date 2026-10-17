@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const workspace = vi.hoisted(() => ({
   scopeKey: 'conversation:project-1:task-1:run-1',
   openResource: vi.fn(),
-  registerResourceRenderer: vi.fn(() => vi.fn()),
+  registerResourceRenderer: vi.fn((_kind: string, _renderer: unknown) => vi.fn()),
   registerResourceCloseResolver: vi.fn(() => vi.fn()),
   setConversationDirectoryEntry: vi.fn(),
 }));
@@ -172,11 +172,16 @@ describe('ConversationRunPage workspace renderer lifecycle', () => {
     await act(async () => {
       root.render(<ConversationRunPage {...props} run={runSnapshot(1)} />);
     });
+    const registrations = [...workspace.registerResourceRenderer.mock.calls];
+    expect(registrations.map(([kind]) => kind)).toEqual([
+      'workflow-view', 'workflow-edit', 'auto-config', 'system-prompt',
+      'hidden-prompt-section', 'compaction-summary', 'raw-frames',
+    ]);
     await act(async () => {
       root.render(<ConversationRunPage {...props} run={runSnapshot(2)} />);
     });
 
-    expect(workspace.registerResourceRenderer).toHaveBeenCalledTimes(6);
+    expect(workspace.registerResourceRenderer.mock.calls).toEqual(registrations);
   });
 
   it('opens AUTO configuration as a right-workspace tab on the current run', async () => {

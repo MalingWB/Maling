@@ -1,7 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { browserApi } from '../../src/api/browser';
 
 describe('browserApi', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    [undefined, 'completed'],
+    ['', 'completed'],
+    ['?compactionStatus=in_progress', 'running'],
+  ])('projects compaction with preview query %s', async (search, status) => {
+    vi.stubGlobal('window', search === undefined ? undefined : { location: { search } });
+    const run = await browserApi.getConversationRun('default', 'mock-task', 'run-052');
+    expect(run.selectedSession?.events.find((event) => event.kind === 'contextCompaction'))
+      .toMatchObject({ status });
+  });
+
   it('keeps queued authoring payload out of lifecycle summaries and restores one item on demand', async () => {
     const run = await browserApi.getConversationRun('default', 'mock-task', 'run-053');
     const item = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0]?.lifecycle?.promptQueue?.items[0];
