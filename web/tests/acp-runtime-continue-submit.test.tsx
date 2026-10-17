@@ -421,7 +421,7 @@ describe('ACP runtime continue submission', () => {
         file: new File(['png'], 'draft.png', { type: 'image/png' }), previewUrl: 'blob:draft-image' },
       { id: 'file', name: 'notes.txt', size: 4, mime: 'text/plain', source: 'dialog', path: 'C:/notes.txt' },
     ],
-    quotes: [{ id: 'quote', sourceKey: 'original-message', text: 'quoted message' }],
+    quotes: [{ id: 'quote', source: { kind: 'agentMessage', messageKey: 'original-message' }, text: 'quoted message' }],
     workspaceFiles: [],
   });
   function mockHistory() {

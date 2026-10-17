@@ -1694,7 +1694,8 @@ fn timeline_provider_history_item_id(item: &AcpUiEvent) -> Option<String> {
             .filter(|value| !value.trim().is_empty())
             .map(|value| format!("session-plan-{value}")),
         "compaction_update" | "compaction_summary_chunk" => raw
-            .get("compactionId").and_then(Value::as_str)
+            .get("compactionId")
+            .and_then(Value::as_str)
             .map(|id| format!("context-compaction-id-{id}")),
         _ => None,
     }

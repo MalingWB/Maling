@@ -13,13 +13,21 @@ pub struct DirectBackgroundControl {
     pub session_id: String,
     pub connection_generation: u64,
     pub active_tools: usize,
+    /// Wall-clock projection for visibility; the target identity is session + generation.
     pub expires_at_ms: u64,
 }
 
 pub fn direct_background_control(attempt: &Utf8Path) -> Option<DirectBackgroundControl> {
-    let entry = AcpSessionRuntimeRegistry::shared().sessions.lock().ok()?.get(attempt.as_str())?.clone();
+    let entry = AcpSessionRuntimeRegistry::shared()
+        .sessions
+        .lock()
+        .ok()?
+        .get(attempt.as_str())?
+        .clone();
     let direct = entry.direct.as_ref()?;
-    if entry.active || direct.abort_requested() || entry.connection.is_transport_closed() { return None; }
+    if entry.active || direct.abort_requested() || entry.connection.is_transport_closed() {
+        return None;
+    }
     let last = direct.background_activity_window()?;
     let active_tools = direct.active_tools.lock().ok()?.len();
     let remaining = direct
@@ -58,24 +66,55 @@ pub fn direct_background_control_under(root: &Utf8Path) -> Option<DirectBackgrou
 
 /// Serialize against prompt admission; never cancel a newer foreground prompt
 /// through the background control path or fabricate a prompt terminal result.
-pub fn cancel_retained_direct_session(attempt: &Utf8Path, expected: &DirectBackgroundControl, expected_turn_id: Option<&str>) -> Result<bool> {
+pub fn cancel_retained_direct_session(
+    attempt: &Utf8Path,
+    expected: &DirectBackgroundControl,
+    expected_turn_id: Option<&str>,
+) -> Result<bool> {
     let registry = AcpSessionRuntimeRegistry::shared();
     let lock = registry.prompt_lock(attempt);
-    let Ok(_guard) = lock.try_lock() else { return Ok(false); };
-    let entry = registry.sessions.lock().map_err(|_| anyhow!("ACP registry lock poisoned"))?.get(attempt.as_str()).cloned();
-    let Some(entry) = entry else { return Ok(false); };
-    if entry.active || entry.direct.is_none() || entry.connection.is_transport_closed()
-        || entry.session_id != expected.session_id || entry.connection_generation != expected.connection_generation
-        || prompt_activity(attempt).is_some() { return Ok(false); }
+    let Ok(_guard) = lock.try_lock() else {
+        return Ok(false);
+    };
+    let entry = registry
+        .sessions
+        .lock()
+        .map_err(|_| anyhow!("ACP registry lock poisoned"))?
+        .get(attempt.as_str())
+        .cloned();
+    let Some(entry) = entry else {
+        return Ok(false);
+    };
+    if entry.active
+        || entry.direct.is_none()
+        || entry.connection.is_transport_closed()
+        || entry.session_id != expected.session_id
+        || entry.connection_generation != expected.connection_generation
+        || prompt_activity(attempt).is_some()
+    {
+        return Ok(false);
+    }
     let path = AcpAttemptPaths::from_attempt_dir(attempt.to_owned()).snapshot;
     let header = crate::acp::events::read_lifecycle_header_snapshot(&path)?;
-    if header.as_ref().and_then(|h| h.turn_id.as_deref()) != expected_turn_id { return Ok(false); }
-    if header.as_ref().is_some_and(|h| h.live_turn_activity != crate::acp::events::AcpLiveTurnActivity::Idle) { return Ok(false); }
+    if header.as_ref().and_then(|h| h.turn_id.as_deref()) != expected_turn_id {
+        return Ok(false);
+    }
+    if header
+        .as_ref()
+        .is_some_and(|h| h.live_turn_activity != crate::acp::events::AcpLiveTurnActivity::Idle)
+    {
+        return Ok(false);
+    }
     let accepted = AdapterConnectionManager::shared().cancel_attempt_prompt(attempt)?;
     if accepted && let Some(direct) = entry.direct.as_ref() {
-        direct.background_cancel_requested.store(true, Ordering::Release);
+        direct
+            .background_cancel_requested
+            .store(true, Ordering::Release);
         // The consumer records the stop after every frame received before it.
-        *direct.pending_cancel_marker.lock().expect("Direct cancel marker lock") =
+        *direct
+            .pending_cancel_marker
+            .lock()
+            .expect("Direct cancel marker lock") =
             Some(entry.connection.session_route_watermark(&entry.session_id));
     }
     Ok(accepted)
@@ -304,12 +343,20 @@ impl DirectRuntime {
             _ => false,
         };
         if changed {
-            if update.pointer("/_meta/goldBandBackground").and_then(Value::as_bool) == Some(true) {
-                *self.last_background_activity.lock().expect("Direct activity lock") = Some(Instant::now());
+            if update
+                .pointer("/_meta/goldBandBackground")
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                *self
+                    .last_background_activity
+                    .lock()
+                    .expect("Direct activity lock") = Some(Instant::now());
             }
             // Settling tools after a stop belongs to the stopped episode; only new work reopens it.
             if !settles {
-                self.background_cancel_requested.store(false, Ordering::Release);
+                self.background_cancel_requested
+                    .store(false, Ordering::Release);
             }
             self.touch();
         }
@@ -547,7 +594,10 @@ fn record_due_cancel_marker(
     runtime: &mut AcpRuntime,
     force: bool,
 ) -> Result<()> {
-    let mut pending = direct.pending_cancel_marker.lock().expect("Direct cancel marker lock");
+    let mut pending = direct
+        .pending_cancel_marker
+        .lock()
+        .expect("Direct cancel marker lock");
     let due = pending.as_ref().is_some_and(|watermark| {
         force || watermark.is_none_or(|mark| entry.event_pump.has_consumed(mark))
     });
@@ -873,12 +923,16 @@ mod tests {
         assert!(direct.last_background_activity.lock().unwrap().is_none());
         background(json!({"sessionUpdate":"tool_call","toolCallId":"a","status":"pending"}));
         background(json!({"sessionUpdate":"tool_call","toolCallId":"b","status":"in_progress"}));
-        background(json!({"sessionUpdate":"tool_call_update","toolCallId":"a","status":"completed"}));
+        background(
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"a","status":"completed"}),
+        );
         assert_eq!(direct.active_tools.lock().unwrap().len(), 1);
         let before = *direct.last_background_activity.lock().unwrap();
         background(json!({"sessionUpdate":"usage_update","used":2}));
         assert_eq!(*direct.last_background_activity.lock().unwrap(), before);
-        background(json!({"sessionUpdate":"tool_call_update","toolCallId":"b","status":"cancelled"}));
+        background(
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"b","status":"cancelled"}),
+        );
         assert!(direct.active_tools.lock().unwrap().is_empty());
         assert!(direct.last_background_activity.lock().unwrap().is_some());
     }
@@ -893,16 +947,22 @@ mod tests {
         background(json!({"sessionUpdate":"tool_call","toolCallId":"a","status":"in_progress"}));
         background(json!({"sessionUpdate":"tool_call","toolCallId":"b","status":"in_progress"}));
         assert!(direct.background_activity_window().is_some());
-        direct.background_cancel_requested.store(true, Ordering::Release);
+        direct
+            .background_cancel_requested
+            .store(true, Ordering::Release);
         assert!(direct.background_activity_window().is_none());
         // Cancellation settles the stopped tools; that must not reopen the Stop window.
-        background(json!({"sessionUpdate":"tool_call_update","toolCallId":"a","status":"cancelled"}));
+        background(
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"a","status":"cancelled"}),
+        );
         background(json!({"sessionUpdate":"tool_call_update","toolCallId":"b","status":"failed"}));
         background(json!({"sessionUpdate":"usage_update","used":3}));
         assert!(direct.background_activity_window().is_none());
         assert!(direct.active_tools.lock().unwrap().is_empty());
         // The Agent ignoring the stop, or a later timer, starts new work and reopens it.
-        background(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"woke"}}));
+        background(
+            json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"woke"}}),
+        );
         assert!(direct.background_activity_window().is_some());
     }
 
