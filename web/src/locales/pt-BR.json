@@ -1109,16 +1109,15 @@
       "stale-package": "O pacote baixado não é mais recente que a versão em execução."
     },
     "multica": {
-      "not-configured": "Multica não está configurado. Conclua a configuração em Configurações primeiro.",
-      "invalid-address": "Endereço de conexão inválido: deve ser uma URL http(s) válida.",
-      "connect-cancelled": "Conexão cancelada.",
       "auth-failed": "Falha na autenticação Multica: {{message}}",
+      "claim-conflict": "Esta tarefa já foi reivindicada por outro daemon.",
+      "connect-cancelled": "Conexão cancelada.",
+      "invalid-address": "Endereço de conexão inválido: deve ser uma URL http(s) válida.",
       "network-failed": "Falha na solicitação de rede Multica: {{message}}",
       "register-failed": "Falha no registro do daemon: {{message}}",
-      "claim-conflict": "Esta tarefa já foi reivindicada por outro daemon.",
-      "task-not-found": "Esta tarefa multica não foi encontrada.",
       "runtime-offline": "O runtime ainda não está pronto. Tente novamente em breve.",
       "session-resume-failed": "Falha ao retomar sessão. Uma nova execução será iniciada.",
+      "task-not-found": "Esta tarefa multica não foi encontrada.",
       "workspace-already-bound": "Este espaço de trabalho já está vinculado.",
       "workspace-not-found": "Esta vinculação de espaço de trabalho não foi encontrada."
     },
@@ -1126,6 +1125,9 @@
       "completion": {
         "repair-exhausted": "A saída do nó ainda não segue o protocolo após {{repairAttempts}} tentativas de correção. O fluxo de trabalho foi pausado."
       }
+    },
+    "remote": {
+      "source-not-configured": "A origem das tarefas não está configurada. Conecte-se primeiro."
     }
   },
   "status": {
@@ -1417,7 +1419,35 @@
       "globalHint": "Disponível em todos os projetos. Salvo em ~/.gold-band/skills/<name>/SKILL.md",
       "projectHint": "Disponível somente quando este projeto está aberto. Salvo em <project>/.gold-band/skills/<name>/SKILL.md",
       "storageGlobal": "Disponível em todos os projetos. Salvo em {{path}}",
-      "storageProject": "Nível de projeto. Salvo em {{path}}"
+      "storageProject": "Nível de projeto. Salvo em {{path}}",
+      "remoteSync": {
+        "action": "Sincronizar SKILLs remotos",
+        "confirm": "Sincronizar",
+        "confirmWithOverwrite": "Sincronizar (sobrescrever {{count}})",
+        "connect": "Conectar {{source}}",
+        "empty": "Nenhum SKILL neste workspace",
+        "existsBadge": "Já existe, será sobrescrito",
+        "loadFailed": "Falha ao carregar SKILLs remotos",
+        "newBadge": "Novo",
+        "notConnected": "Não conectado a {{source}}",
+        "outcomeCreated": "Criado",
+        "outcomeFailed": "Falha",
+        "outcomeOverwritten": "Sobrescrito",
+        "outcomeSkipped": "Ignorado",
+        "reason": {
+          "multica.not-connected": "Origem remota não conectada",
+          "multica.remote-error": "Erro do servidor",
+          "multica.skill.name-collision": "Conflito de nomes neste lote",
+          "multica.skill.not-found": "Já foi excluído no remoto"
+        },
+        "reload": "Recarregar",
+        "reportSummary": "Criados {{created}} · Sobrescritos {{overwritten}} · Ignorados {{skipped}} · Com falha {{failed}}",
+        "reportTitle": "Resultados da sincronização",
+        "selectAll": "Selecionar tudo",
+        "selectedCount": "{{selected}} / {{total}} selecionados",
+        "title": "Sincronizar SKILLs do remoto",
+        "workspace": "Workspace"
+      }
     },
     "importProfile": "Importar papéis",
     "importSettingsDescription": "Importação em lote de arquivos Markdown de papéis de uma pasta. Nomes e resumos ausentes são preenchidos automaticamente.",
@@ -2421,7 +2451,8 @@
       "cacheRead": "Leitura de cache",
       "cacheWrite": "Gravação de cache",
       "total": "Total"
-    }
+    },
+    "hiddenRemoteTaskContext": "Contexto de tarefa remota oculto"
   },
   "graph": {
     "emptyGraph": "Nenhum grafo de trabalho",
@@ -2818,43 +2849,6 @@
       "showLess": "Mostrar menos"
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "Requisitos",
-      "source": {
-        "label": "Origem da tarefa",
-        "multica": "Multica"
-      },
-      "workspace": {
-        "label": "Espaço de trabalho",
-        "remove": "Remover espaço de trabalho",
-        "removeConfirm": "Remover este espaço de trabalho? Seus requisitos não serão mais exibidos."
-      },
-      "column": {
-        "empty": "Nenhuma tarefa"
-      },
-      "account": {
-        "connected": "Conectado",
-        "switchAccount": "Alternar conta",
-        "disconnect": "Desconectar"
-      }
-    },
-    "connection": {
-      "title": "Endereço de conexão",
-      "addressLabel": "Endereço de conexão",
-      "save": "Salvar",
-      "invalidUrl": "Informe um endereço http(s) válido",
-      "restoreDefault": "Restaurar endereço padrão",
-      "restoring": "Restaurando…"
-    },
-    "connect": {
-      "title": "Conectar Multica",
-      "body": "Prestes a conectar a:",
-      "confirm": "Conectar",
-      "connecting": "Conectando…",
-      "cancelConnect": "Cancelar conexão"
-    }
-  },
   "conversation": {
     "title": "Conversa",
     "newConversation": "Nova conversa",
@@ -2894,7 +2888,6 @@
       "contextManagement": "Contexto",
       "runModeManagement": "Modo de execução",
       "more": "Mais",
-      "multicaTaskManagement": "Requisitos",
       "pinned": "Fixado",
       "noPinned": "Conversas fixadas aparecem aqui",
       "noWorkspaces": "Nenhum espaço de trabalho adicionado",
@@ -2933,42 +2926,46 @@
         "failed": "Falhou, não visualizado"
       },
       "settings": "Configurações",
-      "multica": {
-        "sectionTitle": "Requisitos",
-        "emptyTitle": "Não conectado ao Multica",
-        "emptyDescription": "Conecte para ver e reivindicar requisitos Multica.",
-        "connectButton": "Conectar Multica",
-        "connectionSettings": "Configurações de endereço de conexão",
-        "cancelTask": "Cancelar tarefa",
-        "executeTask": "Executar",
+      "remoteTaskManagement": "Requisitos",
+      "remoteTasks": {
         "addWorkspace": "Adicionar espaço de trabalho",
-        "noWorkspacesBound": "Nenhum espaço de trabalho vinculado",
-        "status": {
-          "queued": "A fazer",
-          "running": "Em execução",
-          "completed": "Concluído",
-          "failed": "Falhou"
-        },
+        "cancelTask": "Cancelar tarefa",
+        "connectionSettings": "Configurações de endereço de conexão",
         "dialog": {
-          "title": "Adicionar espaço de trabalho",
-          "remoteWorkspace": "Espaço de trabalho remoto",
-          "provider": "Provider",
           "add": "Adicionar",
+          "allWorkspacesBound": "Todos os espaços de trabalho remotos já estão vinculados.",
           "needWorkspace": "Selecione um espaço de trabalho remoto",
           "noServerWorkspaces": "Nenhum espaço de trabalho vinculável no servidor ainda. Crie um no multica Web primeiro.",
-          "allWorkspacesBound": "Todos os espaços de trabalho remotos já estão vinculados."
-        }
+          "provider": "Provider",
+          "remoteWorkspace": "Espaço de trabalho remoto",
+          "title": "Adicionar espaço de trabalho"
+        },
+        "executeTask": "Executar",
+        "noWorkspacesBound": "Nenhum espaço de trabalho vinculado",
+        "sectionTitle": "Requisitos",
+        "status": {
+          "completed": "Concluído",
+          "failed": "Falhou",
+          "queued": "A fazer",
+          "running": "Em execução"
+        },
+        "connectButton": "Conectar {{source}}",
+        "emptyDescription": "Conecte para ver e reivindicar requisitos de {{source}}.",
+        "emptyTitle": "Não conectado a {{source}}",
+        "removeTask": "Remover da lista",
+        "removeTaskHint": "Removido apenas da lista deste lado; ao atualizar, ele volta a aparecer",
+        "removeTaskTerminalHint": "Remove o registro local de conclusão; ele não volta a aparecer ao atualizar"
       },
       "keepResident": "Manter sessão ativa",
-      "releaseResident": "Permitir liberação da sessão",
-      "keepResidentHint": "Mantenha a sessão ativa quando o Agent tiver tarefas agendadas ou outros trabalhos longos, para que ela não seja encerrada quando ociosa",
-      "releaseResidentHint": "A sessão está mantida ativa e não será encerrada quando ociosa. Clique para permitir a liberação",
+      "releaseResident": "Permitir encerramento da sessão",
+      "keepResidentHint": "Ative a permanência quando o Agent tiver tarefas agendadas ou outros trabalhos de longa duração, para que a sessão não seja encerrada quando ficar ociosa",
+      "releaseResidentHint": "A sessão está em permanência e não será encerrada quando ociosa. Clique para permitir o encerramento",
       "resident": "Sessão mantida ativa"
     },
     "composer": {
-      "multicaNeedLocalWorkspace": "Adicione um espaço de trabalho local antes de executar um requisito",
-      "multicaBindingTag": "Multica · {{title}}",
-      "removeMulticaBinding": "Desvincular tarefa"
+      "remoteNeedLocalWorkspace": "Adicione um espaço de trabalho local antes de executar um requisito",
+      "removeRemoteBinding": "Desvincular tarefa",
+      "remoteBindingTag": "{{source}} · {{title}}"
     },
     "branchPicker": {
       "label": "Branch",
@@ -3150,5 +3147,55 @@
     "validationPositiveNumber": "{{field}} deve ser maior que 0",
     "validationTemplateNameRequired": "Nome do template é obrigatório",
     "validationTemplateNameDuplicated": "Nome do template {{name}} já existe"
+  },
+  "remote": {
+    "connect": {
+      "body": "Prestes a conectar a:",
+      "cancelConnect": "Cancelar conexão",
+      "confirm": "Conectar",
+      "connecting": "Conectando…",
+      "title": "Conectar {{source}}"
+    },
+    "connection": {
+      "addressLabel": "Endereço de conexão",
+      "invalidUrl": "Informe um endereço http(s) válido",
+      "restoreDefault": "Restaurar endereço padrão",
+      "restoring": "Restaurando…",
+      "save": "Salvar",
+      "title": "Endereço de conexão"
+    },
+    "taskManagement": {
+      "account": {
+        "connected": "Conectado"
+      },
+      "column": {
+        "empty": "Nenhuma tarefa"
+      },
+      "source": {
+        "label": "Origem da tarefa",
+        "multica": "Multica"
+      },
+      "title": "Requisitos",
+      "workspace": {
+        "label": "Espaço de trabalho",
+        "remove": "Remover espaço de trabalho",
+        "removeConfirm": "Remover este espaço de trabalho? Seus requisitos não serão mais exibidos."
+      },
+      "issueKind": {
+        "bug": "Bug",
+        "dev": "Desenvolvimento",
+        "test": "Teste"
+      },
+      "issueKindFilter": {
+        "all": "Todos",
+        "dev": "Desenvolvimento",
+        "label": "Tipo",
+        "test": "Teste"
+      },
+      "readiness": {
+        "notReady": "Não pronto",
+        "notReadyHint": "A tarefa de desenvolvimento correspondente ainda não foi concluída; considere aguardá-la"
+      }
+    }
   }
 }

@@ -966,6 +966,10 @@ pub struct ConversationCreateInputVm {
     pub scheduled_content_fingerprint: Option<String>,
     #[serde(default)]
     pub workflow_authoring: Option<TaskAuthoringWorkflow>,
+    /// 首条 prompt 的隐式隐藏区段（multica 远程任务上下文等）。后端注入、前端不感知：
+    /// 任务创建时随 authoring 落盘，首次执行随首条 prompt 下发（改动四十八）。
+    #[serde(default)]
+    pub first_prompt_hidden_sections: Option<Vec<gold_band::provider::PromptHiddenSection>>,
     #[serde(default)]
     pub role: Option<gold_band::provider::UserPromptRole>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -4621,6 +4625,7 @@ fn conversation_create_command(
     command.role = input.role.clone();
     command.workspace_files = input.workspace_files.clone();
     command.quotes = input.quotes.clone();
+    command.first_prompt_hidden_sections = input.first_prompt_hidden_sections.clone();
     Ok(command)
 }
 
@@ -6879,6 +6884,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            first_prompt_hidden_sections: None,
             role: None,
             workspace_files: Vec::new(),
             quotes: Vec::new(),
@@ -6996,6 +7002,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            first_prompt_hidden_sections: None,
             role: None,
             workspace_files: Vec::new(),
             quotes: Vec::new(),
@@ -7035,6 +7042,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            first_prompt_hidden_sections: None,
             role: None,
             workspace_files: Vec::new(),
             quotes: Vec::new(),
@@ -7069,6 +7077,7 @@ mod tests {
             }),
             workspace_files: Vec::new(),
             quotes: Vec::new(),
+            first_prompt_hidden_sections: None,
         };
         let codes = |run_mode| {
             validate_conversation_create_vm(&app, &input_for(run_mode))
@@ -7108,6 +7117,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            first_prompt_hidden_sections: None,
             role: None,
             workspace_files: Vec::new(),
             quotes: Vec::new(),
@@ -7142,6 +7152,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            first_prompt_hidden_sections: None,
             role: None,
             workspace_files: Vec::new(),
             quotes: Vec::new(),
@@ -7188,6 +7199,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            first_prompt_hidden_sections: None,
             role: None,
             workspace_files: Vec::new(),
             quotes: Vec::new(),
@@ -7205,6 +7217,65 @@ mod tests {
                 .join("authoring")
                 .join("inputs")
                 .join("context.txt")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn conversation_task_creation_persists_first_prompt_hidden_sections() {
+        // 远程任务上下文隐式注入（改动四十八）：input 携带区段 → authoring 落盘（首次执行读取）；
+        // 未携带（本地会话）→ 不落盘，与旧行为一致。
+        let app = App::new(temp_repo_root());
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "远程任务正文".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: Some(ConversationDirectConfigVm {
+                agent_type: "claude-acp".to_string(),
+                model_id: None,
+                permission_mode: None,
+                auto_accept: false,
+                config_options: Default::default(),
+                model_bound_overrides: Default::default(),
+            }),
+            auto_config: None,
+            attachment_paths: None,
+            work_location: Default::default(),
+            selected_branch: None,
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+            workflow_authoring: None,
+            first_prompt_hidden_sections: Some(vec![gold_band::provider::PromptHiddenSection {
+                title: "Gold Band remote task context".to_string(),
+                content: "completion protocol".to_string(),
+            }]),
+            workspace_files: Vec::new(),
+            quotes: Vec::new(),
+            role: None,
+        };
+
+        let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
+        let sections_file = app.paths.first_prompt_hidden_sections_file(&task_id);
+        assert!(sections_file.exists());
+        let sections: Vec<gold_band::provider::PromptHiddenSection> =
+            serde_json::from_str(&fs::read_to_string(sections_file.as_std_path()).unwrap())
+                .unwrap();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].title, "Gold Band remote task context");
+        assert!(sections[0].content.contains("completion protocol"));
+
+        // 本地会话（无区段）→ 文件不存在。
+        let local_input = ConversationCreateInputVm {
+            content: "本地会话正文".to_string(),
+            first_prompt_hidden_sections: None,
+            ..input
+        };
+        let (local_task_id, _, _) = create_conversation_task_vm(&app, &local_input).unwrap();
+        assert!(
+            !app.paths
+                .first_prompt_hidden_sections_file(&local_task_id)
                 .exists()
         );
     }
@@ -7233,6 +7304,7 @@ mod tests {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            first_prompt_hidden_sections: None,
             role: None,
             workspace_files: Vec::new(),
             quotes: Vec::new(),

@@ -1109,18 +1109,20 @@
       "stale-package": "已下載的更新套件不高於目前版本。"
     },
     "multica": {
-      "not-configured": "尚未設定 Multica，請先在設定中完成接入。",
-      "invalid-address": "連線網址無效：必須是合法的 http(s) 網址。",
-      "connect-cancelled": "已取消連線。",
       "auth-failed": "Multica 鑑權失敗：{{message}}",
+      "claim-conflict": "該任務已被其他 Daemon 領取。",
+      "connect-cancelled": "已取消連線。",
+      "invalid-address": "連線網址無效：必須是合法的 http(s) 網址。",
       "network-failed": "Multica 網路請求失敗：{{message}}",
       "register-failed": "Daemon 註冊失敗：{{message}}",
-      "claim-conflict": "該任務已被其他 Daemon 領取。",
-      "task-not-found": "找不到該 Multica 任務。",
       "runtime-offline": "執行時未就緒，請稍後重試。",
       "session-resume-failed": "工作階段還原失敗，將以全新任務重跑。",
+      "task-not-found": "找不到該 Multica 任務。",
       "workspace-already-bound": "該工作區已綁定。",
       "workspace-not-found": "找不到該工作區綁定。"
+    },
+    "remote": {
+      "source-not-configured": "尚未設定任務來源，請先完成連接。"
     },
     "dynamic": {
       "completion": {
@@ -1417,7 +1419,35 @@
       "globalHint": "所有專案可用。儲存到 ~/.gold-band/skills/<name>/SKILL.md",
       "projectHint": "僅目前專案可用。儲存到 <project>/.gold-band/skills/<name>/SKILL.md",
       "storageGlobal": "所有專案可用。儲存到 {{path}}",
-      "storageProject": "專案級。儲存到 {{path}}"
+      "storageProject": "專案級。儲存到 {{path}}",
+      "remoteSync": {
+        "action": "同步遠端 SKILL",
+        "confirm": "同步",
+        "confirmWithOverwrite": "同步（覆蓋 {{count}}）",
+        "connect": "連接{{source}}",
+        "empty": "該工作區暫無 SKILL",
+        "existsBadge": "已存在，將覆蓋",
+        "loadFailed": "載入遠端 SKILL 失敗",
+        "newBadge": "新增",
+        "notConnected": "未連接{{source}}",
+        "outcomeCreated": "新建",
+        "outcomeFailed": "失敗",
+        "outcomeOverwritten": "覆蓋",
+        "outcomeSkipped": "跳過",
+        "reason": {
+          "multica.not-connected": "未連接遠端來源",
+          "multica.remote-error": "伺服器錯誤",
+          "multica.skill.name-collision": "本批次內名稱衝突",
+          "multica.skill.not-found": "遠端已被刪除"
+        },
+        "reload": "重新載入",
+        "reportSummary": "新建 {{created}} · 覆蓋 {{overwritten}} · 跳過 {{skipped}} · 失敗 {{failed}}",
+        "reportTitle": "同步結果",
+        "selectAll": "全選",
+        "selectedCount": "已選 {{selected}} / {{total}}",
+        "title": "從遠端同步 SKILL",
+        "workspace": "工作區"
+      }
     },
     "importProfile": "匯入角色",
     "importSettingsDescription": "選擇資料夾批次匯入角色 Markdown 檔案，缺少的名稱和摘要會自動補上。",
@@ -2421,7 +2451,8 @@
       "cacheRead": "快取讀取",
       "cacheWrite": "快取寫入",
       "total": "總計"
-    }
+    },
+    "hiddenRemoteTaskContext": "隱藏遠端任務上下文"
   },
   "graph": {
     "emptyGraph": "沒有工作圖",
@@ -2818,43 +2849,6 @@
       "showLess": "收合"
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "需求管理",
-      "source": {
-        "label": "任務來源",
-        "multica": "Multica"
-      },
-      "workspace": {
-        "label": "工作區",
-        "remove": "移除工作區",
-        "removeConfirm": "確定移除該工作區？該空間的需求將不再展示。"
-      },
-      "column": {
-        "empty": "沒有任務"
-      },
-      "account": {
-        "connected": "已連線",
-        "switchAccount": "切換帳號",
-        "disconnect": "中斷連線"
-      }
-    },
-    "connection": {
-      "title": "連線網址設定",
-      "addressLabel": "連線網址",
-      "save": "儲存",
-      "invalidUrl": "請輸入合法的 http(s) 網址。",
-      "restoreDefault": "還原預設網址",
-      "restoring": "還原中…"
-    },
-    "connect": {
-      "title": "連線 Multica",
-      "body": "即將連線到以下網址：",
-      "confirm": "連線",
-      "connecting": "連線中…",
-      "cancelConnect": "取消連線"
-    }
-  },
   "conversation": {
     "title": "工作階段",
     "newConversation": "新工作階段",
@@ -2894,7 +2888,6 @@
       "contextManagement": "上下文",
       "runModeManagement": "執行模式",
       "more": "更多",
-      "multicaTaskManagement": "需求管理",
       "pinned": "置頂",
       "noPinned": "置頂工作階段會顯示在這裡",
       "noWorkspaces": "尚未新增工作區",
@@ -2933,42 +2926,46 @@
         "failed": "執行異常，尚未查看"
       },
       "settings": "設定",
-      "multica": {
-        "sectionTitle": "需求",
-        "emptyTitle": "尚未連線 Multica",
-        "emptyDescription": "連線後可在此查看並領取 Multica 需求。",
-        "connectButton": "連線 Multica",
-        "connectionSettings": "連線網址設定",
-        "cancelTask": "取消任務",
-        "executeTask": "執行",
+      "remoteTaskManagement": "需求管理",
+      "remoteTasks": {
         "addWorkspace": "新增工作區",
-        "noWorkspacesBound": "尚未綁定工作區",
-        "status": {
-          "queued": "待辦",
-          "running": "進行中",
-          "completed": "已完成",
-          "failed": "失敗"
-        },
+        "cancelTask": "取消任務",
+        "connectionSettings": "連線網址設定",
         "dialog": {
-          "title": "新增工作區",
-          "remoteWorkspace": "遠端工作區",
-          "provider": "Provider",
           "add": "新增",
+          "allWorkspacesBound": "所有遠端工作區均已綁定。",
           "needWorkspace": "請選擇遠端工作區",
           "noServerWorkspaces": "服務端沒有可綁定的工作區，請先在 multica Web 建立工作區。",
-          "allWorkspacesBound": "所有遠端工作區均已綁定。"
-        }
+          "provider": "Provider",
+          "remoteWorkspace": "遠端工作區",
+          "title": "新增工作區"
+        },
+        "executeTask": "執行",
+        "noWorkspacesBound": "尚未綁定工作區",
+        "sectionTitle": "需求",
+        "status": {
+          "completed": "已完成",
+          "failed": "失敗",
+          "queued": "待辦",
+          "running": "進行中"
+        },
+        "connectButton": "連接{{source}}",
+        "emptyDescription": "連接後可在此查看並領取{{source}}需求。",
+        "emptyTitle": "尚未連接{{source}}",
+        "removeTask": "移出清單",
+        "removeTaskHint": "僅從本側清單移除，重新整理後會恢復",
+        "removeTaskTerminalHint": "移出並刪除本機完成記錄，重新整理後不再顯示"
       },
-      "keepResident": "常駐對話",
+      "keepResident": "常駐工作階段",
       "releaseResident": "解除常駐",
-      "keepResidentHint": "Agent 有排程任務等需要長時間執行的工作時，請開啟常駐，避免對話閒置後被回收",
-      "releaseResidentHint": "已常駐，閒置時不會被回收。點擊解除常駐",
-      "resident": "常駐對話"
+      "keepResidentHint": "Agent 有定時任務等需要長時間執行的工作時，請開啟常駐，避免工作階段閒置後被回收",
+      "releaseResidentHint": "已常駐，閒置時不會被回收。點選解除常駐",
+      "resident": "常駐工作階段"
     },
     "composer": {
-      "multicaNeedLocalWorkspace": "請先新增本機工作區，再執行需求",
-      "multicaBindingTag": "Multica · {{title}}",
-      "removeMulticaBinding": "解除任務綁定"
+      "remoteNeedLocalWorkspace": "請先新增本機工作區，再執行需求",
+      "removeRemoteBinding": "解除任務綁定",
+      "remoteBindingTag": "{{source}} · {{title}}"
     },
     "branchPicker": {
       "label": "分支",
@@ -3150,5 +3147,55 @@
     "validationPositiveNumber": "{{field}} 必須大於 0",
     "validationTemplateNameRequired": "範本名稱不能為空",
     "validationTemplateNameDuplicated": "範本名稱 {{name}} 已存在"
+  },
+  "remote": {
+    "connect": {
+      "body": "即將連線到以下網址：",
+      "cancelConnect": "取消連線",
+      "confirm": "連線",
+      "connecting": "連線中…",
+      "title": "連接{{source}}"
+    },
+    "connection": {
+      "addressLabel": "連線網址",
+      "invalidUrl": "請輸入合法的 http(s) 網址。",
+      "restoreDefault": "還原預設網址",
+      "restoring": "還原中…",
+      "save": "儲存",
+      "title": "連線網址設定"
+    },
+    "taskManagement": {
+      "account": {
+        "connected": "已連線"
+      },
+      "column": {
+        "empty": "沒有任務"
+      },
+      "source": {
+        "label": "任務來源",
+        "multica": "Multica"
+      },
+      "title": "需求管理",
+      "workspace": {
+        "label": "工作區",
+        "remove": "移除工作區",
+        "removeConfirm": "確定移除該工作區？該空間的需求將不再展示。"
+      },
+      "issueKind": {
+        "bug": "缺陷",
+        "dev": "開發",
+        "test": "測試"
+      },
+      "issueKindFilter": {
+        "all": "全部",
+        "dev": "開發",
+        "label": "類型",
+        "test": "測試"
+      },
+      "readiness": {
+        "notReady": "未就緒",
+        "notReadyHint": "對應開發任務尚未完成，建議等待其完成後再執行"
+      }
+    }
   }
 }
