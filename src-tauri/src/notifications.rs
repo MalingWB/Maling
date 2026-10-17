@@ -1212,6 +1212,7 @@ mod tests {
             outcome: gold_band::domain::RunOutcome::Success,
             task_title: Some("Task A".to_string()),
             completion_agent_label: None,
+            attempt_dir: None,
         }
     }
 

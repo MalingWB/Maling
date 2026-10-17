@@ -55,13 +55,13 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
     case 'conversation-run':
     case 'personal-analytics':
     case 'settings':
-    case 'multica-tasks':
+    case 'remote-tasks':
       return null;
   }
 }
 
 export function isConversationSidebarMoreNavigationActive(page: ConversationPage): boolean {
-  return page.kind === 'multica-tasks'
+  return page.kind === 'remote-tasks'
     || page.kind === 'scheduled-tasks'
     || page.kind === 'scheduled-task-detail';
 }
@@ -69,7 +69,7 @@ export function isConversationSidebarMoreNavigationActive(page: ConversationPage
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
   active: ConversationPage;
-  showMulticaTaskManagement?: boolean;
+  showRemoteTaskManagement?: boolean;
   defaultExpandedWorkspaceId?: string | null;
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   onSelect: (page: ConversationPage) => void;
@@ -94,7 +94,7 @@ interface ConversationSidebarProps {
 export const ConversationSidebar = memo(function ConversationSidebar({
   vm,
   active,
-  showMulticaTaskManagement = true,
+  showRemoteTaskManagement = true,
   defaultExpandedWorkspaceId,
   workspaceRevealRequest,
   onSelect,
@@ -129,7 +129,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   const [workspaceToRemove, setWorkspaceToRemove] = useState<ConversationWorkspaceVm | null>(null);
   const [workspaceRemovalPending, setWorkspaceRemovalPending] = useState(false);
   const moreNavigationActive = isConversationSidebarMoreNavigationActive(active)
-    && (active.kind !== 'multica-tasks' || showMulticaTaskManagement);
+    && (active.kind !== 'remote-tasks' || showRemoteTaskManagement);
   const [moreNavigationOpen, setMoreNavigationOpen] = useState(moreNavigationActive);
   const pinnedTasksByWorkspace = useMemo(() => vm.pinnedTasks.reduce<Record<string, ConversationTaskRowVm[]>>((acc, task) => {
     (acc[task.projectId] ??= []).push(task);
@@ -365,15 +365,15 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               data-conversation-sidebar-more-content
               className="flex flex-col gap-0.5 overflow-hidden pt-0.5 data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down"
             >
-              {showMulticaTaskManagement ? (
+              {showRemoteTaskManagement ? (
                 <SidebarButton
                   compact
-                  active={active.kind === 'multica-tasks'}
+                  active={active.kind === 'remote-tasks'}
                   icon={<Globe />}
-                  label={t('conversation.sidebar.multicaTaskManagement')}
+                  label={t('conversation.sidebar.remoteTaskManagement')}
                   onClick={() => {
                     setMoreNavigationOpen(true);
-                    onSelect({ kind: 'multica-tasks' });
+                    onSelect({ kind: 'remote-tasks' });
                   }}
                 />
               ) : null}

@@ -1109,18 +1109,20 @@
       "stale-package": "ダウンロード済みのパッケージは現在のバージョンより新しくありません。"
     },
     "multica": {
-      "not-configured": "Multica がまだ設定されていません。先に設定で接続を完了してください。",
-      "invalid-address": "無効な接続アドレス: 有効な http(s) URL である必要があります。",
-      "connect-cancelled": "接続がキャンセルされました。",
       "auth-failed": "Multica 認証が失敗しました: {{message}}",
+      "claim-conflict": "このタスクは、別の Daemon がすでに受け取っています。",
+      "connect-cancelled": "接続がキャンセルされました。",
+      "invalid-address": "無効な接続アドレス: 有効な http(s) URL である必要があります。",
       "network-failed": "Multica ネットワーク要求が失敗しました: {{message}}",
       "register-failed": "Daemon の登録に失敗しました: {{message}}",
-      "claim-conflict": "このタスクは、別の Daemon がすでに受け取っています。",
-      "task-not-found": "この Multica タスクが見つかりませんでした。",
       "runtime-offline": "ランタイムの準備ができていません。しばらくしてからもう一度お試しください。",
       "session-resume-failed": "セッションの再開に失敗しました。新たな実行が開始されます。",
+      "task-not-found": "この Multica タスクが見つかりませんでした。",
       "workspace-already-bound": "このワークスペースはすでにバインドされています。",
       "workspace-not-found": "このワークスペース バインディングが見つかりませんでした。"
+    },
+    "remote": {
+      "source-not-configured": "タスクソースが構成されていません。先に接続してください。"
     },
     "dynamic": {
       "completion": {
@@ -1417,7 +1419,35 @@
       "globalHint": "すべてのプロジェクトで利用可能です。 ~/.gold-band/skills/<name>/SKILL.md に保存されました",
       "projectHint": "このプロジェクトが開いている場合にのみ使用できます。 <project>/.gold-band/skills/<name>/SKILL.md に保存されました",
       "storageGlobal": "すべてのプロジェクトで利用可能です。 {{path}} に保存されました",
-      "storageProject": "プロジェクトレベル。 {{path}} に保存されました"
+      "storageProject": "プロジェクトレベル。 {{path}} に保存されました",
+      "remoteSync": {
+        "action": "リモート SKILL を同期",
+        "confirm": "同期",
+        "confirmWithOverwrite": "同期（{{count}}件を上書き）",
+        "connect": "{{source}}に接続",
+        "empty": "このワークスペースに SKILL はありません",
+        "existsBadge": "既存、上書きされます",
+        "loadFailed": "リモート SKILL の読み込みに失敗しました",
+        "newBadge": "新規",
+        "notConnected": "{{source}}に接続されていません",
+        "outcomeCreated": "作成",
+        "outcomeFailed": "失敗",
+        "outcomeOverwritten": "上書き",
+        "outcomeSkipped": "スキップ",
+        "reason": {
+          "multica.not-connected": "リモートソースに接続されていません",
+          "multica.remote-error": "サーバーエラー",
+          "multica.skill.name-collision": "このバッチ内で名前が重複しています",
+          "multica.skill.not-found": "リモート側で既に削除されています"
+        },
+        "reload": "再読み込み",
+        "reportSummary": "作成 {{created}} · 上書き {{overwritten}} · スキップ {{skipped}} · 失敗 {{failed}}",
+        "reportTitle": "同期結果",
+        "selectAll": "すべて選択",
+        "selectedCount": "{{selected}} / {{total}} 件を選択中",
+        "title": "リモートから SKILL を同期",
+        "workspace": "ワークスペース"
+      }
     },
     "importProfile": "役割のインポート",
     "importSettingsDescription": "ロール Markdown ファイルをフォルダーからバッチインポートします。不足している名前と概要は自動的に入力されます。",
@@ -2421,7 +2451,8 @@
       "cacheRead": "キャッシュ読み取り",
       "cacheWrite": "キャッシュ書き込み",
       "total": "合計"
-    }
+    },
+    "hiddenRemoteTaskContext": "非表示のリモートタスクコンテキスト"
   },
   "graph": {
     "emptyGraph": "作業グラフがありません",
@@ -2798,43 +2829,6 @@
       "showLess": "折りたたむ"
     }
   },
-  "multica": {
-    "taskManagement": {
-      "title": "要件",
-      "source": {
-        "label": "タスクソース",
-        "multica": "Multica"
-      },
-      "workspace": {
-        "label": "ワークスペース",
-        "remove": "ワークスペースを削除する",
-        "removeConfirm": "このワークスペースを削除しますか?その要件は表示されなくなります。"
-      },
-      "column": {
-        "empty": "タスクがありません"
-      },
-      "account": {
-        "connected": "接続済み",
-        "switchAccount": "アカウントを切り替える",
-        "disconnect": "切断する"
-      }
-    },
-    "connection": {
-      "title": "接続アドレス",
-      "addressLabel": "接続アドレス",
-      "save": "保存",
-      "invalidUrl": "有効な http(s) アドレスを入力してください。",
-      "restoreDefault": "デフォルトのアドレスを復元する",
-      "restoring": "復元中…"
-    },
-    "connect": {
-      "title": "Multica に接続",
-      "body": "接続しようとしています:",
-      "confirm": "接続する",
-      "connecting": "接続中…",
-      "cancelConnect": "接続をキャンセルする"
-    }
-  },
   "conversation": {
     "title": "会話",
     "newConversation": "新しい会話",
@@ -2874,7 +2868,6 @@
       "contextManagement": "コンテキスト",
       "runModeManagement": "実行モード",
       "more": "その他",
-      "multicaTaskManagement": "要件",
       "pinned": "固定された",
       "noPinned": "固定された会話がここに表示されます",
       "noWorkspaces": "ワークスペースは追加されていません",
@@ -2913,42 +2906,46 @@
         "failed": "失敗、未表示"
       },
       "settings": "設定",
-      "multica": {
-        "sectionTitle": "要件",
-        "emptyTitle": "Multica に接続されていません",
-        "emptyDescription": "接続すると、ここで Multica の要件を見て受け取れます。",
-        "connectButton": "Multica に接続",
-        "connectionSettings": "接続アドレスの設定",
-        "cancelTask": "タスクをキャンセルする",
-        "executeTask": "実行",
+      "remoteTaskManagement": "要件",
+      "remoteTasks": {
         "addWorkspace": "ワークスペースの追加",
-        "noWorkspacesBound": "バインドされたワークスペースはありません",
-        "status": {
-          "queued": "待機中",
-          "running": "進行中",
-          "completed": "完了",
-          "failed": "失敗"
-        },
+        "cancelTask": "タスクをキャンセルする",
+        "connectionSettings": "接続アドレスの設定",
         "dialog": {
-          "title": "ワークスペースの追加",
-          "remoteWorkspace": "リモートワークスペース",
-          "provider": "Provider",
           "add": "追加",
+          "allWorkspacesBound": "すべてのリモート ワークスペースはすでにバインドされています。",
           "needWorkspace": "リモート ワークスペースを選択してください",
           "noServerWorkspaces": "サーバーには、まだ紐付けできるワークスペースがありません。先に multica Web で作成してください。",
-          "allWorkspacesBound": "すべてのリモート ワークスペースはすでにバインドされています。"
-        }
+          "provider": "Provider",
+          "remoteWorkspace": "リモートワークスペース",
+          "title": "ワークスペースの追加"
+        },
+        "executeTask": "実行",
+        "noWorkspacesBound": "バインドされたワークスペースはありません",
+        "sectionTitle": "要件",
+        "status": {
+          "completed": "完了",
+          "failed": "失敗した",
+          "queued": "待機中",
+          "running": "進行中"
+        },
+        "connectButton": "{{source}}に接続",
+        "emptyDescription": "接続して {{source}} 要件を表示し、要求します。",
+        "emptyTitle": "{{source}}に接続されていません",
+        "removeTask": "リストから削除",
+        "removeTaskHint": "この側のリストから削除されるだけです。更新すると復元されます",
+        "removeTaskTerminalHint": "ローカルの完了記録を削除します。更新しても再表示されません"
       },
-      "keepResident": "セッションを常駐させる",
+      "keepResident": "セッションを常駐",
       "releaseResident": "常駐を解除",
-      "keepResidentHint": "Agent にスケジュールタスクなど長時間実行される処理がある場合は、アイドル時に回収されないよう常駐させてください",
-      "releaseResidentHint": "常駐中のため、アイドル時も回収されません。クリックで常駐を解除",
+      "keepResidentHint": "Agent に定時タスクなど長時間実行する作業がある場合は常駐を有効にし、アイドル時にセッションが回収されないようにしてください",
+      "releaseResidentHint": "常駐中のため、アイドル時に回収されません。クリックして常駐を解除します",
       "resident": "常駐セッション"
     },
     "composer": {
-      "multicaNeedLocalWorkspace": "要件を実行する前に、ローカルワークスペースを追加してください",
-      "multicaBindingTag": "Multica · {{title}}",
-      "removeMulticaBinding": "タスクのバインド解除"
+      "remoteNeedLocalWorkspace": "要件を実行する前に、ローカルワークスペースを追加してください",
+      "removeRemoteBinding": "タスクのバインド解除",
+      "remoteBindingTag": "{{source}} · {{title}}"
     },
     "branchPicker": {
       "label": "ブランチ",
@@ -3130,5 +3127,55 @@
     "validationPositiveNumber": "{{field}} は 0 より大きい必要があります",
     "validationTemplateNameRequired": "テンプレート名は必須です",
     "validationTemplateNameDuplicated": "テンプレート名 {{name}} は既に存在します"
+  },
+  "remote": {
+    "connect": {
+      "body": "接続しようとしています:",
+      "cancelConnect": "接続をキャンセルする",
+      "confirm": "接続する",
+      "connecting": "接続中…",
+      "title": "{{source}}に接続"
+    },
+    "connection": {
+      "addressLabel": "接続アドレス",
+      "invalidUrl": "有効な http(s) アドレスを入力してください。",
+      "restoreDefault": "デフォルトのアドレスを復元する",
+      "restoring": "復元中…",
+      "save": "保存",
+      "title": "接続アドレス"
+    },
+    "taskManagement": {
+      "account": {
+        "connected": "接続済み"
+      },
+      "column": {
+        "empty": "タスクがありません"
+      },
+      "source": {
+        "label": "タスクソース",
+        "multica": "Multica"
+      },
+      "title": "要件",
+      "workspace": {
+        "label": "ワークスペース",
+        "remove": "ワークスペースを削除する",
+        "removeConfirm": "このワークスペースを削除しますか?その要件は表示されなくなります。"
+      },
+      "issueKind": {
+        "bug": "バグ",
+        "dev": "開発",
+        "test": "テスト"
+      },
+      "issueKindFilter": {
+        "all": "すべて",
+        "dev": "開発",
+        "label": "種類",
+        "test": "テスト"
+      },
+      "readiness": {
+        "notReady": "準備未完了",
+        "notReadyHint": "対応する開発タスクがまだ完了していません。完了を待ってからの実行をご検討ください"
+      }
+    }
   }
 }

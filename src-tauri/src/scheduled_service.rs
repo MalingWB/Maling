@@ -528,6 +528,7 @@ impl ScheduledTaskService {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            first_prompt_hidden_sections: None,
             role: None,
             quotes: input.quotes.clone(),
         };
@@ -718,6 +719,7 @@ impl ScheduledTaskService {
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
+            first_prompt_hidden_sections: None,
             role: None,
             quotes: effective_quotes,
         };

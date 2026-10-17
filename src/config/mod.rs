@@ -894,11 +894,16 @@ pub struct SettingsConfig {
     pub desktop_multica_app_url: Option<String>,
     pub desktop_multica_pat: Option<String>,
     pub desktop_multica_daemon_id: Option<String>,
-    pub desktop_multica_workspaces: Option<Vec<MulticaWorkspaceRef>>,
+    pub desktop_multica_workspaces: Option<Vec<RemoteWorkspaceRef>>,
     pub desktop_multica_active_workspace_id: Option<String>,
     pub desktop_multica_default_provider: Option<String>,
     /// 已连接 multica 账号身份（connect 写、disconnect 清）；仅 UI 展示用，非凭证。
     pub desktop_multica_account: Option<MulticaAccountRef>,
+    // —— 远程来源指针（远程来源解耦不变量 3：任务来源与 SKILL 来源是两个独立指针）——
+    /// 当前远程任务来源（通用层路由键；当前唯一取值 "multica"，缺省回落 multica）。
+    pub desktop_remote_task_source: Option<String>,
+    /// 当前远程 SKILL 来源（与任务来源独立；当前唯一取值 "multica"，缺省回落 multica）。
+    pub desktop_remote_skill_source: Option<String>,
 }
 
 pub fn wecom_scan_auth_config() -> &'static WeComScanAuthConfig {
@@ -1379,14 +1384,25 @@ pub struct StateConfig {
         skip_serializing_if = "crate::remote_image_trust::RemoteImageTrust::is_empty"
     )]
     pub remote_image_trust: crate::remote_image_trust::RemoteImageTrust,
-    // —— multica 持久化状态（程序写入/恢复）——
+    // —— 远程来源持久化状态（程序写入/恢复）：multica_runtime_ids 为 multica 适配器注册索引，
+    //    其余为中立模型（远程来源解耦设计 §4.6，写入时即翻译，存储内无方言）——
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multica_runtime_ids: Option<std::collections::HashMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub multica_task_conversations:
-        Option<std::collections::HashMap<String, MulticaTaskConversation>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub multica_completed_tasks: Vec<MulticaCompletedTask>,
+    // alias = 改名前（7085a5a7 词汇中立化）旧版落盘的 multica* 键：旧 state.json 仍可读，
+    // 首次 RMW 重写即迁移为新键；无 alias 则升级后历史被静默清空（终态行唯一回看来源）。
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "multicaTaskConversations"
+    )]
+    pub remote_task_conversations:
+        Option<std::collections::HashMap<String, RemoteTaskConversation>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        alias = "multicaCompletedTasks"
+    )]
+    pub remote_completed_tasks: Vec<RemoteCompletedTask>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1856,10 +1872,13 @@ pub struct RuntimeConfig {
     pub desktop_multica_app_url: Option<String>,
     pub desktop_multica_pat: Option<String>,
     pub desktop_multica_daemon_id: Option<String>,
-    pub desktop_multica_workspaces: Vec<MulticaWorkspaceRef>,
+    pub desktop_multica_workspaces: Vec<RemoteWorkspaceRef>,
     pub desktop_multica_active_workspace_id: Option<String>,
     pub desktop_multica_default_provider: String,
     pub desktop_multica_account: Option<MulticaAccountRef>,
+    // —— 远程来源指针镜像（apply_settings 灌入，缺省 multica；不变量 3：任务/SKILL 独立）——
+    pub desktop_remote_task_source: String,
+    pub desktop_remote_skill_source: String,
 }
 
 impl Default for RuntimeConfig {
@@ -1930,6 +1949,8 @@ impl Default for RuntimeConfig {
             desktop_multica_active_workspace_id: None,
             desktop_multica_default_provider: "claude-acp".to_string(),
             desktop_multica_account: None,
+            desktop_remote_task_source: "multica".to_string(),
+            desktop_remote_skill_source: "multica".to_string(),
         };
         base.apply_app_config(embedded_project_app_config())
     }
@@ -1989,6 +2010,14 @@ impl RuntimeConfig {
             .clone()
             .unwrap_or_else(|| "claude-acp".to_string());
         self.desktop_multica_account = settings.desktop_multica_account.clone();
+        self.desktop_remote_task_source = settings
+            .desktop_remote_task_source
+            .clone()
+            .unwrap_or_else(|| "multica".to_string());
+        self.desktop_remote_skill_source = settings
+            .desktop_remote_skill_source
+            .clone()
+            .unwrap_or_else(|| "multica".to_string());
         if let Some(scheduled_keep_awake_enabled) = settings.scheduled_keep_awake_enabled {
             self.scheduled_keep_awake_enabled = scheduled_keep_awake_enabled;
         }
@@ -2193,9 +2222,9 @@ mod tests {
         ConversationRunModeEntry, DEFAULT_ACP_PROMPT_TERMINAL_ROUTE_TIMEOUT_MS,
         DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
         DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
-        ManagedAgentId, MulticaAccountRef, MulticaCompletedTask, MulticaTaskConversation,
-        MulticaWorkspaceRef, PersonalizationPreference, ProjectAppConfig, ProjectIdentityConfig,
-        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
+        ManagedAgentId, MulticaAccountRef, PersonalizationPreference, ProjectAppConfig,
+        ProjectIdentityConfig, RemoteCompletedTask, RemoteTaskConversation, RuntimeConfig,
+        RuntimeLogLevel, RemoteWorkspaceRef, SettingsConfig, StateConfig, SystemPromptDelivery,
         TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
         catalog_agent_default_config, project_identity_config,
     };
@@ -3571,9 +3600,9 @@ mod tests {
     }
 
     #[test]
-    fn multica_workspace_ref_serializes_camel_case() {
+    fn remote_workspace_ref_serializes_camel_case() {
         // 前端契约：JSON key 必须是 camelCase，防止 rename_all 被误删。
-        let workspace = MulticaWorkspaceRef {
+        let workspace = RemoteWorkspaceRef {
             id: "ws-1".to_string(),
             name: "Gold Band".to_string(),
             slug: "gold-band".to_string(),
@@ -3582,13 +3611,13 @@ mod tests {
         let json = serde_json::to_value(&workspace).unwrap();
         assert_eq!(json["id"], "ws-1");
         assert_eq!(json["provider"], "claude-acp");
-        let roundtripped: MulticaWorkspaceRef = serde_json::from_value(json).unwrap();
+        let roundtripped: RemoteWorkspaceRef = serde_json::from_value(json).unwrap();
         assert_eq!(roundtripped.provider, "claude-acp");
     }
 
     #[test]
-    fn multica_task_conversation_serializes_camel_case() {
-        let conversation = MulticaTaskConversation {
+    fn remote_task_conversation_serializes_camel_case() {
+        let conversation = RemoteTaskConversation {
             local_task_id: "task-1".to_string(),
             local_run_id: "run-1".to_string(),
             session_id: Some("acp-session-1".to_string()),
@@ -3599,7 +3628,7 @@ mod tests {
         assert_eq!(json["localRunId"], "run-1");
         assert_eq!(json["sessionId"], "acp-session-1");
         assert_eq!(json["workDir"], "/repo");
-        serde_json::from_value::<MulticaTaskConversation>(json).unwrap();
+        serde_json::from_value::<RemoteTaskConversation>(json).unwrap();
     }
 
     #[test]
@@ -3618,7 +3647,7 @@ mod tests {
             desktop_multica_base_url: Some("http://maling.weoa.com".to_string()),
             desktop_multica_app_url: Some("http://maling.weoa.com".to_string()),
             desktop_multica_default_provider: None,
-            desktop_multica_workspaces: Some(vec![MulticaWorkspaceRef {
+            desktop_multica_workspaces: Some(vec![RemoteWorkspaceRef {
                 id: "ws-1".to_string(),
                 name: "Gold Band".to_string(),
                 slug: "gold-band".to_string(),
@@ -3651,7 +3680,7 @@ mod tests {
             desktop_multica_base_url: Some("http://maling.weoa.com".to_string()),
             desktop_multica_pat: Some("secret-token".to_string()),
             desktop_multica_daemon_id: Some("daemon-1".to_string()),
-            desktop_multica_workspaces: Some(vec![MulticaWorkspaceRef {
+            desktop_multica_workspaces: Some(vec![RemoteWorkspaceRef {
                 id: "ws-1".to_string(),
                 name: "Gold Band".to_string(),
                 slug: "gold-band".to_string(),
@@ -3691,11 +3720,57 @@ mod tests {
     }
 
     #[test]
-    fn state_config_multica_task_conversations_roundtrip_json() {
+    fn remote_source_pointers_default_and_apply_fallback() {
+        // 不变量 3：任务/SKILL 来源指针独立，缺省都回落 "multica"（当前唯一 adapter）。
+        let defaults = RuntimeConfig::default();
+        assert_eq!(defaults.desktop_remote_task_source, "multica");
+        assert_eq!(defaults.desktop_remote_skill_source, "multica");
+
+        // 未配置（None）时 apply_settings 同样回落 multica。
+        let fallback = RuntimeConfig::default().apply_settings(&SettingsConfig::default());
+        assert_eq!(fallback.desktop_remote_task_source, "multica");
+        assert_eq!(fallback.desktop_remote_skill_source, "multica");
+
+        // 两指针独立取值，互不覆盖。
+        let applied = RuntimeConfig::default().apply_settings(&SettingsConfig {
+            desktop_remote_task_source: Some("multica".to_string()),
+            desktop_remote_skill_source: Some("other".to_string()),
+            ..SettingsConfig::default()
+        });
+        assert_eq!(applied.desktop_remote_task_source, "multica");
+        assert_eq!(applied.desktop_remote_skill_source, "other");
+
+        // 持久化 camelCase roundtrip。
+        let settings = SettingsConfig {
+            desktop_remote_task_source: Some("multica".to_string()),
+            desktop_remote_skill_source: Some("multica".to_string()),
+            ..SettingsConfig::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains("\"desktopRemoteTaskSource\":\"multica\""));
+        assert!(json.contains("\"desktopRemoteSkillSource\":\"multica\""));
+        let roundtripped: SettingsConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            roundtripped.desktop_remote_task_source.as_deref(),
+            Some("multica")
+        );
+        assert_eq!(
+            roundtripped.desktop_remote_skill_source.as_deref(),
+            Some("multica")
+        );
+
+        // 升级路径：不含新键的旧 settings.json 反序列化不崩，两指针回落 None（apply_settings 再归一 multica）。
+        let legacy: SettingsConfig = serde_json::from_str(r#"{"desktopMulticaEnabled": true}"#).unwrap();
+        assert_eq!(legacy.desktop_remote_task_source, None);
+        assert_eq!(legacy.desktop_remote_skill_source, None);
+    }
+
+    #[test]
+    fn state_config_remote_task_conversations_roundtrip_json() {
         let state = StateConfig {
-            multica_task_conversations: Some(std::collections::HashMap::from([(
+            remote_task_conversations: Some(std::collections::HashMap::from([(
                 "remote-task-1".to_string(),
-                MulticaTaskConversation {
+                RemoteTaskConversation {
                     local_task_id: "task-1".to_string(),
                     local_run_id: "run-1".to_string(),
                     session_id: Some("acp-session-1".to_string()),
@@ -3707,7 +3782,7 @@ mod tests {
         let json = serde_json::to_string_pretty(&state).unwrap();
         let roundtripped: StateConfig = serde_json::from_str(&json).unwrap();
         let entry = roundtripped
-            .multica_task_conversations
+            .remote_task_conversations
             .as_ref()
             .unwrap()
             .get("remote-task-1")
@@ -3717,16 +3792,17 @@ mod tests {
     }
 
     #[test]
-    fn state_config_multica_completed_tasks_roundtrip_json() {
+    fn state_config_remote_completed_tasks_roundtrip_json() {
         // 「最近完成」历史（Issue 3C）roundtrip：camelCase 键 + 空列表不序列化。
         let state = StateConfig {
-            multica_completed_tasks: vec![MulticaCompletedTask {
+            remote_completed_tasks: vec![RemoteCompletedTask {
                 remote_task_id: "remote-1".to_string(),
                 local_task_id: "task-1".to_string(),
                 local_run_id: "run-1".to_string(),
                 workspace_id: "ws-1".to_string(),
                 local_project_id: "proj-1".to_string(),
-                issue_id: Some("iss-1".to_string()),
+                issue_ref: Some("iss-1".to_string()),
+                kind: Some("dev".to_string()),
                 status: "completed".to_string(),
                 title: "Fix bug".to_string(),
                 completed_at: "2026-08-06T01:00:00Z".to_string(),
@@ -3735,19 +3811,77 @@ mod tests {
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         // 空字段不序列化，非空 completed 列表序列化为 camelCase 键。
-        assert!(json.contains("\"multicaCompletedTasks\""));
+        assert!(json.contains("\"remoteCompletedTasks\""));
         assert!(json.contains("\"remoteTaskId\": \"remote-1\""));
         assert!(json.contains("\"completedAt\": \"2026-08-06T01:00:00Z\""));
         let roundtripped: StateConfig = serde_json::from_str(&json).unwrap();
-        let entry = &roundtripped.multica_completed_tasks[0];
+        let entry = &roundtripped.remote_completed_tasks[0];
         assert_eq!(entry.remote_task_id, "remote-1");
         assert_eq!(entry.local_run_id, "run-1");
         assert_eq!(entry.status, "completed");
-        assert_eq!(entry.issue_id.as_deref(), Some("iss-1"));
+        assert_eq!(entry.issue_ref.as_deref(), Some("iss-1"));
+        assert_eq!(entry.kind.as_deref(), Some("dev"));
 
         // 空列表序列化后不含该键（skip_serializing_if = Vec::is_empty）。
         let empty_json = serde_json::to_string(&StateConfig::default()).unwrap();
-        assert!(!empty_json.contains("multicaCompletedTasks"));
+        assert!(!empty_json.contains("remoteCompletedTasks"));
+    }
+
+    #[test]
+    fn state_config_deserializes_pre_rename_multica_keys() {
+        // 7085a5a7 词汇中立化把持久化键 multicaCompletedTasks/multicaTaskConversations 改名为
+        // remoteCompletedTasks/remoteTaskConversations（条目内 issueId→issueRef、issueKind→kind）。
+        // 旧版落盘的 state.json 只含旧键；升级后新版必须仍能读出旧键的历史（含条目内旧字段），
+        // 且首次 RMW 重写后自动迁移为新键——否则升级即静默丢光「最近完成」历史（终态行唯一回看来源）。
+        let legacy_json = r#"{
+  "stateSchemaVersion": 1,
+  "multicaTaskConversations": {
+    "remote-task-1": {
+      "localTaskId": "task-1",
+      "localRunId": "run-1",
+      "sessionId": "acp-session-1",
+      "workDir": "E:\\ws"
+    }
+  },
+  "multicaCompletedTasks": [
+    {
+      "remoteTaskId": "remote-1",
+      "localTaskId": "task-1",
+      "localRunId": "run-1",
+      "workspaceId": "ws-1",
+      "localProjectId": "proj-1",
+      "issueId": "iss-1",
+      "issueKind": "dev",
+      "status": "completed",
+      "title": "Fix bug",
+      "completedAt": "2026-08-06T01:00:00Z"
+    }
+  ]
+}"#;
+        let state: StateConfig = serde_json::from_str(legacy_json).unwrap();
+        // 旧键的完成历史读入新字段（含条目内旧字段名 issueId/issueKind → issueRef/kind）。
+        assert_eq!(state.remote_completed_tasks.len(), 1);
+        let entry = &state.remote_completed_tasks[0];
+        assert_eq!(entry.remote_task_id, "remote-1");
+        assert_eq!(entry.issue_ref.as_deref(), Some("iss-1"));
+        assert_eq!(entry.kind.as_deref(), Some("dev"));
+        assert_eq!(entry.status, "completed");
+        // 旧键的续跑索引同理读入新字段。
+        let conv = state
+            .remote_task_conversations
+            .as_ref()
+            .and_then(|m| m.get("remote-task-1"))
+            .expect("legacy multicaTaskConversations entry should load");
+        assert_eq!(conv.session_id.as_deref(), Some("acp-session-1"));
+
+        // 首次 RMW 重写即迁移为新键：写出新键、不再写出旧键。
+        let rewritten = serde_json::to_string_pretty(&state).unwrap();
+        assert!(rewritten.contains("\"remoteCompletedTasks\""));
+        assert!(rewritten.contains("\"remoteTaskConversations\""));
+        assert!(rewritten.contains("\"issueRef\": \"iss-1\""));
+        assert!(rewritten.contains("\"kind\": \"dev\""));
+        assert!(!rewritten.contains("multicaCompletedTasks"));
+        assert!(!rewritten.contains("multicaTaskConversations"));
     }
 }
 
@@ -3801,10 +3935,10 @@ pub struct ConversationPin {
 ///
 /// 一个 multica workspace 只绑定一个执行 provider（绑定后不可变）；**本地工作目录不在
 /// 工作区级绑定**，推迟到每次任务执行时由用户在 composer 下拉选定，并随任务生命周期落到
-/// 任务级结构体（`ActiveRemoteRun` / `MulticaCompletedTask`）。详见 Multica远程任务管理设计 §3。
+/// 任务级结构体（`ActiveRemoteRun` / `RemoteCompletedTask`）。详见 Multica远程任务管理设计 §3。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MulticaWorkspaceRef {
+pub struct RemoteWorkspaceRef {
     pub id: String,
     pub name: String,
     pub slug: String,
@@ -3823,26 +3957,26 @@ pub struct MulticaAccountRef {
     pub email: Option<String>,
 }
 
-/// multica remote_task ↔ 本地会话的断点续跑索引（StateConfig.multica_task_conversations 条目，
+/// 远程任务 ↔ 本地会话的断点续跑索引（StateConfig.remote_task_conversations 条目，
 /// 键 = remote_task_id）。续跑判定按「字面 id → parent_task_id」两级反查（断点续跑方案 §3.3）；
 /// 续跑成功后索引迁移到子任务 id；complete 后清条目。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MulticaTaskConversation {
+pub struct RemoteTaskConversation {
     pub local_task_id: String,
     pub local_run_id: String,
     pub session_id: Option<String>,
     pub work_dir: Option<String>,
 }
 
-/// multica 远程任务完成历史（StateConfig.multica_completed_tasks，Issue 3C「最近完成」回看）。
+/// 远程任务完成历史（StateConfig.remote_completed_tasks，Issue 3C「最近完成」回看）。
 ///
 /// `finalize_terminal` 在任务终态时从 `ActiveRemoteRun` 快照写入：保留 remote↔local 链接 + 行标签
 /// （title）+ 终态（completed/failed），让远程 tab「最近完成」分区能点击直达本地会话。有界（最新在前，
 /// 按 `remote_task_id` 去重，截断至上限），非每查询读盘——title 在终态时快照（来自 claim 的 thread_name）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct MulticaCompletedTask {
+pub struct RemoteCompletedTask {
     pub remote_task_id: String,
     pub local_task_id: String,
     pub local_run_id: String,
@@ -3850,7 +3984,15 @@ pub struct MulticaCompletedTask {
     /// 该任务执行时选定的本地工作区 project_id（finalize 时从 `ActiveRemoteRun` 快照，
     /// terminal 行本地深链用）。
     pub local_project_id: String,
-    pub issue_id: Option<String>,
+    /// alias = 改名前的 `issueId`（7085a5a7 词汇中立化改名 `issueRef`）：旧历史条目仍可读。
+    #[serde(default, alias = "issueId")]
+    pub issue_ref: Option<String>,
+    /// 工作项类型快照（中立词汇 `kind`，写入时翻译自 wire `issue_kind`，story dev/test 拆分）——
+    /// 终态行类型徽标不丢。旧历史条目无此字段 → serde 缺省 None，徽标不渲染。
+    /// alias = 改名前的 `issueKind`：旧历史条目仍可读。
+    /// `readiness` 不持久化：终态无「就绪」语义。
+    #[serde(default, alias = "issueKind")]
+    pub kind: Option<String>,
     /// `completed` | `failed`（由 finalize 的 PendingUpdate 决定）。
     pub status: String,
     pub title: String,

@@ -134,6 +134,9 @@ pub struct CreateConversationTaskCommand {
     pub role: Option<UserPromptRole>,
     pub workspace_files: Vec<PromptWorkspaceFileRef>,
     pub quotes: Vec<UserPromptQuote>,
+    /// 首条 prompt 的隐式隐藏区段（远程任务上下文等）：仅首次执行（SessionMode::New）
+    /// 加载并随首条 prompt 下发；续跑/追问不重放。
+    pub first_prompt_hidden_sections: Option<Vec<crate::provider::PromptHiddenSection>>,
 }
 
 impl CreateConversationTaskCommand {
@@ -155,6 +158,7 @@ impl CreateConversationTaskCommand {
             role: None,
             workspace_files: Vec::new(),
             quotes: Vec::new(),
+            first_prompt_hidden_sections: None,
         }
     }
 }
@@ -347,6 +351,18 @@ impl App {
             write_json(
                 &self.paths.task_prompt_input_file(&task_id),
                 &task_prompt_input,
+            )?;
+        }
+        // 首条 prompt 的隐式隐藏区段落盘（multica 远程任务上下文等）：与 conversation.json 同级，
+        // 由首次执行的 worker invocation 读取；追问/续跑不重放（改动四十八）。
+        if let Some(sections) = command
+            .first_prompt_hidden_sections
+            .as_ref()
+            .filter(|sections| !sections.is_empty())
+        {
+            write_json(
+                &self.paths.first_prompt_hidden_sections_file(&task_id),
+                sections,
             )?;
         }
         if !command.attachment_paths.is_empty() {
