@@ -1179,7 +1179,8 @@ fn attach_direct_prompt_queue(
     lifecycle: &mut ConversationAttemptLifecycleVm,
 ) {
     lifecycle.prompt_queue = direct_prompt_queue_vm(app, task_id, attempt_dir);
-    lifecycle.composer.background_control = gold_band::acp::client::direct_background_control(attempt_dir);
+    lifecycle.composer.background_control =
+        gold_band::acp::client::direct_background_control(attempt_dir);
     if lifecycle.prompt_queue.is_some()
         && lifecycle.composer.mode == "runtime-active"
         && !lifecycle.acp.stopping
@@ -1205,7 +1206,9 @@ pub fn touch_conversation_activity_at(
         .join("conversation.json");
     gold_band::storage::with_file_lock(&metadata_path, || {
         let mut metadata: ConversationMetadata = read_json(&metadata_path)?;
-        let should_advance = metadata.last_activity_at.as_deref()
+        let should_advance = metadata
+            .last_activity_at
+            .as_deref()
             .is_none_or(|current| compare_conversation_timestamps(current, activity_at).is_lt());
         if should_advance {
             metadata.last_activity_at = Some(activity_at.to_string());
@@ -1273,7 +1276,9 @@ fn conversation_task_activity(
 
 /// Live task activity shared by the sidebar list and live session events:
 /// a running prompt turn, otherwise retained Direct background facts.
-pub(crate) fn conversation_task_live_activity(task_dir: &Utf8Path) -> Option<ConversationTaskActivityVm> {
+pub(crate) fn conversation_task_live_activity(
+    task_dir: &Utf8Path,
+) -> Option<ConversationTaskActivityVm> {
     if let Some(activity) = prompt_activity_under(task_dir) {
         return Some(conversation_task_activity_from_prompt(activity));
     }

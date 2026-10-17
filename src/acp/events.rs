@@ -417,7 +417,10 @@ pub fn merge_tool_revision_raw(incoming: &mut Value, previous: &Value) {
             .pointer("/rawOutput/formatted_output")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let mut output: String = previous_output.chars().take(MAX_TERMINAL_OUTPUT_CHARS).collect();
+        let mut output: String = previous_output
+            .chars()
+            .take(MAX_TERMINAL_OUTPUT_CHARS)
+            .collect();
         let remaining = MAX_TERMINAL_OUTPUT_CHARS.saturating_sub(output.chars().count());
         output.extend(delta.chars().take(remaining));
         if previous_output.chars().count() > MAX_TERMINAL_OUTPUT_CHARS
@@ -432,7 +435,15 @@ pub fn merge_tool_revision_raw(incoming: &mut Value, previous: &Value) {
     else {
         return;
     };
-    for key in ["title", "kind", "status", "rawInput", "rawOutput", "content", "locations"] {
+    for key in [
+        "title",
+        "kind",
+        "status",
+        "rawInput",
+        "rawOutput",
+        "content",
+        "locations",
+    ] {
         merge_missing_json_field(incoming_object, previous_object, key);
     }
     if let Some(previous_tool_call) = previous_object.get("toolCall").and_then(Value::as_object) {
@@ -440,7 +451,15 @@ pub fn merge_tool_revision_raw(incoming: &mut Value, previous: &Value) {
             .entry("toolCall")
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
         if let Some(incoming_tool_call) = incoming_tool_call.as_object_mut() {
-            for key in ["title", "kind", "status", "rawInput", "rawOutput", "content", "locations"] {
+            for key in [
+                "title",
+                "kind",
+                "status",
+                "rawInput",
+                "rawOutput",
+                "content",
+                "locations",
+            ] {
                 merge_missing_json_field(incoming_tool_call, previous_tool_call, key);
             }
         }
@@ -3255,7 +3274,10 @@ pub fn normalize_session_update(
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     let compaction_phase = context_compaction_phase(update);
-    let standard_compaction = matches!(provider_kind, "compaction_update" | "compaction_summary_chunk");
+    let standard_compaction = matches!(
+        provider_kind,
+        "compaction_update" | "compaction_summary_chunk"
+    );
     let mut raw_value = update.clone();
     normalize_agent_transcript_metadata(&mut raw_value);
     if let Some(phase) = compaction_phase

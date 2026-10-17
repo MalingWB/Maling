@@ -402,7 +402,13 @@ fn replay_item_key(kind: &str, update: &Value) -> String {
 fn is_replay_content_update(kind: &str) -> bool {
     matches!(
         kind,
-        "agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update" | "plan" | "compaction_update" | "compaction_summary_chunk"
+        "agent_message_chunk"
+            | "agent_thought_chunk"
+            | "tool_call"
+            | "tool_call_update"
+            | "plan"
+            | "compaction_update"
+            | "compaction_summary_chunk"
     )
 }
 
@@ -495,9 +501,14 @@ mod tests {
         replay.begin("claude-acp", "session");
         replay.observe(&json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"external prompt"}}));
         replay.observe(&json!({"sessionUpdate":"compaction_update","compactionId":"cmp","status":"completed","summary":[{"type":"text","text":"summary"}]}));
-        let ReplayUpdateDecision::Import { items } = replay.finish() else { panic!("expected history") };
+        let ReplayUpdateDecision::Import { items } = replay.finish() else {
+            panic!("expected history")
+        };
         assert_eq!(items.len(), 2);
-        assert_eq!(items[1].update["providerHistoryItemId"], "context-compaction-id-cmp");
+        assert_eq!(
+            items[1].update["providerHistoryItemId"],
+            "context-compaction-id-cmp"
+        );
     }
 
     #[test]

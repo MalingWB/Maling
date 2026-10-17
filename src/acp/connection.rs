@@ -2254,7 +2254,10 @@ fn route_inbound_frame(
 }
 
 impl AdapterConnection {
-    pub(crate) fn session_route_watermark(&self, session_id: &str) -> Option<SessionRouteWatermark> {
+    pub(crate) fn session_route_watermark(
+        &self,
+        session_id: &str,
+    ) -> Option<SessionRouteWatermark> {
         self.session_routes
             .lock()
             .ok()
