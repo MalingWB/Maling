@@ -317,6 +317,8 @@ workflow resume 请求：
 
 ## 7. Continue session 规则
 
+2026-10-18 上游同步后，调用配置统一通过 `invocation_session_config` 解析：继续已有会话时沿用该会话的模型、权限与配置选项快照，不重新读取作者态配置覆盖既有会话。远程任务的 `first_prompt_hidden_sections` 仍仅在新建会话时加载，追问和继续执行不重放。两者分别管理会话配置与首轮任务上下文，不建立第二套配置读取入口。
+
 Gold Band 不再依赖 resume/load 时动态刷新 system prompt。prompt 渲染不能只根据 `SessionMode::Continue` 判断语义，而必须使用显式的 user prompt render mode：
 
 | Render mode | 场景 | userPrompt |

@@ -501,3 +501,10 @@ Permission occurrence identity 的生成只对当前事件的两个短字符串�
 - 重构前后中英文 36 份完整 JSON 严格相等，保留原卡片字段、控件行为与能力上限；核心 IM 189 项和桌面 IM Runtime 21 项回归通过。两项偏差的实施、静态检查与证据边界见[实施记录](../../开发计划/IM接入/飞书封装与类型化实施记录-2026-10-16.md)。
 
 方案复核：沿用现有 serde、Tokio、prost 和连接生命周期，只类型化实际组件，不增加依赖、持久状态、缓存、队列或网络请求；处理规模仍受当前卡片能力约束，没有新增历史读取或 UI 刷新范围。
+
+## 17. 2026-10-18 上游取消追问语义对齐
+
+- canonical `ElicitationAction::Cancel` 投影为 `ImResolutionOutcome::ElicitationCancelled`，与用户主动拒绝的 `ElicitationDeclined` 区分；序列化往返必须保留这个区别。
+- 飞书终态卡片以中文“已取消”或英文“Cancelled”显示取消，保留原表单并禁用控件，不伪造提交答案。文案沿用 connector 的集中语言映射。
+- 不新增远程取消入口；渠道入站仍只接受发布时声明的 allowed actions。Runtime 的首个有效决策、幂等、连接 generation 与 durable delivery 继续作为权威事实源。
+- 本次仅补齐既有领域动作的结果投影，不增加持久表、状态机、请求、历史扫描、队列或缓存；渲染复杂度仍受当前表单规模限制。

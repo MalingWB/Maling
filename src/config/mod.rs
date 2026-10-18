@@ -2266,8 +2266,8 @@ mod tests {
         DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
         DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
         ManagedAgentId, MulticaAccountRef, PersonalizationPreference, ProjectAppConfig,
-        ProjectIdentityConfig, RemoteCompletedTask, RemoteTaskConversation, RuntimeConfig,
-        RuntimeLogLevel, RemoteWorkspaceRef, SettingsConfig, StateConfig, SystemPromptDelivery,
+        ProjectIdentityConfig, RemoteCompletedTask, RemoteTaskConversation, RemoteWorkspaceRef,
+        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
         TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
         catalog_agent_default_config, project_identity_config,
     };
@@ -3804,7 +3804,8 @@ mod tests {
         );
 
         // 升级路径：不含新键的旧 settings.json 反序列化不崩，两指针回落 None（apply_settings 再归一 multica）。
-        let legacy: SettingsConfig = serde_json::from_str(r#"{"desktopMulticaEnabled": true}"#).unwrap();
+        let legacy: SettingsConfig =
+            serde_json::from_str(r#"{"desktopMulticaEnabled": true}"#).unwrap();
         assert_eq!(legacy.desktop_remote_task_source, None);
         assert_eq!(legacy.desktop_remote_skill_source, None);
     }

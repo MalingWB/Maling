@@ -258,7 +258,8 @@ function inactiveWithoutFailureLifecycle(): ConversationAttemptLifecycleVm {
 beforeEach(() => {
   runtime.tauri = false;
   resetAcpResourceCache();
-  vi.mocked(getAcpSession).mockReset().mockResolvedValue(null);
+  // Session content is loaded independently from the locator/summary props.
+  vi.mocked(getAcpSession).mockReset().mockResolvedValue(completedSession());
   getAgentCommandCatalog.mockResolvedValue({
     agentType: 'test',
     projectId: 'worktree-project',
@@ -602,6 +603,44 @@ describe('ACP composer render isolation', () => {
     }
   });
 
+  it('joins the read-only demo composer to the visible session info tab', async () => {
+    const session = { ...completedSession(), sessionElapsedSeconds: 62 };
+    vi.mocked(getAcpSession).mockResolvedValue(session);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <TestProviders>
+            <ACPChatDialog
+              session={session}
+              projectId="project-render"
+              taskId="task-render"
+              runId="run-render"
+              roundId="round-render"
+              nodeId="node-render"
+              attemptId="attempt-render"
+              readOnly
+              showDisabledComposer
+              showBranchControl={false}
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TestProviders>,
+        );
+      });
+
+      expect(container.querySelector('[data-acp-session-info="true"]')).not.toBeNull();
+      expect(container.querySelector('[data-acp-session-info-connector="true"]')).not.toBeNull();
+      const promptInput = container.querySelector('[data-slot="prompt-input"]');
+      expect(promptInput?.classList.contains('rounded-tl-none')).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps the conversation shell mounted when an established session payload is temporarily absent', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -691,6 +730,7 @@ describe('ACP composer render isolation', () => {
         { name: 'native-status', description: 'Current ACP session command' },
       ],
     };
+    vi.mocked(getAcpSession).mockResolvedValue(session);
     try {
       await act(async () => {
         root.render(

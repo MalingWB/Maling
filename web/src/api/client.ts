@@ -117,6 +117,8 @@ import type {
   GitMutationRequestVm,
   GitMutationResultVm,
   GitOperationRequestVm,
+  GitPushIntentVm,
+  GitPreparedPushVm,
   GitOperationVm,
   GitStateChangedEventVm,
   GitHubCapabilityVm,
@@ -315,11 +317,12 @@ export interface BrowserAllowLocalAccessInput extends BrowserPageIdInput {
 export interface BrowserResolveLocalHtmlInput {
   projectId: string;
   workspacePath: string | null;
-  rawHref: string;
+  target: { kind: 'href'; href: string } | { kind: 'path'; path: string };
 }
 
 export interface BrowserLocalHtmlTargetVm {
-  canonicalPath: string;
+  /** Canonical file URL, including the navigation query and fragment. */
+  url: string;
 }
 
 export interface BrowserSetViewModeInput extends BrowserPageIdInput {
@@ -417,6 +420,7 @@ export interface RuntimeApi {
   getGitCommitReachability(projectId: string, workspacePath: string | null | undefined, query: GitCommitReachabilityQueryVm): Promise<GitCommitReachabilityVm>;
   executeGitMutation(projectId: string, workspacePath: string | null | undefined, input: GitMutationRequestVm): Promise<GitMutationResultVm>;
   getGitComparison(projectId: string, source: GitComparisonSourceVm): Promise<GitFileComparisonVm>;
+  prepareGitPush(projectId: string, workspacePath: string | null | undefined, input: GitPushIntentVm): Promise<GitPreparedPushVm>;
   startGitOperation(projectId: string, workspacePath: string | null | undefined, input: GitOperationRequestVm): Promise<GitOperationVm>;
   getGitOperation(operationId: string): Promise<GitOperationVm>;
   cancelGitOperation(operationId: string): Promise<GitOperationVm>;
