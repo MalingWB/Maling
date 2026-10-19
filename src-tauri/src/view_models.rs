@@ -752,6 +752,10 @@ pub struct AcpUsageVm {
     pub cached_write_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u64>,
+    /// Token totals come from prompt responses only; background Agent work
+    /// happened in this session and is not included.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub token_totals_exclude_background: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -814,6 +818,7 @@ pub struct AcpAgentExecutionVm {
     pub agent_execution_id: String,
     pub parent_agent_execution_id: Option<String>,
     pub execution_status: String,
+    pub provider_state_seq: Option<u64>,
     pub event_count: usize,
     pub tool_call_count: usize,
     pub read_file_count: usize,
@@ -4638,6 +4643,7 @@ fn indexed_timeline_page_to_scan(
         used: usage.used,
         size: usage.size,
         cost_amount_usd: usage.cost_amount_usd,
+        token_totals_exclude_background: usage.token_totals_exclude_background,
         ..AcpUsageVm::default()
     });
     Ok(AcpEventScan {
@@ -6007,6 +6013,7 @@ fn agent_execution_vm(
         agent_execution_id: record.agent_execution_id.clone(),
         parent_agent_execution_id: record.parent_agent_execution_id.clone(),
         execution_status: record.status.clone(),
+        provider_state_seq: record.provider_state_seq,
         event_count: record.event_count,
         tool_call_count: record.tool_call_count,
         read_file_count: record.read_file_count,
@@ -8399,6 +8406,7 @@ mod tests {
             launch_tool_call_id: format!("launch-{agent_execution_id}"),
             session_id: "session-123".to_string(),
             status: status.to_string(),
+            provider_state_seq: None,
             title: Some(agent_execution_id.to_string()),
             description: None,
             started_at: "100Z".to_string(),
@@ -8492,6 +8500,27 @@ mod tests {
         let usage = usage.unwrap();
         assert_eq!(usage.used, Some(38_223));
         assert_eq!(usage.cost_amount_usd, Some(0.315532));
+    }
+
+    #[test]
+    fn usage_vm_serializes_the_background_token_totals_gap_only_when_present() {
+        let complete = serde_json::to_value(AcpUsageVm {
+            total_tokens: Some(107_089),
+            ..Default::default()
+        })
+        .unwrap();
+        let partial = serde_json::to_value(AcpUsageVm {
+            total_tokens: Some(107_089),
+            token_totals_exclude_background: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert!(complete.get("tokenTotalsExcludeBackground").is_none());
+        assert_eq!(
+            partial["tokenTotalsExcludeBackground"],
+            serde_json::json!(true)
+        );
     }
 
     #[test]
@@ -12157,6 +12186,7 @@ mod tests {
             agent_execution_id: "agent-internal".to_string(),
             parent_agent_execution_id: Some("agent-parent".to_string()),
             execution_status: "running".to_string(),
+            provider_state_seq: Some(12),
             event_count: 1,
             tool_call_count: 1,
             read_file_count: 0,
@@ -12168,6 +12198,7 @@ mod tests {
         };
         let value = serde_json::to_value(vm).unwrap();
         assert_eq!(value["agentExecutionId"], "agent-internal");
+        assert_eq!(value["providerStateSeq"], 12);
         assert!(value.get("toolCallId").is_none());
         assert!(value.get("parentToolCallId").is_none());
         assert!(value.get("launchStatus").is_none());

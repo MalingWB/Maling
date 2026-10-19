@@ -167,6 +167,26 @@ struct AcpAttemptUsageBaseline {
     latest_prompt: AcpPromptTokenUsage,
 }
 
+const USAGE_TRANSACTION_ATTEMPT_SEPARATOR: &str = ":attempt-";
+
+/// Journal identity of one real `session/prompt` RPC. Retries of one logical
+/// prompt share `prompt_event_id` but are accounted separately.
+pub fn prompt_usage_transaction_id(
+    prompt_event_id: &str,
+    retry_attempt: u32,
+    operation_seq: u64,
+) -> String {
+    format!("{prompt_event_id}{USAGE_TRANSACTION_ATTEMPT_SEPARATOR}{retry_attempt}:{operation_seq}")
+}
+
+/// Older journals keyed a prompt by its event id directly.
+fn journal_has_transaction_for_event(journal_ids: &HashSet<String>, event_id: &str) -> bool {
+    let prefix = format!("{event_id}{USAGE_TRANSACTION_ATTEMPT_SEPARATOR}");
+    journal_ids
+        .iter()
+        .any(|id| id == event_id || id.starts_with(&prefix))
+}
+
 pub fn append_prompt_started(
     journal_path: &Utf8Path,
     turn_id: &str,
@@ -223,16 +243,20 @@ pub fn repair_attempt_usage(
         .iter()
         .map(|start| start.turn_id.clone())
         .collect::<HashSet<_>>();
-    for (turn_id, turn_seq, timestamp) in
-        crate::acp::timeline::read_indexed_prompt_starts(timeline_path)?
-    {
-        if known_start_ids.contains(&turn_id) {
+    // The timeline only supplies prompts the journal never started (a crash
+    // between the prompt event and its journal start). A journaled prompt is
+    // keyed by usage transaction id, so match it by its canonical event id;
+    // the logical promptId is a different identity space.
+    for indexed in crate::acp::timeline::read_indexed_prompt_starts(timeline_path)? {
+        if known_start_ids.contains(&indexed.prompt_id)
+            || journal_has_transaction_for_event(&known_start_ids, &indexed.event_id)
+        {
             continue;
         }
         starts.push(PromptTurnStart {
-            turn_id,
-            turn_seq,
-            timestamp,
+            turn_id: indexed.prompt_id,
+            turn_seq: indexed.seq,
+            timestamp: indexed.timestamp,
             provider: None,
             model: None,
         });
@@ -243,7 +267,7 @@ pub fn repair_attempt_usage(
     let mut recovered_turns = 0usize;
     let has_uncompleted_turn = starts
         .iter()
-        .any(|start| !completed.contains_key(&start.turn_id));
+        .any(|start| !completed.contains_key(&start.turn_seq));
     if recover_missing_from_raw
         && has_uncompleted_turn
         && should_recover_missing_usage_from_raw(snapshot_path)
@@ -251,7 +275,7 @@ pub fn repair_attempt_usage(
         let transactions = raw_prompt_transactions(raw_path)?;
         let assignments = assign_transactions_to_turns(&starts, &transactions);
         for (start, transaction) in assignments {
-            if completed.contains_key(&start.turn_id) {
+            if completed.contains_key(&start.turn_seq) {
                 continue;
             }
             let (Some(completed_at), Some(usage)) = (
@@ -275,12 +299,16 @@ pub fn repair_attempt_usage(
                 true,
             )? {
                 recovered_turns = recovered_turns.saturating_add(1);
+                completed.insert(start.turn_seq, (start.turn_id.clone(), usage.clone()));
+            } else {
+                // A competing writer may have completed this RPC. Only count
+                // the journal's accepted record, including its runtime priority.
+                completed = prompt_completions_from_journal(journal_path)?;
             }
-            completed.insert(start.turn_id.clone(), (start.turn_seq, usage.clone()));
         }
     }
 
-    let mut ordered = completed.into_values().collect::<Vec<_>>();
+    let mut ordered = completed.into_iter().collect::<Vec<_>>();
     ordered.sort_by_key(|(turn_seq, _)| *turn_seq);
     let baseline_has_usage = baseline.latest_prompt.has_any_value()
         || baseline.totals.input_tokens.is_some()
@@ -290,7 +318,7 @@ pub fn repair_attempt_usage(
         || baseline.totals.total_tokens.is_some();
     let mut totals = baseline.totals;
     let mut latest_prompt = baseline.latest_prompt;
-    for (_, usage) in &ordered {
+    for (_, (_, usage)) in &ordered {
         totals.accumulate_prompt(usage);
         latest_prompt = usage.clone();
     }
@@ -463,7 +491,13 @@ fn append_prompt_completed_inner(
     recovered_from_raw: bool,
 ) -> Result<bool> {
     with_jsonl_file_lock(journal_path, || {
-        if prompt_completions_from_journal_unlocked(journal_path)?.contains_key(turn_id) {
+        let completed = prompt_completions_from_journal_unlocked(journal_path)?;
+        // One RPC is completed once, whichever turn identity asks to record it.
+        if completed.contains_key(&turn_seq)
+            || completed
+                .values()
+                .any(|(completed_id, _)| completed_id == turn_id)
+        {
             return Ok(false);
         }
         let entry = AcpPromptUsageJournalEntry::PromptCompleted {
@@ -524,7 +558,7 @@ pub fn read_prompt_usage_segments(attempt_dir: &Utf8Path) -> Vec<AcpPromptUsageS
                 )
             });
     let mut starts = std::collections::HashMap::new();
-    let mut segments = Vec::new();
+    let mut by_seq = HashMap::new();
     for entry in entries {
         match entry {
             AcpPromptUsageJournalEntry::PromptStarted {
@@ -539,12 +573,13 @@ pub fn read_prompt_usage_segments(attempt_dir: &Utf8Path) -> Vec<AcpPromptUsageS
                 model,
                 usage,
                 timestamp,
+                recovered_from_raw,
                 ..
             } => {
                 let elapsed_ms = starts
                     .get(&turn_id)
                     .and_then(|started_at| elapsed_ms_between(started_at, &timestamp));
-                segments.push(AcpPromptUsageSegment {
+                let segment = AcpPromptUsageSegment {
                     turn_id,
                     turn_seq,
                     elapsed_ms,
@@ -558,37 +593,69 @@ pub fn read_prompt_usage_segments(attempt_dir: &Utf8Path) -> Vec<AcpPromptUsageS
                         })
                         .or(model),
                     usage,
-                });
+                };
+                keep_one_completion_per_rpc(&mut by_seq, turn_seq, recovered_from_raw, segment);
             }
             _ => {}
         }
     }
+    let mut segments = by_seq
+        .into_values()
+        .map(|(_, segment)| segment)
+        .collect::<Vec<_>>();
     segments.sort_by_key(|segment| segment.turn_seq);
     segments
 }
 
 fn prompt_completions_from_journal(
     path: &Utf8Path,
-) -> Result<HashMap<String, (u64, AcpPromptTokenUsage)>> {
+) -> Result<HashMap<u64, (String, AcpPromptTokenUsage)>> {
     with_jsonl_file_lock(path, || prompt_completions_from_journal_unlocked(path))
 }
 
 fn prompt_completions_from_journal_unlocked(
     path: &Utf8Path,
-) -> Result<HashMap<String, (u64, AcpPromptTokenUsage)>> {
-    let mut completed = HashMap::new();
+) -> Result<HashMap<u64, (String, AcpPromptTokenUsage)>> {
+    let mut by_seq = HashMap::<u64, (bool, (String, AcpPromptTokenUsage))>::new();
     for entry in read_journal_unlocked(path)? {
         if let AcpPromptUsageJournalEntry::PromptCompleted {
             turn_id,
             turn_seq,
             usage,
+            recovered_from_raw,
             ..
         } = entry
         {
-            completed.entry(turn_id).or_insert((turn_seq, usage));
+            keep_one_completion_per_rpc(
+                &mut by_seq,
+                turn_seq,
+                recovered_from_raw,
+                (turn_id, usage),
+            );
         }
     }
-    Ok(completed)
+    Ok(by_seq
+        .into_iter()
+        .map(|(turn_seq, (_, completion))| (turn_seq, completion))
+        .collect())
+}
+
+/// `turn_seq` is the operation seq of one `session/prompt` RPC and is unique
+/// within an attempt (request ids restart with each connection). Journals
+/// written before the identity fix may hold a raw-recovered duplicate of a
+/// journaled RPC under a logical-prompt alias; the runtime record wins.
+fn keep_one_completion_per_rpc<T>(
+    by_seq: &mut HashMap<u64, (bool, T)>,
+    turn_seq: u64,
+    recovered_from_raw: bool,
+    value: T,
+) {
+    match by_seq.get(&turn_seq) {
+        Some((existing_recovered, _)) if !*existing_recovered || recovered_from_raw => {}
+        _ => {
+            by_seq.insert(turn_seq, (recovered_from_raw, value));
+        }
+    }
 }
 
 fn read_journal(path: &Utf8Path) -> Result<Vec<AcpPromptUsageJournalEntry>> {
@@ -1162,5 +1229,168 @@ mod tests {
 
         assert_eq!(recovered.recovered_turns, 0);
         assert_eq!(recovered.completed_turns, 0);
+    }
+    /// task-342 shape: the journal keys each RPC by usage transaction id while
+    /// the timeline index names the same prompt by its logical promptId.
+    fn write_transaction_keyed_prompt(paths: &AcpAttemptPaths) -> AcpUiEvent {
+        let prompt = prompt_event_with_id(3, "100Z", Some("initial-direct-turn"));
+        write_timeline_items(&paths.timeline, std::slice::from_ref(&prompt)).unwrap();
+        let transaction_id = format!("{}:attempt-0:3", prompt.id);
+        append_prompt_started(&paths.prompt_usage, &transaction_id, 3, "100Z", None, None).unwrap();
+        append_prompt_completed(
+            &paths.prompt_usage,
+            &transaction_id,
+            3,
+            "110Z",
+            Some(json!(41)),
+            &AcpPromptTokenUsage {
+                input_tokens: Some(20),
+                output_tokens: Some(12_248),
+                total_tokens: Some(800_237),
+                ..Default::default()
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        for frame in [
+            raw_frame(
+                "100Z",
+                "outbound",
+                json!({"jsonrpc":"2.0","id":41,"method":"session/prompt","params":{}}),
+            ),
+            raw_frame(
+                "110Z",
+                "inbound",
+                json!({"jsonrpc":"2.0","id":41,"result":{"usage":{"inputTokens":20,"outputTokens":12248,"totalTokens":800237}}}),
+            ),
+        ] {
+            append_jsonl(&paths.raw, &frame).unwrap();
+        }
+        prompt
+    }
+
+    #[test]
+    fn repair_does_not_recount_a_journaled_transaction_under_its_logical_prompt_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir.clone());
+        write_transaction_keyed_prompt(&paths);
+        // A later prompt on a fresh runtime is active, which enables raw recovery.
+        append_prompt_started(
+            &paths.prompt_usage,
+            "gold-band-user-prompt-9:attempt-0:9",
+            9,
+            "500Z",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let recovered = repair_attempt_usage(
+            &paths.snapshot,
+            &paths.timeline,
+            &paths.raw,
+            &paths.prompt_usage,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(recovered.recovered_turns, 0);
+        assert_eq!(recovered.totals.total_tokens, Some(800_237));
+        assert_eq!(read_prompt_usage_segments(&attempt_dir).len(), 1);
+    }
+
+    #[test]
+    fn repair_does_not_recount_an_rpc_completed_only_under_a_legacy_alias() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir.clone());
+        write_transaction_keyed_prompt(&paths);
+        // An old runtime can have recovered the response under the logical id
+        // after the original runtime exited without recording its completion.
+        let mut entries = read_journal(&paths.prompt_usage).unwrap();
+        for entry in &mut entries {
+            if let AcpPromptUsageJournalEntry::PromptCompleted {
+                turn_id,
+                recovered_from_raw,
+                ..
+            } = entry
+            {
+                *turn_id = "initial-direct-turn".into();
+                *recovered_from_raw = true;
+            }
+        }
+        std::fs::write(&paths.prompt_usage, b"").unwrap();
+        for entry in entries {
+            append_jsonl(&paths.prompt_usage, &entry).unwrap();
+        }
+        append_prompt_started(
+            &paths.prompt_usage,
+            "gold-band-user-prompt-9:attempt-0:9",
+            9,
+            "500Z",
+            None,
+            None,
+        )
+        .unwrap();
+
+        for recover_missing_from_raw in [false, true, true] {
+            let recovered = repair_attempt_usage(
+                &paths.snapshot,
+                &paths.timeline,
+                &paths.raw,
+                &paths.prompt_usage,
+                recover_missing_from_raw,
+            )
+            .unwrap();
+            assert_eq!(recovered.recovered_turns, 0);
+            assert_eq!(recovered.completed_turns, 1);
+            assert_eq!(recovered.totals.total_tokens, Some(800_237));
+            assert_eq!(read_prompt_usage_segments(&attempt_dir).len(), 1);
+        }
+    }
+
+    #[test]
+    fn journal_completions_of_one_rpc_count_once_even_under_an_alias() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir.clone());
+        write_transaction_keyed_prompt(&paths);
+        // Journals written before the fix already hold the alias duplicate.
+        append_jsonl(
+            &paths.prompt_usage,
+            &AcpPromptUsageJournalEntry::PromptCompleted {
+                turn_id: "initial-direct-turn".into(),
+                turn_seq: 3,
+                timestamp: "110Z".into(),
+                request_id: Some(json!(41)),
+                usage: AcpPromptTokenUsage {
+                    input_tokens: Some(20),
+                    output_tokens: Some(12_248),
+                    total_tokens: Some(800_237),
+                    ..Default::default()
+                },
+                provider: None,
+                model: None,
+                recovered_from_raw: true,
+            },
+        )
+        .unwrap();
+
+        let recovered = repair_attempt_usage(
+            &paths.snapshot,
+            &paths.timeline,
+            &paths.raw,
+            &paths.prompt_usage,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(recovered.totals.total_tokens, Some(800_237));
+        assert_eq!(recovered.totals.output_tokens, Some(12_248));
+        let segments = read_prompt_usage_segments(&attempt_dir);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].turn_id, "gold-band-user-prompt-3:attempt-0:3");
     }
 }

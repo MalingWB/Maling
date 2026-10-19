@@ -254,6 +254,8 @@ pub enum ImResolutionOutcome {
     /// The intervention is resolved, but its accepted result is unavailable.
     ResultUnavailable,
     ElicitationDeclined,
+    /// The request ended without a user answer, independently of a rejection.
+    ElicitationCancelled,
     ManualCheck {
         outcome: NodeOutcome,
     },
@@ -279,6 +281,10 @@ impl From<&InterventionAction> for ImResolutionOutcome {
                 action: ElicitationAction::Decline,
                 ..
             } => Self::ElicitationDeclined,
+            InterventionAction::Elicitation {
+                action: ElicitationAction::Cancel,
+                ..
+            } => Self::ElicitationCancelled,
             InterventionAction::ManualCheck { outcome } => Self::ManualCheck { outcome: *outcome },
         }
     }
@@ -292,6 +298,7 @@ impl std::fmt::Debug for ImResolutionOutcome {
             }
             Self::ResultUnavailable => f.write_str("ResultUnavailable"),
             Self::ElicitationDeclined => f.write_str("ElicitationDeclined"),
+            Self::ElicitationCancelled => f.write_str("ElicitationCancelled"),
             Self::PermissionOption { option_id } => f
                 .debug_struct("PermissionOption")
                 .field("option_id", option_id)
@@ -724,6 +731,25 @@ mod tests {
         let debug = format!("{context:?}");
         assert!(!debug.contains("callback-request-secret"));
         assert!(debug.contains("[opaque]"));
+    }
+
+    #[test]
+    fn elicitation_cancellation_is_not_a_decline_and_round_trips() {
+        for (action, kind) in [
+            (ElicitationAction::Cancel, "elicitationCancelled"),
+            (ElicitationAction::Decline, "elicitationDeclined"),
+        ] {
+            let outcome = ImResolutionOutcome::from(&InterventionAction::Elicitation {
+                action,
+                content: None,
+            });
+            let wire = serde_json::to_value(&outcome).unwrap();
+            assert_eq!(wire, serde_json::json!({ "kind": kind }));
+            assert_eq!(
+                serde_json::from_value::<ImResolutionOutcome>(wire).unwrap(),
+                outcome
+            );
+        }
     }
 
     #[test]

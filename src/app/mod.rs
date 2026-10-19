@@ -6573,9 +6573,9 @@ mod tests {
     };
     use crate::acp::elicitation::{pending_elicitation_file, pending_elicitation_state};
     use crate::config::{
-        AppearancePreference, ColorSchemePreference, DesktopLanguage,
-        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, RemoteCompletedTask,
-        PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel,
+        AppearancePreference, ColorSchemePreference, DesktopLanguage, DesktopUpdateBadgeState,
+        FontSizePreference, FontStackPreference, PersonalizationPreference,
+        ProviderDiagnosticSnapshot, RemoteCompletedTask, RuntimeConfig, RuntimeLogLevel,
         StateConfig, catalog_agent_default_config,
     };
     use crate::domain::{
@@ -10011,8 +10011,7 @@ mod tests {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root);
         let mut seed = StateConfig::default();
-        seed.remote_completed_tasks
-            .push(completed_entry("rt-seed"));
+        seed.remote_completed_tasks.push(completed_entry("rt-seed"));
         app.save_state(&seed).unwrap();
 
         let mut seen = None;

@@ -533,6 +533,7 @@ fn run() -> anyhow::Result<()> {
             get_git_commit_reachability,
             execute_git_mutation,
             get_git_comparison,
+            commands::prepare_git_push,
             start_git_operation,
             start_git_state_monitor,
             stop_git_state_monitor,

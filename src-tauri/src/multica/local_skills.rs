@@ -910,8 +910,15 @@ mod tests {
         // 库外目录：含 SKILL.md，若被打包即泄露。
         let outside = base.join("outside");
         fs::create_dir_all(outside.as_std_path()).unwrap();
-        fs::write(outside.join("SKILL.md").as_std_path(), "---\nname: leak\n---\nsecret").unwrap();
-        create_test_directory_link(outside.as_std_path(), root.join("leaky-skill").as_std_path());
+        fs::write(
+            outside.join("SKILL.md").as_std_path(),
+            "---\nname: leak\n---\nsecret",
+        )
+        .unwrap();
+        create_test_directory_link(
+            outside.as_std_path(),
+            root.join("leaky-skill").as_std_path(),
+        );
 
         let err = resolve_skill_dir_under_root(&root, "leaky-skill").unwrap_err();
         assert!(err.contains("directory link"), "{err}");
