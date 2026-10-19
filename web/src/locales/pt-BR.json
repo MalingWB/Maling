@@ -1109,6 +1109,7 @@
       "stale-package": "O pacote baixado não é mais recente que a versão em execução."
     },
     "multica": {
+      "attachment-stage-failed": "Falha ao baixar os anexos da tarefa: {{message}}",
       "auth-failed": "Falha na autenticação Multica: {{message}}",
       "claim-conflict": "Esta tarefa já foi reivindicada por outro daemon.",
       "connect-cancelled": "Conexão cancelada.",
@@ -2965,6 +2966,7 @@
     "composer": {
       "remoteNeedLocalWorkspace": "Adicione um espaço de trabalho local antes de executar um requisito",
       "removeRemoteBinding": "Desvincular tarefa",
+      "remoteAttachmentHint": "Anexo da tarefa remota; baixado e anexado automaticamente no envio",
       "remoteBindingTag": "{{source}} · {{title}}"
     },
     "branchPicker": {

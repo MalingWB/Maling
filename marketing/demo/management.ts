@@ -33,7 +33,7 @@ export function demoManagementApi(language: () => DesktopLanguage): Partial<Runt
     return ['queued', 'running', 'completed', 'failed'].map((status, index) => ({ id: `demo-requirement-${index}`, issueRef: `GB-${101 + index}`, status,
       workspaceId: workspace.id, title: titles[index], requirement: null, lastActivityAt: timestamp,
       localTaskId: index > 1 ? 'demo-review' : null, runId: index > 1 ? index === 2 ? DEMO_RUN_ID : 'run-051' : null, projectId: index > 1 ? DEMO_PROJECT_ID : null,
-      kind: null, readiness: null }));
+      kind: null, readiness: null, attachments: [] }));
   }
   return {
     async listScheduledTasks(projectId) { return tasks().filter((item) => !projectId || item.projectId === projectId); },

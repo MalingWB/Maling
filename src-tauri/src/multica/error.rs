@@ -33,6 +33,11 @@ pub enum MulticaError {
     /// 用户在浏览器登录等待期间主动取消（连接弹窗「取消连接」）。非失败：前端静默关闭弹窗。
     #[error("multica connect cancelled by user")]
     ConnectCancelled,
+    /// issue 附件中转目录创建失败（M5-bu）：本地临时目录不可写（磁盘满/权限），附件既无法下载
+    /// 也无法告知 agent，整体无法继续 → 硬失败并 release 回滚。逐个附件的下载失败是软失败
+    /// （局部失败隔离），不进本错误码——以隐藏区段告知 agent，不阻断任务启动。
+    #[error("multica attachment staging failed: {0}")]
+    AttachmentStageFailed(String),
     // M4-d：保留在错误码表（multica.session-resume-failed），但断点续跑路径不 emit——任何 resume Err
     // 改走 silent fresh-fallback（更稳，无需 fragile 串匹配）。见开发设计 §2.2.8。
     #[allow(dead_code)]
@@ -54,6 +59,7 @@ impl MulticaError {
             Self::RuntimeOffline => "multica.runtime-offline",
             Self::InvalidAddress => "multica.invalid-address",
             Self::ConnectCancelled => "multica.connect-cancelled",
+            Self::AttachmentStageFailed(_) => "multica.attachment-stage-failed",
             Self::SessionResumeFailed => "multica.session-resume-failed",
         }
     }
@@ -64,6 +70,7 @@ impl MulticaError {
             Self::AuthFailed(msg) | Self::NetworkFailed(msg) | Self::RegisterFailed(msg) => {
                 json!({ "message": msg })
             }
+            Self::AttachmentStageFailed(msg) => json!({ "message": msg }),
             _ => json!({}),
         }
     }
@@ -104,6 +111,10 @@ mod tests {
         assert_eq!(
             MulticaError::ConnectCancelled.code(),
             "multica.connect-cancelled"
+        );
+        assert_eq!(
+            MulticaError::AttachmentStageFailed("temp dir unwritable".into()).code(),
+            "multica.attachment-stage-failed"
         );
         assert_eq!(
             MulticaError::SessionResumeFailed.code(),

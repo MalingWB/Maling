@@ -8,11 +8,12 @@ use std::collections::BTreeMap;
 
 use gold_band::config::{DesktopLanguage, RemoteCompletedTask, RemoteWorkspaceRef};
 use gold_band::prompts::{
-    RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL, RUNTIME_REMOTE_TASK_CONTEXT,
-    RUNTIME_REMOTE_TASK_PARENT_OUTPUT, prompt_by_language, render,
+    RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES, RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
+    RUNTIME_REMOTE_TASK_CONTEXT, RUNTIME_REMOTE_TASK_PARENT_OUTPUT, prompt_by_language, render,
 };
 use gold_band::provider::PromptHiddenSection;
 use serde::Serialize;
+use serde_json::json;
 
 use crate::multica::client::RemoteTask;
 use crate::multica::state::ActiveRemoteRun;
@@ -51,6 +52,21 @@ pub struct RemoteTaskVm {
     /// 仅 pending / detail 行有意义（queued 才有「能否执行」的问题）；active（已领取执行中）
     /// 与 completed（终态）行恒 None，前端不渲染就绪态。旧 server 不发 → None。
     pub readiness: Option<bool>,
+    /// issue 需求附件元数据（展示用，不下载）：仅 detail 构造回填，供 composer 在「点执行 →
+    /// 进输入框」阶段展示附件可见性——文件本体仍在发送时（claim 响应带 mat_ 令牌后）由
+    /// `stage_issue_attachments` 下载（详情阶段服务端不发令牌，无下载凭证）。pending / active /
+    /// 终态行无附件展示需求，不回填（侧栏轮询不为无人消费的元数据增加负载）。旧 server
+    /// 不发 `issue_attachments` → 空数组，前端不渲染。
+    pub attachments: Vec<RemoteTaskAttachmentVm>,
+}
+
+/// issue 需求附件元数据的展示投影（[`RemoteTaskVm::attachments`] 元素）：文件名（空/纯空白
+/// 回退附件 id，[`IssueAttachment::display_name`]）与可选 content_type。仅展示，不含下载语义。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTaskAttachmentVm {
+    pub filename: String,
+    pub content_type: Option<String>,
 }
 
 /// 远程任务列表 sidebar（对齐 ConversationSidebarVm 形状，line 652-658）。
@@ -87,6 +103,15 @@ impl RemoteTaskVm {
     pub fn from_detail(task: &RemoteTask, workspace_id: &str, language: DesktopLanguage) -> Self {
         let mut vm = Self::from_remote(task, workspace_id);
         vm.requirement = detail_prefill(task, language);
+        // 附件元数据透传（展示投影）：文件本体不在详情阶段下载（无 mat_ 令牌），仅让输入框可见。
+        vm.attachments = task
+            .issue_attachments
+            .iter()
+            .map(|a| RemoteTaskAttachmentVm {
+                filename: a.display_name(),
+                content_type: a.content_type.clone(),
+            })
+            .collect();
         vm
     }
 
@@ -114,6 +139,8 @@ impl RemoteTaskVm {
             // 类型取本地快照（multica C1：终态行类型徽标不丢）；终态无「就绪」语义 → 恒 None。
             kind: c.kind.clone(),
             readiness: None,
+            // 终态行无输入框展示场景，附件元数据不回填。
+            attachments: Vec::new(),
         }
     }
 
@@ -141,6 +168,8 @@ impl RemoteTaskVm {
             // 类型取 claim 时随 ActiveRemoteRun 落的快照；已领取执行中无「就绪」语义 → 恒 None。
             kind: run.issue_kind.clone(),
             readiness: None,
+            // 执行中行无输入框展示场景，附件元数据不回填。
+            attachments: Vec::new(),
         }
     }
 
@@ -166,6 +195,8 @@ impl RemoteTaskVm {
             // wire 字段透传并翻译为中立词汇（from_pending / from_detail 共用本构造；claim-at-send 门控数据源）。
             kind: task.issue_kind.clone(),
             readiness: task.is_ready,
+            // pending 列表行不展示附件；仅 from_detail 覆盖（见字段注释）。
+            attachments: Vec::new(),
         }
     }
 }
@@ -197,7 +228,9 @@ fn detail_prefill(task: &RemoteTask, language: DesktopLanguage) -> Option<String
 
 /// 远程任务首条 prompt 的隐式上下文（M5-bk 引入，2026-09-21 二次修正收敛为两块、三次调整收敛为单块）：
 ///
-/// 仅完成输出协议块（issue 关联任务才注入）——写侧协议指令收尾。
+/// 1. 完成输出协议块（issue 关联任务才注入）——写侧协议指令收尾。
+/// 2. 附件软失败清单块（M5-bu，issue 附件下载有失败才注入）——告知 agent 哪些需求附件未能落地，
+///    需与用户确认替代来源（局部失败隔离：不阻断任务启动，但 agent 不得臆测缺失文件内容）。
 ///
 /// 其余上下文均不在此列——DPMS 溯源块、上游交付说明块与需求正文由 [`detail_prefill`] 预填 composer、
 /// 用户可见可编辑，**同一份上下文只下发一次**（任何块若同时进区段会重复注入）。完成输出协议块**必须**
@@ -205,16 +238,54 @@ fn detail_prefill(task: &RemoteTask, language: DesktopLanguage) -> Option<String
 /// issue done 时无输出可中继）。协议块属 runtime 决定的稳定执行上下文（AGENTS.md system/user prompt
 /// 划分标准），随发送时 claim 响应取值，以 `<hidden>` 区段附在首条 prompt 需求正文之后（对齐
 /// `scheduled_task_context` 隐式注入先例；发送前用户不再可见，会话内可点开审计）。
-/// 非 issue 关联（协议块缺省）→ None（无非隐式上下文，行为与引入区段前一致）。
+/// 两块全缺省（非 issue 关联且无附件失败）→ None（无非隐式上下文，行为与引入区段前一致）。
 pub(crate) fn remote_task_hidden_section(
     task: &RemoteTask,
     language: DesktopLanguage,
+    attachment_failures: &[AttachmentFailure],
 ) -> Option<PromptHiddenSection> {
-    let content = completion_protocol_block(task, language)?;
-    Some(PromptHiddenSection {
+    let content = [
+        completion_protocol_block(task, language),
+        attachment_failures_block(attachment_failures, language),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n\n");
+    (!content.trim().is_empty()).then(|| PromptHiddenSection {
         title: REMOTE_TASK_HIDDEN_SECTION_TITLE.to_string(),
         content,
     })
+}
+
+/// 单个需求附件的下载软失败记录（M5-bu）：staging 阶段逐文件收集，渲染进隐式区段清单。
+#[derive(Debug, Clone)]
+pub(crate) struct AttachmentFailure {
+    pub filename: String,
+    pub reason: String,
+}
+
+/// 附件软失败清单块（`src/prompts/{zh-CN,en}/runtime/remote_task_attachment_failures.md`）。
+///
+/// 下载成功的需求附件走原生 attachment 通道（`authoring/inputs`，agent 直接拿到文件），
+/// 不进区段；仅失败项需要 agent 知悉。清单为空 → None（不渲染块，行为与引入前一致）。
+fn attachment_failures_block(
+    failures: &[AttachmentFailure],
+    language: DesktopLanguage,
+) -> Option<String> {
+    if failures.is_empty() {
+        return None;
+    }
+    let template = prompt_by_language(language, RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES);
+    let context = json!({
+        "failures": failures
+            .iter()
+            .map(|f| json!({ "filename": f.filename, "reason": f.reason }))
+            .collect::<Vec<_>>(),
+    });
+    let rendered =
+        render(template, &context).expect("remote task attachment failures template renders");
+    Some(rendered.trim().to_string())
 }
 
 /// 上游交付说明块（`src/prompts/{zh-CN,en}/runtime/remote_task_parent_output.md` 按语言渲染）。
@@ -394,6 +465,7 @@ mod tests {
             business_story_id: None,
             origin_url: None,
             parent_output: None,
+            issue_attachments: Vec::new(),
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
         assert_eq!(vm.id, "t-1");
@@ -435,6 +507,7 @@ mod tests {
             business_story_id: None,
             origin_url: None,
             parent_output: None,
+            issue_attachments: Vec::new(),
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
         assert_eq!(vm.kind.as_deref(), Some("test"));
@@ -444,6 +517,34 @@ mod tests {
         let detail = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         assert_eq!(detail.kind.as_deref(), Some("test"));
         assert_eq!(detail.readiness, Some(false));
+    }
+
+    #[test]
+    fn from_detail_surfaces_issue_attachments_metadata() {
+        // 输入框附件可见性：detail 构造透出元数据投影（display_name 回退 + content_type 透传），
+        // pending 构造不透出（侧栏行无展示需求）。
+        let task: RemoteTask = serde_json::from_value(json!({
+            "id": "t-1",
+            "status": "queued",
+            "issue_attachments": [
+                {"id": "att-1", "filename": "  多值测试样本.zip ", "content_type": "application/zip"},
+                {"id": "att-2", "filename": "   "}
+            ]
+        }))
+        .unwrap();
+        let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
+        assert_eq!(vm.attachments.len(), 2);
+        assert_eq!(vm.attachments[0].filename, "多值测试样本.zip");
+        assert_eq!(
+            vm.attachments[0].content_type.as_deref(),
+            Some("application/zip")
+        );
+        // 空文件名回退附件 id（与软失败清单同一展示名事实源）。
+        assert_eq!(vm.attachments[1].filename, "att-2");
+        assert_eq!(vm.attachments[1].content_type, None);
+
+        let pending = RemoteTaskVm::from_pending(&task, "ws-1");
+        assert!(pending.attachments.is_empty());
     }
 
     #[test]
@@ -473,6 +574,7 @@ mod tests {
             business_story_id: None,
             origin_url: None,
             parent_output: None,
+            issue_attachments: Vec::new(),
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.expect("requirement prefilled");
@@ -506,6 +608,7 @@ mod tests {
             business_story_id: None,
             origin_url: None,
             parent_output: None,
+            issue_attachments: Vec::new(),
         };
         assert_eq!(
             RemoteTaskVm::from_detail(&issue, "ws-1", DesktopLanguage::ZhCn)
@@ -538,6 +641,7 @@ mod tests {
             business_story_id: None,
             origin_url: None,
             parent_output: None,
+            issue_attachments: Vec::new(),
         };
         let vm_body = RemoteTaskVm::from_detail(&issue_body, "ws-1", DesktopLanguage::ZhCn);
         // 无 DPMS 字段 → 正文即预填全部内容（issue_description 优先级不变；协议块走隐式注入）。
@@ -573,6 +677,7 @@ mod tests {
             business_story_id: Some(674290),
             origin_url: Some("https://dpms.example.com/story/674290".into()),
             parent_output: None,
+            issue_attachments: Vec::new(),
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.expect("requirement prefilled");
@@ -631,6 +736,7 @@ mod tests {
             business_story_id: None,
             origin_url: None,
             parent_output: None,
+            issue_attachments: Vec::new(),
         };
         assert_eq!(
             RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn).requirement,
@@ -691,8 +797,9 @@ mod tests {
             business_story_id: Some(674290),
             origin_url: Some("https://dpms.example.com/story/674290".into()),
             parent_output: None,
+            issue_attachments: Vec::new(),
         };
-        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn)
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[])
             .expect("hidden section assembled");
         assert_eq!(section.title, REMOTE_TASK_HIDDEN_SECTION_TITLE);
         let content = section.content;
@@ -703,7 +810,7 @@ mod tests {
         assert!(content.contains("completion-output"));
         // 英文侧同构（溯源块同样不进区段）。
         let section_en =
-            remote_task_hidden_section(&task, DesktopLanguage::En).expect("hidden section");
+            remote_task_hidden_section(&task, DesktopLanguage::En, &[]).expect("hidden section");
         assert!(!section_en.content.contains("DPMS"));
         assert!(section_en.content.contains("completion-output"));
     }
@@ -737,6 +844,7 @@ mod tests {
             business_story_id: None,
             origin_url: None,
             parent_output: Some("部署地址: https://t.example.com\n测试要点: 回归登录链路".into()),
+            issue_attachments: Vec::new(),
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.as_deref().expect("requirement prefilled");
@@ -758,7 +866,7 @@ mod tests {
 
         // 隐式区段只剩协议块：不含上游块、不含父输出文本。
         let section =
-            remote_task_hidden_section(&task, DesktopLanguage::ZhCn).expect("hidden section");
+            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[]).expect("hidden section");
         assert!(!section.content.contains("上游"));
         assert!(!section.content.contains("部署地址: https://t.example.com"));
         assert!(section.content.contains("completion-output"));
@@ -770,7 +878,7 @@ mod tests {
         assert!(requirement_en.contains("upstream (parent) work item"));
         assert!(requirement_en.ends_with("Steps to repro..."));
         let section_en =
-            remote_task_hidden_section(&task, DesktopLanguage::En).expect("hidden section");
+            remote_task_hidden_section(&task, DesktopLanguage::En, &[]).expect("hidden section");
         assert!(!section_en.content.contains("upstream (parent)"));
         assert!(section_en.content.contains("completion-output"));
     }
@@ -802,11 +910,12 @@ mod tests {
             business_story_id: None,
             origin_url: None,
             parent_output: None,
+            issue_attachments: Vec::new(),
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         assert_eq!(vm.requirement.as_deref(), Some("Steps..."));
         let section =
-            remote_task_hidden_section(&task, DesktopLanguage::ZhCn).expect("hidden section");
+            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[]).expect("hidden section");
         assert!(section.content.contains("completion-output"));
 
         // 纯空白 parent_output 同样视为缺失（与 DPMS 字段的逐字段空白过滤惯例一致）。
@@ -847,10 +956,11 @@ mod tests {
             business_story_id: None,
             origin_url: None,
             parent_output: None,
+            issue_attachments: Vec::new(),
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         assert_eq!(vm.requirement, None);
-        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn)
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[])
             .expect("protocol-only section");
         assert!(section.content.starts_with("本工作项关联远程工作项"));
         assert!(section.content.contains("completion-output"));
@@ -867,7 +977,7 @@ mod tests {
         assert!(prefill.contains("部署地址: https://t.example.com"));
         assert!(!prefill.contains("completion-output"));
         assert!(
-            remote_task_hidden_section(&with_parent_output, DesktopLanguage::ZhCn)
+            remote_task_hidden_section(&with_parent_output, DesktopLanguage::ZhCn, &[])
                 .expect("protocol section")
                 .content
                 .starts_with("本工作项关联远程工作项")
@@ -882,7 +992,87 @@ mod tests {
             RemoteTaskVm::from_detail(&non_issue, "ws-1", DesktopLanguage::ZhCn).requirement,
             None
         );
-        assert!(remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn).is_none());
+        assert!(remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &[]).is_none());
+    }
+
+    #[test]
+    fn remote_task_hidden_section_renders_attachment_failures() {
+        // 附件软失败清单（M5-bu）：issue 任务 + 有失败 → 协议块在前、失败清单块在后拼接进同一区段；
+        // 空失败 → 不渲染清单块（区段只剩协议块，行为与引入前一致）；非 issue 任务 + 有失败 →
+        // 清单块独立成立（软失败告知不依赖 issue 关联，chat 来源任务同样可能带附件失败）。
+        let task = RemoteTask {
+            id: "t-9".into(),
+            issue_id: Some("iss-9".into()),
+            status: "queued".into(),
+            auth_token: None,
+            prior_session_id: None,
+            parent_task_id: None,
+            title: None,
+            quick_create_prompt: None,
+            chat_message: None,
+            trigger_comment_content: None,
+            autopilot_description: None,
+            handoff_note: None,
+            issue_description: None,
+            last_activity_at: None,
+            issue_kind: None,
+            is_ready: None,
+            release_plan_id: None,
+            dev_user: None,
+            test_user: None,
+            business_story_id: None,
+            origin_url: None,
+            parent_output: None,
+            issue_attachments: Vec::new(),
+        };
+        let failures = vec![
+            AttachmentFailure {
+                filename: "多值测试样本.zip".into(),
+                reason: "HTTP 404".into(),
+            },
+            AttachmentFailure {
+                filename: "需求说明.pdf".into(),
+                reason: "timeout after 120s".into(),
+            },
+        ];
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &failures)
+            .expect("protocol + failures section");
+        assert_eq!(section.title, REMOTE_TASK_HIDDEN_SECTION_TITLE);
+        assert!(section.content.contains("completion-output"));
+        assert!(section.content.contains("需求附件未能下载到本地"));
+        assert!(section.content.contains("多值测试样本.zip（HTTP 404）"));
+        assert!(section.content.contains("需求说明.pdf（timeout after 120s）"));
+        // 协议块在前、清单块在后（锚点顺序锁定）。
+        let protocol_at = section.content.find("completion-output").expect("protocol");
+        let failures_at = section
+            .content
+            .find("需求附件未能下载到本地")
+            .expect("failures list");
+        assert!(protocol_at < failures_at);
+
+        // 英文侧同构（双语模板都渲染清单）。
+        let section_en = remote_task_hidden_section(&task, DesktopLanguage::En, &failures)
+            .expect("english section");
+        assert!(section_en.content.contains("could not be downloaded locally"));
+        assert!(section_en.content.contains("多值测试样本.zip (HTTP 404)"));
+
+        // 空失败 → 区段只剩协议块，不含清单文案（byte 级与引入前单块区段一致；协议模板自身
+        // 提及「附件」一词，故用清单块独有短语断言缺席）。
+        let no_failures =
+            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[]).expect("protocol only");
+        assert!(no_failures.content.contains("completion-output"));
+        assert!(!no_failures.content.contains("未能下载到本地"));
+
+        // 非 issue 任务 + 有失败 → 清单块独立成区段（不为 None）。
+        let non_issue = RemoteTask {
+            issue_id: None,
+            ..task
+        };
+        let failures_only =
+            remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &failures)
+                .expect("failures-only section");
+        assert!(!failures_only.content.contains("completion-output"));
+        assert!(failures_only.content.contains("需求附件未能下载到本地"));
     }
 
     #[test]
@@ -911,6 +1101,7 @@ mod tests {
             business_story_id: None,
             origin_url: None,
             parent_output: None,
+            issue_attachments: Vec::new(),
         };
         assert_eq!(RemoteTaskVm::from_pending(&task, "ws-1").title, "t-7");
 
@@ -938,6 +1129,7 @@ mod tests {
             project_id: None,
             kind: Some("test".into()),
             readiness: Some(true),
+            attachments: Vec::new(),
         };
         let json = serde_json::to_value(&vm).unwrap();
         // 锁定 camelCase 键名（对齐 line 650 TS，前端按这些键取值）。
@@ -951,6 +1143,8 @@ mod tests {
         // 中立词汇字段（web/src/types.ts 的 kind / readiness，翻译自 wire issueKind / isReady）。
         assert_eq!(json["kind"], "test");
         assert_eq!(json["readiness"], true);
+        // 附件元数据（输入框可见性）：空数组序列化为 []，前端按长度判空不渲染。
+        assert_eq!(json["attachments"], serde_json::json!([]));
         // active 行无本地 run 链接（终态行才填）。
         assert!(json["localTaskId"].is_null());
         assert!(json["runId"].is_null());

@@ -219,11 +219,13 @@ export function RemoteTaskManagementPage({
       // 绑定记 source + remoteTaskId + workspaceId（决策 a/c）：source 是通用层路由键，
       // 本地工作区延迟到执行时由 composer 下拉选，不再随绑定钉死。
       // 发送时 input.projectId（下拉值）-> startRemoteConversationRun。
+      // attachments 为元数据展示（输入框附件可见性）：文件本体发送时由后端用 claim 令牌下载。
       composerDraft.prefill(requirement, {
         source: vmSource ?? source,
         remoteTaskId: task.id,
         workspaceId: task.workspaceId,
         title: task.title,
+        attachments: detail.attachments,
       });
       // 落 conversation-home：composer 已预填正文 + 远程绑定；本地工作区由 App 预选最近活跃，用户可改（决策 c/d）。
       onPrepareRemoteTask();

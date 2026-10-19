@@ -1112,6 +1112,7 @@
       "source-not-configured": "尚未配置任务来源，请先完成连接。"
     },
     "multica": {
+      "attachment-stage-failed": "下载任务附件失败：{{message}}",
       "auth-failed": "Multica 鉴权失败：{{message}}",
       "claim-conflict": "该任务已被其他 Daemon 领取。",
       "connect-cancelled": "已取消连接。",
@@ -2965,7 +2966,8 @@
     "composer": {
       "remoteNeedLocalWorkspace": "请先添加本地工作空间，再执行需求",
       "remoteBindingTag": "{{source}} · {{title}}",
-      "removeRemoteBinding": "解除任务绑定"
+      "removeRemoteBinding": "解除任务绑定",
+      "remoteAttachmentHint": "远程任务附件，发送时自动下载并附加"
     },
     "branchPicker": {
       "label": "分支",

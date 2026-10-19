@@ -964,6 +964,7 @@ start_multica_runtime()
 | A3 | `/api/daemon/runtimes/{rid}/recover-orphans` | POST | PAT | 清理为失败态 |
 | B1 | `/api/daemon/runtimes/{rid}/tasks/pending` | GET | PAT | 只读列表 |
 | B2 | `/api/daemon/runtimes/{rid}/tasks/{tid}/claim` | POST | PAT | **M0 新增 selective claim**；body 可带 prior_session_id（断点续跑） |
+| B3 | `/api/attachments/{id}/download` | GET | **mat_ 任务令牌**（claim 响应） | **M5-bu 新增消费**：issue 直属附件下载（claim 响应 `issue_attachments` 清单；DPMS 需求文件服务端实时代理；码灵中介下载后并入原生任务输入附件通道，见 §12.61）。路由语义（webank `file.go`）：`/api/attachments/{id}` 是 workspace 作用域**元数据 JSON**（id/url/filename），文件本体在 `/download` 子路径（user-scoped auth-only，接受 mat_ actor 凭证；服务端 CloudFront 302 / presign 302 / proxy 直出三模式，客户端默认跟随重定向、跨主机自动剥 Authorization，对签名 URL 正确）——M5-bu 首版误用元数据路由，§12.63 修正 |
 | C1 | `/api/daemon/heartbeat` | POST | PAT | **常驻 15s（Req D：建立连接后即对全部已连接 workspace 持续，非仅执行期）** |
 | C2 | `/api/daemon/tasks/{tid}/start` | POST | PAT | dispatched→running；body `force_fresh_session`（整任务重跑=true） |
 | C2.5 | `/api/daemon/runtimes/{rid}/tasks/{tid}/prepare-lease` | POST | PAT | **Req D 新增续期**：claim-at-click 后、start 前（用户在 composer 选模型/改需求期间）每 15s 续期 45s lease，防 `ReclaimStaleDispatchedTaskForRuntime` 回收（与 multica daemon 自带 `startTaskPrepareLeaseExtender` 同构） |
@@ -2623,6 +2624,49 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **方案自评审**：五项均为最小根因修复，零新抽象/状态机/持久字段/依赖（③复用同一清扫点升级语义，④为读取既有 canonical 数据的 helper）。性能——②的防护是每次导入上报一次的两次 metadata/canonicalize 系统调用（非热路径）；③清扫的精确解析替代字符串前缀比较、无额外 I/O；④续跑登记点一次文件读取（续跑本身是重操作）；⑤⑥无运行时开销。
 
 **验证结果**：均最小失败测试先行后转绿——② `resolve_rejects_skill_root_that_is_a_directory_link`（junction 根 + 库外目标 + 普通目录对照）修复前红（`unwrap_err` 收到 Ok）、修复后绿，`multica::local_skills::` 19 测全绿；③ `sweep_recovers_sole_backup_when_target_missing` + `sweep_matches_exact_skill_dir_name_only` 修复前红（唯一备份被删、相近名残留被误删）、修复后绿，既有 `bundle_write_sweeps_crash_leftovers_across_pids` 在新语义下保持绿（同时固化「恢复→覆盖」端到端路径），core `skill::` 23 测全绿；④ `resumed_run_mode_*` 两测（编译红 E0425 → 绿；夹具首次跑暴露 camelCase 字段名写错、按断言红修正），desktop `multica::` 167 测全绿；⑤ 新用例「reload in flight → sync disabled, stale selection cleared」修复前红（挂起期按钮可点且会调 `pullRemoteSkills`）、修复后绿，该文件 4 测全绿；⑥ `i18n-loading` 由 2 红转 7 绿。`cargo clippy --bin gold-band-desktop` 零错误；`tsc -p web/tsconfig.build.json` 零错误。全量 web 套件存在 22 例失败，经 stash 对照确认为 HEAD（97e8c533）既有、与本批改动无关。
+
+---
+
+### 12.61 改动五十九：issue 需求附件中介下载——claim 时拉取并入任务输入附件通道（M5-bu，2026-10-18）
+
+**背景**：multica dev 1be391b6 起任务载荷新增 `issue_attachments`（issue 直属附件元数据 id/filename/content_type，与 chat_message_attachments 同构、content_type 可空；omitempty 兼容——缺键=空数组；pending/detail/claim 三接口同构），DPMS 需求文件代理卡包含其中；附件内容经 `GET /api/attachments/{id}`（claim 响应的 mat_ 任务令牌鉴权，服务端实时代理）下载。multica 建议的客户端形态是「prompt 里列清单 + agent 自调 `multica attachment download` CLI」——**否决**：违反 B 方案中介设计（agent 永不直连 multica API）、用户机器无 multica CLI 可用性保证、mat_ 令牌进 agent 可见 prompt 属凭证泄漏。签名链接进 payload/prompt 同样被 multica 明令禁止（60s TTL）。
+
+**实现**：码灵中介下载，成功件并入**原生任务输入附件通道**（零新增 agent 提示通路、零前端改动）：
+
+- **wire**：`RemoteTask.issue_attachments`（`#[serde(default)]`，缺键/空数组归一空）+ `IssueAttachment`；`download_issue_attachment`（`Response::chunk()` 流式写 tokio::fs 文件，不在内存聚合整个文件；单次尝试不重试；per-request 120s 覆盖 client 级 30s——附件可能是大 zip；状态码不走 `map_status`——其 404→TaskNotFound 语义对附件不成立，统一按附件维度映射 `NetworkFailed`）。
+- **时机**：`start_remote_conversation_run` Fresh 分支（resume 判定之后、簿记 spawn_blocking 之前）——续跑不发新首条 prompt、无新建任务附件通道；claim 时刻数据即执行依据（领取即定版）。先下载到系统临时目录 `gold-band-multica-attachments-<task_id>`，成功路径并入 `input.attachment_paths` → `create_conversation_run` 既有 `fs::copy` 进任务 `authoring/inputs` → provider `resolve_attachments`（图片预算内联派生、文本≤预算内嵌、大/二进制 File 引用不整读进内存）→ chips / 自动重试 / 整任务重跑全复用；run 创建后临时目录 best-effort 清理（create 失败回滚路径同样清理——下次重试按新 claim 重新下载）。
+- **失败语义（state-lifecycle §7 局部失败隔离）**：逐文件下载失败 / 零字节响应 / 令牌缺失 = **软失败**（DPMS 同步附件用户不可控，任一文件硬失败会永久阻塞整个任务）——成功件照常附带，失败清单经隐藏区段新块 `runtime/remote_task_attachment_failures.md`（zh-CN/en）告知 agent「不臆测缺失文件内容、与用户确认替代来源」；`remote_task_hidden_section` 扩为两块（完成输出协议 + 附件失败清单，双缺席→None，空失败 byte 级回退单块形态）。仅中转目录创建失败 = **硬失败**（磁盘满/权限：附件既无法下载也无法交代）——新错误码 `multica.attachment-stage-failed`（结构化 `{message}` 参数，七语言文案）→ release 回滚回 queued 供重试。
+- **文件名治理**：server filename 是不可信输入——`sanitize_attachment_filename`（剥路径成分防目录穿越 / Windows 非法字符与控制字符替换 / 保留设备名 CON/PRN/AUX/NUL/COM1-9/LPT1-9 含带扩展名变体 / 尾部点空格 / 180 字符限长保扩展名 / 空名回退附件 id）+ `disambiguate_attachment_filename`（扩展名前 -2/-3 序号消歧——create 侧按 basename 落 inputs，同名互相覆盖；与 composer 既有本地附件 basename 同池消歧）。
+- **前端**：零改动（成功件 chips 走既有 task-inputs 附件渲染）；仅新增 `errors.multica.attachment-stage-failed` 文案（七语言同位）。
+
+**方案自评审**：过度设计——两度收敛后落地：① 否决「prompt 清单 + agent CLI 下载」（中介原则 + 凭证边界）；② 否决自建 `.gold-band/multica-attachments/` 平行存储 + 自定义附件 prompt 块（发现既有 `attachment_paths → authoring/inputs → task-inputs` 原生通道后改为复用，零新持久存储、零自定义 prompt、零前端新组件）。最终新增面：一个 wire 字段镜像、一个下载方法、一个临时目录生命周期（run 创建后即清，不常驻）、一个软失败模板、一个错误码。性能——空附件（绝大多数任务）零开销（不建目录、不取令牌）；有附件时串行单次尝试、逐文件 120s 上界、流式落盘不进内存，只发生在发送路径（本身即网络事务），pending/detail 仅解析不下载，resume 路径零改动，无 UI 刷新影响。composer 附件上限校验（10 个/单件 25MB/总 100MB）不经由——server 授权的任务输入 ≠ 用户选择器文件，超限大文件由 provider File 引用兜底（不内联不整读）。
+
+**验证结果**：wire 解析 2 测（值解析 + 缺键/空数组/无 content_type 元素兼容）、隐藏区段测（两块拼接顺序、空失败回退、非 issue 任务失败清单独立成段、双语）、sanitize/disambiguation 4 测（穿越剥离/非法字符/保留名/限长保扩展/空名回退/序号消歧）、staging 4 测（空清单零开销、令牌缺失软失败、下载失败软失败含原因、目录创建失败硬失败→错误码）全绿；desktop `multica::` 178 测、lib `remote_task` 7 测全绿；clippy multica 文件零告警；七语言 leaf-key 对等（各 2734）。内网带附件任务（zip 下载、DPMS 代理卡、失败清单展示）待打包实测。
+
+### 12.62 改动六十：输入框附件可见性（元数据 chips）+ staging 可观测日志（M5-bu 追加，2026-10-18）
+
+**背景**：内网实测反馈「点执行 → 进入会话初始输入框时未见附件加载」。根因两层：① **期望与实现时点错位**——12.61 把附件下载绑定在发送阶段（claim 响应带 mat_ 令牌后），「点执行」只做只读详情拉取（`get_remote_task_requirement`），附件元数据在 `RemoteTaskVm` 无字段透出、直接丢弃，输入框自然无任何附件痕迹（非下载故障）；② **服务端硬约束**（webank 源码验证）：`auth_token` 只在 claim 时铸造（`types.go:137-142`），只读详情走的 `resolveTaskRequirementBody` 不带令牌且注释明确 attachments 属 claim-only enrichment——**详情阶段下载文件本体无凭证可用**（除非 multica 改服务端令牌铸造时机，违背其令牌设计）。结论：输入框阶段唯一可行能力是元数据展示；文件本体下载保留在发送阶段不变。
+
+**实现**：
+
+- **元数据投影（后端）**：`RemoteTaskVm.attachments: Vec<RemoteTaskAttachmentVm>`（filename/content_type，camelCase），仅 `from_detail` 回填——`issue_attachments` 元数据经 `IssueAttachment::display_name()`（新增方法：空/纯空白文件名回退附件 id，与软失败清单同一展示名事实源）归一；pending/active/终态行不回填（侧栏轮询不为无人消费的元数据增加负载）。旧 server 不发该字段 → 空数组，前端不渲染。
+- **绑定携带（前端）**：`ConversationComposerRemoteBinding` 增加 `attachments`（`readonly RemoteTaskAttachmentVm[]`），`handlePrepareRemoteTask` 从 `detail.attachments` 透传进 `prefill`。随绑定同生命周期：编辑正文不丢、删绑定 chip / 进排程（互斥解绑）即一并消失；不进本地附件管线（`draft.attachments` 是已选文件 + 预览 URL，语义不同）。
+- **chips 渲染（前端）**：`ComposerContextArea` 新增可选 `remoteAttachments`——复用既有上下文 chip 行（quotes / 本地附件 / 工作区文件引用同排），只读 chip（Paperclip 图标 + 文件名截断，`data-composer-remote-attachment-chip`），无移除/预览交互，Tooltip 提示「发送时自动下载并附加」（`conversation.composer.remoteAttachmentHint`，七语言同位）。仅主 composer 传入（ACP composer / 排程对话框无远程绑定，可选参数零改动）。
+- **可观测日志（后端）**：`stage_issue_attachments` 分级记录——空清单 info（区分「server claim 响应未携带 issue_attachments」与「携带但下载失败」）、逐件成功 info（task_id/attachment_id/local_name/bytes）、逐件失败与零字节 warn（task_id/attachment_id/error）、令牌缺失 warn（task_id/count）。运行日志默认 Info 级（`RuntimeLogLevel::Info`），内网排查无需改配置即可见（bug-fix-verification 外部系统例外的替代证据）。
+
+**方案自评审**：过度设计——纯元数据透传 + 只读渲染 + 日志，无新状态机/持久化/请求（详情响应本就含该数据，`serde` 已解析）；路由键与 chips 复用既有 draft 绑定生命周期与 `ComposerContextArea` 组件，不新建平行状态。性能——发送路径每次用户动作新增至多数行日志；渲染为少量静态 chips；无 IO 新增。待内网确认的服务端事实（本地 webank fork 早于 1be391b6 无法验证）：① claim 响应是否实际携带 `issue_attachments`（空清单 info 日志可判定）；② `GET /api/attachments/{id}` 在 mat_ 下是否返回文件流（webank 基线该路由为 workspace 作用域元数据 JSON，`file.go:622`；文件流在 `/api/attachments/{id}/download`，`file.go:775`）——若 1be391b6 未将其改造为 mat_ 可用文件流，逐件失败 warn 日志会直接给出状态码与错误，届时按日志修正 client 下载路由。**（两项事实已于 2026-10-19 内网复测落定：①已携带——输入框 chips 正常展示；②基线语义未变——下载到的"文件"实为元数据 JSON，即 §12.63 修正的 bug。）**
+
+**验证结果**：vm 投影 1 测（display_name 回退 + content_type 透传 + pending 不透出）、camelCase 序列化锁定更新（空数组 `[]`）、draft 绑定生命周期 1 测（prefill 携带 → 编辑保留 → 解绑/进排程消失，本地附件管线不混入）、page prefill 透传断言更新、chips DOM 契约 3 测（只读无按钮、空列表整区不渲染、与本地附件同排）全绿；desktop `multica::` 179 测全绿；`tsc`（build 配置）零错误；i18n 七语言 leaf-key 对等 + parity 测试通过；web 生产构建通过。clippy 无新增告警（multica 命中均为遗留风格 lint，不在本次改动行）。内网复测关注：输入框 chips 出现（server 发字段）+ 发送后 task-inputs chips / 运行日志逐件结果。
+
+### 12.63 改动六十一：附件下载路由修正——元数据路由误用改 `/download` 子路径（M5-bu 修复，2026-10-19）
+
+**背景**：内网复测（服务端已部署 1be391b6）反馈：输入框元数据 chips 正常展示，但发送后会话里的附件打开后**不是文件内容，而是一段含 id/url/filename 的 JSON**。根因：`download_issue_attachment` 误用了元数据路由 `GET /api/attachments/{id}`——webank 基线（`file.go:622` `GetAttachmentByID`）该路由返回附件行元数据 JSON（正是用户看到的字段集），文件本体在 `GET /api/attachments/{id}/download`（`file.go:775` `DownloadAttachment`；router.go 注册为 user-scoped auth-only，从附件行自解析 workspace 并在内部做成员校验）。§12.62 预判的「待内网确认事实②」由此落定：1be391b6 未改造基线路由语义，`/download` 即正确通道。
+
+**实现**：`client.rs::download_issue_attachment` 请求路径一行修正（`/api/attachments/{id}` → `/api/attachments/{id}/download`）；错误消息随 `path` 变量自动携带新路由；方法与字段文档注释三处同步两路由语义（含服务端三模式：CloudFront 302 / presign 302 / proxy 直出——共享 `reqwest::Client` 默认策略跟随重定向且跨主机剥 `Authorization`，对签名 URL 恰好正确）。鉴权不变：`mat_` 是绑定 (agent, task, workspace, owner) 的通用 actor 凭证（webank daemon.go MUL-3292：「any API call the agent makes ... recognized server-side as actor=agent」），user-scoped 路由天然接受，内网实测元数据路由 200 亦已佐证中间件接受 mat_。
+
+**方案自评审**：过度设计——零新增抽象/状态/依赖，纯路由契约修正；不加「响应像元数据 JSON 即判失败」的启发式防御（附件本就可以是 .json 文件，正确端点即正确语义）。性能——无变化。
+
+**验证结果**：红绿测试（bug-fix-verification）——先改既有软失败测试断言为期待 `GET /api/attachments/a1/download`（错误串与真实请求共用同一 `path` 变量，钉住请求路由），旧代码红、修正后绿；desktop `multica::` 全量定向测试全绿。
 
 ---
 

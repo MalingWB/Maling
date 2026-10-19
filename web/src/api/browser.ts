@@ -2505,6 +2505,7 @@ export const browserApi: RuntimeApi = {
       projectId: null,
       kind: null,
       readiness: null,
+      attachments: [],
     });
   },
   startRemoteConversationRun(input, _remoteTaskId, _workspaceId) {

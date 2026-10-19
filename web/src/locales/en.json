@@ -1112,6 +1112,7 @@
       "source-not-configured": "Task source is not configured. Connect first."
     },
     "multica": {
+      "attachment-stage-failed": "Failed to download task attachments: {{message}}",
       "auth-failed": "Multica authentication failed: {{message}}",
       "claim-conflict": "This task has already been claimed by another daemon.",
       "connect-cancelled": "Connection cancelled.",
@@ -2965,7 +2966,8 @@
     "composer": {
       "remoteNeedLocalWorkspace": "Add a local workspace before running a requirement",
       "remoteBindingTag": "{{source}} · {{title}}",
-      "removeRemoteBinding": "Unbind task"
+      "removeRemoteBinding": "Unbind task",
+      "remoteAttachmentHint": "Remote task attachment; downloaded and attached automatically on send"
     },
     "branchPicker": {
       "label": "Branch",

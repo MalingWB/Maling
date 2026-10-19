@@ -1156,6 +1156,7 @@ export function ConversationComposer({
         >
           <ComposerContextArea
             attachments={attachments}
+            remoteAttachments={remoteBinding?.attachments}
             quotes={quotes}
             workspaceFiles={workspaceFiles}
             error={contextError}

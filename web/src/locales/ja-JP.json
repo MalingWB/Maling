@@ -1109,6 +1109,7 @@
       "stale-package": "ダウンロード済みのパッケージは現在のバージョンより新しくありません。"
     },
     "multica": {
+      "attachment-stage-failed": "タスクの添付ファイルのダウンロードに失敗しました: {{message}}",
       "auth-failed": "Multica 認証が失敗しました: {{message}}",
       "claim-conflict": "このタスクは、別の Daemon がすでに受け取っています。",
       "connect-cancelled": "接続がキャンセルされました。",
@@ -2965,6 +2966,7 @@
     "composer": {
       "remoteNeedLocalWorkspace": "要件を実行する前に、ローカルワークスペースを追加してください",
       "removeRemoteBinding": "タスクのバインド解除",
+      "remoteAttachmentHint": "リモートタスクの添付ファイル。送信時に自動でダウンロードして添付されます",
       "remoteBindingTag": "{{source}} · {{title}}"
     },
     "branchPicker": {

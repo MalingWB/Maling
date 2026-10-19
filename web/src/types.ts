@@ -170,6 +170,18 @@ export interface RemoteTaskVm {
   /// 就绪标记（原 is_ready；服务端派生：父 dev issue 已 done 才 true）。仅 pending/detail 行有值，
   /// running/completed 行恒 null（已领取/终态无「能否执行」语义）。旧 server 不发 → null。
   readiness: boolean | null;
+  /// issue 需求附件元数据（仅展示，不下载）：仅 detail 行回填，供 composer 在「点执行 → 进输入框」
+  /// 阶段渲染附件 chips；文件本体在发送时由后端 stage_issue_attachments 下载。空数组 = 无附件
+  /// 或旧 server 未下发，前端不渲染。
+  attachments: RemoteTaskAttachmentVm[];
+}
+
+/// issue 需求附件元数据展示投影（RemoteTaskVm.attachments 元素）。
+export interface RemoteTaskAttachmentVm {
+  /// 展示名（后端已做空白回退附件 id 的归一）。
+  filename: string;
+  /// 可选 content_type；仅展示参考，码灵侧不消费 mime（落盘扩展名判定）。
+  contentType: string | null;
 }
 
 export interface RemoteConversationSidebarVm {

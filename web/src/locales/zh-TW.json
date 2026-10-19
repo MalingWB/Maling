@@ -1109,6 +1109,7 @@
       "stale-package": "已下載的更新套件不高於目前版本。"
     },
     "multica": {
+      "attachment-stage-failed": "下載任務附件失敗：{{message}}",
       "auth-failed": "Multica 鑑權失敗：{{message}}",
       "claim-conflict": "該任務已被其他 Daemon 領取。",
       "connect-cancelled": "已取消連線。",
@@ -2965,6 +2966,7 @@
     "composer": {
       "remoteNeedLocalWorkspace": "請先新增本機工作區，再執行需求",
       "removeRemoteBinding": "解除任務綁定",
+      "remoteAttachmentHint": "遠端任務附件，發送時自動下載並附加",
       "remoteBindingTag": "{{source}} · {{title}}"
     },
     "branchPicker": {

@@ -1109,6 +1109,7 @@
       "stale-package": "다운로드한 패키지가 현재 버전보다 최신이 아닙니다."
     },
     "multica": {
+      "attachment-stage-failed": "작업 첨부 파일을 다운로드하지 못했습니다: {{message}}",
       "auth-failed": "Multica 인증에 실패했습니다: {{message}}",
       "claim-conflict": "이 작업은 이미 다른 Daemon이 가져갔습니다.",
       "connect-cancelled": "연결이 취소되었습니다.",
@@ -2965,6 +2966,7 @@
     "composer": {
       "remoteNeedLocalWorkspace": "요구사항을 실행하기 전에 로컬 워크스페이스를 추가해 주세요",
       "removeRemoteBinding": "작업 바인딩 해제",
+      "remoteAttachmentHint": "원격 작업 첨부 파일이며 전송 시 자동으로 다운로드되어 첨부됩니다",
       "remoteBindingTag": "{{source}} · {{title}}"
     },
     "branchPicker": {
