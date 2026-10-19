@@ -16,7 +16,11 @@ use tracing::{debug, info};
 
 #[path = "client_direct.rs"]
 mod direct;
-pub use direct::{DirectBackgroundControl, direct_background_control, direct_background_control_under, cancel_retained_direct_session, close_direct_conversation, register_direct_session, set_direct_session_resident};
+pub use direct::{
+    DirectBackgroundControl, cancel_retained_direct_session, close_direct_conversation,
+    direct_background_control, direct_background_control_under, register_direct_session,
+    set_direct_session_resident,
+};
 
 #[derive(Debug, Clone)]
 struct AcpTimelineStreamState {
@@ -384,11 +388,10 @@ use crate::acp::permission::{
 };
 use crate::acp::pipeline_diagnostics::{AcpPipelineDiagnostics, PipelineUpdateKind};
 use crate::acp::session_config::{
-    ACP_SESSION_CONFIG_ROLLED_BACK_CODE, ExplicitSessionScalarPlan, RolledBackSessionConfig,
-    ModelBoundCatalogs, live_catalog_model_id,
-    observe_session_model_bound_catalog, plan_explicit_session_scalar,
-    reconcile_session_config_overrides, retarget_live_model_bound_catalog,
-    rolled_back_session_config_params,
+    ACP_SESSION_CONFIG_ROLLED_BACK_CODE, ExplicitSessionScalarPlan, ModelBoundCatalogs,
+    RolledBackSessionConfig, live_catalog_model_id, observe_session_model_bound_catalog,
+    plan_explicit_session_scalar, reconcile_session_config_overrides,
+    retarget_live_model_bound_catalog, rolled_back_session_config_params,
 };
 use crate::acp::timeline::{
     TimelineCompactionPolicy, TimelineStore, read_indexed_prompt_anchor_events,
@@ -6335,10 +6338,8 @@ impl<'a> AcpRuntime<'a> {
     /// executions without later activity project as interrupted from it.
     pub(super) fn persist_background_cancel_marker(&mut self) -> Result<()> {
         self.seq = self.seq.saturating_add(1);
-        let event = crate::acp::events::background_cancel_marker_event(
-            self.seq,
-            self.session_id.clone(),
-        );
+        let event =
+            crate::acp::events::background_cancel_marker_event(self.seq, self.session_id.clone());
         self.persist_event(&event)
     }
 
@@ -6356,14 +6357,23 @@ impl<'a> AcpRuntime<'a> {
         if !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
             return Ok(());
         }
-        if self.turn_file_worker.is_none() && self.direct.is_some() && self.active_prompt_turn.is_none()
+        if self.turn_file_worker.is_none()
+            && self.direct.is_some()
+            && self.active_prompt_turn.is_none()
         {
             let metadata = load_session_metadata(&self.paths.snapshot, self.session_id.clone())?;
             if let (Some(turn), Some(prompt)) = (metadata.turn_id, metadata.prompt_event_id) {
-                self.turn_file_worker = Some(crate::acp::turn_files::TurnFileWorker::start_background(
-                    crate::acp::turn_files::TurnFileStore::new(self.paths.attempt_dir.clone(), self.runtime_policy.turn_file_capture),
-                    self.turn_file_workspace.clone(), turn, prompt, current_timestamp(),
-                )?);
+                self.turn_file_worker =
+                    Some(crate::acp::turn_files::TurnFileWorker::start_background(
+                        crate::acp::turn_files::TurnFileStore::new(
+                            self.paths.attempt_dir.clone(),
+                            self.runtime_policy.turn_file_capture,
+                        ),
+                        self.turn_file_workspace.clone(),
+                        turn,
+                        prompt,
+                        current_timestamp(),
+                    )?);
             }
         }
         let (Some(worker), Some(tool_call_id), Some(raw)) = (
@@ -6402,15 +6412,25 @@ impl<'a> AcpRuntime<'a> {
 
     fn flush_background_file_changes(&mut self, finish: bool) -> Result<()> {
         let sets = if finish {
-            self.turn_file_worker.take().map(|worker| worker.finish()).transpose()?
+            self.turn_file_worker
+                .take()
+                .map(|worker| worker.finish())
+                .transpose()?
         } else {
-            self.turn_file_worker.as_ref().and_then(|worker| worker.take_updates())
+            self.turn_file_worker
+                .as_ref()
+                .and_then(|worker| worker.take_updates())
         };
-        if let Some(sets) = sets { self.persist_file_change_sets(sets)?; }
+        if let Some(sets) = sets {
+            self.persist_file_change_sets(sets)?;
+        }
         Ok(())
     }
 
-    fn persist_file_change_sets(&mut self, sets: Vec<crate::acp::turn_files::TurnFileChangeSet>) -> Result<()> {
+    fn persist_file_change_sets(
+        &mut self,
+        sets: Vec<crate::acp::turn_files::TurnFileChangeSet>,
+    ) -> Result<()> {
         for change_set in sets {
             self.seq = self.seq.saturating_add(1);
             let event = turn_file_change_set_event(
@@ -12183,10 +12203,20 @@ mod tests {
         loop {
             let events = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
             if events.iter().any(|event| event.kind == "fileChangeSet") {
-                assert!(events.iter().any(|event| event.kind == "textDelta" && event.raw.as_ref().and_then(|raw| raw.pointer("/_meta/goldBandBackground")) == Some(&json!(true))));
+                assert!(events.iter().any(|event| {
+                    event.kind == "textDelta"
+                        && event
+                            .raw
+                            .as_ref()
+                            .and_then(|raw| raw.pointer("/_meta/goldBandBackground"))
+                            == Some(&json!(true))
+                }));
                 break;
             }
-            assert!(Instant::now() < deadline, "background file changes publish before any next prompt");
+            assert!(
+                Instant::now() < deadline,
+                "background file changes publish before any next prompt"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         // Prompt completion must not cancel a new session-owned permission.
@@ -12283,23 +12313,66 @@ mod tests {
         // retention identity; the pin applies to the active session as well.
         super::set_direct_session_resident("test", "direct", true);
         assert!(entry.direct.as_ref().unwrap().protected());
-        let control = super::direct_background_control(&attempt).expect("background control available after end_turn");
+        let observation_started = Instant::now();
+        let control = super::direct_background_control(&attempt)
+            .expect("background control available after end_turn");
         let task_root = attempt.parent().unwrap();
-        assert!(super::prompt_activity_under(task_root).is_none(), "the prompt turn is idle");
-        assert_eq!(super::direct_background_control_under(task_root).as_ref(), Some(&control), "task activity sees the busy background");
-        assert!(super::cancel_retained_direct_session(&attempt, &control, Some("turn-fixture")).unwrap());
-        assert!(super::direct_background_control(&attempt).is_none(), "accepted background stop ends the Stop window");
+        assert!(
+            super::prompt_activity_under(task_root).is_none(),
+            "the prompt turn is idle"
+        );
+        let task_control = super::direct_background_control_under(task_root)
+            .expect("task activity sees the busy background");
+        assert_eq!(task_control.session_id, control.session_id);
+        assert_eq!(
+            task_control.connection_generation,
+            control.connection_generation
+        );
+        assert_eq!(task_control.active_tools, control.active_tools);
+        let observation_ms = observation_started.elapsed().as_millis() as u64;
+        assert!(
+            task_control.expires_at_ms.abs_diff(control.expires_at_ms)
+                <= observation_ms.saturating_add(1),
+            "wall-clock projections of the same monotonic grace window stay within observation and rounding bounds",
+        );
+        assert!(
+            super::cancel_retained_direct_session(&attempt, &control, Some("turn-fixture"))
+                .unwrap()
+        );
+        assert!(
+            super::direct_background_control(&attempt).is_none(),
+            "accepted background stop ends the Stop window"
+        );
         assert!(super::direct_background_control_under(task_root).is_none());
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let events = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
-            if let Some(marker) = events.iter().find(|event| crate::acp::events::is_background_cancel_marker(event)) {
+            if let Some(marker) = events
+                .iter()
+                .find(|event| crate::acp::events::is_background_cancel_marker(event))
+            {
                 // Provider frames only; interaction responses are written by their own owners.
-                let last_provider_frame = events.iter().filter(|event| matches!(event.kind.as_str(), "textDelta" | "toolCall" | "fileChangeSet")).map(|event| event.ended_seq.unwrap_or(event.seq)).max().unwrap();
-                assert!(marker.seq > last_provider_frame, "stop is recorded after frames received before it");
+                let last_provider_frame = events
+                    .iter()
+                    .filter(|event| {
+                        matches!(
+                            event.kind.as_str(),
+                            "textDelta" | "toolCall" | "fileChangeSet"
+                        )
+                    })
+                    .map(|event| event.ended_seq.unwrap_or(event.seq))
+                    .max()
+                    .unwrap();
+                assert!(
+                    marker.seq > last_provider_frame,
+                    "stop is recorded after frames received before it"
+                );
                 break;
             }
-            assert!(Instant::now() < deadline, "accepted background stop is recorded on the canonical timeline");
+            assert!(
+                Instant::now() < deadline,
+                "accepted background stop is recorded on the canonical timeline"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         let submission = AcpPromptSubmission {
@@ -12313,7 +12386,11 @@ mod tests {
         else {
             panic!("follow-up ownership")
         };
-        assert!(!super::cancel_retained_direct_session(&attempt, &control, Some("turn-fixture")).unwrap(), "old background cancellation cannot reach a newer prompt");
+        assert!(
+            !super::cancel_retained_direct_session(&attempt, &control, Some("turn-fixture"))
+                .unwrap(),
+            "old background cancellation cannot reach a newer prompt"
+        );
         super::run_prompt(
             "upgraded-acp",
             &doctor_fixture_config("upgraded-acp"),

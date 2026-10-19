@@ -1,4 +1,7 @@
 # Keep generated text assets stable on Windows machines with core.autocrlf=true.
+# Embedded prompt literals must have identical bytes across checkout platforms.
+src/prompts/**/*.md text eol=lf
+src/prompts/**/*.json text eol=lf
 resources/themes/*.json text eol=lf
 theme-sdk/schema/*.json text eol=lf
 themes/*/dist/*.json text eol=lf

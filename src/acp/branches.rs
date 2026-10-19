@@ -188,19 +188,33 @@ fn prompt_turn_is_terminal(
         .unwrap_or(!session_active)
 }
 
-fn background_launch_is_live(launch: &AcpUiEvent, launches: &HashMap<String, AcpUiEvent>, session_status: &str) -> bool {
+fn background_launch_is_live(
+    launch: &AcpUiEvent,
+    launches: &HashMap<String, AcpUiEvent>,
+    session_status: &str,
+) -> bool {
     if matches!(session_status, "failed" | "stopped" | "cancelled" | "error") {
         return false;
     }
     let mut current = launch;
     let mut visited = HashSet::new();
     loop {
-        if current.raw.as_ref().and_then(|raw| raw.pointer("/_meta/goldBandBackground")).and_then(Value::as_bool) == Some(true) {
+        if current
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/goldBandBackground"))
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
             return true;
         }
         let parent = event_branch_id(current);
-        if !visited.insert(parent.clone()) { return false; }
-        let Some(next) = launches.get(&parent) else { return false; };
+        if !visited.insert(parent.clone()) {
+            return false;
+        }
+        let Some(next) = launches.get(&parent) else {
+            return false;
+        };
         current = next;
     }
 }
@@ -1429,7 +1443,9 @@ pub fn indexed_agent_index(
             let updated_at = (status == "interrupted")
                 .then(|| {
                     if background_stopped {
-                        root.latest_background_cancel.as_ref().map(|(_, at)| at.clone())
+                        root.latest_background_cancel
+                            .as_ref()
+                            .map(|(_, at)| at.clone())
                     } else {
                         prompt_turn_ended_at(owning_turn, &prompt_turns)
                     }
@@ -2527,41 +2543,111 @@ mod tests {
     #[test]
     fn agent_launched_after_end_turn_is_not_interrupted_by_that_turn() {
         let attempt = temp_attempt("after-end-turn");
-        let mut launch = event_at("launch", 10, "toolCall", Some("provider-child"), Some("pending"), json!({"agentLaunch": true}), Some(json!({"prompt":"inspect"})));
+        let mut launch = event_at(
+            "launch",
+            10,
+            "toolCall",
+            Some("provider-child"),
+            Some("pending"),
+            json!({"agentLaunch": true}),
+            Some(json!({"prompt":"inspect"})),
+        );
         launch.raw.as_mut().unwrap()["_meta"]["goldBandBackground"] = json!(true);
-        let text = event_at("child", 11, "thoughtDelta", None, None, json!({"parentToolCallId":"provider-child"}), None);
-        persist_partitioned(&attempt, vec![prompt_turn_event("first", 1, Some(("completed", 5))), launch, text]);
-        assert_eq!(rebuild_agent_index(&attempt, "completed").unwrap()[0].status, "running");
-        assert_eq!(indexed_agent_index(&attempt, "completed").unwrap()[0].status, "running");
-        assert_eq!(indexed_agent_index(&attempt, "cancelled").unwrap()[0].status, "interrupted");
+        let text = event_at(
+            "child",
+            11,
+            "thoughtDelta",
+            None,
+            None,
+            json!({"parentToolCallId":"provider-child"}),
+            None,
+        );
+        persist_partitioned(
+            &attempt,
+            vec![
+                prompt_turn_event("first", 1, Some(("completed", 5))),
+                launch,
+                text,
+            ],
+        );
+        assert_eq!(
+            rebuild_agent_index(&attempt, "completed").unwrap()[0].status,
+            "running"
+        );
+        assert_eq!(
+            indexed_agent_index(&attempt, "completed").unwrap()[0].status,
+            "running"
+        );
+        assert_eq!(
+            indexed_agent_index(&attempt, "cancelled").unwrap()[0].status,
+            "interrupted"
+        );
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 
     #[test]
     fn accepted_background_stop_interrupts_background_agent_until_it_continues() {
         let launch = || {
-            let mut launch = event_at("launch", 10, "toolCall", Some("provider-child"), Some("pending"), json!({"agentLaunch": true}), Some(json!({"prompt":"inspect"})));
+            let mut launch = event_at(
+                "launch",
+                10,
+                "toolCall",
+                Some("provider-child"),
+                Some("pending"),
+                json!({"agentLaunch": true}),
+                Some(json!({"prompt":"inspect"})),
+            );
             launch.raw.as_mut().unwrap()["_meta"]["goldBandBackground"] = json!(true);
             launch
         };
-        let child = |id: &str, seq| event_at(id, seq, "thoughtDelta", None, None, json!({"parentToolCallId":"provider-child"}), None);
+        let child = |id: &str, seq| {
+            event_at(
+                id,
+                seq,
+                "thoughtDelta",
+                None,
+                None,
+                json!({"parentToolCallId":"provider-child"}),
+                None,
+            )
+        };
         let stop = crate::acp::events::background_cancel_marker_event(12, Some("session".into()));
         let status = |attempt: &Utf8Path| {
             let rebuilt = rebuild_agent_index(attempt, "completed").unwrap()[0].clone();
             let indexed = indexed_agent_index(attempt, "completed").unwrap()[0].clone();
-            assert_eq!(rebuilt.status, indexed.status, "full rebuild and index projection agree");
+            assert_eq!(
+                rebuilt.status, indexed.status,
+                "full rebuild and index projection agree"
+            );
             indexed
         };
 
         let stopped = temp_attempt("background-stop");
-        persist_partitioned(&stopped, vec![prompt_turn_event("first", 1, Some(("completed", 5))), launch(), child("child", 11), stop.clone()]);
+        persist_partitioned(
+            &stopped,
+            vec![
+                prompt_turn_event("first", 1, Some(("completed", 5))),
+                launch(),
+                child("child", 11),
+                stop.clone(),
+            ],
+        );
         let record = status(&stopped);
         assert_eq!(record.status, "interrupted");
         assert_eq!(record.ended_at.as_deref(), Some(stop.timestamp.as_str()));
         std::fs::remove_dir_all(stopped.as_std_path()).unwrap();
 
         let ignored = temp_attempt("background-stop-ignored");
-        persist_partitioned(&ignored, vec![prompt_turn_event("first", 1, Some(("completed", 5))), launch(), child("child", 11), stop, child("child-after-stop", 13)]);
+        persist_partitioned(
+            &ignored,
+            vec![
+                prompt_turn_event("first", 1, Some(("completed", 5))),
+                launch(),
+                child("child", 11),
+                stop,
+                child("child-after-stop", 13),
+            ],
+        );
         assert_eq!(status(&ignored).status, "running");
         std::fs::remove_dir_all(ignored.as_std_path()).unwrap();
     }

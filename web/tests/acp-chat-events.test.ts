@@ -565,6 +565,7 @@ describe('ACP chat event handling', () => {
     expect(updated?.pendingInteractions).toEqual([{
       kind: 'elicitation',
       interactionId: 'elicit-live',
+      sessionId: null,
       turnId: null,
       promptEventId: null,
       message,
