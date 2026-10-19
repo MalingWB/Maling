@@ -548,6 +548,7 @@ function browserCompletedConversationSession(): AcpSessionVm {
       cachedReadTokens: 4_200,
       cachedWriteTokens: 300,
       totalTokens: 25_400,
+      tokenTotalsExcludeBackground: parameters.get('backgroundUsageGap') === '1',
     },
     events: [
       {

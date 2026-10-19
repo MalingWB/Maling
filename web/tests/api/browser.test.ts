@@ -359,3 +359,21 @@ describe('browserApi independent session compaction', () => {
       .toMatchObject({ status });
   });
 });
+
+describe('browserApi background usage gap preview', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    ['', false],
+    ['?backgroundUsageGap=1', true],
+  ])('projects the usage gap with preview query %s', async (search, expected) => {
+    vi.stubGlobal('window', { location: { search } });
+    const session = await browserApi.getAcpSession(
+      'default', 'mock-task', 'run-052', 'round-001', 'dev', 'attempt-001',
+    );
+    expect(session?.usage).toMatchObject({
+      totalTokens: 25_400,
+      tokenTotalsExcludeBackground: expected,
+    });
+  });
+});

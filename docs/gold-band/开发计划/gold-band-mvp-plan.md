@@ -1,5 +1,11 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-10-19 继续同步上游 main
+
+- 在已保留本地回归修复的 `9b58b3bb` 上合入上游 `4944b79d`，新增 3 个提交：ACP 后台用量缺口图标、runtime 重建后的用量去重、Git 提交审查的大批量路径统计。Fork `main` 仍为 `bbef7724`，继续沿用已有同步分支。
+- 三个提交自动合入，无文本冲突。额外回归发现历史日志仅有旧别名完成记录时，恢复内存仍按字符串身份累计同一 RPC 两次；恢复查找、接受记录与累计统一使用既有 `operationSeq`，不新增持久字段。原最小测试观察到完成数 2（应为 1），保留红绿证据。
+- 同步修正统计查询文档中的旧 pathspec 分组说明；已有 browser fixture 增加 `backgroundUsageGap=1` 场景以验证真实用量 Tooltip。验证结果和性能边界见[本轮验收记录](上游同步/2026-10-19-增量同步验收.md)。
+
 ## 2026-10-19 合并回归的跨平台夹具与提示词检出修复
 
 - Linux 附件用例的源文件名原为 364 个 UTF-8 字节，在调用附件接口前就超过文件系统单段上限；改为 244 字节，并断言源文件名合法、深目录下原名确实超预算、最终存储名确实缩短，同时保留原名 metadata、扩展名和内容验收。附件生产实现不变。
@@ -2849,8 +2855,8 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - 根因：元数据监听把临时锁文件的创建/删除当成已发布变更，普通工作区监听又能绕过元数据过滤；审阅接口把选中提交解析、文件列表和行数统计绑定，进程启动成本随选择数增长。前者是失效边界实现错误，后者是接口加载边界设计缺陷。
 - 元数据监听忽略仅涉及 .lock 的事件；rename 同时包含真实目标时仍失效。真实 index/HEAD/refs 修改、无路径事件、rescan、错误与队列溢出继续补读。源码管理的工作区事件消费端排除 .git 内部及 commonDir，保留普通源文件（包括 src/index.lock）的刷新；工作区 .git 入口本身变化走 repository 刷新。文件浏览器 watcher 语义不变。
 - commit-review 只返回选中完整 OID、revision、文件类型和不可变比较端点；一次 log --stdin 读取最小父提交信息，一次 diff-tree --stdin 批量读取文件变化。保留第一父提交、根提交、空提交、非连续选择、跨分支等价补丁去重与重命名链语义；不是首尾提交整体相减。机器输出达到 4 MiB 上限即拒绝解析，避免部分结果被当成完整列表。
-- commit-review-statistics 独立 DEBUG 请求，按相同比较端点及其选中文件路径分组；空树每次请求最多计算一次。不同路径集合保持独立 Git 查询，避免扩大扫描范围或改变重命名判定。统计未到达时 binary/addedLines/deletedLines 为 null，文件立即可点击；局部失败保留列表并可只重试统计。
-- 统计入口继续验证仓库/linked worktree 作用域；拒绝非完整 OID、非法相对路径、非选中 afterOid、超过 10000 文件或累计路径 1 MiB 的请求。路径按 literal pathspec 传递。Store 复用原有 48 项缓存和请求代次，合并在途统计，迟到结果不得覆盖新选择；已打开 Diff 按工作区和不可变端点补齐摘要，不重读正文。审阅会话 ID 包含工作区。
+- commit-review-statistics 独立 DEBUG 请求，按相同比较端点分组；空树每次请求最多计算一次。每组查询端点间的 numstat，再只向所选文件投影统计，不加载文件正文；统计未到达时 binary/addedLines/deletedLines 为 null，文件立即可点击；局部失败保留列表并可只重试统计。
+- 统计入口继续验证仓库/linked worktree 作用域；拒绝非完整 OID、非法相对路径、非选中 afterOid、超过 10000 文件或累计路径 1 MiB 的请求。每组端点执行一次不带 pathspec 的 numstat，再按审阅文件路径在进程内过滤；路径不进入命令行参数，避免大合并提交超过 Windows 32767 字符命令行上限。Store 复用原有 48 项缓存和请求代次，合并在途统计，迟到结果不得覆盖新选择；已打开 Diff 按工作区和不可变端点补齐摘要，不重读正文。审阅会话 ID 包含工作区。
 - 性能与过度设计评审：未新增依赖、缓存层、线程池或并发队列；移除原逐提交 worker，收益来自批量查询和缩短可见内容的关键路径。单提交核心列表固定 3 次 Git，普通六提交样例至多 4 次；桌面主仓库作用域检查另有 2 次，故首批列表预算分别为 5/6 次。跨分支等价补丁判定仍可能增加查询，统计另计；这些是命令预算，不是弱机器实测秒数。
 
 - 验收记录：修复前 Store 的 .git/index.lock 用例观察到快照读取 2 次而非 1 次；metadata monitor 锁文件用例观察到 invalidates=true；单提交核心预算用例观察到 6 次而非 3 次。修复后上述测试转绿。Rust source_control 56 项、metadata monitor 8 项、前端相关 Store/DOM/导航 82 项通过；TypeScript、Windows desktop cargo check、Vite 生产构建通过（保留现有 warning）。
