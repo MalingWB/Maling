@@ -111,6 +111,8 @@ pub const RUNTIME_REMOTE_TASK_PARENT_OUTPUT: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_parent_output.md");
 pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_completion_protocol.md");
+pub const RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES: LocalizedText =
+    localized_prompt_zh_en!("runtime/remote_task_attachment_failures.md");
 pub const RUNTIME_ARTIFACT_FINALIZE: LocalizedText =
     localized_prompt!("runtime/artifact_finalize.md");
 pub const RUNTIME_CONTROL_RESUME: LocalizedText =
@@ -192,6 +194,10 @@ pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_ZH_CN: &str =
     RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL.zh_cn;
 pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN: &str =
     RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL.en;
+pub const RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES_ZH_CN: &str =
+    RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES.zh_cn;
+pub const RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES_EN: &str =
+    RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES.en;
 pub const RUNTIME_ARTIFACT_FINALIZE_ZH_CN: &str = RUNTIME_ARTIFACT_FINALIZE.zh_cn;
 pub const RUNTIME_ARTIFACT_FINALIZE_EN: &str = RUNTIME_ARTIFACT_FINALIZE.en;
 pub const RUNTIME_CONTROL_RESUME_ZH_CN: &str = RUNTIME_CONTROL_RESUME.zh_cn;
@@ -271,6 +277,10 @@ pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
     (
         "runtime/remote_task_completion_protocol.md",
         RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
+    ),
+    (
+        "runtime/remote_task_attachment_failures.md",
+        RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES,
     ),
     ("runtime/artifact_finalize.md", RUNTIME_ARTIFACT_FINALIZE),
     ("runtime/runtime_control_resume.md", RUNTIME_CONTROL_RESUME),
@@ -493,6 +503,27 @@ mod tests {
         let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_PARENT_OUTPUT_EN, ctx);
         assert!(en.contains("execution context"));
         assert!(en.contains("部署地址: https://t.example.com"));
+    }
+
+    #[test]
+    fn remote_task_attachment_failures_templates_render_list() {
+        // 附件软失败清单（M5-bu）：failures 数组逐项渲染 filename+reason；中英文都需
+        // 完整渲染且锁定「不臆测文件内容 + 与用户确认替代来源」的关键语义。
+        let ctx = json!({"failures": [
+            {"filename": "多值测试样本.zip", "reason": "HTTP 404"},
+            {"filename": "需求说明.pdf", "reason": "timeout after 120s"}
+        ]});
+        let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES_ZH_CN, ctx.clone());
+        assert!(zh.contains("需求附件未能下载到本地"));
+        assert!(zh.contains("多值测试样本.zip（HTTP 404）"));
+        assert!(zh.contains("需求说明.pdf（timeout after 120s）"));
+        assert!(zh.contains("不要臆测文件内容"));
+
+        let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES_EN, ctx);
+        assert!(en.contains("could not be downloaded locally"));
+        assert!(en.contains("多值测试样本.zip (HTTP 404)"));
+        assert!(en.contains("需求说明.pdf (timeout after 120s)"));
+        assert!(en.contains("instead of guessing their contents"));
     }
 
     #[test]

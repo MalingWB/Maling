@@ -67,6 +67,7 @@ function task(overrides: Partial<RemoteTaskVm> = {}): RemoteTaskVm {
     projectId: null,
     kind: null,
     readiness: null,
+    attachments: [],
     ...overrides,
   };
 }

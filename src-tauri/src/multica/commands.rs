@@ -21,7 +21,9 @@ use crate::commands::{
     command_error, schedule_agent_command_catalog_refresh,
 };
 use crate::conversation_workspace::workspace_entry_for_project;
-use crate::multica::client::{MULTICA_ISSUE_IN_PROGRESS_STATUS, MulticaClient, WorkspaceInfo};
+use crate::multica::client::{
+    MULTICA_ISSUE_IN_PROGRESS_STATUS, MulticaClient, RemoteTask, WorkspaceInfo,
+};
 use crate::multica::config::{
     MulticaSettingsVm, get_daemon_id, get_pat, multica_base_url, multica_settings,
 };
@@ -31,7 +33,7 @@ use crate::multica::local_skills::{
 };
 use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
 use crate::multica::vm::{
-    MulticaPullItemResultVm, MulticaPullReportVm, MulticaSkillListItemVm,
+    AttachmentFailure, MulticaPullItemResultVm, MulticaPullReportVm, MulticaSkillListItemVm,
     RemoteConversationSidebarVm, RemoteTaskVm, remote_task_hidden_section,
 };
 use crate::remote::remote_task_source;
@@ -706,12 +708,10 @@ pub async fn start_remote_conversation_run(
         .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
     let mut input = input;
     input.project_id = resolved_project_id.clone();
-    // 远程任务上下文隐式注入（改动四十八 + 二次修正 + 三次调整）：claim 响应构建仅含「完成输出协议」
-    // 的隐藏区段，随首条 prompt 隐式下发；DPMS 溯源块、上游交付说明块与需求正文都在可见预填侧
-    // （`get_remote_task_requirement` → `detail_prefill`），故**不**重复进区段。claim 时刻数据即执行
-    // 依据（multica 设计：领取即定版），前端不感知该字段。
-    input.first_prompt_hidden_sections =
-        remote_task_hidden_section(&task, context.config.desktop_language).map(|s| vec![s]);
+    // 远程任务上下文隐式注入（改动四十八 + 二次修正 + 三次调整）在 Fresh 分支（⑥ 之后）执行：
+    // 区段现含「完成输出协议 + 附件软失败清单」两块，后者依赖下方附件中转下载结果；续跑不发首条
+    // prompt、不消费该字段。DPMS 溯源块、上游交付说明块与需求正文都在可见预填侧
+    // （`get_remote_task_requirement` → `detail_prefill`），不重复进区段。
     // 先算 emitter（借 workspace_app）再 move——避免在 with_acp_live_update 表达式内同时借与 move。
     let live_update = acp_live_update_emitter_for_app(
         &workspace_app,
@@ -912,6 +912,46 @@ pub async fn start_remote_conversation_run(
         }
     }
 
+    // ⑥ issue 需求附件中转下载（M5-bu，Fresh 分支专属——续跑不发新首条 prompt，无新建任务的
+    //    附件通道）：claim 时刻的 issue_attachments 即执行依据（领取即定版）。成功文件并入
+    //    input.attachment_paths 走**原生 attachment 通道**（create 时 fs::copy 进任务
+    //    authoring/inputs，agent 以 task-inputs 文件引用消费——chips/重试/重跑全复用，零新增
+    //    prompt 与前端通路）；逐文件下载失败为软失败（局部失败隔离），仅中转目录创建失败为
+    //    硬失败 → release 回滚。先取既有占用名（composer 本地附件 basename）参与消歧。
+    let mut used_attachment_names = input
+        .attachment_paths
+        .iter()
+        .flatten()
+        .filter_map(|path| {
+            std::path::Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        })
+        .collect::<HashSet<_>>();
+    let staging = match stage_issue_attachments(&client, &task, &mut used_attachment_names).await {
+        Ok(staging) => staging,
+        Err(error) => {
+            // claim 已成功、中转目录不可建（磁盘满/权限）→ 回滚（dispatched→queued）。
+            release_after_run_start_failure(&client, &runtime_id, &remote_task_id).await;
+            return Err(command_error(error.into()));
+        }
+    };
+    if !staging.paths.is_empty() {
+        input
+            .attachment_paths
+            .get_or_insert_with(Vec::new)
+            .extend(staging.paths.iter().cloned());
+    }
+    // 远程任务上下文隐式注入（原 ③ 处移此）：完成输出协议块（issue 关联）+ 附件软失败清单块
+    // （有失败才渲染）。claim 时刻数据即执行依据（multica 设计：领取即定版），前端不感知该字段。
+    input.first_prompt_hidden_sections = remote_task_hidden_section(
+        &task,
+        context.config.desktop_language,
+        &staging.failures,
+    )
+    .map(|section| vec![section]);
+
     // 搬运到 spawn_blocking 闭包的 multica 簿记数据。
     let remote = remote_task_id.clone();
     let ws_id = workspace_id.clone();
@@ -972,6 +1012,19 @@ pub async fn start_remote_conversation_run(
     )
     .await
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?;
+
+    // 附件中转目录使命完成：成功文件已复制进任务 authoring/inputs（create_conversation_run 的
+    // fs::copy），源文件不再需要 → best-effort 清理（失败仅记日志；create 失败路径同样清理——
+    // 任务已回滚，下次重试按新 claim 重新下载）。
+    if let Some(staging_dir) = &staging.dir {
+        if let Err(error) = std::fs::remove_dir_all(staging_dir) {
+            warn!(
+                error = %error,
+                dir = %staging_dir.display(),
+                "multica attachment staging cleanup failed"
+            );
+        }
+    }
 
     match result {
         Ok(created) => {
@@ -1577,9 +1630,218 @@ fn resumed_run_mode(task_dir: &camino::Utf8Path, fallback: &str) -> String {
     }
 }
 
+/// issue 附件中转下载结果（M5-bu）。
+#[derive(Debug, Default)]
+struct IssueAttachmentStaging {
+    /// 中转目录（实际建过才有值；run 创建后 best-effort 清理）。
+    dir: Option<std::path::PathBuf>,
+    /// 下载成功的文件绝对路径（已消歧文件名，待并入 `input.attachment_paths`）。
+    paths: Vec<String>,
+    /// 逐文件软失败清单（渲染进首条 prompt 隐式区段，告知 agent 缺失情况）。
+    failures: Vec<AttachmentFailure>,
+}
+
+/// issue 需求附件中转下载（M5-bu）：claim 响应的 `issue_attachments` 经任务级 mat_ 令牌逐个下载
+/// 到系统临时目录（`gold-band-multica-attachments-<task_id>`），供调用方并入原生 attachment 通道。
+///
+/// 逐文件下载失败为**软失败**（局部失败隔离，state-lifecycle §7：DPMS 同步附件用户不可控，硬失败
+/// 会永久阻塞任务）——成功件照常附带、失败件记入清单告知 agent 与用户确认替代来源；仅中转目录
+/// 创建失败为硬失败（`AttachmentStageFailed`：本地磁盘满/权限，附件既无法下载也无法交代）。
+/// 令牌缺失（server 契约异常，新 server 不发附件或必发令牌）同样按逐件软失败处理，不硬失败。
+///
+/// 性能契约：空附件列表（绝大多数任务）直接返回，不建目录、不取令牌——零开销；有附件时串行
+/// 下载、单次尝试、逐文件 120s 超时（client 常量），流式落盘不进内存。
+async fn stage_issue_attachments(
+    client: &MulticaClient,
+    task: &RemoteTask,
+    used_names: &mut HashSet<String>,
+) -> Result<IssueAttachmentStaging, MulticaError> {
+    if task.issue_attachments.is_empty() {
+        // 诊断信号（info 落运行日志）：区分「server claim 响应未携带 issue_attachments」与
+        // 「携带但下载失败」——内网排查依赖本行（bug-fix-verification 外部系统例外的替代证据）。
+        info!(
+            task_id = %task.id,
+            "multica issue attachments: claim response carried none"
+        );
+        return Ok(IssueAttachmentStaging::default());
+    }
+    // 令牌缺失：全部附件记软失败（不建目录——无令牌一个也下载不了）。
+    let Some(token) = task.auth_token.as_deref() else {
+        warn!(
+            task_id = %task.id,
+            count = task.issue_attachments.len(),
+            "multica issue attachments skipped: claim response carried no task token"
+        );
+        return Ok(IssueAttachmentStaging {
+            failures: task
+                .issue_attachments
+                .iter()
+                .map(|a| AttachmentFailure {
+                    filename: a.display_name(),
+                    reason: "task token missing".into(),
+                })
+                .collect(),
+            ..IssueAttachmentStaging::default()
+        });
+    };
+    // task id 同样来自 server，过一遍非法字符归一（纵深防御，正常为 uuid）。
+    let dir = std::env::temp_dir().join(format!(
+        "gold-band-multica-attachments-{}",
+        sanitize_attachment_filename(&task.id, "task")
+    ));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| MulticaError::AttachmentStageFailed(format!("create staging dir failed: {e}")))?;
+    let mut staging = IssueAttachmentStaging {
+        dir: Some(dir.clone()),
+        ..IssueAttachmentStaging::default()
+    };
+    for attachment in &task.issue_attachments {
+        // 本地名：先归一（剥路径/非法字符/保留名/限长），再对既有占用名（composer 本地附件
+        // basename + 已下载件）消歧——create 侧 fs::copy 按 basename 落 authoring/inputs，同名
+        // 会互相覆盖。
+        let local_name = disambiguate_attachment_filename(
+            &sanitize_attachment_filename(&attachment.filename, &attachment.id),
+            used_names,
+        );
+        let destination = dir.join(&local_name);
+        match client
+            .download_issue_attachment(&attachment.id, token, &destination)
+            .await
+        {
+            Ok(()) => {
+                // 零字节按软失败处理（服务器异常的常见形态；可疑空文件不交给 agent）。
+                let len = std::fs::metadata(&destination).map(|m| m.len()).unwrap_or(0);
+                if len == 0 {
+                    warn!(
+                        task_id = %task.id,
+                        attachment_id = %attachment.id,
+                        "multica issue attachment download returned empty body"
+                    );
+                    let _ = std::fs::remove_file(&destination);
+                    staging.failures.push(AttachmentFailure {
+                        filename: attachment.display_name(),
+                        reason: "empty response body".into(),
+                    });
+                } else {
+                    info!(
+                        task_id = %task.id,
+                        attachment_id = %attachment.id,
+                        local_name = %local_name,
+                        bytes = len,
+                        "multica issue attachment downloaded"
+                    );
+                    staging.paths.push(destination.to_string_lossy().into_owned());
+                }
+            }
+            Err(error) => {
+                warn!(
+                    task_id = %task.id,
+                    attachment_id = %attachment.id,
+                    error = %error,
+                    "multica issue attachment download failed"
+                );
+                staging.failures.push(AttachmentFailure {
+                    filename: attachment.display_name(),
+                    reason: error.to_string(),
+                });
+            }
+        }
+    }
+    Ok(staging)
+}
+
+/// 附件本地文件名长度上限（按字符计，保扩展名截 stem；server 文件名可能极长）。
+const ATTACHMENT_FILENAME_MAX_CHARS: usize = 180;
+
+/// Windows 保留设备名（stem 命中即非法，大小写不敏感；COM1-9 / LPT1-9）。
+const WINDOWS_RESERVED_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// 归一 server 提供的附件文件名为安全本地文件名（M5-bu）：剥路径成分（防目录穿越——server 数据
+/// 不受信）、替换 Windows 非法字符与控制字符、去尾部点/空格、规避保留设备名、限长保扩展名；
+/// 全程清洗后为空回退 fallback（附件 id），仍为空用 "attachment"。唯一性由调用方消歧保证。
+fn sanitize_attachment_filename(raw: &str, fallback: &str) -> String {
+    // ① 只取最后一段非空路径成分（`..\evil\name.txt` → `name.txt`；`a//b` → `b`）。
+    let last_segment = raw
+        .rsplit(['/', '\\'])
+        .map(str::trim)
+        .find(|segment| !segment.is_empty())
+        .unwrap_or("");
+    let mut cleaned = replace_invalid_filename_chars(last_segment);
+    // ② Windows 要求 basename 不以点/空格结尾。
+    cleaned = cleaned.trim_end_matches(['.', ' ']).to_string();
+    // ③ 保留设备名规避（含带扩展名变体：`Com1.txt` 的 stem 命中即非法）→ 前置下划线。
+    let stem = &cleaned[..cleaned.find('.').unwrap_or(cleaned.len())];
+    if WINDOWS_RESERVED_NAMES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(stem))
+    {
+        cleaned = format!("_{cleaned}");
+    }
+    // ④ 限长保扩展名（按字符截断，避开多字节边界；超长“扩展名”视为无扩展名乱串不保留）。
+    if cleaned.chars().count() > ATTACHMENT_FILENAME_MAX_CHARS {
+        let ext = cleaned
+            .rfind('.')
+            .map(|dot| &cleaned[dot..])
+            .filter(|ext| ext.chars().count() <= 40)
+            .map(str::to_string);
+        let stem_budget =
+            ATTACHMENT_FILENAME_MAX_CHARS - ext.as_ref().map_or(0, |e| e.chars().count());
+        cleaned = format!(
+            "{}{}",
+            cleaned.chars().take(stem_budget).collect::<String>(),
+            ext.unwrap_or_default()
+        );
+    }
+    // ⑤ 清洗后为空（原名为纯路径分隔/纯非法字符）→ 回退 id；id 也空 → 兜底常量。
+    if cleaned.is_empty() {
+        cleaned = replace_invalid_filename_chars(fallback);
+    }
+    if cleaned.is_empty() {
+        cleaned = "attachment".to_string();
+    }
+    cleaned
+}
+
+/// 替换 Windows 非法字符（`< > : " / \ | ? *`）与控制字符为下划线。
+fn replace_invalid_filename_chars(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+                || (c as u32) < 0x20
+                || c as u32 == 0x7f
+            {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// 已占用名集合内消歧：重名在扩展名前加 `-2`/`-3`… 序号重试直到唯一（首个空闲序号）。
+fn disambiguate_attachment_filename(name: &str, used: &mut HashSet<String>) -> String {
+    if used.insert(name.to_string()) {
+        return name.to_string();
+    }
+    let (stem, ext) = match name.rfind('.') {
+        // dotfile（`.gitignore`）整体视为 stem，不带扩展名拆分。
+        Some(dot) if dot > 0 => (&name[..dot], &name[dot..]),
+        _ => (name, ""),
+    };
+    (2..)
+        .map(|n| format!("{stem}-{n}{ext}"))
+        .find(|candidate| used.insert(candidate.clone()))
+        .expect("filename disambiguation cannot exhaust u64 sequence")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::multica::client::IssueAttachment;
 
     // ---- 改动三：断点续跑判定（classify_resume_from 纯逻辑固化）----
     use gold_band::domain::{PauseReason, RunStatus};
@@ -2110,6 +2372,7 @@ mod tests {
             project_id: None,
             kind: None,
             readiness: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -2162,5 +2425,211 @@ mod tests {
             decide_start_failure_action(Some("not-running")),
             StartFailureAction::RollbackRelease
         );
+    }
+
+    // ---- M5-bu：issue 附件文件名归一 / 消歧 / 中转 staging（纯逻辑固化）----
+
+    #[test]
+    fn sanitize_attachment_filename_strips_path_and_invalid_chars() {
+        // server 文件名是不可信输入：路径成分剥离（防穿越）+ Windows 非法字符/控制字符替换。
+        assert_eq!(
+            sanitize_attachment_filename("..\\evil\\多值测试样本.zip", "id-1"),
+            "多值测试样本.zip"
+        );
+        assert_eq!(
+            sanitize_attachment_filename("../../etc/passwd", "id-1"),
+            "passwd"
+        );
+        assert_eq!(
+            sanitize_attachment_filename("a<b>c:d\"e|f?g*h.png", "id-1"),
+            "a_b_c_d_e_f_g_h.png"
+        );
+        assert_eq!(
+            sanitize_attachment_filename("bad\u{0007}name.txt", "id-1"),
+            "bad_name.txt"
+        );
+        // 尾部点/空格（Windows 要求 basename 不以此结尾）。
+        assert_eq!(
+            sanitize_attachment_filename("report..  ", "id-1"),
+            "report"
+        );
+    }
+
+    #[test]
+    fn sanitize_attachment_filename_avoids_windows_reserved_names() {
+        // 保留设备名（含带扩展名变体，stem 命中即非法）→ 前置下划线；大小写不敏感。
+        assert_eq!(sanitize_attachment_filename("CON", "id-1"), "_CON");
+        assert_eq!(sanitize_attachment_filename("Com1.txt", "id-1"), "_Com1.txt");
+        assert_eq!(sanitize_attachment_filename("lpt9.log", "id-1"), "_lpt9.log");
+        // 近似名不受影响（stem 未精确命中保留表）。
+        assert_eq!(sanitize_attachment_filename("console.txt", "id-1"), "console.txt");
+        assert_eq!(sanitize_attachment_filename("config.json", "id-1"), "config.json");
+    }
+
+    #[test]
+    fn sanitize_attachment_filename_falls_back_and_caps_length() {
+        // 空 / 纯路径分隔 / 纯非法字符 → 回退附件 id；id 也空 → 兜底常量。
+        assert_eq!(sanitize_attachment_filename("", "att-id-1"), "att-id-1");
+        assert_eq!(sanitize_attachment_filename("///\\\\", "att-id-1"), "att-id-1");
+        assert_eq!(sanitize_attachment_filename("...", ""), "attachment");
+        assert_eq!(sanitize_attachment_filename("", ""), "attachment");
+        // 超长限截保扩展名（180 字符上限；stem 截断、.zip 保留）。
+        let long = format!("{}.zip", "很".repeat(200));
+        let capped = sanitize_attachment_filename(&long, "id-1");
+        assert_eq!(capped.chars().count(), ATTACHMENT_FILENAME_MAX_CHARS);
+        assert!(capped.ends_with(".zip"));
+        // 超长“扩展名”（>40 字符的 dot 后缀）视为乱串不保留，直接截断。
+        let no_ext = sanitize_attachment_filename(&"a".repeat(300), "id-1");
+        assert_eq!(no_ext.chars().count(), ATTACHMENT_FILENAME_MAX_CHARS);
+        assert!(!no_ext.contains('.'));
+    }
+
+    #[test]
+    fn disambiguate_attachment_filename_dedupes_with_sequence() {
+        // create 侧 fs::copy 按 basename 落 authoring/inputs，同名互相覆盖 → 并入前必须唯一：
+        // 首个直接占用；重名在扩展名前加 -2/-3；与既有占用名（composer 本地附件）同样消歧。
+        let mut used = HashSet::new();
+        assert_eq!(
+            disambiguate_attachment_filename("样本.zip", &mut used),
+            "样本.zip"
+        );
+        assert_eq!(
+            disambiguate_attachment_filename("样本.zip", &mut used),
+            "样本-2.zip"
+        );
+        assert_eq!(
+            disambiguate_attachment_filename("样本.zip", &mut used),
+            "样本-3.zip"
+        );
+        // 序号插在扩展名前；无扩展名整体为 stem。
+        let mut used2 = HashSet::from(["本地已有.txt".to_string()]);
+        assert_eq!(
+            disambiguate_attachment_filename("本地已有.txt", &mut used2),
+            "本地已有-2.txt"
+        );
+        let mut used3 = HashSet::new();
+        assert_eq!(disambiguate_attachment_filename("README", &mut used3), "README");
+        assert_eq!(
+            disambiguate_attachment_filename("README", &mut used3),
+            "README-2"
+        );
+    }
+
+    #[tokio::test]
+    async fn stage_issue_attachments_empty_list_is_zero_cost_noop() {
+        // 兼容性契约：无附件（绝大多数任务：issue 无附件 / 非 issue 任务 / 旧 server 缺键）→
+        // 不建目录、不取令牌、无失败——发送路径零行为变化。
+        let client = MulticaClient::new("http://127.0.0.1:9", Some("pat".to_string())).unwrap();
+        let task = RemoteTask {
+            id: "t-no-att".into(),
+            status: "queued".into(),
+            auth_token: None,
+            issue_attachments: Vec::new(),
+            ..minimal_remote_task()
+        };
+        let staging = stage_issue_attachments(&client, &task, &mut HashSet::new())
+            .await
+            .unwrap();
+        assert!(staging.dir.is_none());
+        assert!(staging.paths.is_empty());
+        assert!(staging.failures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stage_issue_attachments_missing_token_records_soft_failures() {
+        // 令牌缺失（server 契约异常：新 server 发附件必发令牌）→ 全部附件软失败、不建目录、
+        // 不硬失败（任务仍可启动，agent 据清单与用户确认替代来源）。
+        let client = MulticaClient::new("http://127.0.0.1:9", Some("pat".to_string())).unwrap();
+        let task = RemoteTask {
+            id: "t-no-token".into(),
+            status: "queued".into(),
+            auth_token: None,
+            issue_attachments: vec![
+                IssueAttachment {
+                    id: "a1".into(),
+                    filename: "多值测试样本.zip".into(),
+                    content_type: None,
+                },
+                IssueAttachment {
+                    id: "a2".into(),
+                    filename: "  ".into(),
+                    content_type: None,
+                },
+            ],
+            ..minimal_remote_task()
+        };
+        let staging = stage_issue_attachments(&client, &task, &mut HashSet::new())
+            .await
+            .unwrap();
+        assert!(staging.dir.is_none());
+        assert!(staging.paths.is_empty());
+        assert_eq!(staging.failures.len(), 2);
+        assert_eq!(staging.failures[0].filename, "多值测试样本.zip");
+        assert_eq!(staging.failures[0].reason, "task token missing");
+        // 空白文件名回退附件 id（清单可辨识）。
+        assert_eq!(staging.failures[1].filename, "a2");
+    }
+
+    #[tokio::test]
+    async fn stage_issue_attachments_download_failure_is_soft() {
+        // 逐文件下载失败（连接拒绝模拟网络失败）→ 软失败记录原因、不阻断其余附件、不报错：
+        // 局部失败隔离（state-lifecycle §7）。
+        let client = MulticaClient::new("http://127.0.0.1:9", Some("pat".to_string())).unwrap();
+        let task = RemoteTask {
+            id: "t-dl-fail".into(),
+            status: "queued".into(),
+            auth_token: Some("mat_x".into()),
+            issue_attachments: vec![IssueAttachment {
+                id: "a1".into(),
+                filename: "需求说明.pdf".into(),
+                content_type: None,
+            }],
+            ..minimal_remote_task()
+        };
+        let staging = stage_issue_attachments(&client, &task, &mut HashSet::new())
+            .await
+            .unwrap();
+        assert!(staging.paths.is_empty());
+        assert_eq!(staging.failures.len(), 1);
+        assert_eq!(staging.failures[0].filename, "需求说明.pdf");
+        assert!(staging.failures[0].reason.contains("GET /api/attachments/a1"));
+        // 中转目录已建（硬失败边界之外）→ 清理交调用方，stage 自身不删。
+        let dir = staging.dir.expect("staging dir created for downloads");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn stage_issue_attachments_dir_creation_failure_is_hard() {
+        // 硬失败边界：中转目录路径被同名文件占用（磁盘/权限异常的确定性模拟）→
+        // AttachmentStageFailed（调用方 release 回滚），不吞错。
+        let client = MulticaClient::new("http://127.0.0.1:9", Some("pat".to_string())).unwrap();
+        let task = RemoteTask {
+            id: "t-dir-clash".into(),
+            status: "queued".into(),
+            auth_token: Some("mat_x".into()),
+            issue_attachments: vec![IssueAttachment {
+                id: "a1".into(),
+                filename: "spec.pdf".into(),
+                content_type: None,
+            }],
+            ..minimal_remote_task()
+        };
+        let blocked = std::env::temp_dir().join("gold-band-multica-attachments-t-dir-clash");
+        std::fs::write(&blocked, b"not a dir").unwrap();
+        let error = stage_issue_attachments(&client, &task, &mut HashSet::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, MulticaError::AttachmentStageFailed(_)));
+        assert_eq!(error.code(), "multica.attachment-stage-failed");
+        std::fs::remove_file(&blocked).unwrap();
+    }
+
+    /// 构造最小 RemoteTask（staging 只消费 id / status? / auth_token / issue_attachments，
+    /// 其余字段不参与；用 JSON 反序列化免去逐字段字面量，也顺带锁 wire 兼容）。
+    fn minimal_remote_task() -> RemoteTask {
+        serde_json::from_str(
+            r#"{"id":"t-min","status":"queued","auth_token":null,"issue_attachments":[]}"#,
+        )
+        .unwrap()
     }
 }

@@ -73,6 +73,13 @@ const NETWORK_RETRY_BASE_SECS: u64 = 1;
 /// 下一 tick（15s）重试——而非一个 tick 阻塞数分钟。
 const LIVENESS_TIMEOUT_SECS: u64 = 10;
 
+/// 单个 issue 附件下载超时（秒），覆盖 client 级 30s 默认值（M5-bu）。
+///
+/// 附件经 server 从 DPMS 实时代理流转发，体积可达数十 MB，30s 对大文件偏紧；120s 在「大文件正常
+/// 下载」与「故障时不长时间阻塞发送」之间取衡。超时按逐文件软失败处理（局部失败隔离，不阻断其他
+/// 附件与任务启动）。
+const ATTACHMENT_DOWNLOAD_TIMEOUT_SECS: u64 = 120;
+
 /// issue 完成态（接入方案 D2：码灵完成远程任务后用 PAT 把关联 issue 流转到 done）。
 pub const MULTICA_ISSUE_DONE_STATUS: &str = "done";
 
@@ -137,11 +144,11 @@ pub struct RemoteTask {
     pub status: String,
     /// server 在 claim 时签发的 task-scoped 短期凭证（mat_，webank `GenerateAgentTaskToken`）。
     ///
-    /// **码灵 Option B 中介设计下不消费**：ACP agent 从不直接调 multica API（开发设计 选项 B：
-    /// 码灵作为中介，而非 agent 直调），所有 multica 调用由码灵用自身 PAT 完成；本字段仅按 wire 契约
-    /// 反序列化（server 必回），不读取。
+    /// **码灵 Option B 中介设计下的唯一消费点：issue 附件下载通道**（M5-bu）——ACP agent 从不直接调
+    /// multica API（开发设计 选项 B：码灵作为中介，而非 agent 直调），claim 响应携带的 mat_ 令牌由
+    /// 码灵持有并用于 `GET /api/attachments/{id}`（server 侧任务作用域附件既定通道，DPMS 附件实时
+    /// 流转发）；其余 multica 调用仍由码灵用自身 PAT 完成。令牌不落盘、不进 prompt。
     #[serde(default)]
-    #[allow(dead_code)]
     pub auth_token: Option<String>,
     /// 续跑指针（**只输出**）：server claim 响应回填的父任务 ACP session_id。
     ///
@@ -231,6 +238,44 @@ pub struct RemoteTask {
     /// 本字段仍可能存在，任务是否执行继续按 is_ready 判定）。旧 server / 非 issue 任务 → None。
     #[serde(default)]
     pub parent_output: Option<String>,
+    /// issue 直属附件元数据（multica dev `1be391b6`，M5-bu）：pending 列表 / 任务详情 / claim 响应
+    /// 三条路径的 task 对象内均携带。
+    ///
+    /// 语义：该任务所属 issue 的直属附件（**不含评论附件**；DPMS 需求同步转成的需求文件代理卡在其中）。
+    /// 元素结构与 chat_message_attachments 同构（id / filename / content_type，content_type 可空）。
+    /// 兼容性契约：server 侧 `omitempty`——issue 无附件、非 issue 任务、旧版本服务端都不带这个键；
+    /// 解析端容忍字段缺失，缺省视为空数组（`#[serde(default)]`）。码灵消费点：发送时（claim-at-send）
+    /// 用 claim 响应的 mat_ 令牌逐个中介下载（`MulticaClient::download_issue_attachment`），成功文件
+    /// 并入 `attachment_paths` 走任务输入附件既有管线；pending / 详情路径仅解析不消费。
+    #[serde(default)]
+    pub issue_attachments: Vec<IssueAttachment>,
+}
+
+/// issue 直属附件元数据（wire 镜像 multica daemon `types.go` `IssueAttachments` 元素）。
+///
+/// `id` = server 附件 id（下载通道 `GET /api/attachments/{id}` 的路径参数）；`filename` 为上传名
+/// （**不可信输入**，落盘前须清洗，见 commands.rs `sanitize_attachment_filename`）；`content_type`
+/// 可为空/缺失，码灵侧不消费（mime 由落盘文件扩展名经 provider `file_mime_type` 判定，与本地附件
+/// 同一事实源）。
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+pub struct IssueAttachment {
+    pub id: String,
+    #[serde(default)]
+    pub filename: String,
+    #[serde(default)]
+    pub content_type: Option<String>,
+}
+
+impl IssueAttachment {
+    /// 展示名：server 文件名优先，空/纯空白回退附件 id（下载软失败清单与输入框元数据 chips 共用）。
+    pub fn display_name(&self) -> String {
+        let trimmed = self.filename.trim();
+        if trimmed.is_empty() {
+            self.id.clone()
+        } else {
+            trimmed.to_string()
+        }
+    }
 }
 
 impl RemoteTask {
@@ -994,6 +1039,53 @@ impl MulticaClient {
         .await
     }
 
+    /// `GET /api/attachments/{id}` —— issue 附件下载（M5-bu，任务作用域通道）。
+    ///
+    /// 鉴权用 claim 响应的 mat_ 任务令牌（[`RemoteTask::auth_token`]），不用 PAT——server 侧任务
+    /// 附件是任务作用域资源（multica 既定设计：mat_ 按需下载）。DPMS 附件由服务端代理实时流转发，
+    /// 响应体即文件流。chunk 循环流式写入 `destination`（tokio 异步文件写，不在内存聚合整个文件）；
+    /// 调用方负责 destination 的目录创建与文件名清洗。
+    ///
+    /// **单次尝试、不重试**：失败由调用方按逐文件软失败处理（局部失败隔离）。状态码不走 `map_status`
+    /// （其 404→TaskNotFound 语义对附件不成立），统一按附件维度映射 `NetworkFailed`。
+    pub async fn download_issue_attachment(
+        &self,
+        attachment_id: &str,
+        task_token: &str,
+        destination: &std::path::Path,
+    ) -> Result<(), MulticaError> {
+        let path = format!("/api/attachments/{attachment_id}");
+        let mut resp = self
+            .http
+            .request(Method::GET, self.url(&path))
+            .bearer_auth(task_token)
+            .timeout(Duration::from_secs(ATTACHMENT_DOWNLOAD_TIMEOUT_SECS))
+            .send()
+            .await
+            .map_err(|e| MulticaError::NetworkFailed(format!("GET {path} failed: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(MulticaError::NetworkFailed(format!(
+                "GET {path}: HTTP {}",
+                resp.status()
+            )));
+        }
+        let mut file = tokio::fs::File::create(destination)
+            .await
+            .map_err(|e| {
+                MulticaError::NetworkFailed(format!("create attachment file failed: {e}"))
+            })?;
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| MulticaError::NetworkFailed(format!("GET {path} body failed: {e}")))?
+        {
+            file.write_all(&chunk).await.map_err(|e| {
+                MulticaError::NetworkFailed(format!("write attachment file failed: {e}"))
+            })?;
+        }
+        Ok(())
+    }
+
     /// `POST /api/daemon/runtimes/{rid}/tasks/{tid}/release` —— claim 回滚（接入方案 B4，claim-at-send 失败恢复）。
     ///
     /// claim-at-send 下「发送」先 claim（pending→dispatched）再起本地 run；若 claim 成功但本地起 run 失败
@@ -1649,6 +1741,59 @@ mod tests {
         // 「上游交付说明」块），与拆分前行为一致（版本解耦）。
         let legacy: RemoteTask = serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
         assert!(legacy.parent_output.is_none());
+    }
+
+    // ===== issue 直属附件 issue_attachments（multica dev 1be391b6，M5-bu）=====
+
+    #[test]
+    fn remote_task_parses_issue_attachments() {
+        // wire 契约：issue_attachments = 所属 issue 直属附件（不含评论附件；DPMS 需求文件代理卡
+        // 在其中），元素与 chat_message_attachments 同构（id / filename / content_type，后者可空）。
+        // pending / detail / claim 三接口共用 AgentTaskResponse。
+        let task: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-1","status":"queued","issue_attachments":[{"id":"0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0","filename":"多值测试样本.zip","content_type":"application/octet-stream"},{"id":"1a2b3c4d-5e6f-7a8b-9c0d-e1f2a3b4c5d6","filename":"界面截图.png","content_type":""}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            task.issue_attachments,
+            vec![
+                IssueAttachment {
+                    id: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0".to_string(),
+                    filename: "多值测试样本.zip".to_string(),
+                    content_type: Some("application/octet-stream".to_string()),
+                },
+                IssueAttachment {
+                    id: "1a2b3c4d-5e6f-7a8b-9c0d-e1f2a3b4c5d6".to_string(),
+                    filename: "界面截图.png".to_string(),
+                    content_type: Some(String::new()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn remote_task_missing_or_empty_issue_attachments_parse_as_empty() {
+        // 兼容性契约：server 侧 omitempty——issue 无附件 / 非 issue 任务 / 旧 server 都不带键 →
+        // 空数组（缺省不阻断解析，发送路径零下载、零行为变化）。显式空数组同样归一为空。
+        let legacy: RemoteTask = serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
+        assert!(legacy.issue_attachments.is_empty());
+        let explicit: RemoteTask =
+            serde_json::from_str(r#"{"id":"t-1","status":"queued","issue_attachments":[]}"#)
+                .unwrap();
+        assert!(explicit.issue_attachments.is_empty());
+        // content_type 键缺席（旧 server 元素形态）→ None，不阻断同元素其余字段解析。
+        let no_mime: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-1","issue_attachments":[{"id":"a1","filename":"spec.pdf"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            no_mime.issue_attachments,
+            vec![IssueAttachment {
+                id: "a1".to_string(),
+                filename: "spec.pdf".to_string(),
+                content_type: None,
+            }]
+        );
     }
 
     #[test]

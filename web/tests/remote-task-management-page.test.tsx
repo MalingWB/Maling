@@ -409,10 +409,11 @@ describe('RemoteTaskManagementPage (container)', () => {
         'ws-004': [{ id: 'rt-1', workspaceId: 'ws-004', title: 'Some task', status: 'queued' } as RemoteTaskVm],
       },
     }));
-    // 任务详情回填需求正文（pending 列表只有 thread_name，正文仅任务详情里有）。
+    // 任务详情回填需求正文（pending 列表只有 thread_name，正文仅任务详情里有）+ 附件元数据（输入框可见性）。
     getRemoteTaskRequirement.mockResolvedValue({
       id: 'rt-1', issueRef: null, status: 'queued',
       workspaceId: 'ws-004', title: 'Some task', requirement: '远程任务需求正文', lastActivityAt: null,
+      attachments: [{ filename: '多值测试样本.zip', contentType: 'application/zip' }],
     });
     const { container } = await renderPage(onSelectRun, onPrepareRemoteTask);
 
@@ -421,9 +422,15 @@ describe('RemoteTaskManagementPage (container)', () => {
     await act(async () => { claimBtn.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
-    // claim-at-send：点击只读取（任务仍 queued），预填正文 + 远程绑定，落 conversation-home；发送时才 claim+start。
+    // claim-at-send：点击只读取（任务仍 queued），预填正文 + 远程绑定（含附件元数据），落 conversation-home；发送时才 claim+start。
     expect(getRemoteTaskRequirement).toHaveBeenCalledWith('rt-1', 'ws-004');
-    expect(draftMocks.prefill).toHaveBeenCalledWith('远程任务需求正文', { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-004', title: 'Some task' });
+    expect(draftMocks.prefill).toHaveBeenCalledWith('远程任务需求正文', {
+      source: 'multica',
+      remoteTaskId: 'rt-1',
+      workspaceId: 'ws-004',
+      title: 'Some task',
+      attachments: [{ filename: '多值测试样本.zip', contentType: 'application/zip' }],
+    });
     expect(onPrepareRemoteTask).toHaveBeenCalledWith();
     expect(onSelectRun).not.toHaveBeenCalled();
   });
@@ -439,6 +446,7 @@ describe('RemoteTaskManagementPage (container)', () => {
     getRemoteTaskRequirement.mockResolvedValue({
       id: 'rt-1', issueRef: 'issue-1', status: 'queued',
       workspaceId: 'ws-004', title: 'Issue title', requirement: null, lastActivityAt: null,
+      attachments: [],
     });
     const { container } = await renderPage();
 

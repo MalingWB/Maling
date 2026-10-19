@@ -1,4 +1,4 @@
-import { FileDiff, FileText, Image as ImageIcon, LoaderCircle, MessageSquareQuote, TextQuote, X } from 'lucide-react';
+import { FileDiff, FileText, Image as ImageIcon, LoaderCircle, MessageSquareQuote, Paperclip, TextQuote, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -10,12 +10,15 @@ import type { AttachmentItem } from '@/lib/attachment-service';
 import { isWholeFileDiffQuote, type ComposerQuote, type ComposerWorkspaceFileRef } from '@/lib/composer-context';
 import { quoteLabel, quoteSourceDetail } from '@/lib/composer-quote-i18n';
 import { formatSize } from '@/lib/attachment-service';
+import type { RemoteTaskAttachmentVm } from '@/types';
 import { cn } from '@/lib/utils';
 
 export interface ComposerContextAreaProps {
   quotes?: readonly ComposerQuote[];
   workspaceFiles?: readonly ComposerWorkspaceFileRef[];
   attachments: readonly AttachmentItem[];
+  /// 远程任务绑定携带的 issue 需求附件元数据（仅展示，无移除/预览——生命周期随远程绑定 chip）。
+  remoteAttachments?: readonly RemoteTaskAttachmentVm[];
   error?: string | null;
   onRemoveQuote?: (id: string) => void;
   onRemoveWorkspaceFile?: (id: string) => void;
@@ -28,6 +31,7 @@ export function ComposerContextArea({
   quotes = [],
   workspaceFiles = [],
   attachments,
+  remoteAttachments = [],
   error,
   onRemoveQuote,
   onRemoveWorkspaceFile,
@@ -36,7 +40,7 @@ export function ComposerContextArea({
   onPreviewAttachment,
 }: ComposerContextAreaProps) {
   const { t } = useTranslation();
-  if (quotes.length === 0 && workspaceFiles.length === 0 && attachments.length === 0 && !error) return null;
+  if (quotes.length === 0 && workspaceFiles.length === 0 && attachments.length === 0 && remoteAttachments.length === 0 && !error) return null;
 
   return (
     <div className="mb-1.5 px-1" data-composer-context-area="true">
@@ -88,6 +92,22 @@ export function ComposerContextArea({
             onPreview={() => onPreviewAttachment(attachment)}
             onRemove={() => onRemoveAttachment(attachment.id)}
           />
+        ))}
+        {remoteAttachments.map((attachment, index) => (
+          <Tooltip key={`${attachment.filename}-${index}`}>
+            <TooltipTrigger asChild>
+              <span
+                className="flex h-8 min-w-0 max-w-52 items-center gap-1.5 rounded-lg bg-muted/55 px-2 text-xs text-foreground/85"
+                data-composer-remote-attachment-chip="true"
+              >
+                <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">{attachment.filename}</span>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={8}>
+              {t('conversation.composer.remoteAttachmentHint')}
+            </TooltipContent>
+          </Tooltip>
         ))}
         {workspaceFiles.map((file) => (
           <Tooltip key={file.id}>
