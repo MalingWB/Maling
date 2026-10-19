@@ -23,6 +23,8 @@
 
 内置提示词的 Markdown 与 JSON 资源统一使用 LF，由 `.gitattributes` 的 `src/prompts/**/*.md` 和 `src/prompts/**/*.json` 检出规则固定，避免 Windows 的 `core.autocrlf` 改变 `include_str!` 嵌入内容及最终 prompt。七种语言遵守同一规则，嵌入资源测试检查实际字节；不在各消费端做零散换行替换，也不改写用户输入、引用正文或模板变量中的换行。
 
+已有工作区合入换行属性后，还需核对 `git ls-files --eol src/prompts` 的工作区字节；Git 内容 diff 为空不代表磁盘资源已是 LF。残留 CRLF 仅做字节级换行规范化，保留正文与本地修改，并重新编译嵌入资源后执行换行契约及精确输出测试，不能用旧测试二进制作为验收依据。
+
 ---
 
 ## 3. system prompt 与 user prompt 的职责边界
