@@ -2,6 +2,7 @@ import { access, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readChannelConfig } from './channel-config.mjs';
 
 const LOCALES = ['zh-CN', 'zh-TW', 'en', 'ja-JP', 'ko-KR', 'pt-BR', 'es'];
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -16,6 +17,7 @@ const version = versionFlagIndex >= 0
 const notesRoot = path.resolve(notesRootFlagIndex >= 0 ? rest[notesRootFlagIndex + 1] : 'release-notes');
 const assetDir = path.resolve(assetDirArg);
 const outputDir = path.resolve(outputDirArg);
+const channelConfig = readChannelConfig(process.env.GOLD_BAND_RELEASE_CHANNEL ?? 'default');
 
 if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
   console.error('A semver release version is required. Pass --version X.Y.Z.');
@@ -92,7 +94,7 @@ await copyFile(path.join(outputDir, 'latest.zh-CN.json'), path.join(outputDir, '
 await writeFile(
   path.join(outputDir, 'release-body.md'),
   [
-    `# Gold Band v${version}`,
+    `# ${channelConfig.productName} v${version}`,
     '[中文](#user-content-zh) · [English](#user-content-en)',
     '<a id="zh"></a>',
     '## 中文',

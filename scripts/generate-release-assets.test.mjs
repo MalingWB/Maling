@@ -11,7 +11,7 @@ const scriptPath = path.join(repoRoot, 'scripts', 'generate-release-assets.mjs')
 const locales = ['zh-CN', 'zh-TW', 'en', 'ja-JP', 'ko-KR', 'pt-BR', 'es'];
 const notesFor = (locale) => `## Features\n\n### 1. ${locale}\n\n\`\`\`sh\n# ${locale} comment\n\`\`\``;
 
-async function fixture(t) {
+async function fixture(t, channel = 'default') {
   const root = await mkdtemp(path.join(os.tmpdir(), 'gold-band-release-assets-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const assets = path.join(root, 'assets');
@@ -33,7 +33,8 @@ async function fixture(t) {
       cwd: root,
       env: {
         ...process.env,
-        GITHUB_REPOSITORY: 'diodeme/Gold-Band',
+        GOLD_BAND_RELEASE_CHANNEL: channel,
+        GITHUB_REPOSITORY: channel === 'wb' ? 'MalingWB/Maling' : 'diodeme/Gold-Band',
         RELEASE_TAG: 'v1.2.3',
         RELEASE_BASE_URL: '',
       },
@@ -41,8 +42,38 @@ async function fixture(t) {
     },
   );
 
-  return { output, metadataPath: path.join(versionDir, 'release.json'), run };
+  return { assets, output, metadataPath: path.join(versionDir, 'release.json'), run };
 }
+
+test('WB release body and manifests describe MALING assets for every release platform', async (t) => {
+  const { assets, output, run } = await fixture(t, 'wb');
+  await rm(path.join(assets, 'Gold-Band_1.2.3_x64-setup.exe'));
+  await rm(path.join(assets, 'Gold-Band_1.2.3_x64-setup.exe.sig'));
+  const packages = new Map([
+    ['windows-x86_64', 'MALING_1.2.3_x64-setup.exe'],
+    ['linux-x86_64', 'MALING_1.2.3_amd64.AppImage'],
+    ['darwin-x86_64', 'MALING_x64.app.tar.gz'],
+    ['darwin-aarch64', 'MALING_aarch64.app.tar.gz'],
+  ]);
+  for (const [platform, filename] of packages) {
+    await writeFile(path.join(assets, filename), 'installer');
+    await writeFile(path.join(assets, `${filename}.sig`), `signature-${platform}`);
+  }
+  const result = run();
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(await readFile(path.join(output, 'release-body.md'), 'utf8'), /^# MALING v1\.2\.3\n/);
+  for (const locale of [...locales, null]) {
+    const manifest = JSON.parse(await readFile(path.join(output, locale ? `latest.${locale}.json` : 'latest.json'), 'utf8'));
+    assert.equal(manifest.version, '1.2.3');
+    assert.deepEqual(Object.keys(manifest.platforms).sort(), [...packages.keys()].sort());
+    for (const [platform, filename] of packages) {
+      assert.deepEqual(manifest.platforms[platform], {
+        url: `https://github.com/MalingWB/Maling/releases/download/v1.2.3/${filename}`,
+        signature: `signature-${platform}`,
+      });
+    }
+  }
+});
 
 for (const critical of [undefined, false, true]) {
   test(`generates localized manifests and bilingual body with critical=${critical ?? 'absent'}`, async (t) => {
