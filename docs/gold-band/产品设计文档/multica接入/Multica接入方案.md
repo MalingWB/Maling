@@ -553,7 +553,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 > claim 之后**没有退回/释放接口**，唯一出路是执行到 complete 或 fail。因此列表展示用只读的 B1，确认要做了再用 B2 领取。
 
 **B3. 下载 issue 需求附件**（M5-bu）｜ **复用 multica 既有附件通道，server 零新增**
-- `GET /api/attachments/{attachmentId}` ｜ **mat_ 任务令牌**（claim 响应 `auth_token`，非 PAT）
+- `GET /api/attachments/{attachmentId}/download` ｜ **mat_ 任务令牌**（claim 响应 `auth_token`，非 PAT）｜ 路由语义（webank `file.go`）：`/api/attachments/{id}` 为元数据 JSON 路由，文件本体在 `/download` 子路径（§12.63 修正记录）
 - 说明：任务载荷新增可选 `issue_attachments`（issue 直属附件元数据 `id/filename/content_type`，与 `chat_message_attachments` 同构；DPMS 需求文件代理卡包含其中，服务端实时代理流转发；pending / detail / claim 三接口同构、omitempty——旧 server 缺键即无附件）。码灵在用户点「发送」时**中介下载**（agent 不直连 multica API）：成功文件清洗文件名后并入会话既有任务输入附件通道（chips 展示、agent 以文件引用消费、自动重试/重跑复用）；逐文件失败不阻断任务启动，失败清单经隐式上下文告知 agent 缺失情况（与用户确认替代来源）。**输入框可见性（M5-bu 追加）**：点「执行」进入输入框时，detail 响应的附件元数据以只读 chips 展示（文件本体仍发送时下载——服务端只在 claim 时铸造 mat_ 令牌，详情阶段无下载凭证）；下载结果分级落运行日志供内网排查。设计细节见开发设计 §12.61/§12.62。
 
 #### C. 任务执行与上报

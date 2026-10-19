@@ -146,8 +146,9 @@ pub struct RemoteTask {
     ///
     /// **码灵 Option B 中介设计下的唯一消费点：issue 附件下载通道**（M5-bu）——ACP agent 从不直接调
     /// multica API（开发设计 选项 B：码灵作为中介，而非 agent 直调），claim 响应携带的 mat_ 令牌由
-    /// 码灵持有并用于 `GET /api/attachments/{id}`（server 侧任务作用域附件既定通道，DPMS 附件实时
-    /// 流转发）；其余 multica 调用仍由码灵用自身 PAT 完成。令牌不落盘、不进 prompt。
+    /// 码灵持有并用于 `GET /api/attachments/{id}/download`（server 侧任务作用域附件既定通道，DPMS 附件
+    /// 实时流转发；mat_ 为通用 actor 凭证，user-scoped 下载路由天然接受）；其余 multica 调用仍由码灵
+    /// 用自身 PAT 完成。令牌不落盘、不进 prompt。
     #[serde(default)]
     pub auth_token: Option<String>,
     /// 续跑指针（**只输出**）：server claim 响应回填的父任务 ACP session_id。
@@ -253,7 +254,7 @@ pub struct RemoteTask {
 
 /// issue 直属附件元数据（wire 镜像 multica daemon `types.go` `IssueAttachments` 元素）。
 ///
-/// `id` = server 附件 id（下载通道 `GET /api/attachments/{id}` 的路径参数）；`filename` 为上传名
+/// `id` = server 附件 id（下载通道 `GET /api/attachments/{id}/download` 的路径参数）；`filename` 为上传名
 /// （**不可信输入**，落盘前须清洗，见 commands.rs `sanitize_attachment_filename`）；`content_type`
 /// 可为空/缺失，码灵侧不消费（mime 由落盘文件扩展名经 provider `file_mime_type` 判定，与本地附件
 /// 同一事实源）。
@@ -1039,7 +1040,8 @@ impl MulticaClient {
         .await
     }
 
-    /// `GET /api/attachments/{id}` —— issue 附件下载（M5-bu，任务作用域通道）。
+    /// `GET /api/attachments/{id}/download` —— issue 附件下载（M5-bu，任务作用域通道；文件本体路由，
+    /// 基路径 `/api/attachments/{id}` 是元数据 JSON 路由，§12.63）。
     ///
     /// 鉴权用 claim 响应的 mat_ 任务令牌（[`RemoteTask::auth_token`]），不用 PAT——server 侧任务
     /// 附件是任务作用域资源（multica 既定设计：mat_ 按需下载）。DPMS 附件由服务端代理实时流转发，
@@ -1054,7 +1056,10 @@ impl MulticaClient {
         task_token: &str,
         destination: &std::path::Path,
     ) -> Result<(), MulticaError> {
-        let path = format!("/api/attachments/{attachment_id}");
+        // 路由语义（webank file.go）：`/api/attachments/{id}` 是元数据 JSON 路由（GetAttachmentByID），
+        // 文件本体在 `/download` 子路径（DownloadAttachment；CloudFront 302 / presign 302 / proxy 直出
+        // 三模式——共享 client 默认跟随重定向，跨主机自动剥 Authorization，对签名 URL 正确）。
+        let path = format!("/api/attachments/{attachment_id}/download");
         let mut resp = self
             .http
             .request(Method::GET, self.url(&path))

@@ -964,7 +964,7 @@ start_multica_runtime()
 | A3 | `/api/daemon/runtimes/{rid}/recover-orphans` | POST | PAT | 清理为失败态 |
 | B1 | `/api/daemon/runtimes/{rid}/tasks/pending` | GET | PAT | 只读列表 |
 | B2 | `/api/daemon/runtimes/{rid}/tasks/{tid}/claim` | POST | PAT | **M0 新增 selective claim**；body 可带 prior_session_id（断点续跑） |
-| B3 | `/api/attachments/{id}` | GET | **mat_ 任务令牌**（claim 响应） | **M5-bu 新增消费**：issue 直属附件下载（claim 响应 `issue_attachments` 清单；DPMS 需求文件服务端实时代理；码灵中介下载后并入原生任务输入附件通道，见 §12.61） |
+| B3 | `/api/attachments/{id}/download` | GET | **mat_ 任务令牌**（claim 响应） | **M5-bu 新增消费**：issue 直属附件下载（claim 响应 `issue_attachments` 清单；DPMS 需求文件服务端实时代理；码灵中介下载后并入原生任务输入附件通道，见 §12.61）。路由语义（webank `file.go`）：`/api/attachments/{id}` 是 workspace 作用域**元数据 JSON**（id/url/filename），文件本体在 `/download` 子路径（user-scoped auth-only，接受 mat_ actor 凭证；服务端 CloudFront 302 / presign 302 / proxy 直出三模式，客户端默认跟随重定向、跨主机自动剥 Authorization，对签名 URL 正确）——M5-bu 首版误用元数据路由，§12.63 修正 |
 | C1 | `/api/daemon/heartbeat` | POST | PAT | **常驻 15s（Req D：建立连接后即对全部已连接 workspace 持续，非仅执行期）** |
 | C2 | `/api/daemon/tasks/{tid}/start` | POST | PAT | dispatched→running；body `force_fresh_session`（整任务重跑=true） |
 | C2.5 | `/api/daemon/runtimes/{rid}/tasks/{tid}/prepare-lease` | POST | PAT | **Req D 新增续期**：claim-at-click 后、start 前（用户在 composer 选模型/改需求期间）每 15s 续期 45s lease，防 `ReclaimStaleDispatchedTaskForRuntime` 回收（与 multica daemon 自带 `startTaskPrepareLeaseExtender` 同构） |
@@ -2654,9 +2654,19 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 - **chips 渲染（前端）**：`ComposerContextArea` 新增可选 `remoteAttachments`——复用既有上下文 chip 行（quotes / 本地附件 / 工作区文件引用同排），只读 chip（Paperclip 图标 + 文件名截断，`data-composer-remote-attachment-chip`），无移除/预览交互，Tooltip 提示「发送时自动下载并附加」（`conversation.composer.remoteAttachmentHint`，七语言同位）。仅主 composer 传入（ACP composer / 排程对话框无远程绑定，可选参数零改动）。
 - **可观测日志（后端）**：`stage_issue_attachments` 分级记录——空清单 info（区分「server claim 响应未携带 issue_attachments」与「携带但下载失败」）、逐件成功 info（task_id/attachment_id/local_name/bytes）、逐件失败与零字节 warn（task_id/attachment_id/error）、令牌缺失 warn（task_id/count）。运行日志默认 Info 级（`RuntimeLogLevel::Info`），内网排查无需改配置即可见（bug-fix-verification 外部系统例外的替代证据）。
 
-**方案自评审**：过度设计——纯元数据透传 + 只读渲染 + 日志，无新状态机/持久化/请求（详情响应本就含该数据，`serde` 已解析）；路由键与 chips 复用既有 draft 绑定生命周期与 `ComposerContextArea` 组件，不新建平行状态。性能——发送路径每次用户动作新增至多数行日志；渲染为少量静态 chips；无 IO 新增。待内网确认的服务端事实（本地 webank fork 早于 1be391b6 无法验证）：① claim 响应是否实际携带 `issue_attachments`（空清单 info 日志可判定）；② `GET /api/attachments/{id}` 在 mat_ 下是否返回文件流（webank 基线该路由为 workspace 作用域元数据 JSON，`file.go:622`；文件流在 `/api/attachments/{id}/download`，`file.go:775`）——若 1be391b6 未将其改造为 mat_ 可用文件流，逐件失败 warn 日志会直接给出状态码与错误，届时按日志修正 client 下载路由。
+**方案自评审**：过度设计——纯元数据透传 + 只读渲染 + 日志，无新状态机/持久化/请求（详情响应本就含该数据，`serde` 已解析）；路由键与 chips 复用既有 draft 绑定生命周期与 `ComposerContextArea` 组件，不新建平行状态。性能——发送路径每次用户动作新增至多数行日志；渲染为少量静态 chips；无 IO 新增。待内网确认的服务端事实（本地 webank fork 早于 1be391b6 无法验证）：① claim 响应是否实际携带 `issue_attachments`（空清单 info 日志可判定）；② `GET /api/attachments/{id}` 在 mat_ 下是否返回文件流（webank 基线该路由为 workspace 作用域元数据 JSON，`file.go:622`；文件流在 `/api/attachments/{id}/download`，`file.go:775`）——若 1be391b6 未将其改造为 mat_ 可用文件流，逐件失败 warn 日志会直接给出状态码与错误，届时按日志修正 client 下载路由。**（两项事实已于 2026-10-19 内网复测落定：①已携带——输入框 chips 正常展示；②基线语义未变——下载到的"文件"实为元数据 JSON，即 §12.63 修正的 bug。）**
 
 **验证结果**：vm 投影 1 测（display_name 回退 + content_type 透传 + pending 不透出）、camelCase 序列化锁定更新（空数组 `[]`）、draft 绑定生命周期 1 测（prefill 携带 → 编辑保留 → 解绑/进排程消失，本地附件管线不混入）、page prefill 透传断言更新、chips DOM 契约 3 测（只读无按钮、空列表整区不渲染、与本地附件同排）全绿；desktop `multica::` 179 测全绿；`tsc`（build 配置）零错误；i18n 七语言 leaf-key 对等 + parity 测试通过；web 生产构建通过。clippy 无新增告警（multica 命中均为遗留风格 lint，不在本次改动行）。内网复测关注：输入框 chips 出现（server 发字段）+ 发送后 task-inputs chips / 运行日志逐件结果。
+
+### 12.63 改动六十一：附件下载路由修正——元数据路由误用改 `/download` 子路径（M5-bu 修复，2026-10-19）
+
+**背景**：内网复测（服务端已部署 1be391b6）反馈：输入框元数据 chips 正常展示，但发送后会话里的附件打开后**不是文件内容，而是一段含 id/url/filename 的 JSON**。根因：`download_issue_attachment` 误用了元数据路由 `GET /api/attachments/{id}`——webank 基线（`file.go:622` `GetAttachmentByID`）该路由返回附件行元数据 JSON（正是用户看到的字段集），文件本体在 `GET /api/attachments/{id}/download`（`file.go:775` `DownloadAttachment`；router.go 注册为 user-scoped auth-only，从附件行自解析 workspace 并在内部做成员校验）。§12.62 预判的「待内网确认事实②」由此落定：1be391b6 未改造基线路由语义，`/download` 即正确通道。
+
+**实现**：`client.rs::download_issue_attachment` 请求路径一行修正（`/api/attachments/{id}` → `/api/attachments/{id}/download`）；错误消息随 `path` 变量自动携带新路由；方法与字段文档注释三处同步两路由语义（含服务端三模式：CloudFront 302 / presign 302 / proxy 直出——共享 `reqwest::Client` 默认策略跟随重定向且跨主机剥 `Authorization`，对签名 URL 恰好正确）。鉴权不变：`mat_` 是绑定 (agent, task, workspace, owner) 的通用 actor 凭证（webank daemon.go MUL-3292：「any API call the agent makes ... recognized server-side as actor=agent」），user-scoped 路由天然接受，内网实测元数据路由 200 亦已佐证中间件接受 mat_。
+
+**方案自评审**：过度设计——零新增抽象/状态/依赖，纯路由契约修正；不加「响应像元数据 JSON 即判失败」的启发式防御（附件本就可以是 .json 文件，正确端点即正确语义）。性能——无变化。
+
+**验证结果**：红绿测试（bug-fix-verification）——先改既有软失败测试断言为期待 `GET /api/attachments/a1/download`（错误串与真实请求共用同一 `path` 变量，钉住请求路由），旧代码红、修正后绿；desktop `multica::` 全量定向测试全绿。
 
 ---
 

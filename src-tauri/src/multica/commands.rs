@@ -2592,7 +2592,9 @@ mod tests {
         assert!(staging.paths.is_empty());
         assert_eq!(staging.failures.len(), 1);
         assert_eq!(staging.failures[0].filename, "需求说明.pdf");
-        assert!(staging.failures[0].reason.contains("GET /api/attachments/a1"));
+        // 路由契约（webank file.go：/api/attachments/{id} 是元数据 JSON，文件本体在
+        // /download 子路径）——错误串与真实请求共用同一 path 变量，此处即钉住请求路由。
+        assert!(staging.failures[0].reason.contains("GET /api/attachments/a1/download"));
         // 中转目录已建（硬失败边界之外）→ 清理交调用方，stage 自身不删。
         let dir = staging.dir.expect("staging dir created for downloads");
         let _ = std::fs::remove_dir_all(dir);
