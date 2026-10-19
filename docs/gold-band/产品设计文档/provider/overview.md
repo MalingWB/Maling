@@ -34,7 +34,7 @@ npx 直启（2026-10-11）：npx 在适配器整个生命周期内保留 `cmd �
 
 ### 构建期 Agent 版本策略
 
-`configs/agent-catalog-policy.json` 的 `versionPins` 以 Catalog Agent ID 为 key、精确 npm 版本字符串为 value。当前固定 `claude-acp` 为 `0.87.0`、`codex-acp` 为 `2.1.1`（2026-10-08 的 npm latest 正式版）。删除对应项即可恢复跟随 Registry，不支持 `-1`、范围或 `latest`。
+`configs/agent-catalog-policy.json` 的 `versionPins` 以 Catalog Agent ID 为 key、精确 npm 版本字符串为 value。当前固定 `claude-acp` 为 `0.90.0`、`codex-acp` 为 `2.1.1`，WB `0.20.0` 构建沿用此策略（2026-10-19）。删除对应项即可恢复跟随 Registry，不支持 `-1`、范围或 `latest`。
 
 Gold Band 使用 ACP v1 并声明 `clientCapabilities.session.compaction: {}`，消费预览版 `compaction_update` / `compaction_summary_chunk`。按 provider 的 `compactionId` 原位更新既有压缩时间线实体，保留首次位置；支持 completed-only 回放、摘要顺序追加及最终替换、缺字段保持和 null 清空。未知状态保留原值并显示通用状态，不推断成功。压缩行展示状态、耗时和已确认的压缩前用量；用量以 `usage_update` 为准。压缩完成且 provider 返回非空文本摘要时显示“查看摘要”，点击在右侧“压缩摘要”Tab 默认渲染 Markdown，支持切换只读源码及复制原文；无摘要时不显示入口。其他 Agent 的既有压缩信号继续映射到同一实体模型，不声明 JetBrains AIR 私有客户端能力。
 

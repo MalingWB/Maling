@@ -106,6 +106,19 @@ Agent 实例新增两个独立能力配置：
 - 接口与规模验收：Codex probe 由 channel 保持运行时，CodeBuddy probe 可完成，最终两者结果均正确落盘；同 Agent 等待不占额外 adapter 名额，释放后可继续运行；1,000 个模拟 Agent 全部处理且 worker 数不超过 4。重试使用完全相同的截止时间，已耗尽预算不重试；保存提交不等待运行中 doctor、连续保存请求合并等既有测试继续通过。
 - 前端验收：DOM 测试确认等待时按钮 loading/disabled、重复点击不重发，失败结果到达后停止旋转并恢复重试，其他 Agent 的按钮不受影响。`tsc -p web/tsconfig.build.json --noEmit` 和 Vite 生产构建通过；保留既有大 chunk、混合静态/动态 import 和 Rust dead-code 警告。内置 iab 不可用，按项目规则使用已连接 Chrome deep link `/chat/agents`，确认页面渲染及诊断完成后的按钮恢复；浏览器使用前端 mock，实际 ACP 超时与进程回收由 Rust 子进程测试验证，未重新连接用户真实 Codex/CodeBuddy 账号。测试页面与本次 Vite 进程在验收后关闭。
 
+### 2026-10-19 WB 0.20.0 构建
+
+- 基于远端 `main` 的 `4a670901` 构建，基础版本同步为 `0.20.0`；WB 完整版本继续使用 `0.20.0-wb.<构建时间>+<Git SHA>`。
+- 复用现有 `versionPins`，固定 Claude ACP `0.90.0`、Codex ACP `2.1.1`；在线生成 Catalog 时同时固定版本元数据与 npx 启动参数，其他 Agent 继续使用 Registry 配置。
+- 过度设计与性能评审：仅维护版本与构建配置，不新增依赖、状态、缓存、队列或运行时 I/O；验证使用现有 Catalog 与渠道构建契约测试及正式构建。
+- 验收：Catalog 契约测试 7 项、渠道构建契约测试 21 项通过；应用版本、Cargo lock、Catalog 元数据与启动参数一致性检查通过，`npm ci` 完成。用户选择普通更新并自行执行 `npm run build:wb`；本轮未执行生产构建，未生成安装包或更新清单。
+
+### 2026-10-19 0.20.0 GitHub 发布准备
+
+- 发布说明范围为 `v0.19.1..f8f32b1f`，用户明确选择关键更新；七语言发布说明与 `release-notes/0.20.0/release.json`（`critical: true`）一同纳入发布源提交。以上 WB 本地构建的普通更新选择保留为当时记录，不代表此次 GitHub 发布策略。
+- 应用版本和锁文件统一为 `0.20.0`，沿用 Claude ACP `0.90.0`、Codex ACP `2.1.1` 的精确 pin。Registry/Catalog 刷新包含 CodeBuddy 启动版本 `2.169.0` 和 Cursor 目录版本 `2026.10.16`；未修改运行时实现，也未完成这些版本的真实账号连接验证。
+- 验证使用现有 Catalog、渠道构建、发布配置与发布说明生成器测试，并以实际七语言文件检查关键更新清单和双语正文。安装包构建、签名及正式发布不属于此次发布准备验收。
+
 ### 2026-10-08 Claude / Codex ACP 升级
 
 - 将已有精确 pin 更新为 Claude ACP `0.87.0`、Codex ACP `2.1.1`，基于当前 Registry snapshot 重建 Catalog，不覆盖其他 Agent 的配置变更。
