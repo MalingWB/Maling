@@ -1074,11 +1074,9 @@ impl MulticaClient {
                 resp.status()
             )));
         }
-        let mut file = tokio::fs::File::create(destination)
-            .await
-            .map_err(|e| {
-                MulticaError::NetworkFailed(format!("create attachment file failed: {e}"))
-            })?;
+        let mut file = tokio::fs::File::create(destination).await.map_err(|e| {
+            MulticaError::NetworkFailed(format!("create attachment file failed: {e}"))
+        })?;
         while let Some(chunk) = resp
             .chunk()
             .await

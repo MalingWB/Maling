@@ -68,6 +68,9 @@ jobs:
       - name: Test release checksums
         run: npm run test:release-checksums
 
+      - name: Test release channels and packaging contracts
+        run: node --test scripts/channel-config.test.mjs scripts/build-channel-options.test.mjs scripts/prepare-release-build.test.mjs scripts/release-please-config.test.mjs scripts/generate-release-assets.test.mjs
+
       - name: Test README and guide i18n links
         run: npm run test:readme-i18n
 

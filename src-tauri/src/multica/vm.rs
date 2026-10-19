@@ -1041,7 +1041,11 @@ mod tests {
         assert!(section.content.contains("completion-output"));
         assert!(section.content.contains("需求附件未能下载到本地"));
         assert!(section.content.contains("多值测试样本.zip（HTTP 404）"));
-        assert!(section.content.contains("需求说明.pdf（timeout after 120s）"));
+        assert!(
+            section
+                .content
+                .contains("需求说明.pdf（timeout after 120s）")
+        );
         // 协议块在前、清单块在后（锚点顺序锁定）。
         let protocol_at = section.content.find("completion-output").expect("protocol");
         let failures_at = section
@@ -1053,7 +1057,11 @@ mod tests {
         // 英文侧同构（双语模板都渲染清单）。
         let section_en = remote_task_hidden_section(&task, DesktopLanguage::En, &failures)
             .expect("english section");
-        assert!(section_en.content.contains("could not be downloaded locally"));
+        assert!(
+            section_en
+                .content
+                .contains("could not be downloaded locally")
+        );
         assert!(section_en.content.contains("多值测试样本.zip (HTTP 404)"));
 
         // 空失败 → 区段只剩协议块，不含清单文案（byte 级与引入前单块区段一致；协议模板自身

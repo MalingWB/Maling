@@ -945,12 +945,9 @@ pub async fn start_remote_conversation_run(
     }
     // 远程任务上下文隐式注入（原 ③ 处移此）：完成输出协议块（issue 关联）+ 附件软失败清单块
     // （有失败才渲染）。claim 时刻数据即执行依据（multica 设计：领取即定版），前端不感知该字段。
-    input.first_prompt_hidden_sections = remote_task_hidden_section(
-        &task,
-        context.config.desktop_language,
-        &staging.failures,
-    )
-    .map(|section| vec![section]);
+    input.first_prompt_hidden_sections =
+        remote_task_hidden_section(&task, context.config.desktop_language, &staging.failures)
+            .map(|section| vec![section]);
 
     // 搬运到 spawn_blocking 闭包的 multica 簿记数据。
     let remote = remote_task_id.clone();
@@ -1689,8 +1686,9 @@ async fn stage_issue_attachments(
         "gold-band-multica-attachments-{}",
         sanitize_attachment_filename(&task.id, "task")
     ));
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| MulticaError::AttachmentStageFailed(format!("create staging dir failed: {e}")))?;
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        MulticaError::AttachmentStageFailed(format!("create staging dir failed: {e}"))
+    })?;
     let mut staging = IssueAttachmentStaging {
         dir: Some(dir.clone()),
         ..IssueAttachmentStaging::default()
@@ -1710,7 +1708,9 @@ async fn stage_issue_attachments(
         {
             Ok(()) => {
                 // 零字节按软失败处理（服务器异常的常见形态；可疑空文件不交给 agent）。
-                let len = std::fs::metadata(&destination).map(|m| m.len()).unwrap_or(0);
+                let len = std::fs::metadata(&destination)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
                 if len == 0 {
                     warn!(
                         task_id = %task.id,
@@ -1730,7 +1730,9 @@ async fn stage_issue_attachments(
                         bytes = len,
                         "multica issue attachment downloaded"
                     );
-                    staging.paths.push(destination.to_string_lossy().into_owned());
+                    staging
+                        .paths
+                        .push(destination.to_string_lossy().into_owned());
                 }
             }
             Err(error) => {
@@ -2449,28 +2451,40 @@ mod tests {
             "bad_name.txt"
         );
         // 尾部点/空格（Windows 要求 basename 不以此结尾）。
-        assert_eq!(
-            sanitize_attachment_filename("report..  ", "id-1"),
-            "report"
-        );
+        assert_eq!(sanitize_attachment_filename("report..  ", "id-1"), "report");
     }
 
     #[test]
     fn sanitize_attachment_filename_avoids_windows_reserved_names() {
         // 保留设备名（含带扩展名变体，stem 命中即非法）→ 前置下划线；大小写不敏感。
         assert_eq!(sanitize_attachment_filename("CON", "id-1"), "_CON");
-        assert_eq!(sanitize_attachment_filename("Com1.txt", "id-1"), "_Com1.txt");
-        assert_eq!(sanitize_attachment_filename("lpt9.log", "id-1"), "_lpt9.log");
+        assert_eq!(
+            sanitize_attachment_filename("Com1.txt", "id-1"),
+            "_Com1.txt"
+        );
+        assert_eq!(
+            sanitize_attachment_filename("lpt9.log", "id-1"),
+            "_lpt9.log"
+        );
         // 近似名不受影响（stem 未精确命中保留表）。
-        assert_eq!(sanitize_attachment_filename("console.txt", "id-1"), "console.txt");
-        assert_eq!(sanitize_attachment_filename("config.json", "id-1"), "config.json");
+        assert_eq!(
+            sanitize_attachment_filename("console.txt", "id-1"),
+            "console.txt"
+        );
+        assert_eq!(
+            sanitize_attachment_filename("config.json", "id-1"),
+            "config.json"
+        );
     }
 
     #[test]
     fn sanitize_attachment_filename_falls_back_and_caps_length() {
         // 空 / 纯路径分隔 / 纯非法字符 → 回退附件 id；id 也空 → 兜底常量。
         assert_eq!(sanitize_attachment_filename("", "att-id-1"), "att-id-1");
-        assert_eq!(sanitize_attachment_filename("///\\\\", "att-id-1"), "att-id-1");
+        assert_eq!(
+            sanitize_attachment_filename("///\\\\", "att-id-1"),
+            "att-id-1"
+        );
         assert_eq!(sanitize_attachment_filename("...", ""), "attachment");
         assert_eq!(sanitize_attachment_filename("", ""), "attachment");
         // 超长限截保扩展名（180 字符上限；stem 截断、.zip 保留）。
@@ -2508,7 +2522,10 @@ mod tests {
             "本地已有-2.txt"
         );
         let mut used3 = HashSet::new();
-        assert_eq!(disambiguate_attachment_filename("README", &mut used3), "README");
+        assert_eq!(
+            disambiguate_attachment_filename("README", &mut used3),
+            "README"
+        );
         assert_eq!(
             disambiguate_attachment_filename("README", &mut used3),
             "README-2"
@@ -2594,7 +2611,11 @@ mod tests {
         assert_eq!(staging.failures[0].filename, "需求说明.pdf");
         // 路由契约（webank file.go：/api/attachments/{id} 是元数据 JSON，文件本体在
         // /download 子路径）——错误串与真实请求共用同一 path 变量，此处即钉住请求路由。
-        assert!(staging.failures[0].reason.contains("GET /api/attachments/a1/download"));
+        assert!(
+            staging.failures[0]
+                .reason
+                .contains("GET /api/attachments/a1/download")
+        );
         // 中转目录已建（硬失败边界之外）→ 清理交调用方，stage 自身不删。
         let dir = staging.dir.expect("staging dir created for downloads");
         let _ = std::fs::remove_dir_all(dir);

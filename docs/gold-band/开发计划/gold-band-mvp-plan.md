@@ -1,5 +1,15 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-10-19 GitHub Release 统一构建 WB 跨平台安装包
+
+- 根因：GitHub 两条发布 workflow 固定使用 default，而 WB 渠道又将 `bundleTargets` 限定为 Windows NSIS，混合了产品渠道与打包平台。用户要求保留跨平台 GitHub Release，全部产出 WB/MALING 包。
+- 实现：自动发布和手工 tag 重建统一设置 `GOLD_BAND_RELEASE_CHANNEL=wb`，保留 Windows x64、Linux x64、macOS x64/arm64 四组 runner；移除 WB 的 NSIS 专属覆盖，继承 Tauri 原生 `all` 平台目标。两条流程共用 `prepare-release-build.mjs` 校验签名与 metrics key、生成渠道 overlay 和 Release 名称，正式版本严格来自 release tag。本地 WB 时间戳版本入口不变；本地非 default 渠道仅在 Windows 通过 CLI 选择 NSIS，避免 WiX 不支持时间戳/提交号版本，Linux/macOS 使用原生目标。
+- 凭据：Actions Secrets 使用 `WB_TAURI_SIGNING_PRIVATE_KEY`、可选 `WB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 和 `GOLD_BAND_METRICS_API_KEY`；macOS 继续复用已有可选 Apple 证书和公证配置。私钥必须与 WB 渠道公钥配对。
+- 产物：Tauri 上传本渠道安装包及更新签名；后处理复用现有七语言 manifest、关键更新元数据和校验和生成器，Release 正文产品名从渠道配置读取。停止向 WB Release 上传指向上游的 macOS 安装辅助脚本。GitHub 下载 URL 使用当前仓库/tag；WB 客户端的内网更新地址、MCP、metrics、Multica 与渠道身份仍由 WB 配置提供，不因附件托管位置改变。
+- 红绿证据：原实现上 6 项接口/工作流断言失败（仅 NSIS、两条 workflow 渠道不匹配、Gold Band 正文、两条上传命令携带上游脚本）；复核时新增本地时间戳版本测试并观察到 Windows 缺少 NSIS 选择的失败，再将约束移到本地构建入口。修复后相关 52 项 Node 测试通过，覆盖四平台签名与下载地址、缺失/空白凭据在写入前失败、tag 版本、可选 Apple 签名以及原有渠道行为。发布契约测试已纳入 PR checks。
+- 验收边界：本机完成配置与生成器接口验收，尚未在 GitHub 使用真实密钥执行四平台生产打包；发布用的七语言日志及 `release.json` 仍必须进入目标 release commit。仓库中既有未提交版本、Catalog 和日志改动不属于本次变更。
+- 过度设计与性能评审：复用 release-please、tauri-action、Tauri 原生平台打包及现有渠道/清单生成器，只增加两条 workflow 共用的构建准备入口，不新增依赖、运行时状态或第二套发布流程；runner 数量仍为 4，校验为固定字段读取，产物处理范围仍局限本次 release，客户端性能无新增影响。
+
 ## 2026-10-19 继续同步上游 main
 
 - 在已保留本地回归修复的 `9b58b3bb` 上合入上游 `4944b79d`，新增 3 个提交：ACP 后台用量缺口图标、runtime 重建后的用量去重、Git 提交审查的大批量路径统计。Fork `main` 仍为 `bbef7724`，继续沿用已有同步分支。

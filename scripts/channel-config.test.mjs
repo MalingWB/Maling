@@ -57,6 +57,15 @@ test('wb overlay embeds MALING as both product name and publisher', () => {
   assert.equal(overlay.bundle.publisher, 'MALING');
 });
 
+test('wb uses Tauri native bundle targets on every release platform', () => {
+  const base = JSON.parse(readFileSync(join(repoRoot, 'src-tauri', 'tauri.conf.json'), 'utf8'));
+  const overlay = tauriConfigOverlay(readChannelConfig('wb'));
+
+  assert.equal(overlay.bundle.targets ?? base.bundle.targets, 'all');
+  assert.equal(overlay.plugins.updater.pubkey, readChannelConfig('wb').updaterPublicKey);
+  assert.equal(base.bundle.createUpdaterArtifacts, true);
+});
+
 test('channel overlay sets the configured main binary name', () => {
   assert.equal(tauriConfigOverlay(baseChannelConfig).mainBinaryName, 'gold-band-desktop');
   assert.equal(tauriConfigOverlay(readChannelConfig('wb')).mainBinaryName, 'maling-desktop');

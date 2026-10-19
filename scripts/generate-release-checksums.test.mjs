@@ -62,7 +62,7 @@ for (const [workflow, toolingRoot] of [
   ['.github/workflows/release.yml', 'release-tools/'],
   ['.github/workflows/release-please.yml', ''],
 ]) {
-  test(`${workflow} publishes localized manifests, installer, and checksums in order`, () => {
+  test(`${workflow} publishes localized manifests and checksums without the upstream installer`, () => {
     const config = parse(readFileSync(path.resolve(workflow), 'utf8'));
     const job = config.jobs['updater-json'];
     assert.ok(job, `${workflow} must have an updater-json job`);
@@ -93,11 +93,12 @@ for (const [workflow, toolingRoot] of [
     const uploadArgs = commands[uploadIndex].split(/\s+/);
     for (const asset of [
       'release-output/latest*.json',
-      `${toolingRoot}scripts/install-gold-band-macos.sh`,
       'release-assets/*.sha256',
       '--clobber',
     ]) {
       assert.ok(uploadArgs.includes(asset), `${workflow} upload must include ${asset}`);
     }
+    assert.ok(!uploadArgs.some((asset) => asset.includes('install-gold-band-macos.sh')),
+      'WB releases must not distribute an installer targeting the upstream Gold Band app');
   });
 }
