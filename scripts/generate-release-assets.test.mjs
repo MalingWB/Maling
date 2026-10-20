@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { readChannelConfig } from './channel-config.mjs';
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const scriptPath = path.join(repoRoot, 'scripts', 'generate-release-assets.mjs');
@@ -26,7 +27,7 @@ async function fixture(t, channel = 'default') {
     await writeFile(path.join(versionDir, `${locale}.md`), `${notesFor(locale)}\n`);
   }
 
-  const run = () => spawnSync(
+  const run = (env = {}) => spawnSync(
     process.execPath,
     [scriptPath, assets, output, '--version', '1.2.3', '--notes-root', notesRoot],
     {
@@ -37,6 +38,7 @@ async function fixture(t, channel = 'default') {
         GITHUB_REPOSITORY: channel === 'wb' ? 'MalingWB/Maling' : 'diodeme/Gold-Band',
         RELEASE_TAG: 'v1.2.3',
         RELEASE_BASE_URL: '',
+        ...env,
       },
       encoding: 'utf8',
     },
@@ -45,8 +47,7 @@ async function fixture(t, channel = 'default') {
   return { assets, output, metadataPath: path.join(versionDir, 'release.json'), run };
 }
 
-test('WB release body and manifests describe MALING assets for every release platform', async (t) => {
-  const { assets, output, run } = await fixture(t, 'wb');
+async function writeWbPackages(assets) {
   await rm(path.join(assets, 'Gold-Band_1.2.3_x64-setup.exe'));
   await rm(path.join(assets, 'Gold-Band_1.2.3_x64-setup.exe.sig'));
   const packages = new Map([
@@ -59,19 +60,56 @@ test('WB release body and manifests describe MALING assets for every release pla
     await writeFile(path.join(assets, filename), 'installer');
     await writeFile(path.join(assets, `${filename}.sig`), `signature-${platform}`);
   }
-  const result = run();
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(await readFile(path.join(output, 'release-body.md'), 'utf8'), /^# MALING v1\.2\.3\n/);
-  for (const locale of [...locales, null]) {
-    const manifest = JSON.parse(await readFile(path.join(output, locale ? `latest.${locale}.json` : 'latest.json'), 'utf8'));
-    assert.equal(manifest.version, '1.2.3');
-    assert.deepEqual(Object.keys(manifest.platforms).sort(), [...packages.keys()].sort());
-    for (const [platform, filename] of packages) {
-      assert.deepEqual(manifest.platforms[platform], {
-        url: `https://github.com/MalingWB/Maling/releases/download/v1.2.3/${filename}`,
-        signature: `signature-${platform}`,
-      });
+  return packages;
+}
+
+for (const [scenario, env] of [
+  ['GitHub Actions', {}],
+  ['ambient URL override', { RELEASE_BASE_URL: 'https://example.invalid/unrelated-downloads' }],
+  ['without GitHub metadata', { GITHUB_REPOSITORY: '', RELEASE_TAG: '', GITHUB_REF_NAME: '' }],
+]) {
+  test(`WB release manifests use the channel download URL: ${scenario}`, async (t) => {
+    const { assets, output, run } = await fixture(t, 'wb');
+    const packages = await writeWbPackages(assets);
+    const result = run(env);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(await readFile(path.join(output, 'release-body.md'), 'utf8'), /^# MALING v1\.2\.3\n/);
+    for (const locale of [...locales, null]) {
+      const manifest = JSON.parse(await readFile(path.join(output, locale ? `latest.${locale}.json` : 'latest.json'), 'utf8'));
+      assert.equal(manifest.version, '1.2.3');
+      assert.deepEqual(Object.keys(manifest.platforms).sort(), [...packages.keys()].sort());
+      for (const [platform, filename] of packages) {
+        assert.deepEqual(manifest.platforms[platform], {
+          url: `${readChannelConfig('wb').releaseBaseUrl}/${encodeURIComponent(filename)}`,
+          signature: `signature-${platform}`,
+        });
+      }
     }
+  });
+}
+
+test('custom download URLs retain unversioned macOS archives alongside versioned installers', async (t) => {
+  const { assets, output } = await fixture(t, 'wb');
+  const packages = await writeWbPackages(assets);
+  await mkdir(output);
+  for (const otherVersion of ['0.9.0', '9.0.0']) {
+    await writeFile(path.join(assets, `MALING_${otherVersion}_x64-setup.exe`), 'other installer');
+    await writeFile(path.join(assets, `MALING_${otherVersion}_x64-setup.exe.sig`), 'other signature');
+  }
+  const baseUrl = 'https://example.invalid/downloads';
+  const manifestPath = path.join(output, 'latest.json');
+  const result = spawnSync(process.execPath, [
+    path.join(repoRoot, 'scripts', 'generate-updater-json.mjs'), assets, manifestPath,
+    '--base-url', `${baseUrl}/`, '--version', '1.2.3',
+  ], { cwd: output, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  assert.deepEqual(Object.keys(manifest.platforms).sort(), [...packages.keys()].sort());
+  for (const [platform, filename] of packages) {
+    assert.deepEqual(manifest.platforms[platform], {
+      url: `${baseUrl}/${encodeURIComponent(filename)}`,
+      signature: `signature-${platform}`,
+    });
   }
 });
 
@@ -88,6 +126,8 @@ for (const critical of [undefined, false, true]) {
       assert.equal(manifest.version, '1.2.3');
       assert.equal(manifest.notes, notesFor(locale));
       assert.equal(manifest.platforms['windows-x86_64'].signature, 'signature');
+      assert.equal(manifest.platforms['windows-x86_64'].url,
+        'https://github.com/diodeme/Gold-Band/releases/download/v1.2.3/Gold-Band_1.2.3_x64-setup.exe');
     }
     assert.deepEqual(
       JSON.parse(await readFile(path.join(output, 'latest.json'), 'utf8')),
