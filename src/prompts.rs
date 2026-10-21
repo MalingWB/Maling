@@ -599,6 +599,20 @@ mod tests {
         assert!(en.contains("entire work item"));
         assert!(en.contains("do not limit the block to your own node's output"));
         assert!(en.contains("brief summary"));
+        // M5-bw（开发设计 §12.65）：覆盖清单由平铺改为分级——构建包名/制品名与部署环境是
+        // 最重要输出（含「不涉及构建部署时明确说明」防歧义条款），测试要点/变更范围降为
+        // 锦上添花；工作流收尾节点必须把前序（尤其 CI/CD 节点）产出中的构建/部署核心信息
+        // 携带进自己的块——即使构建部署非本节点执行，防止核心信息在链路末端丢失。两语言均锁定。
+        assert!(zh.contains("构建出的包名/制品名"));
+        assert!(zh.contains("部署的环境"));
+        assert!(zh.contains("不涉及构建或部署"));
+        assert!(zh.contains("尤其是 CI/CD 节点"));
+        assert!(zh.contains("携带进你的块"));
+        assert!(en.contains("the built artifact/package name"));
+        assert!(en.contains("the environment it was deployed to"));
+        assert!(en.contains("no build or deployment"));
+        assert!(en.contains("especially those of CI/CD nodes"));
+        assert!(en.contains("carry that information forward into your block"));
     }
 
     #[test]
