@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::multica::error::MulticaError;
+use crate::multica::markdown_source::markdown_source_to_plain_text;
 
 /// PAT 创建请求（`POST /api/tokens` body）。serde 默认序列化为 snake_case 键。
 #[derive(Debug, Serialize)]
@@ -286,6 +287,10 @@ impl RemoteTask {
     /// 皆空回退 title（issue 无正文时预填标题）。issue 正文排在 handoff 之后、title 之前——
     /// 比「具体指令/交接」次之、比「标题」丰富。空白值视为缺失跳过——按来源**逐个**过滤后再短路，
     /// 保证纯空白的上游来源不会吞掉下游（如空白 quick_create 仍回退 title）。
+    ///
+    /// 返回值是**纯文本**：全部来源统一过 [`markdown_source_to_plain_text`]——multica web
+    /// 富文本编辑器保存的是 markdown 源码（`\_` 等转义由 tiptap 序列化产生），码灵把需求
+    /// 正文当纯文本消费（composer 预填 + agent 首轮 prompt），在此边界解掉转义层（M5-bx）。
     pub fn requirement_text(&self) -> Option<String> {
         [
             self.quick_create_prompt.as_deref(),
@@ -299,7 +304,7 @@ impl RemoteTask {
         .into_iter()
         .flatten()
         .find(|s| !s.trim().is_empty())
-        .map(str::to_string)
+        .map(markdown_source_to_plain_text)
     }
 }
 
@@ -1881,6 +1886,23 @@ mod tests {
             serde_json::from_str(r#"{"id":"t","thread_name":"Title","quick_create_prompt":"  "}"#)
                 .unwrap();
         assert_eq!(blank.requirement_text().as_deref(), Some("Title"));
+    }
+
+    #[test]
+    fn remote_task_requirement_text_decodes_markdown_escapes() {
+        // multica web 富文本编辑器（tiptap）保存走 @tiptap/markdown 序列化，正文的 `_`/`*`/`[`
+        // 等会被转义成 `\_`/`\*` 存库；web 端渲染时解析回去视觉正常，码灵拿到的是 markdown
+        // 源码。码灵把需求正文当**纯文本**消费（composer 预填 + agent 首轮 prompt），必须在
+        // requirement_text 边界做一次 CommonMark 转义解码（代码块/代码 span 内的转义是用户
+        // 字面输入，保留；`C:\Users` 等非标点前反斜杠不动）。JSON 里 `\\_` 解析后即被测输入 `\_`。
+        let task: RemoteTask = serde_json::from_str(
+            r#"{"id":"t","thread_name":"T","issue_description":"包名 my\\_app\\_1 部署 dev\\_cluster"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            task.requirement_text().as_deref(),
+            Some("包名 my_app_1 部署 dev_cluster"),
+        );
     }
 
     #[test]

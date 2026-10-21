@@ -2700,6 +2700,25 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.66 改动六十四：需求正文 markdown 转义解码——requirement_text 边界把 tiptap 序列化源码转纯文本（M5-bx，2026-10-21）
+
+**背景（用户报告）**：需求管理点 multica 任务【执行】进入输入框后，正文里每个下划线前多出一个反斜杠（`my\_app` 形态）；multica web 页面上同内容显示正常。
+
+**根因（源码证据）**：multica web issue 编辑器（ContentEditor，tiptap，`contentType: 'markdown'` + `editor.getMarkdown()` 保存）经 `@tiptap/markdown` 序列化，`escapeMarkdownSyntax`（`text.replace(/([\\`*_[\]~])/g, "\\$1")`）把 `\` `` ` `` `*` `_` `[` `]` `~` 转义后存库；web 端展示时再解析 markdown（`\_` → `_`），往返自洽所以 web 视觉正常。码灵拿到的是 server 原样返回的 **markdown 源码**（webank `daemon.go` detail/claim 响应不反转义），而码灵把需求正文当**纯文本**消费（composer 预填 + agent 首轮 prompt，均无 markdown 渲染层）——转义层从未被解掉。这不是码灵链路漏了转义处理（全链路审计确认前端/后端无任何转义逻辑），而是**层语义错配**：markdown 源码 → 纯文本缺一次转换。定性：好设计（server 原样存储往返一致）+ 消费端缺层转换。
+
+**方案（码灵侧解码，方案 A）**：新增纯函数模块 `multica/markdown_source.rs`，`markdown_source_to_plain_text(source) -> String` 按 CommonMark 转义语义反转序列化转义，接线在 `RemoteTask::requirement_text()` 尾部（`.map(markdown_source_to_plain_text)`）——全部来源（quick-create/chat/comment/autopilot/handoff/issue_description/title）统一解码，composer 预填（`detail_prefill` → `vm.requirement`）与 agent 首轮 prompt 单点覆盖。规则：
+- 围栏代码块（``` / ~~~，≤3 空格缩进、≥3 字符开栏、同字符且长度 ≥ 开栏才闭栏）内容逐字保留；
+- 行内代码 span（等长反引号 run 闭合）内容逐字保留；**未闭合的开栏按字面处理、其后照常解码**（前瞻匹配闭合 run，避免单个杂散反引号吞掉全文解码）；代码 span 不跨段落（空行）与围栏配对；
+- 其余位置 `\` + ASCII 标点 → 标点；`\` + 其他（Windows 路径 `\U`、非 ASCII、行尾硬换行）→ 反斜杠原样保留；
+- 只消除转义层，不做 markdown → 文本结构转换（`**`、`#`、链接等语法原样保留，与「码灵把正文当纯文本」的消费语义一致，也避免 pulldown-cmark 全量渲染的过度转换）。
+- 明确不解码：`detail_prefill` 的 DPMS 溯源块与上游交付说明块（`parent_output`）——二者非 tiptap 作者产出（服务端派生 / agent completion-output），保持原样。
+
+**方案自评审**：过度设计——单文件纯函数 + 单点接线，无新增状态/依赖/ crate（未引入 pulldown-cmark）；前瞻匹配是 CommonMark 语义本身要求（未闭合回退字面），非假设性复杂度；文档化简化（4 空格缩进代码块、setext 标题、info 串反引号校验）均有依据：tiptap 代码块序列化为围栏式，不会产出这三类形态。性能——requirement 正文为 KB 级一次性转换，段落级 O(n) 主导、反引号前瞻最坏 O(n²) 仅在病态多反引号文本出现且 n 为段长，可忽略；转换发生在 claim/detail 拉取边界，不在任何热路径。
+
+**验证结果**：红绿流程（bug-fix-verification.md）——先写集成测试 `remote_task_requirement_text_decodes_markdown_escapes`（client.rs，JSON fixture `\\_` 即 tiptap 产出形态），未修复实现上稳定红（`left: Some("包名 my\_app\_1 部署 dev\_cluster")`）；实现后转绿。新模块单测 11 条（标点集/非标点保留/连续转义/代码 span 等长闭合与未闭合回退/跨段与跨围栏不配对/围栏逐字与闭栏条件/≤3 空格缩进/行尾反斜杠/CRLF/纯文本不变）全绿；`multica::` 全套件 191/191 绿（含 client 优先级既有测试、vm requirement 预填、commands/bridge）。真实内网 multica 任务的端到端视觉效果（本机 server 不可达）留内网验收。内网侧根治（tiptap 序列化转义策略）另行整理需求文档交内网团队，不在码灵侧代偿。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）
