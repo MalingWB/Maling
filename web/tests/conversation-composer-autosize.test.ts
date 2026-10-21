@@ -8,6 +8,10 @@ const composerSource = readFileSync(
   new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url),
   'utf-8',
 );
+const adornmentSource = readFileSync(
+  new URL('../src/components/conversation/ComposerLeadingAdornment.tsx', import.meta.url),
+  'utf-8',
+);
 
 describe('conversation composer autosize contract', () => {
   it('uses the narrower home layout and a compact initial textarea', () => {
@@ -43,16 +47,21 @@ describe('conversation composer autosize contract', () => {
     expect(composerSource).toContain(
       '<div className={CONVERSATION_HOME_COMPOSER_LAYOUT.inputScrollContainerClassName}>',
     );
-    // chip 与斜杠标签的绝对定位 span 必须位于滚动包装层内部（在其开标签之后渲染）。
-    // 两类 leading adornment 统一使用 main 引入的 COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME
-    // 槽位常量（absolute z-10 inline-flex … + left-0 top-2），不再各自硬编码类名字符串。
+    // leading adornment 槽（slash 标签 + multica chip）由 ComposerLeadingAdornment 组件渲染，
+    // 其消费点必须位于滚动包装层内部（在其开标签之后渲染），组件内的槽位 span 必须使用
+    // COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME 槽位常量（absolute z-10 inline-flex … +
+    // left-0 top-2）绝对定位，不再各自硬编码类名字符串。
     const wrapperIndex = composerSource.indexOf(
       'CONVERSATION_HOME_COMPOSER_LAYOUT.inputScrollContainerClassName',
     );
-    const chipIndex = composerSource.indexOf(
-      '${COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME} left-0 top-2',
-    );
+    const slotIndex = composerSource.indexOf('<ComposerLeadingAdornment');
     expect(wrapperIndex).toBeGreaterThan(-1);
-    expect(chipIndex).toBeGreaterThan(wrapperIndex);
+    expect(slotIndex).toBeGreaterThan(wrapperIndex);
+    expect(adornmentSource).toContain(
+      '${COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME} left-0 top-2 max-w-full',
+    );
+    // 窄宽度契约：并排槽（slash 标签 + multica chip）受滚动容器宽度约束，溢出由 chip truncate 消化。
+    expect(adornmentSource).toContain('max-w-full');
+    expect(adornmentSource).toContain('min-w-0');
   });
 });

@@ -1028,7 +1028,7 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **背景 / 根因**：用户要求 chip「放在输入框里面，删除键可直接删除」，其余样式不变。§12.22（M5-aj）独立 chip 正确，但两点可完善：① chip 在 `PromptInput` 首子节点 block 行（输入区上方独立行），与正文分离；② Backspace 删 chip 要求正文为空，体感不够直接。
   - **方案**：① chip 内嵌——复用 slash 命令标签同款 leading adornment 机制（`useLeadingAdornmentTextIndent`）：chip 移进 textarea 的 `relative` 容器、绝对定位左上角，正文首行 text-indent 缩进让位（换行后回左侧），chip 与 slash 互斥（slash 优先）；② Backspace 放宽——触发条件从「正文为空」改为「光标在正文起点且无选区（`selectionStart===0 && selectionEnd===0`）」，模拟删首个 token，正文非空 / 光标在中末 / 有选区时照常删字不误删；③ 提取纯函数 `shouldBackspaceClearMulticaBinding` 固化交互契约（home composer 过重不挂组件测）。
   - **验证**：tsc 零错；生产构建绿；vitest `conversation-composer-multica-chip` 9 测 + composer/multica 回归 102 测全过。
-  - **更新**：§12.22（M5-aj）chip 渲染位置 + Backspace 删除条件；chip 与正文解耦 / × 解绑 / claim-at-send 删 chip 纯本地等设计不变。
+  - **更新**：§12.22（M5-aj）chip 渲染位置 + Backspace 删除条件；chip 与正文解耦 / × 解绑 / claim-at-send 删 chip 纯本地等设计不变。**后续修正（M5-bv，开发设计 §12.64）**：①「chip 与 slash 互斥（slash 优先）」改为**同槽并排显示**（@role + 远程绑定是合法发送组合，互斥会让用户误以为绑定丢失）；②「home composer 过重不挂组件测」限制随 adornment 槽抽出 `ComposerLeadingAdornment` 组件解除。
 
 - [x] **M5-aq**（本轮）multica dead_code 清理——移除 `error/state/bridge/client.rs` 4 个临时模块级 `#![allow(dead_code)]`，暴露项分类处置（开发设计 §12.29）：
   - **删**：`WorkspaceEmpty` / `PinSessionFailed` 变体（零构造——前端空态守卫 / pin best-effort 记日志）+ i18n；`ActiveRemoteRun.runtime_id` 字段（零读取，心跳走 runtime_ids map）；`client.rs::post_json_with_workspace`（零调用，issue 接口走 `json_send(PUT)`）。
@@ -1222,6 +1222,12 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **问题（PR 负责人审批六项）**：① 跨项目误投递（不修——remote_task_id 服务端分配全局唯一，客户端只维护任务↔远程绑定，项目归属是用户决策）；② skill 根目录是目录链接（symlink/junction）时顺着链接把库外内容整体上传；③ 更新崩溃后重试先删唯一备份且前缀清扫可误删名字相近 skill 的备份；④ 续跑登记 run_mode 用本次 UI 选定而非任务实际执行模式；⑤ 列表刷新挂起期旧选择仍可提交同步；⑥ 五语言「常驻会话」文案缺失致翻译检查红。
   - **实现**：② `resolve_own_skill_dir` 双防护——入口目录 `is_symlink()`（Windows 覆盖 junction）拒绝 + canonical 落点必须在库内；③ `remove_stale_bundle_staging` 精确解析残留名（`my-skill` 不再匹配 `my-skill-v2-777`）+ backup recovery-first（唯一副本恢复回 target，`write_bundle_instance` 据此按覆盖语义完成本次写入）；④ `resumed_run_mode` helper——续跑登记取被续 run 持久化 `ConversationMetadata.run_mode`，读不到回退本次请求选定并 WARN；⑤ `RemoteSkillSyncDialog` 列表 effect 开始清空旧选择 + 同步按钮/守卫补 `loadingList`；⑥ `conversation.sidebar` 常驻五键补 zh-TW/ja-JP/ko-KR/pt-BR/es。定性：②③④⑤好设计+实现不完善，⑥新增键漏维护五语言。
   - **验证**：五项均最小失败测试先行后转绿（`multica::local_skills::` 19 过 / core `skill::` 23 过 / desktop `multica::` 167 过 / 弹窗 4 过 / `i18n-loading` 2 红转 7 绿）；clippy 与 tsc 零错误；全量 web 套件 22 例失败经 stash 对照确认为 HEAD 既有、与本批无关。
+
+- [x] **M5-bv**（2026-10-21）@role 输入后 multica 绑定 chip 消失——leading adornment 槽互斥改并排（纯前端，开发设计 §12.64 改动六十二）：
+  - **问题（用户报告）**：需求管理点 multica 任务「执行」进入输入框后，在正文开头输入 `@角色`，开头的 multica 任务标签被「覆盖」消失，任务实际仍关联。
+  - **根因**：数据显示分层错位——数据层无缺陷（slash 提交不清 `draft.remote`，发送仍走 `start_remote_conversation_run`），纯显示层缺陷：M5-ap 把绑定 chip 与 slash 标签设计为同一 leading adornment 槽位互斥（slash 优先），依据「绑定预填的是任务需求文本、非 slash 命令」的假设；但「远程任务 + 指定执行角色」是合法组合（发送链路同时转发 role snapshot 与远程绑定），假设与真实用法冲突。定性：好设计 + 实现不完善。
+  - **实现**：adornment 槽抽为 `ComposerLeadingAdornment` 组件——slash 标签在前、绑定 chip 随后（`gap-1`）条件并排；`adornmentRef` 挂槽容器测总宽做首行缩进（ResizeObserver 天然支持多标签）；`remoteChipActive` 的 `!committedSlashCommand` 抑制删除；Backspace 让位契约不变（slash 提交时先拆角色标签）。零数据层改动。
+  - **验证**：红绿流程——组件先按互斥行为等价抽出（tsc 零错），新增 `composer-leading-adornment` 4 测，并存断言在互斥实现上红（`'开发' to contain 'Multica · 修复登录超时'`，与根因一致）后改并排转绿；既有两个源码契约测试锚点迁移（chip 主题断言改读组件文件；autosize 滚动收口改跨文件双断言）；相邻 composer/slash 10 套件 104 测全绿 + tsc 零错；本地 vite dev 首屏无回归、console 零错误。@role 菜单与真实 multica 绑定的并排视觉依赖 Tauri IPC + 内网 multica（本地不可达），逻辑由 DOM 测试覆盖，视觉留内网验收。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

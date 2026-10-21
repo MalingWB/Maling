@@ -1804,7 +1804,7 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **根因（好设计、实现可完善）**：§12.22（M5-aj）的独立 chip 方案（与正文解耦、可见可控、删除语义明确）本身正确，但两点实现可完善：① chip 作为 `PromptInput` 的首子节点（block-flow，输入区**上方独立行**），与正文分离，不像「正文的一部分」；② Backspace 删除要求**正文为空**（`visibleContent.trim() === ''`，避免误删正文），体感上「不够直接」——用户希望删 chip 像删正文最前一个字一样自然。
 
 **方案（复用既有 leading adornment 机制 + 提取可测纯函数）**：
-- **chip 内嵌（复用 slash 同款机制）**：chip 从 `PromptInput` 首子节点 block 行移进 textarea 的 `relative` 容器，作为正文最前的 leading adornment——绝对定位左上角（`absolute left-0 top-0 z-10`），正文首行经 `useLeadingAdornmentTextIndent`（`text-indent = chip 宽度 + 0.25rem`）缩进让位；CSS `text-indent` 只作用于首行，换行后正文回到左侧（chip 只占首行高度，不与后续行重叠）。chip 与 slash 命令标签互斥（**slash 优先**——绑定预填的是任务需求文本、非 slash 命令），共用同一套 `leadingAdornmentLayout`（原仅服务 slash 的 `committedInputLayout` 重命名 + `enabled` 泛化为 `committedSlashCommand || multicaChipActive`）。× 关闭按钮保留（点 × 仍删 chip）。
+- **chip 内嵌（复用 slash 同款机制）**：chip 从 `PromptInput` 首子节点 block 行移进 textarea 的 `relative` 容器，作为正文最前的 leading adornment——绝对定位左上角（`absolute left-0 top-0 z-10`），正文首行经 `useLeadingAdornmentTextIndent`（`text-indent = chip 宽度 + 0.25rem`）缩进让位；CSS `text-indent` 只作用于首行，换行后正文回到左侧（chip 只占首行高度，不与后续行重叠）。chip 与 slash 命令标签互斥（**slash 优先**——绑定预填的是任务需求文本、非 slash 命令；⚠️ **此互斥已被 M5-bv（§12.64）取代**：`@role` + 远程绑定是合法发送组合，二者改为同槽并排显示），共用同一套 `leadingAdornmentLayout`（原仅服务 slash 的 `committedInputLayout` 重命名 + `enabled` 泛化为 `committedSlashCommand || multicaChipActive`）。× 关闭按钮保留（点 × 仍删 chip）。
 - **Backspace 删除条件放宽**：从「正文为空」改为「光标停在正文最前且无选区（`selectionStart === 0 && selectionEnd === 0`）」——模拟「chip 是正文首个 token」：文本起点的 Backspace 本就是 no-op，劫持它删 chip；正文非空、光标在中间/末尾（`selectionStart > 0`）或存在选区（`selectionEnd !== 0`，即便起点为 0）时照常删字、不误伤 chip。slash 提交时让位 slash 控制器。
 - **提取纯函数固化交互契约**：把 Backspace 触发条件从 `handleKeyDown` inline 提取为 `web/src/lib/conversation-composer-multica-chip.ts` 的 `shouldBackspaceClearMulticaBinding({key, multicaActive, hasCommittedSlashCommand, selectionStart, selectionEnd})`，单测覆盖 5 维输入分支。home `ConversationComposer` 依赖过重（draft context + agent commands + attachment + slash controller + right workspace）不挂组件测，与既有「纯逻辑 reducer 测 + 容器测」套件策略一致（§12.22 验收同款理由）。
 
@@ -2667,6 +2667,21 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **方案自评审**：过度设计——零新增抽象/状态/依赖，纯路由契约修正；不加「响应像元数据 JSON 即判失败」的启发式防御（附件本就可以是 .json 文件，正确端点即正确语义）。性能——无变化。
 
 **验证结果**：红绿测试（bug-fix-verification）——先改既有软失败测试断言为期待 `GET /api/attachments/a1/download`（错误串与真实请求共用同一 `path` 变量，钉住请求路由），旧代码红、修正后绿；desktop `multica::` 全量定向测试全绿。
+
+### 12.64 改动六十二：composer leading adornment 槽并排化——multica 绑定 chip 不再被 @role 标签挤掉（M5-bv，2026-10-21）
+
+**背景（用户报告）**：需求管理点 multica 任务「执行」进入输入框后，在正文开头输入 `@角色`，开头的 multica 任务标签（绑定 chip）被「覆盖」消失，但任务实际仍关联（发送仍走远程链路）。
+
+**根因（数据显示分层错位）**：数据层无缺陷——`parseCommittedSlashItem` 认定正文开头的 `@role ` 为已提交角色**不会**清 `draft.remote`，`handleSubmit` 原样转发绑定、发送走 `start_remote_conversation_run`；缺陷纯在显示层：§12.28（M5-ap）把绑定 chip 与 slash 标签设计为同一 leading adornment 槽位**互斥**（渲染三元 `committedSlashCommand ? <SlashTag/> : remoteBinding ? <chip/> : null`），依据是「绑定预填的是任务需求文本、非 slash 命令」这一假设。但「远程任务 + 指定执行角色」是合法且有意义的用户组合（发送链路同时转发 role snapshot 与远程绑定），假设与真实用法冲突——slash 提交后 chip 消失，用户误以为绑定丢失。定性：好设计（claim-at-send 绑定生命周期）+ 实现不完善（显示层互斥假设错误）。
+
+**方案（同槽并排，零数据层改动）**：
+- leading adornment 槽抽为独立组件 `web/src/components/conversation/ComposerLeadingAdornment.tsx`：slash 标签在前（锚定正文首个 token）、绑定 chip 随后（`gap-1`），条件并排渲染；`adornmentRef` 挂槽容器，`useLeadingAdornmentTextIndent` 以 ResizeObserver 测**槽总宽**做首行缩进，天然支持多标签。抽取同时解除「home `ConversationComposer` 依赖过重不挂组件测」的历史限制（§12.22/§12.28 同款理由）——adornment 槽成为可独立 DOM 测试单元。
+- `ConversationComposer`：`remoteChipActive = Boolean(remoteBinding) && !committedSlashCommand` 的抑制条件删除，indent 启用改为 `committedSlashCommand || remoteBinding`；顺带清理 5 个随迁移失效的 import（Badge/Globe/SlashCommandInputTag/agentIcon{Src,Class}/SLOT 常量）。
+- **Backspace 让位契约不变**（`shouldBackspaceClearRemoteBinding` 的 `!hasCommittedSlashCommand`）：slash 提交时正文起点 Backspace 先拆角色标签（unwrap），语义正确，非本次缺陷。
+
+**方案自评审**：过度设计——零新增状态/依赖/reducer action，纯渲染条件修正 + 为可测性抽取组件，复用既有缩进测量机制。性能——纯渲染条件变化，ResizeObserver 已存在，无影响。
+
+**验证结果**：红绿流程（bug-fix-verification）——先按互斥行为等价抽出组件并接线（tsc 零错），新增 `web/tests/composer-leading-adornment.test.tsx`（4 测：双标签并存 + × 解绑回调 / 仅 slash / 仅 chip / 双无不渲染槽），并存断言在互斥实现上稳定红（`expected '开发' to contain 'Multica · 修复登录超时'`，与根因一致），改并排后转绿；两个既有源码契约测试锚点迁移——`conversation-composer-remote-chip`（chip 主题对比断言改读组件文件）与 `conversation-composer-autosize`（滚动收口断言改跨文件双断言：消费点在滚动包装层内 + 组件内槽常量）；相邻 composer/slash 10 套件 104 测全绿 + tsc build 范围零错。UI：本地 vite dev 打开 composer 首屏渲染正常、console 零错误；@role 菜单与真实 multica 绑定的完整视觉链路依赖 Tauri IPC + 内网 multica（本地不可达，既有环境约束），逻辑已由 DOM 测试覆盖，并排视觉留内网验收。
 
 ---
 
