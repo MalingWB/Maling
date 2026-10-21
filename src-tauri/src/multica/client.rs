@@ -177,7 +177,8 @@ pub struct RemoteTask {
     /// 首轮需求文本——来源字段（镜像 server `AgentTaskResponse` 的来源互斥分支，仅 claim 响应携带）。
     ///
     /// pending 列表只有 `thread_name`，无这些字段。供 [`RemoteTask::requirement_text`] 取「最佳可用」
-    /// 预填文本：quick-create/chat/comment/autopilot/handoff 任一非空取之；皆空回退 title（issue 场景）。
+    /// 预填文本：quick-create/chat/comment/autopilot/handoff 任一非空取之；皆空即无正文（title 不进
+    /// 正文槽，M5-ca 起由 vm 任务名称块承载）。
     #[serde(default)]
     pub quick_create_prompt: Option<String>,
     #[serde(default)]
@@ -191,7 +192,7 @@ pub struct RemoteTask {
     /// issue 正文（webank `AgentTaskResponse.IssueDescription`，仅 issue 任务 + 仅 claim 响应携带）。
     ///
     /// issue 任务无 quick_create/chat/comment/autopilot/handoff 来源时，正本是 issue 自身的 body；
-    /// `requirement_text()` 把它排在 handoff_note 之后、title 之前——比「具体指令」次之、比「标题」丰富。
+    /// `requirement_text()` 把它排在 handoff_note 之后（末位正文来源）——比「具体指令」次之。
     #[serde(default)]
     pub issue_description: Option<String>,
     #[serde(default)]
@@ -284,9 +285,10 @@ impl RemoteTask {
     /// 预填用「最佳可用需求文本」（镜像 server `computeTaskKind` 来源互斥优先级）。
     ///
     /// quick-create → chat → comment → autopilot → handoff → issue_description 任一非空取之；
-    /// 皆空回退 title（issue 无正文时预填标题）。issue 正文排在 handoff 之后、title 之前——
-    /// 比「具体指令/交接」次之、比「标题」丰富。空白值视为缺失跳过——按来源**逐个**过滤后再短路，
-    /// 保证纯空白的上游来源不会吞掉下游（如空白 quick_create 仍回退 title）。
+    /// 皆空即无正文（M5-ca 起不回退 title——任务名称由 vm 预填的专属名称块承载，回退只会让
+    /// 无正文任务把标题重复一遍）。issue 正文排在 handoff 之后——比「具体指令/交接」次之。
+    /// 空白值视为缺失跳过——按来源**逐个**过滤后再短路，保证纯空白的上游来源不会吞掉下游
+    /// （如空白 quick_create 仍会落到 chat）。
     ///
     /// 返回值是**纯文本**：全部来源统一过 [`markdown_source_to_plain_text`]——multica web
     /// 富文本编辑器保存的是 markdown 源码（`\_` 等转义由 tiptap 序列化产生），码灵把需求
@@ -299,7 +301,6 @@ impl RemoteTask {
             self.autopilot_description.as_deref(),
             self.handoff_note.as_deref(),
             self.issue_description.as_deref(),
-            self.title.as_deref(),
         ]
         .into_iter()
         .flatten()
@@ -1831,7 +1832,8 @@ mod tests {
     #[test]
     fn remote_task_requirement_text_picks_source_by_priority() {
         // 镜像 server computeTaskKind 来源互斥优先级：
-        // quick-create > chat > comment > autopilot > handoff > issue_description > title。
+        // quick-create > chat > comment > autopilot > handoff > issue_description
+        // （M5-ca 起皆空即无正文——title 不进正文槽，由 vm 任务名称块承载）。
         let qc: RemoteTask = serde_json::from_str(
             r#"{"id":"t","thread_name":"T","quick_create_prompt":"qc-prompt"}"#,
         )
@@ -1859,10 +1861,11 @@ mod tests {
             Some("Steps: ...\nExpected: ...")
         );
 
-        // issue 无 body → 回退 title（预填 issue 标题）。
+        // issue 无 body → 无正文（M5-ca 起 title 不再混进正文槽——任务名称由 vm 预填的
+        // 专属名称块承载，此处回退只会让无正文任务把标题重复一遍）。
         let issue: RemoteTask =
             serde_json::from_str(r#"{"id":"t","thread_name":"Login bug"}"#).unwrap();
-        assert_eq!(issue.requirement_text().as_deref(), Some("Login bug"));
+        assert_eq!(issue.requirement_text(), None);
 
         // issue_description 排在 handoff 之后：handoff 非空时压过正文。
         let handoff_over_body: RemoteTask = serde_json::from_str(
@@ -1881,11 +1884,11 @@ mod tests {
         .unwrap();
         assert_eq!(multi.requirement_text().as_deref(), Some("qc"));
 
-        // 空白来源视为缺失，跳到下一优先级（回退 title）。
+        // 空白来源视为缺失，逐个跳过；全部来源缺席 → None（名称块承载标题，见上）。
         let blank: RemoteTask =
             serde_json::from_str(r#"{"id":"t","thread_name":"Title","quick_create_prompt":"  "}"#)
                 .unwrap();
-        assert_eq!(blank.requirement_text().as_deref(), Some("Title"));
+        assert_eq!(blank.requirement_text(), None);
     }
 
     #[test]
@@ -1902,6 +1905,22 @@ mod tests {
         assert_eq!(
             task.requirement_text().as_deref(),
             Some("包名 my_app_1 部署 dev_cluster"),
+        );
+    }
+
+    #[test]
+    fn remote_task_requirement_text_strips_html_and_decodes_entities() {
+        // 同一序列化链路还会产 HTML 岛屿与实体：块级 `<p>` 包裹正文、行内标签、空段落标记
+        // `&nbsp;`、`&amp;` 等实体（DPMS 同步的 HTML 正文同构）。web 端 markdown 渲染器正常
+        // 显示，码灵纯文本消费需在 requirement_text 边界剥掉 HTML 层、解码实体；`&lt;p&gt;`
+        // 这类实体解出的是用户字面文本，不得再当标签二次剥离。
+        let task: RemoteTask = serde_json::from_str(
+            r#"{"id":"t","thread_name":"T","issue_description":"<p>包名 my\\_app</p><p>&nbsp;</p><p>环境 dev\\_cluster &amp; 预发</p>"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            task.requirement_text().as_deref(),
+            Some("包名 my_app\n\u{00A0}\n环境 dev_cluster & 预发\n"),
         );
     }
 

@@ -105,6 +105,8 @@ pub const RUNTIME_INVALID_OUTPUT_REPAIR: LocalizedText =
     localized_prompt!("runtime/invalid_output_repair.md");
 pub const RUNTIME_SCHEDULED_TASK_CONTEXT: LocalizedText =
     localized_prompt!("runtime/scheduled_task_context.md");
+pub const RUNTIME_REMOTE_TASK_TITLE: LocalizedText =
+    localized_prompt_zh_en!("runtime/remote_task_title.md");
 pub const RUNTIME_REMOTE_TASK_CONTEXT: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_context.md");
 pub const RUNTIME_REMOTE_TASK_PARENT_OUTPUT: LocalizedText =
@@ -186,6 +188,8 @@ pub const RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN: &str = RUNTIME_INVALID_OUTPUT_REP
 pub const RUNTIME_INVALID_OUTPUT_REPAIR_EN: &str = RUNTIME_INVALID_OUTPUT_REPAIR.en;
 pub const RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN: &str = RUNTIME_SCHEDULED_TASK_CONTEXT.zh_cn;
 pub const RUNTIME_SCHEDULED_TASK_CONTEXT_EN: &str = RUNTIME_SCHEDULED_TASK_CONTEXT.en;
+pub const RUNTIME_REMOTE_TASK_TITLE_ZH_CN: &str = RUNTIME_REMOTE_TASK_TITLE.zh_cn;
+pub const RUNTIME_REMOTE_TASK_TITLE_EN: &str = RUNTIME_REMOTE_TASK_TITLE.en;
 pub const RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN: &str = RUNTIME_REMOTE_TASK_CONTEXT.zh_cn;
 pub const RUNTIME_REMOTE_TASK_CONTEXT_EN: &str = RUNTIME_REMOTE_TASK_CONTEXT.en;
 pub const RUNTIME_REMOTE_TASK_PARENT_OUTPUT_ZH_CN: &str = RUNTIME_REMOTE_TASK_PARENT_OUTPUT.zh_cn;
@@ -265,6 +269,10 @@ pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
     (
         "runtime/scheduled_task_context.md",
         RUNTIME_SCHEDULED_TASK_CONTEXT,
+    ),
+    (
+        "runtime/remote_task_title.md",
+        RUNTIME_REMOTE_TASK_TITLE,
     ),
     (
         "runtime/remote_task_context.md",
@@ -470,6 +478,16 @@ mod tests {
                 }),
             );
         }
+    }
+
+    #[test]
+    fn remote_task_title_templates_render_task_name() {
+        // 任务名称块（multica 预填 composer 首块，M5-ca）：单变量渲染，中英标签锁定。
+        let zh =
+            assert_fully_rendered(RUNTIME_REMOTE_TASK_TITLE_ZH_CN, json!({"title": "修复登录"}));
+        assert_eq!(zh, "任务名称：修复登录");
+        let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_TITLE_EN, json!({"title": "Fix login"}));
+        assert_eq!(en, "Task name: Fix login");
     }
 
     #[test]
