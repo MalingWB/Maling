@@ -613,6 +613,16 @@ mod tests {
         assert!(en.contains("no build or deployment"));
         assert!(en.contains("especially those of CI/CD nodes"));
         assert!(en.contains("carry that information forward into your block"));
+        // M5-by（开发设计 §12.67）：核心信息三项化——改动范围（极其精简）升为第三核心项；
+        // 新增完成后修订条款——任务完成后用户在会话中要求调整时重新输出完整新块（整块覆盖
+        // 非增量、核心信息保留），只更新远程侧存储内容、不改变任务完成状态。完成门控语义不变
+        // （首次块判定完成，后续块走迟到补写通道幂等覆盖）。两语言均锁定。
+        assert!(zh.contains("极其精简"));
+        assert!(zh.contains("重新输出完整的新块"));
+        assert!(zh.contains("不改变任务的完成状态"));
+        assert!(en.contains("extremely brief"));
+        assert!(en.contains("complete new block"));
+        assert!(en.contains("does not change the task's completion status"));
     }
 
     #[test]
