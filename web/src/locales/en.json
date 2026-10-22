@@ -2939,6 +2939,8 @@
         "removeTask": "Remove from list",
         "removeTaskHint": "Removed on this side only; refresh restores it",
         "removeTaskTerminalHint": "Removes the local completion record; it will not reappear on refresh",
+        "rerunTask": "Re-run",
+        "rerunBadge": "Re-run",
         "addWorkspace": "Add Workspace",
         "noWorkspacesBound": "No workspaces bound",
         "status": {
@@ -3176,6 +3178,10 @@
       "readiness": {
         "notReady": "Not ready",
         "notReadyHint": "The matching dev task is not done yet; consider waiting for it"
+      },
+      "issueStatus": {
+        "todo": "To do",
+        "backlog": "Backlog"
       },
       "column": {
         "empty": "No tasks"

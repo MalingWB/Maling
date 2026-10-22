@@ -582,6 +582,12 @@ export interface RuntimeApi {
   /// 移出终态行的「最近完成」本地历史条目（真删除，刷新不复活）；不存在时幂等成功。
   /// 仅终态行（completed/failed）有意义——pending/running 行不来自本地历史。
   removeRemoteCompletedTask(remoteTaskId: string): Promise<void>;
+  /// 终态任务 issue 状态对账（batch-status 分批 → diff 写回本地历史，有变更才广播刷新）。
+  /// 返回变更条数；0 = 无变化 / 未连接 / 单飞退出 / 本轮失败（静默降级，不抛错）。
+  reconcileRemoteTaskStatuses(): Promise<number>;
+  /// 重新执行终态任务：server 克隆新任务（新 id、queued、同 issue、attribution 指回源任务），
+  /// 成功返回新任务 id；源任务与 issue 状态不变，新任务经列表刷新自然进板（按 id 去重）。
+  rerunRemoteTask(taskId: string): Promise<string>;
   listServerMulticaWorkspaces(): Promise<MulticaServerWorkspaceVm[]>;
   pickLocalDirectory(): Promise<string | null>;
   addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string): Promise<MulticaSettingsVm>;

@@ -110,12 +110,14 @@ vi.mock('@/components/ui/tooltip', () => ({
   TooltipContent: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 
-// Board 桩：渲染收到的任务标题 + prepare/cancel/remove/open 触发按钮，把容器逻辑与看板内部解耦。
+// Board 桩：渲染收到的任务标题 + prepare/cancel/rerun/remove/open 触发按钮，把容器逻辑与看板内部解耦。
+// （rerun 入口的 issue 状态门控在看板组件单测固化；桩里终态行恒暴露入口以验证容器接线。）
 vi.mock('@/components/conversation/RemoteTaskBoard', () => ({
-  RemoteTaskBoard: ({ tasks, onPrepare, onCancel, onRemove, onSelectRun }: {
+  RemoteTaskBoard: ({ tasks, onPrepare, onCancel, onRerun, onRemove, onSelectRun }: {
     tasks: { id: string; title: string; status: string; projectId?: string | null; localTaskId?: string | null; runId?: string | null }[];
     onPrepare: (t: unknown) => void;
     onCancel: (t: unknown) => void;
+    onRerun: (t: unknown) => void;
     onRemove: (t: unknown) => void;
     onSelectRun: (p: string, t: string, r: string) => void;
   }) => (
@@ -128,6 +130,9 @@ vi.mock('@/components/conversation/RemoteTaskBoard', () => ({
           )}
           {task.status === 'running' && (
             <button aria-label="conversation.sidebar.remoteTasks.cancelTask" onClick={() => onCancel(task)} />
+          )}
+          {(task.status === 'completed' || task.status === 'failed') && (
+            <button aria-label="conversation.sidebar.remoteTasks.rerunTask" onClick={() => onRerun(task)} />
           )}
           <button aria-label="conversation.sidebar.remoteTasks.removeTask" onClick={() => onRemove(task)} />
           {task.projectId && task.localTaskId && task.runId && (
@@ -160,8 +165,10 @@ const mocks = vi.hoisted(() => ({
   disconnectMultica: vi.fn(),
   getRemoteTaskRequirement: vi.fn(),
   cancelRemoteTask: vi.fn(),
+  reconcileRemoteTaskStatuses: vi.fn(),
   removeRemoteCompletedTask: vi.fn(),
   removeMulticaWorkspace: vi.fn(),
+  rerunRemoteTask: vi.fn(),
   setActiveMulticaWorkspace: vi.fn(),
   openExternalUrl: vi.fn(),
   subscribeRemoteTaskUpdates: vi.fn(),
@@ -174,8 +181,10 @@ vi.mock('@/api', () => ({
   disconnectMultica: mocks.disconnectMultica,
   getRemoteTaskRequirement: mocks.getRemoteTaskRequirement,
   cancelRemoteTask: mocks.cancelRemoteTask,
+  reconcileRemoteTaskStatuses: mocks.reconcileRemoteTaskStatuses,
   removeRemoteCompletedTask: mocks.removeRemoteCompletedTask,
   removeMulticaWorkspace: mocks.removeMulticaWorkspace,
+  rerunRemoteTask: mocks.rerunRemoteTask,
   setActiveMulticaWorkspace: mocks.setActiveMulticaWorkspace,
   openExternalUrl: mocks.openExternalUrl,
   subscribeRemoteTaskUpdates: mocks.subscribeRemoteTaskUpdates,
@@ -191,6 +200,8 @@ const {
   getMulticaSettings,
   getRemoteTaskRequirement,
   cancelRemoteTask,
+  reconcileRemoteTaskStatuses,
+  rerunRemoteTask,
   setActiveMulticaWorkspace,
   subscribeRemoteTaskUpdates,
   subscribeRemoteSourceSettingsUpdates,
@@ -232,6 +243,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   getMulticaSettings.mockResolvedValue(baseSettings());
   setActiveMulticaWorkspace.mockResolvedValue(baseSettings());
+  // 终态对账（multica 状态对账改造）：默认静默成功（0 行变更）；具体行为在专属用例断言。
+  reconcileRemoteTaskStatuses.mockResolvedValue(0);
   subscribeRemoteTaskUpdates.mockResolvedValue(noopUnlisten);
   subscribeRemoteSourceSettingsUpdates.mockResolvedValue(noopUnlisten);
 });
@@ -476,6 +489,50 @@ describe('RemoteTaskManagementPage (container)', () => {
     expect(cancelRemoteTask).toHaveBeenCalledWith('rt-run');
   });
 
+  // 重新执行（multica 任务重试改造）：202 后直接重取列表（server pending 单一事实源，不做本地注入）。
+  it('reruns a terminal task and re-fetches the list after 202', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {
+        'ws-004': [{ id: 'rt-done', workspaceId: 'ws-004', title: 'Done', status: 'completed' } as RemoteTaskVm],
+      },
+    }));
+    rerunRemoteTask.mockResolvedValue('rt-new');
+    const { container } = await renderPage();
+    expect(getRemoteTasks).toHaveBeenCalledTimes(1);
+
+    const rerunBtn = container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.rerunTask"]') as HTMLButtonElement;
+    expect(rerunBtn).toBeTruthy();
+    await act(async () => { rerunBtn.click(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(rerunRemoteTask).toHaveBeenCalledWith('rt-done');
+    // 202 后重取列表：新任务经服务端 pending 自然进板（按 id 去重由合并逻辑保证）。
+    expect(getRemoteTasks).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows the passthrough error (可重试) and keeps the list when rerun fails', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {
+        'ws-004': [{ id: 'rt-done', workspaceId: 'ws-004', title: 'Done', status: 'completed' } as RemoteTaskVm],
+      },
+    }));
+    rerunRemoteTask.mockRejectedValue({ code: 'remote.network-failed', params: { message: 'HTTP 400: issue 已有 pending 任务' } });
+    const { container } = await renderPage();
+
+    const rerunBtn = container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.rerunTask"]') as HTMLButtonElement;
+    await act(async () => { rerunBtn.click(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    // 非 202 错误按错误码原样回显（displayAppError 桩 → mock-error），不重取列表。
+    expect(container.textContent).toContain('mock-error');
+    expect(getRemoteTasks).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="task-rt-done"]')).toBeTruthy();
+  });
+
   it('manual refresh re-fetches the task list without remounting', async () => {
     getRemoteTasks.mockResolvedValue(baseVm({
       workspaces: [ws004],
@@ -495,6 +552,47 @@ describe('RemoteTaskManagementPage (container)', () => {
 
     // 刷新触发再次拉取（count → 2），无需重进页面。
     expect(getRemoteTasks).toHaveBeenCalledTimes(2);
+  });
+
+  // 终态对账（multica 状态对账改造）：页面驱动——multica + 已连接 + 有工作空间时 mount 即一轮。
+  it('reconciles terminal task statuses once on mount when multica is connected with workspaces', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {},
+    }));
+    await renderPage();
+
+    expect(reconcileRemoteTaskStatuses).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips reconciliation when disconnected or no workspaces are bound', async () => {
+    // 未连接：对账无从发起。
+    getRemoteTasks.mockResolvedValue(baseVm({ connected: false }));
+    await renderPage();
+    expect(reconcileRemoteTaskStatuses).not.toHaveBeenCalled();
+
+    // 已连接但未绑定工作空间：无终态历史可对账（本地历史按工作空间归属）。
+    getRemoteTasks.mockResolvedValue(baseVm({ workspaces: [] }));
+    await renderPage();
+    expect(reconcileRemoteTaskStatuses).not.toHaveBeenCalled();
+  });
+
+  it('fires an extra reconciliation round on manual refresh', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {},
+    }));
+    const { container } = await renderPage();
+    expect(reconcileRemoteTaskStatuses).toHaveBeenCalledTimes(1);
+
+    const refreshBtn = container.querySelector('button[aria-label="common.refresh"]') as HTMLButtonElement;
+    await act(async () => { refreshBtn.click(); });
+    await act(async () => { await Promise.resolve(); });
+
+    // mount 一轮 + 手动刷新附带一轮（静默，失败不打扰）。
+    expect(reconcileRemoteTaskStatuses).toHaveBeenCalledTimes(2);
   });
 
   it('filters the board by issue kind and restores the full list on "all"', async () => {

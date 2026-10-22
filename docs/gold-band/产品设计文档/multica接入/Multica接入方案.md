@@ -310,6 +310,7 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
 | **终态回传** | —— | complete(output=末轮产物摘要, session_id=ACP session_id) / fail(error, failure_reason)；终态前先 `PinTaskSession`(`POST /api/daemon/tasks/{id}/session`) 把 session_id 写回 task 行（续跑依赖）；**带 3.2.4 的指数退避重试 + 幂等**确保终态送达；**接受 multica auto-retry**（`max_attempts=2`，runtime_recovery 等可重试原因由 server 兜底） | `multica/client.rs` |
 | **失败恢复 / 续跑** | gold-band 已有 `recover_interrupted_running_sessions`(`app/mod.rs:2397-2401`)；库层 `run_continue_background_with_config_overrides` 原生支持 ACP `session/load` 续接（内部自动读 worker-ref.json continue_ref） | ① 启动 recover-orphans 把残留在飞 task **无条件置失败**（runtime_recovery）② **resume-safe 失败**（runtime_offline / runtime_recovery / timeout）→ `run_continue_background_with_config_overrides(task_id, run_id, None, None, …)`，内部 `session/load` 续接（见 3.2.7）③ **resume-unsafe 失败**（agent_error）→ 整 task `POST /api/issues/{id}/rerun` 重新入队（新会话）④ **接受 multica auto-retry 兜底** + 用户可手动【rerun】 | `multica/loop.rs`、`StateConfig` 新增字段、新增 `rerun_multica_task` 命令 |
 | **取消检测** | gold-band 已有 stop/pause session 能力 | 长任务执行期周期 `GET /tasks/{id}/status`，发现 cancelled/failed/404 → 中断本地 run（复用 gold-band stop session） | `multica/loop.rs` |
+| **终态对账 + 任务重新执行** | 终态历史（`remote_completed_tasks`，上限 50）/ `with_state` dirty 落盘 / 前端事件订阅与三源合并去重均既有 | **multica 任务重试改造（M5-cb）**：① 看板页面驱动对账——mount + 30s 轮询（`document.hidden` 跳过、手动刷新附带一轮），`batch-status`（B4）回填 `issue_status_category/_name` 进终态历史（diff 无变更不落盘、不 emit）；② 终态行且 category ∈ {todo, backlog, done}（in_progress 排除——multica 按 issue+agent 串行）渲染【重新执行】→ `rerun`（D1a）→ 202 后**源终态行退场**（rerun 命令真删除本地终态历史 + 列表构建按 rerun 血缘过滤兜底——「任务移回待办」单行移动语义，旧会话悬空仅会话列表直达）并重取列表（server pending 单一事实源）；③ rerun 新任务（`rerun_of_task_id` 非空）渲染「重新执行」徽标，todo/backlog 终态行渲染 issue 状态标记（自定义名优先）；④ 400 业务 message 透传直显（可重试）；旧 server 两接口 404 → 静默降级（无按钮/标记） | `multica/client.rs`、`multica/bridge.rs`（`apply_reconciled_issue_status`）、`multica/commands.rs`（`reconcile_remote_task_statuses` / `rerun_remote_task`）、`web/src/pages/RemoteTaskManagementPage.tsx`、`web/src/components/conversation/RemoteTaskBoard.tsx` |
 
 **性能优化（连接池复用 + liveness 短超时 + 自愈单次重试 + tick 埋点）**：上述 client/loop 落地后做了一次系统性性能检视（10 维度），前置确认业务逻辑正确（锁不跨 await、终态严格重试、4xx 不重试、前端纯事件驱动、PAT 不回显），修复两项严重缺陷（实现细节见开发设计 §12.13）：
 - **共享 `reqwest::Client`**：进程级 `OnceLock` 单例，`MulticaClient::new` 取廉价 clone——修复「每调用点重建 client → 连接池/TLS 上下文作废 → 每次重做 TCP+TLS 握手」（弱网放大失败率）。`MulticaClient: Clone`。client 级 30s 超时仍在单例内设定。
@@ -556,6 +557,11 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - `GET /api/attachments/{attachmentId}/download` ｜ **mat_ 任务令牌**（claim 响应 `auth_token`，非 PAT）｜ 路由语义（webank `file.go`）：`/api/attachments/{id}` 为元数据 JSON 路由，文件本体在 `/download` 子路径（§12.63 修正记录）
 - 说明：任务载荷新增可选 `issue_attachments`（issue 直属附件元数据 `id/filename/content_type`，与 `chat_message_attachments` 同构；DPMS 需求文件代理卡包含其中，服务端实时代理流转发；pending / detail / claim 三接口同构、omitempty——旧 server 缺键即无附件）。码灵在用户点「发送」时**中介下载**（agent 不直连 multica API）：成功文件清洗文件名后并入会话既有任务输入附件通道（chips 展示、agent 以文件引用消费、自动重试/重跑复用）；逐文件失败不阻断任务启动，失败清单经隐式上下文告知 agent 缺失情况（与用户确认替代来源）。**输入框可见性（M5-bu 追加）**：点「执行」进入输入框时，detail 响应的附件元数据以只读 chips 展示（文件本体仍发送时下载——服务端只在 claim 时铸造 mat_ 令牌，详情阶段无下载凭证）；下载结果分级落运行日志供内网排查。设计细节见开发设计 §12.61/§12.62。
 
+**B4. 终态批量状态对账**（M5-cb）｜ **multica 任务重试改造新增接口**
+- `POST /api/daemon/tasks/batch-status` ｜ PAT ｜ 请求 `{ "task_ids": ["<id>", ...] }`（**≤500 id/批**，超限 400；空数组 400；重复 id 服务端自动去重）
+- 响应 200：数组（可为空）`[{ "task_id", "task_status", "issue_id", "issue_status", "issue_status_category", "issue_status_name" }]`——`issue_status_category ∈ {todo, backlog, in_progress, done, canceled}` 是客户端开关；`issue_status_name` 仅自定义状态回填；**缺席的 id = 不存在 / 不属本 daemon / 未绑 issue**（三者不可区分）
+- 码灵消费：看板页面驱动对账（mount + 30s 轮询，页面隐藏跳过，手动刷新附带一轮）——取本地终态历史（上限 50）整批查询，回填 `issue_status_category/_name` 到终态行，驱动「重新执行」入口（D1a）与回退待办标记的可见性。旧 server 无此路由 → 404 → 码灵静默跳过（无按钮/标记，前向兼容零协商）。
+
 #### C. 任务执行与上报
 
 **C1. 心跳**（Req D：常驻维持在线）
@@ -610,6 +616,12 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - 语义：fail 后原任务行保持 failed 终态（审计），rerun 是新建任务行（`rerun_of_task_id` 指回原行）=「这件事重做一遍」。
 - 前提：issue 当前 assignee 仍是绑定本 runtime 的 agent；agent 未归档；issue 未被删除（删除则 404）。
 - `force_fresh_session` 强制新会话——对自建 daemon（自己执行、不依赖 provider session）无影响。
+
+**D1a. 任务级重新执行（daemon rerun）** ★ M5-cb ｜ **multica 任务重试改造新增接口（daemon API，PAT）**
+- `POST /api/daemon/tasks/{taskId}/rerun` ｜ PAT ｜ 请求体空
+- 响应 **202**：完整新任务对象（与 pending/claim 同构）——新 id、`status=queued`、同 `issue_id`、`attribution.rerun_of_task_id` 指回源任务；**不改源任务与 issue 状态**；新任务自然出现在 pending 列表；服务端幂等（issue+agent 维度 pending 槽唯一）。
+- 错误：400 = 业务错误（body 带 message，码灵透传原文直显、可重试——如「该 issue 已有 pending 任务」）；404 = 不存在 / 不属本 daemon。
+- 码灵消费：终态行（completed/failed）**且** B4 对账回填的 `issue_status_category ∈ {todo, backlog, done}` 时渲染【重新执行】按钮——**in_progress 排除**（issue 正被他端执行，multica 按 issue+agent 串行派发，重跑会撞 pending 槽）。202 后码灵**源终态行退场并重取列表**（server pending 单一事实源，按 task id 去重）：rerun 命令真删除源任务的本地终态历史行（旧会话本体不动、悬空可从会话列表直达），`get_remote_tasks` 构建列表时按 rerun 血缘（pending 行 `rerun_of_task_id`）过滤终态行兜底（他端发起的 rerun / 删除瞬时失败；读命令只过滤不写回）——看板呈现「已完成的任务移回待办」的**单行移动语义**，源终态行不与活跃后继同板。新任务（`rerun_of_task_id` 非空）在看板渲染「重新执行」徽标表达血缘。
 
 **D2. issue 状态流转** ★ M5-t（done）/ M5-w（in_progress）/ M5-bj（completion_output）
 - `PUT /api/issues/{id}` ｜ user PAT ｜ 需 `X-Workspace-ID` 头
@@ -728,6 +740,7 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **上线证据（2026-09-11 客户端实测）**：桌面端连 multica 后 pending 载荷已携带 `issue_kind`，看板类型徽标与类型过滤生效（首帧曾缺字段、经一次心跳后收敛——§12.41 有分析）。
   - **原「claim 路径必须回填 is_ready」硬约束已随门控移除而失效（M5-bb / §12.42）**：码灵 claim 路径不再消费 `is_ready` 判定，只回 `issue_kind` 也不影响领取；`is_ready` 事实源是 pending 列表（看板徽标）。
 - [ ] **S4 · 心跳 ack 就绪 diff**（待 multica 侧最终确认线格式）：`POST /api/daemon/heartbeat` 的 ack 增加就绪变更 diff（码灵侧提议 `pending_readiness_changes: [{task_id, is_ready}]`，仅在父 dev issue done 使 test 任务就绪翻转时下发）。**不阻塞码灵上线**——缺失时页面不自动刷新，未就绪徽标停留旧值直至手动刷新（M5-bb 后无 claim 拦截兜底，仅展示层提醒）；形状不同仅需改 `client.rs` 反序列化
+- [x] **S5 · 任务重试改造两接口**（multica 侧已实现，码灵 M5-cb 消费）：`POST /api/daemon/tasks/batch-status`（≤500 id/批终态对账，B4）+ `POST /api/daemon/tasks/{taskId}/rerun`（任务级重新执行，202 幂等，D1a）。旧 server 缺路由 → 404 → 码灵静默降级，双向兼容。
 
 > 其余需求（任务列表 `GET /tasks/pending`、失败恢复 `POST /api/issues/{id}/rerun`、注册 `POST /api/daemon/register`、心跳、recover-orphans、complete/fail）均用 multica 现有接口，**无需改源码**。
 
@@ -1255,6 +1268,11 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **需求（用户提出）**：点【执行】后输入框开头先放任务名称，其后是 DPMS 溯源、任务内容——远程任务从列表点入，输入框自身不带标题，缺任务身份上下文。
   - **实现**：新模板 `src/prompts/{zh-CN,en}/runtime/remote_task_title.md`（`任务名称：{{ title }}`）；`detail_prefill` 块序调整为 [任务名称块, DPMS 溯源块, 上游交付说明块, 需求正文]，标题过 `markdown_source_to_plain_text` 解码（与正文同边界）+ 空白过滤；**移除 `requirement_text()` 的皆空回退 title**——名称块已保证标题在场，回退只会让无正文任务重复一遍标题（开发阶段破坏式更新）。
   - **验证**：模板渲染测试中英标签锁定（`prompts::tests` 17/17）；vm 预填测试更新为四段块序（首块锚点/无正文不重复/空白标题跳过/解码/en 渲染），`multica::` 全套件 201/201 绿；clippy 零告警。输入框真实视觉效果留内网验收。
+
+- [x] **M5-cb**（2026-10-22）状态对账与任务重新执行（Rust + 前端，开发设计 §12.70 改动六十八）：
+  - **背景**：multica 任务重试改造新增 `batch-status`（B4）与任务级 `rerun`（D1a）两 daemon API，码灵侧同步：终态行对账刷新 issue 状态 + 「重新执行」入口 + 202 后新任务进板归组。
+  - **实现**：`RemoteCompletedTask` 增 `issue_status_category/_name`（serde default，对账回填）；wire `RemoteTask.attribution.rerun_of_task_id`；命令 `reconcile_remote_task_statuses`（单飞、按 500 分批、diff 无变更不落盘、变更才 emit）/ `rerun_remote_task`（400 业务 message 透传；202 后**移动语义**——真删除源终态历史行 + `get_remote_tasks` 按 rerun 血缘过滤兜底，「任务移回待办」单行移动）；前端页面驱动对账（mount + 30s 轮询、隐藏跳过、手动刷新附带）；`canRerunRemoteTask`（终态 + todo/backlog/done，**in_progress 排除**）+ rerun 徽标 + issue 状态 chip（自定义名优先）；202 后直接重取列表（server pending 单一事实源）。7 语言 i18n 同步。
+  - **验证**：`multica::` 210/210 绿；web tsc 零错误 + remote 三套件 62/62 绿。看板真实视觉效果与内网联调（对账回填、rerun 202、新任务归组）留内网验收。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

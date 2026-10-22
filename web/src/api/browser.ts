@@ -2506,6 +2506,9 @@ export const browserApi: RuntimeApi = {
       kind: null,
       readiness: null,
       attachments: [],
+      issueStatusCategory: null,
+      issueStatusName: null,
+      rerunOfTaskId: null,
     });
   },
   startRemoteConversationRun(input, _remoteTaskId, _workspaceId) {
@@ -2517,6 +2520,14 @@ export const browserApi: RuntimeApi = {
   },
   removeRemoteCompletedTask(_remoteTaskId: string) {
     return Promise.resolve();
+  },
+  reconcileRemoteTaskStatuses() {
+    // 浏览器桩：无对账数据源，静默 0（与后端「无终态历史/失败降级」同返回形态）。
+    return Promise.resolve(0);
+  },
+  rerunRemoteTask(_taskId: string) {
+    // 浏览器桩：浏览器端无 multica 连接（远程任务仅桌面端真实执行）。
+    return Promise.reject({ code: 'remote.source-not-configured', params: {} });
   },
   listServerMulticaWorkspaces() {
     return Promise.resolve([]);

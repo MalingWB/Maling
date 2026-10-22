@@ -2955,7 +2955,9 @@
         "emptyTitle": "尚未連接{{source}}",
         "removeTask": "移出清單",
         "removeTaskHint": "僅從本側清單移除，重新整理後會恢復",
-        "removeTaskTerminalHint": "移出並刪除本機完成記錄，重新整理後不再顯示"
+        "removeTaskTerminalHint": "移出並刪除本機完成記錄，重新整理後不再顯示",
+        "rerunTask": "重新執行",
+        "rerunBadge": "重新執行"
       },
       "keepResident": "常駐工作階段",
       "releaseResident": "解除常駐",
@@ -3197,6 +3199,10 @@
       "readiness": {
         "notReady": "未就緒",
         "notReadyHint": "對應開發任務尚未完成，建議等待其完成後再執行"
+      },
+      "issueStatus": {
+        "todo": "待辦",
+        "backlog": "待辦池"
       }
     }
   }

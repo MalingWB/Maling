@@ -22,7 +22,7 @@ use crate::commands::{
 };
 use crate::conversation_workspace::workspace_entry_for_project;
 use crate::multica::client::{
-    MULTICA_ISSUE_IN_PROGRESS_STATUS, MulticaClient, RemoteTask, WorkspaceInfo,
+    MULTICA_ISSUE_IN_PROGRESS_STATUS, MulticaClient, RemoteTask, TaskIssueStatus, WorkspaceInfo,
 };
 use crate::multica::config::{
     MulticaSettingsVm, get_daemon_id, get_pat, multica_base_url, multica_settings,
@@ -46,6 +46,10 @@ use crate::view_models_conversation::{
 /// multica resume 判定前等待启动恢复管线的超时（P2）：正常管线为秒级；超时按 best-effort 继续
 /// 判定（不永久阻塞用户发送，不劣于无等待语义），下一轮重试自愈。
 const MULTICA_RESUME_STARTUP_GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `batch-status` 单批 task_id 上限（server 侧硬上限，超出 400）——本地终态历史有界 50，
+/// 当前一批即够；常量锁定分片契约，历史上限调整后仍按 server 上限分批。
+const BATCH_STATUS_MAX_IDS: usize = 500;
 
 /// 远程任务列表（按 workspace 分组，对齐 `ConversationSidebarVm` 形状）。
 ///
@@ -101,6 +105,8 @@ pub async fn get_remote_tasks(
     // 远程任务（running + pending + 终态）按 workspace 分组：每个 workspace 单次取锁取在飞 running 行
     // （active_runs，改动七）与 runtime_id，再按 runtime_id 拉 server pending，最后并入本地终态行
     // （按 remote_task_id 去重：running > pending > terminal，避免同一任务同时显多个状态）。
+    // 终态行先经 rerun 血缘退场过滤（[`filter_rerun_retired_terminal`]，移动语义：有活跃排队
+    // 后继的源终态行不进响应）。
     let mut tasks_by_workspace: BTreeMap<String, Vec<RemoteTaskVm>> = BTreeMap::new();
     for workspace in &workspaces {
         // 单次取锁：在飞 running 行（active_runs，改动七：执行中任务不再从侧栏消失）+ workspace 的 runtime_id。
@@ -139,9 +145,14 @@ pub async fn get_remote_tasks(
             .get(&workspace.id)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
+        // 移动语义兜底：rerun 血缘活跃的源终态行不进本次响应（纯视图过滤，不写回——读命令不顺便
+        // 执行维护写，data-loading 规则 §5）。源行的持久退场由 rerun 命令 202 后真删除；此处保证
+        // 「他端机器发起 rerun / 删除瞬时失败」时终态列不显示有活跃排队后继的行。pending 拉取失败
+        // → 血缘集合为空 → 不过滤（失败安全，不误删显示）。
+        let terminal = filter_rerun_retired_terminal(&pending, terminal);
         tasks_by_workspace.insert(
             workspace.id.clone(),
-            merge_workspace_tasks(running, pending, terminal),
+            merge_workspace_tasks(running, pending, &terminal),
         );
     }
 
@@ -176,6 +187,26 @@ fn merge_workspace_tasks(
         }
     }
     running
+}
+
+/// rerun 血缘退场过滤（移动语义，纯逻辑可单测）：pending 行的 `rerun_of_task_id` 指回源任务，
+/// 命中的终态行已过时（该任务链 server 侧重新排队为后继任务）——从本次响应排除，看板呈现
+/// 「任务移回待办」的单行移动语义。与 [`merge_workspace_tasks`] 的同 id 三源去重互补：本过滤
+/// 处理跨 id 的血缘退场。源行的持久删除由 [`rerun_remote_task`] 在 202 后执行，本过滤只管
+/// 显示正确性（兜底他端发起的 rerun 与删除瞬时失败）。
+fn filter_rerun_retired_terminal(
+    pending: &[RemoteTaskVm],
+    terminal: &[RemoteTaskVm],
+) -> Vec<RemoteTaskVm> {
+    let rerun_sources: HashSet<&str> = pending
+        .iter()
+        .filter_map(|task| task.rerun_of_task_id.as_deref())
+        .collect();
+    terminal
+        .iter()
+        .filter(|task| !rerun_sources.contains(task.id.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// 断点续跑判定结果（开发设计 改动三）。
@@ -1191,6 +1222,143 @@ pub fn remove_remote_completed_task(
         crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
     }
     Ok(())
+}
+
+// ===== 状态对账 + 任务重新执行（multica 任务重试改造）=====
+
+/// 终态任务 issue 状态对账（页面 mount / 30s 周期 / 手动刷新驱动）。
+///
+/// 收集本地终态历史（`remote_completed_tasks`，有界 50）全部 task id，按 server 上限
+/// （[`BATCH_STATUS_MAX_IDS`]）分批调 `batch-status`，把回执的 issue 状态分类/自定义名 diff 写回
+/// 历史条目；有变更才落盘 + 广播 `remote-tasks-updated`（前端 re-fetch 即见 issue 状态标记与
+/// 「重新执行」入口）。返回变更条数（0 = 无变化 / 无终态历史 / 未连接 / 单飞退出 / 本轮失败）。
+///
+/// **静默降级**：任何失败（旧 server 无端点 → 404、网络抖动、读盘失败）只 warn 返回 0——
+/// 对账是刷新路径的增强，失败不影响基础列表（下一次周期自然重试），不得弹错误打扰用户。
+#[tauri::command]
+pub async fn reconcile_remote_task_statuses(
+    state: State<'_, DesktopState>,
+    shared: State<'_, SharedMulticaState>,
+    app_handle: AppHandle,
+) -> CommandResult<u64> {
+    let context = state.context().map_err(command_error)?;
+    if !multica_settings(&context.config).connected {
+        return Ok(0);
+    }
+    // 对账单飞：在飞期间的后续触发（mount/周期/手动刷新叠合）整体退出，结果由在飞方广播。
+    // 锁中毒按放行处理——对账本身幂等（值 diff 后写），认领只是防重复扇出。
+    let claimed = shared
+        .lock()
+        .map(|mut guard| guard.begin_reconcile())
+        .unwrap_or(true);
+    if !claimed {
+        return Ok(0);
+    }
+    // 认领必须释放（成功/失败皆然）：主体包进 async 块，出口统一 end_reconcile。
+    let outcome = async {
+        let task_ids: Vec<String> = context
+            .app()
+            .load_state()
+            .map_err(command_error)?
+            .remote_completed_tasks
+            .iter()
+            .map(|c| c.remote_task_id.clone())
+            .collect();
+        if task_ids.is_empty() {
+            return Ok(0);
+        }
+        let base_url = multica_base_url(&context.config).unwrap_or_default();
+        let pat = get_pat(&context.config).unwrap_or_default();
+        let client =
+            MulticaClient::new(base_url, Some(pat)).map_err(|e| command_error(e.into()))?;
+        let mut rows: Vec<TaskIssueStatus> = Vec::new();
+        for chunk in task_ids.chunks(BATCH_STATUS_MAX_IDS) {
+            match client.batch_task_statuses(chunk).await {
+                Ok(batch) => rows.extend(batch),
+                Err(MulticaError::TaskNotFound) => {
+                    // 旧 server 无此端点（404）→ 静默降级：无对账数据，前端不渲染新标记。
+                    warn!("multica reconcile: batch-status 404 (legacy server? skip round)");
+                    return Ok(0);
+                }
+                Err(error) => {
+                    warn!(%error, "multica reconcile: batch-status failed (skip round)");
+                    return Ok(0);
+                }
+            }
+        }
+        let changed = context
+            .app()
+            .with_state(|state_cfg| {
+                let changed =
+                    crate::multica::bridge::apply_reconciled_issue_status(state_cfg, &rows);
+                (changed > 0, changed as u64)
+            })
+            .map_err(command_error)?;
+        if changed > 0 {
+            crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
+            info!(changed, "multica reconcile updated issue statuses");
+        }
+        Ok(changed)
+    }
+    .await;
+    if let Ok(mut guard) = shared.lock() {
+        guard.end_reconcile();
+    }
+    outcome
+}
+
+/// 重新执行终态任务（multica 任务重试改造，移动语义）。
+///
+/// `POST /api/daemon/tasks/{task_id}/rerun`：server 克隆出新任务（新 id、`status=queued`、同
+/// issue、`attribution.rerun_of_task_id` 指回源任务）——源任务与 issue 状态都不被修改。成功
+/// 后广播 `remote-tasks-updated`：前端 re-fetch 列表，新任务自然进 pending（server pending
+/// 是唯一事实源，按 id 天然去重；服务端 (issue, agent) pending 槽唯一保证重复点击幂等）。
+/// 返回新任务 id（调用方测试断言用；进板走 re-fetch，不做本地注入）。
+///
+/// 移动语义（202 后源终态行退场）：server 侧该任务链重新排队，本地终态历史行已过时——真删除
+/// （复用 [`bridge::remove_completed_task_entry`]，旧会话本体不动、悬空可从会话列表直达），看板
+/// 呈现「已完成的任务移回待办」。删除失败不阻断 rerun（202 已成事实），读取侧由
+/// [`filter_rerun_retired_terminal`] 的血缘过滤兜底显示，仅记 warn。
+///
+/// 错误透传：400 的业务 message（如「任务未绑定 issue」）已由 client 提取进
+/// `NetworkFailed(msg)` → 前端经错误码 params `{{message}}` 原样展示，可重试。
+#[tauri::command]
+pub async fn rerun_remote_task(
+    state: State<'_, DesktopState>,
+    app_handle: AppHandle,
+    task_id: String,
+) -> CommandResult<String> {
+    let context = state.context().map_err(command_error)?;
+    if !multica_settings(&context.config).connected {
+        return Err(command_error(MulticaError::NotConfigured.into()));
+    }
+    let base_url = multica_base_url(&context.config).unwrap_or_default();
+    let pat = get_pat(&context.config).unwrap_or_default();
+    let client = MulticaClient::new(base_url, Some(pat)).map_err(|e| command_error(e.into()))?;
+    let new_task = client
+        .rerun_task(&task_id)
+        .await
+        .map_err(|e| command_error(e.into()))?;
+    // 先落盘后广播（状态规则 §5）：源终态历史行真删除；with_state 原子 RMW，未删到（本就不在
+    // 历史，如他端执行的任务）不落盘。删除失败仅降级为 warn——不把已成事实的 rerun 报成失败。
+    let retired = match context.app().with_state(|state_cfg| {
+        let removed = crate::multica::bridge::remove_completed_task_entry(state_cfg, &task_id);
+        (removed, removed)
+    }) {
+        Ok(removed) => removed,
+        Err(error) => {
+            warn!(%error, source = %task_id, "multica retire rerun source row failed");
+            false
+        }
+    };
+    crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
+    info!(
+        source = %task_id,
+        rerun = %new_task.id,
+        retired,
+        "multica rerun accepted (new queued task)"
+    );
+    Ok(new_task.id)
 }
 
 // ===== M3.5 / M5-c：multica workspace 绑定 CRUD（开发设计 2.2.1 / 2.5）=====
@@ -2357,6 +2525,37 @@ mod tests {
         );
     }
 
+    // ---- 移动语义：rerun 血缘退场过滤（filter_rerun_retired_terminal 纯逻辑固化）----
+    #[test]
+    fn filter_rerun_retired_terminal_excludes_rows_with_active_rerun_successor() {
+        // pending 后继 rerun_of_task_id=rt-1 → 源终态行 rt-1 退场（移回待办的显示语义）；
+        // 无后继的 rt-2 保留。
+        let pending = vec![
+            RemoteTaskVm {
+                rerun_of_task_id: Some("rt-1".into()),
+                ..task_vm("rt-9", "queued")
+            },
+            task_vm("rt-8", "queued"),
+        ];
+        let terminal = vec![task_vm("rt-1", "completed"), task_vm("rt-2", "failed")];
+        let kept = filter_rerun_retired_terminal(&pending, &terminal);
+        assert_eq!(
+            kept.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
+            vec!["rt-2"]
+        );
+    }
+
+    #[test]
+    fn filter_rerun_retired_terminal_keeps_all_when_no_lineage() {
+        // 无血缘 pending（普通排队任务）与 pending 拉取失败（空列表）都不退场任何终态行
+        // ——失败安全：只有后继在场的正面证据才触发退场。
+        let terminal = vec![task_vm("rt-1", "completed"), task_vm("rt-2", "completed")];
+        let kept = filter_rerun_retired_terminal(&[task_vm("rt-8", "queued")], &terminal);
+        assert_eq!(kept.len(), 2);
+        let kept = filter_rerun_retired_terminal(&[], &terminal);
+        assert_eq!(kept.len(), 2);
+    }
+
     /// 构造最小 RemoteTaskVm（仅 id + status 影响 merge 判定）。
     fn task_vm(id: &str, status: &str) -> RemoteTaskVm {
         RemoteTaskVm {
@@ -2373,6 +2572,9 @@ mod tests {
             kind: None,
             readiness: None,
             attachments: Vec::new(),
+            issue_status_category: None,
+            issue_status_name: None,
+            rerun_of_task_id: None,
         }
     }
 

@@ -252,6 +252,19 @@ pub struct RemoteTask {
     /// 并入 `attachment_paths` 走任务输入附件既有管线；pending / 详情路径仅解析不消费。
     #[serde(default)]
     pub issue_attachments: Vec<IssueAttachment>,
+    /// 任务归因（rerun 血缘，multica 任务重试改造）：`attribution.rerun_of_task_id` 指回被
+    /// 重新执行的源任务。仅 rerun 产生的新任务携带（`POST /api/daemon/tasks/{tid}/rerun` 的
+    /// 202 响应与该新任务进 pending 列表后的列表项）；普通任务 / 旧 server 无此键 → None。
+    /// 码灵消费点：看板 queued 卡片的「重新执行」徽标（multica「归组到源任务行」语义的看板投影）。
+    #[serde(default)]
+    pub attribution: Option<TaskAttribution>,
+}
+
+/// 任务归因对象（wire 镜像 multica `AgentTaskResponse.Attribution`）。
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+pub struct TaskAttribution {
+    #[serde(default)]
+    pub rerun_of_task_id: Option<String>,
 }
 
 /// issue 直属附件元数据（wire 镜像 multica daemon `types.go` `IssueAttachments` 元素）。
@@ -340,6 +353,40 @@ pub struct StartRequest {
 #[derive(Debug, Deserialize)]
 pub struct TaskStatusResponse {
     pub status: String,
+}
+
+// ===== 终态对账 + 任务重新执行（multica 任务重试改造）=====
+
+/// batch-status 请求 body（`POST /api/daemon/tasks/batch-status`）。
+///
+/// 上限 500 id/批（超出 server 400，调用方按批分片）；重复 id server 自动去重——调用方无需预处理。
+#[derive(Debug, Serialize)]
+pub struct BatchTaskStatusRequest {
+    pub task_ids: Vec<String>,
+}
+
+/// batch-status 响应行（响应为数组，可为空——全部 id 都不认识时）。
+///
+/// 只含 token 工作空间持有的任务；缺失 id = 不存在/非本工作空间/非 issue 任务（三者不可区分，
+/// 调用方按「无对账数据」处理，不据此清除本地值）。`issue_status_category`
+/// （`todo`|`backlog`|`in_progress`|`done`|`canceled`）是客户端展示/动作判据；
+/// `issue_status_name` 仅自定义状态时携带。字段全 `#[serde(default)]`：缺字段不阻断解析。
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+pub struct TaskIssueStatus {
+    #[serde(default)]
+    pub task_id: String,
+    /// server 侧任务状态（参考值；本地终态行的 status 是本地执行事实，对账不覆写它）。
+    #[serde(default)]
+    pub task_status: String,
+    #[serde(default)]
+    pub issue_id: Option<String>,
+    /// server 原始 issue 状态值（码灵不消费——category 才是判据，透传保真供诊断）。
+    #[serde(default)]
+    pub issue_status: Option<String>,
+    #[serde(default)]
+    pub issue_status_category: Option<String>,
+    #[serde(default)]
+    pub issue_status_name: Option<String>,
 }
 
 // ===== M4 终态上报/会话固定/重跑 wire 类型（开发设计 2.2.7 / 接入方案 C6-C8/D1）=====
@@ -1155,6 +1202,80 @@ impl MulticaClient {
         Ok(parsed.status)
     }
 
+    /// `POST /api/daemon/tasks/batch-status` —— 终态任务 issue 状态对账（multica 任务重试改造）。
+    ///
+    /// 空输入直接返回空（不发请求——server 对空批 400，那是调用方应避免的形态而非错误信号）。
+    /// **单次请求、liveness 短超时、client 内不重试**：对账由页面 30s 周期驱动，循环即重试
+    /// （与 heartbeat 同策略），防慢响应在对账 tick 内累积。旧 server 无此端点 → 404 →
+    /// `map_status` 映射 [`TaskNotFound`](MulticaError::TaskNotFound)，调用方静默降级
+    /// （无对账数据，前端不渲染 issue 状态与「重新执行」入口）——无版本协商的自然前向兼容。
+    pub async fn batch_task_statuses(
+        &self,
+        task_ids: &[String],
+    ) -> Result<Vec<TaskIssueStatus>, MulticaError> {
+        if task_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        const PATH: &str = "/api/daemon/tasks/batch-status";
+        let body = BatchTaskStatusRequest {
+            task_ids: task_ids.to_vec(),
+        };
+        let resp = self
+            .json_send(
+                Method::POST,
+                PATH,
+                None,
+                &body,
+                Some(Duration::from_secs(LIVENESS_TIMEOUT_SECS)),
+            )
+            .await?;
+        resp.json::<Vec<TaskIssueStatus>>().await.map_err(|e| {
+            MulticaError::NetworkFailed(format!("decode {PATH} failed: {e}"))
+        })
+    }
+
+    /// `POST /api/daemon/tasks/{tid}/rerun` —— 重新执行终态任务（multica 任务重试改造）。
+    ///
+    /// 无请求体；202 回**新任务**全量对象（与 pending/claim 的 AgentTaskResponse 同构）：新 id、
+    /// `status=queued`、同 issue_id、`attribution.rerun_of_task_id` 指回源任务。源任务与 issue
+    /// 状态不被修改；新任务自然进 server pending 池（调用方 re-fetch 列表即见，按 id 天然去重，
+    /// 服务端按 (issue, agent) pending 槽唯一保证幂等——重复点击至多复用同一新任务）。
+    ///
+    /// 错误体透传：400（任务未绑 issue 等业务错误）的 body 携带 server message，经宽容提取
+    /// （JSON `error`/`message` 字段，否则原文）入 `NetworkFailed(msg)` → 前端经错误码 params
+    /// `{{message}}` 原样展示。故**不走** `json_send`/`map_status`（其吞 body，裸 `HTTP 400`
+    /// 对用户无信息量；参照 `download_issue_attachment` 的自建请求先例）；404（任务不存在/
+    /// 非本工作空间）仍映射 [`TaskNotFound`](MulticaError::TaskNotFound)。用户主动触发的一次性
+    /// 动作，走一般网络重试（3 次）。
+    pub async fn rerun_task(&self, task_id: &str) -> Result<RemoteTask, MulticaError> {
+        self.with_network_retry("rerun", || async {
+            let path = format!("/api/daemon/tasks/{task_id}/rerun");
+            let mut req = self.http.request(Method::POST, self.url(&path));
+            if let Some(t) = self.token.as_deref().filter(|t| !t.is_empty()) {
+                req = req.bearer_auth(t);
+            }
+            let resp = req
+                .timeout(Duration::from_secs(LIVENESS_TIMEOUT_SECS))
+                .send()
+                .await
+                .map_err(|e| MulticaError::NetworkFailed(format!("POST {path} failed: {e}")))?;
+            let status = resp.status();
+            if status == StatusCode::NOT_FOUND {
+                return Err(MulticaError::TaskNotFound);
+            }
+            if !status.is_success() {
+                let message = extract_error_message(resp).await;
+                return Err(MulticaError::NetworkFailed(format!(
+                    "{path}: HTTP {status}: {message}"
+                )));
+            }
+            resp.json::<RemoteTask>()
+                .await
+                .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))
+        })
+        .await
+    }
+
     // ===== M4 终态上报/会话固定/重跑（开发设计 2.5 / 接入方案 C6-C8/D1）=====
 
     /// `POST /api/daemon/tasks/{tid}/complete` —— 成功终态（接入方案 C6）。
@@ -1384,6 +1505,35 @@ fn map_status(path: &str, status: StatusCode) -> Result<(), MulticaError> {
         _ => Err(MulticaError::NetworkFailed(format!(
             "{path}: HTTP {status}"
         ))),
+    }
+}
+
+/// 错误响应体可读 message 的宽容提取（rerun 400 业务错误透传，码灵不猜文案只透传 server 原文）。
+///
+/// server 错误体形态不保证：优先按 JSON 取 `error`/`message` 字段，取不到回退 body 原文；
+/// 截断至 200 字符防超长 body 进错误码 params（前端 toast 展示）。读失败（连接断等）回退空串
+/// ——错误路径的锦上添花，不再产生二级错误。
+async fn extract_error_message(resp: Response) -> String {
+    pick_error_message(&resp.text().await.unwrap_or_default())
+}
+
+/// [`extract_error_message`] 的纯函数核（body 文本 → message），单独抽出可直测。
+fn pick_error_message(body: &str) -> String {
+    const MAX_MESSAGE_CHARS: usize = 200;
+    let raw = if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+        ["error", "message"]
+            .iter()
+            .find_map(|key| value.get(key).and_then(|v| v.as_str()))
+            .map(str::to_string)
+            .unwrap_or_else(|| body.to_string())
+    } else {
+        body.to_string()
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        trimmed.chars().take(MAX_MESSAGE_CHARS).collect()
     }
 }
 
@@ -1642,6 +1792,80 @@ mod tests {
         assert_eq!(full.issue_id.as_deref(), Some("iss-1"));
         assert_eq!(full.auth_token.as_deref(), Some("tok"));
         assert_eq!(full.prior_session_id.as_deref(), Some("sess-9"));
+    }
+
+    #[test]
+    fn remote_task_parses_attribution_rerun_lineage() {
+        // rerun 新任务携带 attribution.rerun_of_task_id 指回源任务（看板「重新执行」徽标数据源）。
+        let task: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-new","status":"queued","issue_id":"iss-1","attribution":{"rerun_of_task_id":"t-old"}}"#,
+        )
+        .unwrap();
+        assert_eq!(task.id, "t-new");
+        assert_eq!(
+            task.attribution.as_ref().and_then(|a| a.rerun_of_task_id.as_deref()),
+            Some("t-old")
+        );
+
+        // 普通任务 / 旧 server 无 attribution 键 → None（徽标不渲染，行为与引入前一致）。
+        let plain: RemoteTask = serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
+        assert!(plain.attribution.is_none());
+    }
+
+    #[test]
+    fn batch_task_status_request_serializes_task_ids() {
+        // 锁定 batch-status body 契约：{task_ids: [...]}（上限分片由调用方负责，body 原样透传）。
+        let body = BatchTaskStatusRequest {
+            task_ids: vec!["t-1".into(), "t-2".into()],
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["task_ids"][0], "t-1");
+        assert_eq!(json["task_ids"][1], "t-2");
+        assert_eq!(json.as_object().unwrap().len(), 1, "body 只有 task_ids 一个键");
+    }
+
+    #[test]
+    fn task_issue_status_rows_parse_leniently() {
+        // 全字段落位：category 是判据、name 仅自定义状态携带。
+        let rows: Vec<TaskIssueStatus> = serde_json::from_str(
+            r#"[{"task_id":"t-1","task_status":"completed","issue_id":"iss-1","issue_status":"done_2","issue_status_category":"done"}]"#,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].task_id, "t-1");
+        assert_eq!(rows[0].task_status, "completed");
+        assert_eq!(rows[0].issue_status_category.as_deref(), Some("done"));
+        assert!(rows[0].issue_status_name.is_none(), "标准分类无 name 键");
+
+        // 自定义状态：issue_status_name 携带（展示优先于分类）。
+        let custom: Vec<TaskIssueStatus> = serde_json::from_str(
+            r#"[{"task_id":"t-2","issue_status_category":"todo","issue_status_name":"待产品评审"}]"#,
+        )
+        .unwrap();
+        assert_eq!(custom[0].issue_status_name.as_deref(), Some("待产品评审"));
+
+        // 空数组（全部 id 不认识）+ 字段缺省不阻断解析。
+        let empty: Vec<TaskIssueStatus> = serde_json::from_str("[]").unwrap();
+        assert!(empty.is_empty());
+        let minimal: Vec<TaskIssueStatus> = serde_json::from_str(r#"[{"task_id":"t-3"}]"#).unwrap();
+        assert_eq!(minimal[0].task_id, "t-3");
+        assert!(minimal[0].issue_status_category.is_none());
+    }
+
+    #[test]
+    fn pick_error_message_prefers_json_fields_and_truncates() {
+        // JSON error 字段优先（multica 400 业务错误形态）。
+        assert_eq!(
+            pick_error_message(r#"{"error":"task is not bound to an issue"}"#),
+            "task is not bound to an issue"
+        );
+        // message 字段次之；非 JSON 回退原文；空白体回退空串（不猜文案）。
+        assert_eq!(pick_error_message(r#"{"message":"nope"}"#), "nope");
+        assert_eq!(pick_error_message("plain text failure"), "plain text failure");
+        assert_eq!(pick_error_message("   "), "");
+        // 超长 body 截断至 200 字符（防 params 膨胀，前端 toast 有界）。
+        let long = "x".repeat(500);
+        assert_eq!(pick_error_message(&long).chars().count(), 200);
     }
 
     #[test]

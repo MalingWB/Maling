@@ -2955,7 +2955,9 @@
         "emptyTitle": "{{source}}에 연결되지 않음",
         "removeTask": "목록에서 제거",
         "removeTaskHint": "이 쪽 목록에서만 제거되며, 새로 고치면 다시 나타납니다",
-        "removeTaskTerminalHint": "로컬 완료 기록을 함께 삭제하며, 새로 고쳐도 다시 나타나지 않습니다"
+        "removeTaskTerminalHint": "로컬 완료 기록을 함께 삭제하며, 새로 고쳐도 다시 나타나지 않습니다",
+        "rerunTask": "다시 실행",
+        "rerunBadge": "다시 실행"
       },
       "keepResident": "세션 상시 유지",
       "releaseResident": "상시 유지 해제",
@@ -3197,6 +3199,10 @@
       "readiness": {
         "notReady": "준비되지 않음",
         "notReadyHint": "해당 개발 작업이 아직 완료되지 않았습니다. 완료될 때까지 기다려 보세요"
+      },
+      "issueStatus": {
+        "todo": "할 일",
+        "backlog": "백로그"
       }
     }
   }

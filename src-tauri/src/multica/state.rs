@@ -22,6 +22,10 @@ pub struct MulticaRuntimeState {
     /// 跑完整完成路径（重复 complete HTTP + 冗余日志/通知）。认领保证完成路径单飞：先到者
     /// 进入，后到者整体退出；认领随 finalize 终结（成功/失败皆走 finalize，见 bridge）。
     pub completing: HashSet<String>,
+    /// 对账进行中标记（状态对账改造，单飞）：batch-status 对账由页面 mount / 30s 周期 /
+    /// 手动刷新三处触发，慢响应期间可能再次触发——重复对账虽幂等（值 diff 后写），但重复
+    /// 扇出 batch 请求无意义。全局单飞（对账无任务粒度，与 `completing` 的按 id 认领不同）。
+    pub reconcile_in_flight: bool,
 }
 
 /// 单个在飞 remote task 的本地映射。
@@ -204,6 +208,22 @@ impl MulticaRuntimeState {
     pub fn end_completion(&mut self, remote_task_id: &str) {
         self.completing.remove(remote_task_id);
     }
+
+    /// 原子认领对账（状态对账改造）：返回 false = 已有对账在飞，调用方整体退出
+    /// （结果与广播由在飞方负责）。全局粒度——对账操作无 per-task 语义。
+    pub fn begin_reconcile(&mut self) -> bool {
+        if self.reconcile_in_flight {
+            false
+        } else {
+            self.reconcile_in_flight = true;
+            true
+        }
+    }
+
+    /// 终结对账认领（命令收尾统一调用，成功/失败皆然；幂等）。
+    pub fn end_reconcile(&mut self) {
+        self.reconcile_in_flight = false;
+    }
 }
 
 #[cfg(test)]
@@ -348,6 +368,21 @@ mod tests {
         // 幂等：重复 end 无副作用。
         state.end_completion("remote-1");
         state.end_completion("remote-x");
+    }
+
+    // ---- 状态对账改造：对账单飞（mount / 30s 周期 / 手动刷新并发触发）----
+
+    #[test]
+    fn begin_reconcile_claims_exclusively_and_end_releases() {
+        let mut state = MulticaRuntimeState::default();
+        // 首个触发认领成功；在飞期间后续触发整体退出（全局单飞，无任务粒度）。
+        assert!(state.begin_reconcile());
+        assert!(!state.begin_reconcile());
+        // 收尾释放后可再认领；重复 end 幂等。
+        state.end_reconcile();
+        assert!(state.begin_reconcile());
+        state.end_reconcile();
+        state.end_reconcile();
     }
 
     #[test]

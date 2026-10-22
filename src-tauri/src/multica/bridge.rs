@@ -769,6 +769,10 @@ fn completed_task_from_run(
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| remote_task_id.to_string()),
         completed_at,
+        // finalize 时不知 server 侧 issue 状态 → 留空，由 `reconcile_remote_task_statuses`
+        // 周期对账首填/更新（apply_reconciled_issue_status）。
+        issue_status_category: None,
+        issue_status_name: None,
     }
 }
 
@@ -798,6 +802,38 @@ pub(crate) fn remove_completed_task_entry(state: &mut StateConfig, remote_task_i
         .remote_completed_tasks
         .retain(|c| c.remote_task_id != remote_task_id);
     before != state.remote_completed_tasks.len()
+}
+
+/// 把 `batch-status` 对账行应用进「最近完成」历史的 issue 状态字段（纯状态函数，可单测）。
+///
+/// 对账语义（multica 状态对账口径）：本地终态行记录的 issue 状态可能已过期（用户在 multica
+/// 侧流转/回退 issue），server 返回的 `issue_status_category`/`issue_status_name` 是权威值——
+/// 逐条按 `task_id` 匹配本地历史，值有变才覆写并计数。返回变更条数（0 = 无变化，调用方据此
+/// 不落盘不广播）。server 不认识的 task_id（不存在/非本 token 工作空间/非 issue 任务）不在
+/// 响应行里 → 本地条目保持原值（不误清——对账只写 server 明确回执的值）；
+/// 响应里本地没有的 task_id（他端执行的任务）跳过——不凭对账行凭空造终态历史。
+pub(crate) fn apply_reconciled_issue_status(
+    state: &mut StateConfig,
+    rows: &[crate::multica::client::TaskIssueStatus],
+) -> usize {
+    let mut changed = 0;
+    for row in rows {
+        let Some(entry) = state
+            .remote_completed_tasks
+            .iter_mut()
+            .find(|c| c.remote_task_id == row.task_id)
+        else {
+            continue;
+        };
+        if entry.issue_status_category != row.issue_status_category
+            || entry.issue_status_name != row.issue_status_name
+        {
+            entry.issue_status_category = row.issue_status_category.clone();
+            entry.issue_status_name = row.issue_status_name.clone();
+            changed += 1;
+        }
+    }
+    changed
 }
 
 /// 终态对「最近完成」历史快照 status 的处置（success→completed / failure→failed）。
@@ -999,6 +1035,8 @@ mod tests {
             status: "completed".into(),
             title: format!("title-{remote}"),
             completed_at: completed_at.into(),
+            issue_status_category: None,
+            issue_status_name: None,
         }
     }
 
@@ -1026,6 +1064,97 @@ mod tests {
         assert_eq!(
             state.remote_completed_tasks[0].completed_at,
             "2026-08-06T03:00:00Z"
+        );
+    }
+
+    // ---- 状态对账改造：batch-status 行应用进终态历史（纯状态函数固化）----
+
+    use crate::multica::client::TaskIssueStatus;
+
+    fn status_row(task_id: &str, category: Option<&str>, name: Option<&str>) -> TaskIssueStatus {
+        TaskIssueStatus {
+            task_id: task_id.into(),
+            task_status: "completed".into(),
+            issue_id: Some("iss-1".into()),
+            issue_status: None,
+            issue_status_category: category.map(str::to_string),
+            issue_status_name: name.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn apply_reconciled_issue_status_fills_updates_and_counts_changes_only() {
+        let mut state = StateConfig::default();
+        record_completed_task(&mut state, completed("rt-1", "2026-08-06T01:00:00Z"));
+        record_completed_task(&mut state, completed("rt-2", "2026-08-06T02:00:00Z"));
+
+        // 首次对账：首填 rt-1（done）、rt-2（todo + 自定义状态名）→ 2 条变更。
+        let changed = apply_reconciled_issue_status(
+            &mut state,
+            &[
+                status_row("rt-1", Some("done"), None),
+                status_row("rt-2", Some("todo"), Some("待产品评审")),
+            ],
+        );
+        assert_eq!(changed, 2);
+        assert_eq!(
+            state.remote_completed_tasks[1].issue_status_category.as_deref(),
+            Some("done")
+        );
+        assert!(state.remote_completed_tasks[1].issue_status_name.is_none());
+        assert_eq!(
+            state.remote_completed_tasks[0].issue_status_category.as_deref(),
+            Some("todo")
+        );
+        assert_eq!(
+            state.remote_completed_tasks[0].issue_status_name.as_deref(),
+            Some("待产品评审")
+        );
+
+        // 值不变的重复对账 → 0 变更（调用方据此不落盘不广播）；仅 rt-1 变为 in_progress → 1。
+        assert_eq!(
+            apply_reconciled_issue_status(
+                &mut state,
+                &[
+                    status_row("rt-1", Some("done"), None),
+                    status_row("rt-2", Some("todo"), Some("待产品评审")),
+                ]
+            ),
+            0
+        );
+        assert_eq!(
+            apply_reconciled_issue_status(&mut state, &[status_row("rt-1", Some("in_progress"), None)]),
+            1
+        );
+        assert_eq!(
+            state.remote_completed_tasks[1].issue_status_category.as_deref(),
+            Some("in_progress")
+        );
+    }
+
+    #[test]
+    fn apply_reconciled_issue_status_skips_unknown_and_keeps_absent() {
+        let mut state = StateConfig::default();
+        record_completed_task(&mut state, completed("rt-1", "2026-08-06T01:00:00Z"));
+        // 先对账得到值。
+        apply_reconciled_issue_status(&mut state, &[status_row("rt-1", Some("done"), None)]);
+
+        // server 不认识的 id（他端任务）跳过——不凭对账行凭空造终态历史；
+        // 已有值的条目不在本轮响应行里（issue 被删等）→ 保持原值不误清。
+        let changed = apply_reconciled_issue_status(
+            &mut state,
+            &[status_row("rt-unknown", Some("todo"), None)],
+        );
+        assert_eq!(changed, 0);
+        assert_eq!(
+            state.remote_completed_tasks[0].issue_status_category.as_deref(),
+            Some("done"),
+            "不在响应行的条目保持原值"
+        );
+        assert_eq!(
+            state.remote_completed_tasks.len(),
+            1,
+            "未知 id 不新增历史条目"
         );
     }
 
@@ -1194,6 +1323,8 @@ mod tests {
             status: status.into(),
             title: format!("title-{local_task_id}"),
             completed_at: "2026-09-20T00:00:00Z".into(),
+            issue_status_category: None,
+            issue_status_name: None,
         }
     }
 

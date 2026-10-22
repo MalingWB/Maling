@@ -593,6 +593,12 @@ export const desktopApi: RuntimeApi = {
   removeRemoteCompletedTask(remoteTaskId: string) {
     return invokeCommand<void>('remove_remote_completed_task', { remoteTaskId });
   },
+  reconcileRemoteTaskStatuses() {
+    return invokeCommand<number>('reconcile_remote_task_statuses');
+  },
+  rerunRemoteTask(taskId: string) {
+    return invokeCommand<string>('rerun_remote_task', { taskId });
+  },
   listServerMulticaWorkspaces() {
     return invokeCommand<MulticaServerWorkspaceVm[]>('list_server_multica_workspaces');
   },

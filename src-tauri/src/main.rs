@@ -108,8 +108,9 @@ use gold_band::storage::{GoldBandPaths, configure_storage_paths};
 use multica::commands::{
     add_multica_workspace, cancel_remote_task, get_remote_task_requirement, get_remote_tasks,
     list_remote_skills, list_server_multica_workspaces, pull_remote_skills,
-    recover_remote_work_dir_sessions, remove_multica_workspace, remove_remote_completed_task,
-    set_active_multica_workspace, start_remote_conversation_run,
+    recover_remote_work_dir_sessions, reconcile_remote_task_statuses, remove_multica_workspace,
+    remove_remote_completed_task, rerun_remote_task, set_active_multica_workspace,
+    start_remote_conversation_run,
 };
 // Heartbeat signals are projected by the RuntimeLifecycleBus metrics subscriber.
 use image_actions::{copy_image_to_clipboard, save_image_as};
@@ -582,6 +583,8 @@ fn run() -> anyhow::Result<()> {
             start_remote_conversation_run,
             cancel_remote_task,
             remove_remote_completed_task,
+            reconcile_remote_task_statuses,
+            rerun_remote_task,
             list_server_multica_workspaces,
             list_remote_skills,
             pull_remote_skills,

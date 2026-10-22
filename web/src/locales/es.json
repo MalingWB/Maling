@@ -2955,7 +2955,9 @@
         "emptyTitle": "No conectado a {{source}}",
         "removeTask": "Quitar de la lista",
         "removeTaskHint": "Solo se quita de la lista de este lado; al actualizar vuelve a aparecer",
-        "removeTaskTerminalHint": "Elimina el registro local de finalización; no volverá a aparecer al actualizar"
+        "removeTaskTerminalHint": "Elimina el registro local de finalización; no volverá a aparecer al actualizar",
+        "rerunTask": "Reejecutar",
+        "rerunBadge": "Reejecutar"
       },
       "keepResident": "Mantener la sesión activa",
       "releaseResident": "Permitir el cierre de la sesión",
@@ -3197,6 +3199,10 @@
       "readiness": {
         "notReady": "No listo",
         "notReadyHint": "La tarea de desarrollo correspondiente aún no está terminada; considere esperarla"
+      },
+      "issueStatus": {
+        "todo": "Pendiente",
+        "backlog": "Backlog"
       }
     }
   }

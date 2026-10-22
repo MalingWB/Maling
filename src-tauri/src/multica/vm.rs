@@ -60,6 +60,21 @@ pub struct RemoteTaskVm {
     /// 终态行无附件展示需求，不回填（侧栏轮询不为无人消费的元数据增加负载）。旧 server
     /// 不发 `issue_attachments` → 空数组，前端不渲染。
     pub attachments: Vec<RemoteTaskAttachmentVm>,
+    /// 终态行关联 issue 的状态分类（`todo`|`backlog`|`in_progress`|`done`|`canceled`，对账
+    /// `batch-status` 回填进本地历史，仅 `from_completed` 携带）。前端判据：∈ {todo,backlog,done}
+    /// 渲染「重新执行」入口（in_progress 意味着他端在执行——multica 按 issue+agent 串行）；
+    /// ∈ {todo,backlog} 渲染 issue 状态标记（任务终了但 issue 仍未开工，回退待办的场景）。
+    /// 未对账（None）/ 旧历史条目 → 前端不渲染入口与标记（行为与引入前一致）。
+    pub issue_status_category: Option<String>,
+    /// 自定义 issue 状态名（对账回填，仅 `from_completed` 携带）：展示优先于分类（更精确）。
+    pub issue_status_name: Option<String>,
+    /// rerun 血缘：本任务是 `POST /tasks/{tid}/rerun` 产生的新任务时，指回被重新执行的源
+    /// 任务 id（wire `attribution.rerun_of_task_id`，pending/claim 响应携带）。前端消费点：
+    /// 看板 queued 卡片渲染「重新执行」徽标；后端消费点：`get_remote_tasks` 据此做终态行
+    /// 退场过滤（移动语义——源终态行不与活跃后继同板，看板呈现「任务移回待办」的单行移动；
+    /// 源行持久删除由 rerun 命令 202 后执行，过滤兜底他端发起与删除失败残留）。普通任务 /
+    /// 旧 server → None。
+    pub rerun_of_task_id: Option<String>,
 }
 
 /// issue 需求附件元数据的展示投影（[`RemoteTaskVm::attachments`] 元素）：文件名（空/纯空白
@@ -143,6 +158,12 @@ impl RemoteTaskVm {
             readiness: None,
             // 终态行无输入框展示场景，附件元数据不回填。
             attachments: Vec::new(),
+            // issue 状态取对账回填值（batch-status → RemoteCompletedTask）；
+            // 未对账 / 旧历史条目 None → 前端不渲染 issue 状态标记与「重新执行」入口。
+            issue_status_category: c.issue_status_category.clone(),
+            issue_status_name: c.issue_status_name.clone(),
+            // rerun 血缘不持久化在终态历史（徽标只在 queued 卡片渲染）→ 恒 None。
+            rerun_of_task_id: None,
         }
     }
 
@@ -172,6 +193,10 @@ impl RemoteTaskVm {
             readiness: None,
             // 执行中行无输入框展示场景，附件元数据不回填。
             attachments: Vec::new(),
+            // issue 状态是对账（终态行）语义，active 行恒 None；rerun 血缘不进本地快照 → None。
+            issue_status_category: None,
+            issue_status_name: None,
+            rerun_of_task_id: None,
         }
     }
 
@@ -199,6 +224,15 @@ impl RemoteTaskVm {
             readiness: task.is_ready,
             // pending 列表行不展示附件；仅 from_detail 覆盖（见字段注释）。
             attachments: Vec::new(),
+            // issue 状态是对账（终态行）语义，pending/detail 行恒 None；
+            // rerun 血缘透传 wire `attribution.rerun_of_task_id`（rerun 新任务进 pending
+            // 列表后自然携带 → 看板「重新执行」徽标；普通任务 None）。
+            issue_status_category: None,
+            issue_status_name: None,
+            rerun_of_task_id: task
+                .attribution
+                .as_ref()
+                .and_then(|a| a.rerun_of_task_id.clone()),
         }
     }
 }
@@ -495,6 +529,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
         assert_eq!(vm.id, "t-1");
@@ -537,6 +572,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
         assert_eq!(vm.kind.as_deref(), Some("test"));
@@ -604,6 +640,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.expect("requirement prefilled");
@@ -639,6 +676,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         assert_eq!(
             RemoteTaskVm::from_detail(&issue, "ws-1", DesktopLanguage::ZhCn)
@@ -672,6 +710,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm_body = RemoteTaskVm::from_detail(&issue_body, "ws-1", DesktopLanguage::ZhCn);
         // 无 DPMS 字段 → 名称行 + 空行 + 正文（issue_description 优先级不变；协议块走隐式注入）。
@@ -748,6 +787,7 @@ mod tests {
             origin_url: Some("https://dpms.example.com/story/674290".into()),
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.expect("requirement prefilled");
@@ -811,6 +851,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         assert_eq!(
             RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn).requirement,
@@ -872,6 +913,7 @@ mod tests {
             origin_url: Some("https://dpms.example.com/story/674290".into()),
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[])
             .expect("hidden section assembled");
@@ -919,6 +961,7 @@ mod tests {
             origin_url: None,
             parent_output: Some("部署地址: https://t.example.com\n测试要点: 回归登录链路".into()),
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.as_deref().expect("requirement prefilled");
@@ -986,6 +1029,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         assert_eq!(
@@ -1035,6 +1079,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         assert_eq!(vm.requirement, None);
@@ -1102,6 +1147,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let failures = vec![
             AttachmentFailure {
@@ -1180,6 +1226,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         assert_eq!(RemoteTaskVm::from_pending(&task, "ws-1").title, "t-7");
 
@@ -1208,6 +1255,9 @@ mod tests {
             kind: Some("test".into()),
             readiness: Some(true),
             attachments: Vec::new(),
+            issue_status_category: Some("todo".into()),
+            issue_status_name: Some("待产品评审".into()),
+            rerun_of_task_id: Some("t-old".into()),
         };
         let json = serde_json::to_value(&vm).unwrap();
         // 锁定 camelCase 键名（对齐 line 650 TS，前端按这些键取值）。
@@ -1221,6 +1271,10 @@ mod tests {
         // 中立词汇字段（web/src/types.ts 的 kind / readiness，翻译自 wire issueKind / isReady）。
         assert_eq!(json["kind"], "test");
         assert_eq!(json["readiness"], true);
+        // 状态对账 + rerun 血缘字段（状态对账改造）。
+        assert_eq!(json["issueStatusCategory"], "todo");
+        assert_eq!(json["issueStatusName"], "待产品评审");
+        assert_eq!(json["rerunOfTaskId"], "t-old");
         // 附件元数据（输入框可见性）：空数组序列化为 []，前端按长度判空不渲染。
         assert_eq!(json["attachments"], serde_json::json!([]));
         // active 行无本地 run 链接（终态行才填）。
@@ -1266,6 +1320,8 @@ mod tests {
             status: "completed".into(),
             title: "Done thing".into(),
             completed_at: "2026-08-06T01:23:45Z".into(),
+            issue_status_category: Some("todo".into()),
+            issue_status_name: None,
         };
         let vm = RemoteTaskVm::from_completed(&c, "proj-1");
         assert_eq!(vm.id, "rt-1");
@@ -1282,15 +1338,21 @@ mod tests {
         // story 拆分：终态行类型取本地快照（徽标不丢）；终态无就绪语义 → 恒 None。
         assert_eq!(vm.kind.as_deref(), Some("test"));
         assert!(vm.readiness.is_none());
+        // 状态对账：issue 状态字段取对账回填值；rerun 血缘终态行恒 None。
+        assert_eq!(vm.issue_status_category.as_deref(), Some("todo"));
+        assert!(vm.issue_status_name.is_none());
+        assert!(vm.rerun_of_task_id.is_none());
 
         // 旧历史条目（缺 kind）→ None，徽标不渲染（无迁移、无兼容层）。
         let legacy = RemoteCompletedTask {
             kind: None,
+            issue_status_category: None,
             ..c.clone()
         };
         let legacy_vm = RemoteTaskVm::from_completed(&legacy, "proj-1");
         assert!(legacy_vm.kind.is_none());
         assert!(legacy_vm.readiness.is_none());
+        assert!(legacy_vm.issue_status_category.is_none(), "未对账条目无 issue 状态");
 
         // title 空白 → 用 remote_task_id 兜底（不留空标签）。
         let blank = RemoteCompletedTask {

@@ -174,6 +174,16 @@ export interface RemoteTaskVm {
   /// 阶段渲染附件 chips；文件本体在发送时由后端 stage_issue_attachments 下载。空数组 = 无附件
   /// 或旧 server 未下发，前端不渲染。
   attachments: RemoteTaskAttachmentVm[];
+  /// 终态行关联 issue 的状态分类（todo|backlog|in_progress|done|canceled；对账 batch-status 回填，
+  /// 仅 completed/failed 行有值）。∈ {todo,backlog,done} 时渲染「重新执行」入口（in_progress =
+  /// 他端在执行，multica 按 issue+agent 串行）；∈ {todo,backlog} 时渲染 issue 状态标记
+  /// （任务终了但 issue 仍未开工）。null = 未对账 / 旧历史条目 / 非终态行，不渲染。
+  issueStatusCategory: string | null;
+  /// 自定义 issue 状态名（对账回填，仅终态行）：issue 状态标记展示优先于分类文案（更精确）。
+  issueStatusName: string | null;
+  /// rerun 血缘：本任务是 rerun 产生的新任务时指回源任务 id（wire attribution.rerun_of_task_id）。
+  /// 看板 queued 卡片渲染「重新执行」徽标（multica「归组到源任务行」的看板投影）。null = 普通任务。
+  rerunOfTaskId: string | null;
 }
 
 /// issue 需求附件元数据展示投影（RemoteTaskVm.attachments 元素）。

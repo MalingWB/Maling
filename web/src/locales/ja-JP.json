@@ -2955,7 +2955,9 @@
         "emptyTitle": "{{source}}に接続されていません",
         "removeTask": "リストから削除",
         "removeTaskHint": "この側のリストから削除されるだけです。更新すると復元されます",
-        "removeTaskTerminalHint": "ローカルの完了記録を削除します。更新しても再表示されません"
+        "removeTaskTerminalHint": "ローカルの完了記録を削除します。更新しても再表示されません",
+        "rerunTask": "再実行",
+        "rerunBadge": "再実行"
       },
       "keepResident": "セッションを常駐",
       "releaseResident": "常駐を解除",
@@ -3197,6 +3199,10 @@
       "readiness": {
         "notReady": "準備未完了",
         "notReadyHint": "対応する開発タスクがまだ完了していません。完了を待ってからの実行をご検討ください"
+      },
+      "issueStatus": {
+        "todo": "未着手",
+        "backlog": "バックログ"
       }
     }
   }

@@ -2766,6 +2766,20 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证结果**：模板渲染测试（中英标签锁定，`prompts::tests` 17/17 绿）；vm 预填测试更新为四段块序（名称块首行锚点、无正文不重复、空白标题跳过、标题解码、en 渲染），`multica::` 全套件 201/201 绿；clippy 改动文件零告警。输入框真实视觉效果留内网验收。
 
+### 12.70 改动六十八：状态对账与任务重新执行——batch-status 回填 issue 状态 + 终态行 rerun 入口（M5-cb，2026-10-22）
+
+**背景（multica 侧任务重试改造，码灵同步）**：multica 新增两个 daemon API——`POST /api/daemon/tasks/batch-status`（≤500 id/批，回 `{task_id, task_status, issue_id, issue_status, issue_status_category, issue_status_name?}`，`issue_status_category ∈ {todo, backlog, in_progress, done, canceled}` 是客户端开关）与 `POST /api/daemon/tasks/{taskId}/rerun`（202 回全新任务对象：新 id、queued、同 issue、`attribution.rerun_of_task_id` 指回源任务）。码灵侧需要：① 看板终态任务周期对账刷新本地镜像 issue 状态；② 终态且 issue 允许（todo/backlog/done，**in_progress 排除**——multica 按 issue+agent 串行派发）时提供「重新执行」入口；③ 202 后新任务自然进板、按 task id 去重；④ 非 202 错误原样回显可重试；⑤ **移动语义**（内网验收后产品决策修订，2026-10-22）：点击重新执行后源终态行退场、看板呈现「已完成的任务移回待办」的单行移动——旧终态行不得与活跃后继同板，旧会话悬空（本体不动，仅会话列表直达）。
+
+**方案**：
+- **数据**：`RemoteCompletedTask` 增 `issue_status_category` / `issue_status_name`（serde default——旧 `state.json` 缺键即 None，本地终态历史落库时留空、由对账回填）；wire `RemoteTask` 增可选 `attribution.rerun_of_task_id`；`RemoteTaskVm` 三投影字段 `issue_status_category` / `issue_status_name`（仅 `from_completed` 携带）/ `rerun_of_task_id`（仅 `from_remote` 从 attribution 提取）。
+- **接口**：client 增 `batch_task_statuses(task_ids)`（空集短路不发请求、按 500 分批、`LIVENESS_TIMEOUT_SECS` 短超时、无重试——loop/页面驱动天然下一轮重试；404→`TaskNotFound` 供旧 server 降级）与 `rerun_task(task_id)`（网络级重试；非 2xx 经 `extract_error_message` 宽容提取错误体 `error`/`message` 字段、200 字符截断，包进 `NetworkFailed("{path}: HTTP {status}: {message}")` → 前端 `{{message}}` 透传直显）。Tauri 命令 `reconcile_remote_task_statuses`（`reconcile_in_flight` 单飞；TaskNotFound 静默 Ok(0)——旧 server 无该路由即无按钮/标记，前向兼容零协商）与 `rerun_remote_task`（回新 task id；成功即真删除源终态历史行——`with_state` 原子 RMW 复用 `remove_completed_task_entry`，先落盘后 emit `remote-tasks-updated`；删除失败不阻断 rerun（202 已成事实），仅记 warn 由读取侧过滤兜底）。
+- **实现**：bridge 纯函数 `apply_reconciled_issue_status(state, rows)` 按 task_id 反查终态历史、diff 计数，无变更不落盘（`with_state` dirty 语义）；变更 >0 才 emit 事件触发前端重拉。前端**页面驱动对账**（用户决策）：multica + 已连接 + 有工作空间时 mount 即一轮 + 30s 轮询，`document.hidden` 跳过，手动刷新附带一轮（静默失败不打扰）。看板 `canRerunRemoteTask`（终态 + category 闭集）/ `showsIssueStatusChip`（todo/backlog——done 与任务终态一致无提示价值）纯函数判定；「重新执行」按钮（RotateCcw）+ rerun 徽标（queued 且 `rerunOfTaskId` 非空——multica「归组到源行」在扁平 4 列的投影）+ issue 状态 chip（自定义状态名优先于分类 i18n）；202 后**直接重取列表**（用户决策：server pending 单一事实源，不做本地注入，按 id 去重由三源合并既有逻辑保证）。**移动语义（⑤）**：`get_remote_tasks` 三源合并前对终态行做 rerun 血缘退场过滤——纯函数 `filter_rerun_retired_terminal(pending, terminal)` 收集 pending 行 `rerun_of_task_id` 集合，命中的终态行不进本次响应（只过滤不写回——data-loading 规则 §5 读命令不顺便执行维护写；pending 拉取失败集合为空即不过滤，失败安全）。持久退场（rerun 命令 202 后真删除）与视图过滤互补：前者兑现移动语义的数据层，后者兜底他端机器发起的 rerun 与删除瞬时失败的残留。他端 rerun 且他端完成（我端从未见 queued 后继）时旧终态行会重新出现——此时任务链确实回到终态，不算错误展示（罕见：同一 agent runtime 两台机器）。
+
+
+**方案自评审**：过度设计——无新表/新聚合/新后台任务：对账复用终态历史（有界 50）+ 既有 `with_state`/事件通道；rerun 复用 pending 拉取与合并去重；单飞 bool 对齐 `completing` 先例；旧 server 降级走 404→静默，无版本协商；移动语义复用 `remove_completed_task_entry`（remove 命令同款内部件）与 `merge_workspace_tasks` 旁的纯过滤函数（约 15 行），无新状态/新命令/新 IPC/新轮询。性能——对账单批 ≤500 id POST（本地历史上限 50 实际一批）、30s 页面驱动且隐藏即停、无变更零落盘零事件；rerun 是用户点击级低频路径（202 后多一次有界 ≤50 条的本地 RMW 落盘）；血缘过滤 O(P+T) 纯内存集合；前端纯谓词 + 两枚 Badge，无额外渲染层。
+
+**验证结果**：`multica::` 全套件 210/210 绿（新增 attribution 解析 / batch 请求序列化 / 行宽容解析 / `pick_error_message` JSON 优先+截断 / `apply_reconciled_issue_status` 回填与跳过 / `begin_reconcile` 单飞 / `from_completed` 新字段携带 / `filter_rerun_retired_terminal` 血缘退场与失败安全两例）；web `tsc -p web/tsconfig.build.json` 零错误、remote-task-board + remote-task-management-page 59/59 绿、locale-remote-parity 绿（rerun 判定真值表、徽标/chip 渲染、按钮禁用态、容器 rerun 流与错误回显、对账 mount/门控/手动刷新触发）；7 语言 i18n 同步（`rerunTask`/`rerunBadge` + `issueStatus.todo/.backlog`）。看板真实视觉效果与内网联调（对账回填、rerun 202、源终态行退场与新任务进待办）留内网验收。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

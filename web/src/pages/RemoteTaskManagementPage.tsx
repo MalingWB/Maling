@@ -37,8 +37,10 @@ import {
   getMulticaSettings,
   getRemoteTaskRequirement,
   getRemoteTasks,
+  reconcileRemoteTaskStatuses,
   removeMulticaWorkspace,
   removeRemoteCompletedTask,
+  rerunRemoteTask,
   setActiveMulticaWorkspace,
   subscribeRemoteSourceSettingsUpdates,
   subscribeRemoteTaskUpdates,
@@ -61,6 +63,11 @@ import type {
  */
 const ISSUE_KIND_FILTERS = ['all', 'dev', 'test'] as const;
 type IssueKindFilter = (typeof ISSUE_KIND_FILTERS)[number];
+
+/// 终态对账轮询周期（毫秒，multica 状态对账改造）：页面驱动——mount 即一轮 + 周期轮询，
+/// document 隐藏时跳过。30s 在「issue 状态及时性」与「无谓 batch 请求」间取衡（本地终态
+/// 历史有界 50，单批即达；后端单飞防叠发）。
+const REMOTE_TASK_RECONCILE_INTERVAL_MS = 30_000;
 
 /// 纯函数：按类型过滤任务（接口层可单测）。`all` 原样返回；dev/test 仅保留该类型。
 /// 未知/缺失 kind 只在「全部」出现——旧 server 不发类型字段时所有任务都是 `null`，
@@ -148,6 +155,9 @@ export function RemoteTaskManagementPage({
 
   const handleManualRefresh = useCallback(() => {
     setRefreshing(true);
+    // 手动刷新附带一轮终态对账（静默——列表/设置错误照常回显，对账是增强路径失败不打扰；
+    // 后端有变更会 emit remote-tasks-updated，经事件通道再触发一次合并刷新）。
+    reconcileRemoteTaskStatuses().catch(() => undefined);
     Promise.all([fetchTasks(), fetchSettings()]).finally(() => {
       if (mountRef.current) setRefreshing(false);
     });
@@ -195,6 +205,22 @@ export function RemoteTaskManagementPage({
   }, [workspaces, selectedWorkspaceId, vm?.lastActiveWorkspaceId]);
 
   const hasWorkspaces = workspaces.length > 0;
+
+  // 终态对账轮询（multica 状态对账改造，页面驱动）：mount 即一轮 + 30s 周期，document 隐藏时
+  // 跳过（frontend-performance §5：不可见不刷新）。后端单飞（叠发触发整体退出）+ 静默降级
+  // （旧 server 404 / 网络失败返回 0），故前端 catch 后无事可做；有变更时后端 emit
+  // remote-tasks-updated → useEventDrivenRefresh 合并触发列表刷新（issue 状态标记与
+  // 「重新执行」入口随 re-fetch 到达）。
+  useEffect(() => {
+    if (source !== 'multica' || !connected || !hasWorkspaces) return;
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return;
+      reconcileRemoteTaskStatuses().catch(() => undefined);
+    };
+    tick();
+    const timer = window.setInterval(tick, REMOTE_TASK_RECONCILE_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [source, connected, hasWorkspaces]);
   const workspaceTasks = vm?.tasksByWorkspace[effectiveWorkspaceId] ?? [];
   // 投影 = 类型过滤 ∩ 未移出：两级都是纯客户端过滤，不触碰数据源。
   const selectedTasks = useMemo(
@@ -243,6 +269,23 @@ export function RemoteTaskManagementPage({
     try {
       await cancelRemoteTask(task.id);
       fetchTasks();
+    } catch (err) {
+      setError(displayAppError(t, err));
+    } finally {
+      setBusyTaskId(null);
+    }
+  }
+
+  // 重新执行（multica 任务重试改造）：rerun 202 后直接重取列表（server pending 单一事实源，
+  // 新任务按 id 天然去重，不做本地注入）。非 202/网络错误按错误码原样回显（可重试）；
+  // 400 的业务 message 已由后端透传进错误 params。
+  async function handleRerun(task: RemoteTaskVm) {
+    if (readOnly) return;
+    setBusyTaskId(task.id);
+    setError(null);
+    try {
+      await rerunRemoteTask(task.id);
+      await fetchTasks();
     } catch (err) {
       setError(displayAppError(t, err));
     } finally {
@@ -394,6 +437,7 @@ export function RemoteTaskManagementPage({
             busyTaskId={busyTaskId}
             onPrepare={(task) => void handlePrepareRemoteTask(task)}
             onCancel={(task) => void handleCancel(task)}
+            onRerun={(task) => void handleRerun(task)}
             onRemove={handleRemoveTask}
             onSelectRun={onSelectRun}
           />
