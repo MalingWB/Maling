@@ -1301,7 +1301,7 @@ export const browserApi: RuntimeApi = {
   async cancelWeComScanAuthorization(sessionId) {
     browserScanSessions.delete(sessionId);
   },
-  async startFeishuScanAuthorization(sessionId) {
+  async startFeishuScanAuthorization(sessionId, _mode) {
     return browserStartScan('feishu', sessionId);
   },
   async completeFeishuScanAuthorization(sessionId) {

@@ -2,6 +2,7 @@
 
 ## 0. 当前实现状态
 
+- 2026-10-21 Composer 长文本导致会话滚动回跳：根因是 footer 高度通过 CSS 变量改变内容 padding 与 `scrollHeight` 时没有同步 `scrollTop`，且贴底恢复只依赖滞后 follow intent。修复在 footer 高度事务内先记录变化前是否贴底：原本贴底则同帧对齐新底部，阅读历史则保持滚动位置。最小失败测试先固定“距底部 0px 时增高后必须仍为 0px”，修复前 `scrollTop` 期望 380 实际 200；修复后相关 5 个前端测试文件 61 项通过，浏览器同一路径从 `1063/466` 变为 `1279/682`，距底部保持 0px；生产构建通过。不新增状态、请求、缓存或定时恢复。
 - 2026-10-14 会话重进旧提问修复：现有 summary-first 设计仍残留 run.selectedSession，非空旧 prop 会在重挂载时遮住较新 ACP 缓存，甚至回写更低 revision；历史窗口可恢复也不能证明离页缓存提问仍有效。先以延迟 canonical Promise 的 DOM 测试复现两条路径，再删除 run 正文契约及缓存/merge/页面消费，复用 ACP resource 的单调接纳与局部就绪状态。生命周期回传收紧为完整 locator、session identity 与 lifecycle 摘要，不再回传正文；浏览器 fixture 的 run/session 查询分离。验收必须覆盖连续两次重进首帧、可疑缓存待确认、可信 live 新问题、迟到旧快照和跨身份隔离，并验证 Direct/Workflow/右侧 Agent、历史阅读位置和文件变化按需加载；不能只检查查询后的最终状态。
 - 本次验收：新增 9 项 DOM、3 项接口测试由红转绿；受影响 14 个前端测试文件共 349 项，348 项通过，1 项既有 `atomically rejoins the live head with replay received during the latest-page request` 仍因缺少 `Editing · files` 文案失败，内存加载 HEAD 原 ACP 实现可复现相同失败，未扩围处理。Rust `conversation_run_` 17 项通过，产品 TypeScript 与生产构建通过。真实浏览器连续两次离开/重进，在 canonical 查询挂起时旧问题闪现次数为 0、历史消息可见、每次 1 个查询；新 revision 11 拒绝旧 revision 10 回写，真正新问题正常显示，640px/1440px 无横向溢出。未验证已安装 EXE。Demo/Site 的接口测试通过；Demo 类型检查及独立营销预览仍有既有接口/Vite 配置问题，不计为本次通过项。
 

@@ -7,20 +7,20 @@ use anyhow::{Context, Result};
 use gold_band::app::intervention::InterventionLocator;
 use gold_band::app::{App, RuntimeLifecycleEvent};
 use gold_band::im::{
-    FeishuConnector, FeishuScanAuthClient, FeishuScanAuthError, FeishuScanAuthorization,
-    FeishuScanCredentials, IM_PAYLOAD_VERSION, ImActionResponse, ImActionResponseContext,
-    ImActionResponseState, ImActionTokenCodec, ImBindingSummary, ImChannelCleanupOperation,
-    ImChannelCleanupPhase, ImChannelKind, ImChannelSettings, ImConnectionManager, ImConnector,
-    ImConnectorEvent, ImCredentialStore, ImDelivery, ImDeliveryInsertResult, ImDeliveryPayload,
-    ImDeliveryWorker, ImDestination, ImErrorCode, ImInboundActionService, ImInboundEnvelope,
-    ImInboundHandling, ImInboundOutcome, ImIntegrationSettings, ImLifecycleProjectionJob,
-    ImLifecycleProjectionQueueItem, ImLifecycleProjector, ImLocale, ImMaintenanceWorker,
-    ImMessageUpdateMode, ImNavigationLocator, ImNotificationKind, ImObservedBinding,
-    ImProjectionCompletion, ImProjectionEnqueueOutcome, ImProjectionResult, ImProjectionTarget,
-    ImRepository, ImRepositoryError, ImResolutionDispatch, ImResolutionOutcome, ImResolvedBy,
-    ImWorkerSignal, InterventionResolutionNotification, OsImCredentialStore,
-    ResolvedImChannelConfig, WECOM_SCAN_SESSION_TTL, WeComConnector, WeComScanAuthClient,
-    WeComScanAuthError, WeComScanCredentials, drain_projection_queue,
+    FeishuConnector, FeishuRegistrationTarget, FeishuScanAuthClient, FeishuScanAuthError,
+    FeishuScanAuthorization, FeishuScanCredentials, IM_PAYLOAD_VERSION, ImActionResponse,
+    ImActionResponseContext, ImActionResponseState, ImActionTokenCodec, ImBindingSummary,
+    ImChannelCleanupOperation, ImChannelCleanupPhase, ImChannelKind, ImChannelSettings,
+    ImConnectionManager, ImConnector, ImConnectorEvent, ImCredentialStore, ImDelivery,
+    ImDeliveryInsertResult, ImDeliveryPayload, ImDeliveryWorker, ImDestination, ImErrorCode,
+    ImInboundActionService, ImInboundEnvelope, ImInboundHandling, ImInboundOutcome,
+    ImIntegrationSettings, ImLifecycleProjectionJob, ImLifecycleProjectionQueueItem,
+    ImLifecycleProjector, ImLocale, ImMaintenanceWorker, ImMessageUpdateMode, ImNavigationLocator,
+    ImNotificationKind, ImObservedBinding, ImProjectionCompletion, ImProjectionEnqueueOutcome,
+    ImProjectionResult, ImProjectionTarget, ImRepository, ImRepositoryError, ImResolutionDispatch,
+    ImResolutionOutcome, ImResolvedBy, ImWorkerSignal, InterventionResolutionNotification,
+    OsImCredentialStore, ResolvedImChannelConfig, WECOM_SCAN_SESSION_TTL, WeComConnector,
+    WeComScanAuthClient, WeComScanAuthError, WeComScanCredentials, drain_projection_queue,
     im_lifecycle_projection_channel, im_worker_channel, resolution_event_id,
     try_enqueue_projection,
 };
@@ -130,12 +130,20 @@ pub struct ImScanAuthorizationVm {
     pub expires_at_ms: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FeishuScanMode {
+    /// Lets the Feishu launcher list existing apps and offer app creation.
+    SelectOrCreate,
+    /// Re-authorizes the app currently stored for this installation.
+    ReauthorizeCurrent,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeishuScanStartInput {
     pub session_id: String,
-    /// Re-authorizes the configured app instead of creating a new one.
-    pub reauthorize: bool,
+    pub mode: FeishuScanMode,
 }
 
 impl From<ScanSlotError> for WeComScanAuthError {
@@ -245,9 +253,11 @@ impl DesktopImRuntime {
         let wecom_scan_client =
             WeComScanAuthClient::new(gold_band::config::wecom_scan_auth_config().source.clone())
                 .map_err(|error| anyhow::anyhow!(error.code()))?;
-        let feishu_scan_client =
-            FeishuScanAuthClient::new(gold_band::config::feishu_scan_auth_config())
-                .map_err(|error| anyhow::anyhow!(error.code()))?;
+        let feishu_scan_client = FeishuScanAuthClient::new(
+            gold_band::config::feishu_scan_auth_config(),
+            crate::channel::current_channel_config().app_name,
+        )
+        .map_err(|error| anyhow::anyhow!(error.code()))?;
         let (projection_sender, projection_receiver) = im_lifecycle_projection_channel();
         let (raw_event_sender, connector_event_receiver) = mpsc::channel(128);
         let mut connectors = HashMap::<ImChannelKind, Arc<dyn ImConnector>>::new();
@@ -766,21 +776,16 @@ impl DesktopImRuntime {
         result
     }
 
-    /// `existing_app_id` re-authorizes that app; `None` creates a new one.
     async fn start_feishu_scan(
         &self,
         session_id: String,
-        existing_app_id: Option<&str>,
+        target: FeishuRegistrationTarget<'_>,
     ) -> Result<ImScanAuthorizationVm, FeishuScanAuthError> {
         if Uuid::parse_str(&session_id).is_err() {
             return Err(FeishuScanAuthError::SessionInvalid);
         }
         let cancellation = self.feishu_scan_session.open(&session_id);
-        let authorization = match self
-            .feishu_scan_client
-            .begin(existing_app_id, &cancellation)
-            .await
-        {
+        let authorization = match self.feishu_scan_client.begin(target, &cancellation).await {
             Ok(authorization) => authorization,
             Err(error) => {
                 self.feishu_scan_session.cancel(Some(&session_id));
@@ -1922,25 +1927,31 @@ pub async fn start_feishu_scan_authorization(
     input: FeishuScanStartInput,
 ) -> CommandResult<ImScanAuthorizationVm> {
     let runtime = require_im_runtime(&app_handle).await?;
-    let existing_app_id = if input.reauthorize {
-        let settings = state
-            .app()
-            .and_then(|app| app.load_settings())
-            .map_err(im_command_error)?;
-        let app_id = settings
-            .im_integrations
-            .channels
-            .into_iter()
-            .find(|channel| channel.kind == ImChannelKind::Feishu)
-            .map(|channel| channel.public_identity)
-            .filter(|app_id| !app_id.is_empty())
-            .ok_or_else(|| feishu_scan_error(FeishuScanAuthError::ConfigInvalid))?;
-        Some(app_id)
-    } else {
-        None
+    let existing_app_id = match input.mode {
+        FeishuScanMode::SelectOrCreate => None,
+        FeishuScanMode::ReauthorizeCurrent => {
+            let settings = state
+                .app()
+                .and_then(|app| app.load_settings())
+                .map_err(im_command_error)?;
+            Some(
+                settings
+                    .im_integrations
+                    .channels
+                    .into_iter()
+                    .find(|channel| channel.kind == ImChannelKind::Feishu)
+                    .map(|channel| channel.public_identity)
+                    .filter(|app_id| !app_id.is_empty())
+                    .ok_or_else(|| feishu_scan_error(FeishuScanAuthError::ConfigInvalid))?,
+            )
+        }
     };
+    let target = existing_app_id.as_deref().map_or(
+        FeishuRegistrationTarget::SelectOrCreate,
+        FeishuRegistrationTarget::Existing,
+    );
     runtime
-        .start_feishu_scan(input.session_id, existing_app_id.as_deref())
+        .start_feishu_scan(input.session_id, target)
         .await
         .map_err(feishu_scan_error)
 }
@@ -2643,6 +2654,29 @@ mod tests {
         assert!(im_settings_require_runtime(&ImIntegrationSettings {
             channels: vec![configured],
         }));
+    }
+
+    #[test]
+    fn feishu_scan_start_input_uses_the_typed_mode_contract() {
+        let select = serde_json::from_value::<FeishuScanStartInput>(serde_json::json!({
+            "sessionId": "session-1",
+            "mode": "selectOrCreate"
+        }))
+        .unwrap();
+        assert_eq!(select.mode, FeishuScanMode::SelectOrCreate);
+        let reauthorize = serde_json::from_value::<FeishuScanStartInput>(serde_json::json!({
+            "sessionId": "session-2",
+            "mode": "reauthorizeCurrent"
+        }))
+        .unwrap();
+        assert_eq!(reauthorize.mode, FeishuScanMode::ReauthorizeCurrent);
+        assert!(
+            serde_json::from_value::<FeishuScanStartInput>(serde_json::json!({
+                "sessionId": "session-3",
+                "reauthorize": true
+            }))
+            .is_err()
+        );
     }
 
     #[tokio::test]
