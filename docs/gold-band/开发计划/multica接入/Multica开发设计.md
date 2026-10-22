@@ -2780,6 +2780,19 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证结果**：`multica::` 全套件 210/210 绿（新增 attribution 解析 / batch 请求序列化 / 行宽容解析 / `pick_error_message` JSON 优先+截断 / `apply_reconciled_issue_status` 回填与跳过 / `begin_reconcile` 单飞 / `from_completed` 新字段携带 / `filter_rerun_retired_terminal` 血缘退场与失败安全两例）；web `tsc -p web/tsconfig.build.json` 零错误、remote-task-board + remote-task-management-page 59/59 绿、locale-remote-parity 绿（rerun 判定真值表、徽标/chip 渲染、按钮禁用态、容器 rerun 流与错误回显、对账 mount/门控/手动刷新触发）；7 语言 i18n 同步（`rerunTask`/`rerunBadge` + `issueStatus.todo/.backlog`）。看板真实视觉效果与内网联调（对账回填、rerun 202、源终态行退场与新任务进待办）留内网验收。
 
+### 12.71 改动六十九：任务名称块去标签——预填首行即标题本身，模板链路删除（M5-cc，2026-10-22）
+
+**背景（用户需求）**：M5-ca 的名称块带「任务名称：/Task name: 」标签前缀；内网验收后用户要求去掉——输入框开头直接就是任务名称本身，标签是冗余装饰。
+
+**方案**：
+- 标签是模板存在的唯一理由（中英标签差异）；去掉后模板只剩单变量 `{{ title }}`，语言无差异、无装饰文案，模板层失去存在意义。按「杜绝无效抽象 + 开发阶段破坏式更新」删除整条链路：`src/prompts/{zh-CN,en}/runtime/remote_task_title.md`、常量 `RUNTIME_REMOTE_TASK_TITLE`（含 `_ZH_CN`/`_EN` 派生与 BUNDLED_PROMPTS 清单项）及渲染测试。
+- `title_block` 去掉 language 参数与模板渲染，`markdown_source_to_plain_text` 解码 + 空白过滤后直接返回标题文本；`TitleTemplateContext` 删除。块序、解码边界、空白跳过、`requirement_text()` 不回退 title 等既有决策全部不变。
+- 顺带补齐 M5-cb 遗留：`RemoteCompletedTask` 新增两 Option 字段后 `gold-band` lib 测试两处结构体字面量未补字段（当时只跑 `--bins` 目标，lib 测试未编译到），补 `issue_status_category/_name: None`。
+
+**方案自评审**：过度设计——纯删除（模板文件×2/常量×3/清单项/上下文结构/渲染测试净减），无新增抽象。性能——少一次常数级模板渲染，其余不变。
+
+**验证结果**：`multica::` 全套件 210/210 绿（标题断言改为裸标题、标题块的 en 重复断言随语言分支消失而删）；`prompts::` 16/16 绿（标题模板测试随删除移除）；lib `with_state` 6/6、`remote_completed_tasks` roundtrip 1/1 绿；clippy（desktop bins+tests / gold-band lib）零错误（`gold-band --tests` 下 feishu 连接器 2 条既有 deny 与本改动无关）。真实输入框视觉效果留内网验收。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

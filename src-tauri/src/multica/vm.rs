@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use gold_band::config::{DesktopLanguage, RemoteCompletedTask, RemoteWorkspaceRef};
 use gold_band::prompts::{
     RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES, RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
-    RUNTIME_REMOTE_TASK_CONTEXT, RUNTIME_REMOTE_TASK_PARENT_OUTPUT, RUNTIME_REMOTE_TASK_TITLE,
+    RUNTIME_REMOTE_TASK_CONTEXT, RUNTIME_REMOTE_TASK_PARENT_OUTPUT,
     prompt_by_language, render,
 };
 use gold_band::provider::PromptHiddenSection;
@@ -111,12 +111,13 @@ impl RemoteTaskVm {
     }
 
     /// 任务详情行（claim-at-send 只读拉取 / claim 响应）。回填 `requirement`（正文仅任务详情端点才有：
-    /// pending 列表只给 thread_name）为 composer 预填 = **DPMS 溯源块（可选）+ 上游交付说明块（可选）+
-    /// 需求正文**（见 [`detail_prefill`]）。溯源块（发布计划 / 负责人 / 需求链接）与上游交付说明（父任务
-    /// 完成时留下的交付内容，子任务赖以执行）都是用户需在发送前核对的信息，与需求正文一起构成用户可见
-    /// 可编辑的起始输入；完成输出协议不进预填，由 [`remote_task_hidden_section`] 在发送时隐式注入首条
-    /// prompt。read 与 claim 共用此构造——二者响应同构、都带 requirement 来源字段；区别仅在调用时机
-    /// （read 不改 server 状态、任务仍 queued；claim 置 dispatched）。
+    /// pending 列表只给 thread_name）为 composer 预填 = **任务名称块（可选，首行即标题本身）+
+    /// DPMS 溯源块（可选）+ 上游交付说明块（可选）+ 需求正文**（见 [`detail_prefill`]）。溯源块
+    /// （发布计划 / 负责人 / 需求链接）与上游交付说明（父任务完成时留下的交付内容，子任务赖以执行）
+    /// 都是用户需在发送前核对的信息，与需求正文一起构成用户可见可编辑的起始输入；完成输出协议不进
+    /// 预填，由 [`remote_task_hidden_section`] 在发送时隐式注入首条 prompt。read 与 claim 共用此构造
+    /// ——二者响应同构、都带 requirement 来源字段；区别仅在调用时机（read 不改 server 状态、任务仍
+    /// queued；claim 置 dispatched）。
     pub fn from_detail(task: &RemoteTask, workspace_id: &str, language: DesktopLanguage) -> Self {
         let mut vm = Self::from_remote(task, workspace_id);
         vm.requirement = detail_prefill(task, language);
@@ -245,7 +246,8 @@ pub(crate) const REMOTE_TASK_HIDDEN_SECTION_TITLE: &str = "Gold Band remote task
 /// 需求正文（来源优先级见 [`RemoteTask::requirement_text`]），块间空行分隔。
 ///
 /// 任务名称（`thread_name`）是预填首行——远程任务从 multica 列表点入，输入框自身不带标题展示，
-/// 名称行补齐任务身份上下文；标题由 [`title_block`] 解码渲染，缺省 / 纯空白 → 跳过名称块。
+/// 名称行补齐任务身份上下文；标题由 [`title_block`] 解码（首行即标题本身，无标签前缀），缺省 /
+/// 纯空白 → 跳过名称块。
 /// 溯源字段全缺省 / 纯空白 → 跳过溯源块；`parent_output` 缺省 / 纯空白 → 跳过上游块（行为与引入
 /// 各块前一致，版本解耦）；正文缺失但任一块存在 → 只发块（不丢信息）。分层依据：DPMS 溯源是
 /// **用户需在发送前核对的目标环境信息**（发布计划 / 负责人 / 需求链接），上游交付说明是**子任务赖以
@@ -253,7 +255,7 @@ pub(crate) const REMOTE_TASK_HIDDEN_SECTION_TITLE: &str = "Gold Band remote task
 /// 正文不回退 title——名称块已保证标题在场，回退只会让无正文任务把标题重复一遍。
 fn detail_prefill(task: &RemoteTask, language: DesktopLanguage) -> Option<String> {
     let blocks = [
-        title_block(task, language),
+        title_block(task),
         dpms_context_block(task, language),
         parent_output_block(task, language),
         task.requirement_text(),
@@ -366,27 +368,19 @@ struct ParentOutputTemplateContext<'a> {
     parent_output: &'a str,
 }
 
-/// 任务名称块（`src/prompts/{zh-CN,en}/runtime/remote_task_title.md` 按语言渲染）。
+/// 任务名称块：解码后的标题本身即预填首行（M5-cc 起无「任务名称：/Task name: 」标签前缀，
+/// 标签随模板一并删除——无语言差异、无装饰文案的模板没有存在意义）。
 ///
 /// `thread_name` 缺省 / 纯空白 → None（不渲染块，行为与引入前一致，版本解耦）。标题与正文
 /// 同过 [`markdown_source_to_plain_text`]——`thread_name` 同为 web 侧序列化产出，防 `\_`/
 /// HTML 残留直接透传到输入框首行。
-fn title_block(task: &RemoteTask, language: DesktopLanguage) -> Option<String> {
+fn title_block(task: &RemoteTask) -> Option<String> {
     let title = markdown_source_to_plain_text(&blank_to_none(task.title.as_deref())?);
     let title = title.trim();
     if title.is_empty() {
         return None;
     }
-    let template = prompt_by_language(language, RUNTIME_REMOTE_TASK_TITLE);
-    let rendered = render(template, &TitleTemplateContext { title })
-        .expect("remote task title template renders");
-    Some(rendered.trim().to_string())
-}
-
-/// 任务名称模板上下文（minijinja strict：`{{ title }}` 单变量）。
-#[derive(Serialize)]
-struct TitleTemplateContext<'a> {
-    title: &'a str,
+    Some(title.to_string())
 }
 
 /// DPMS 溯源块（`src/prompts/{zh-CN,en}/runtime/remote_task_context.md` 按语言渲染）。
@@ -645,7 +639,7 @@ mod tests {
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.expect("requirement prefilled");
         // M5-ca：预填以任务名称块开头（无 DPMS/上游块 → 名称行 + 空行 + 正文）。
-        assert_eq!(requirement, "任务名称：Thread name\n\nFull prompt body");
+        assert_eq!(requirement, "Thread name\n\nFull prompt body");
         // 完成输出协议块不进预填（隐式注入，见 remote_task_hidden_section 测试；上游交付说明进预填）。
         assert!(!requirement.contains("completion-output"));
         // title 与 requirement 各司其职（title 仍是 thread_name，不混进正文）。
@@ -682,7 +676,7 @@ mod tests {
             RemoteTaskVm::from_detail(&issue, "ws-1", DesktopLanguage::ZhCn)
                 .requirement
                 .as_deref(),
-            Some("任务名称：Login bug")
+            Some("Login bug")
         );
 
         // issue 带 body（改动四：任务详情端点回填 issue_description）→ requirement 取正文而非标题。
@@ -716,7 +710,7 @@ mod tests {
         // 无 DPMS 字段 → 名称行 + 空行 + 正文（issue_description 优先级不变；协议块走隐式注入）。
         assert_eq!(
             vm_body.requirement.as_deref(),
-            Some("任务名称：Login bug\n\nSteps to repro...")
+            Some("Login bug\n\nSteps to repro...")
         );
         // title 仍是 thread_name，不混进正文。
         assert_eq!(vm_body.title, "Login bug");
@@ -724,8 +718,9 @@ mod tests {
 
     #[test]
     fn from_detail_prepends_task_title_block() {
-        // M5-ca：任务名称块是预填首块——输入框第一行即任务身份，先于 DPMS/上游/正文；
-        // 标题过 markdown_source_to_plain_text（与正文同一解码边界，thread_name 同为 web 侧产出）。
+        // M5-ca：任务名称块是预填首块——输入框第一行即任务身份，先于 DPMS/上游/正文；首行即
+        // 标题本身（M5-cc 去标签，无语言分支）；标题过 markdown_source_to_plain_text
+        // （与正文同一解码边界，thread_name 同为 web 侧产出）。
         let task: RemoteTask = serde_json::from_value(json!({
             "id": "t-1",
             "status": "queued",
@@ -736,12 +731,7 @@ mod tests {
         let requirement = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn)
             .requirement
             .expect("requirement prefilled");
-        assert!(requirement.starts_with("任务名称：包名 my_app 修复\n\n正文"));
-        // 英文语言 → 同一数据渲染英文标签（模板双语同构）。
-        let requirement_en = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::En)
-            .requirement
-            .expect("requirement prefilled");
-        assert!(requirement_en.starts_with("Task name: 包名 my_app 修复\n\n正文"));
+        assert!(requirement.starts_with("包名 my_app 修复\n\n正文"));
 
         // 标题缺省 / 纯空白 → 跳过名称块（行为与引入前一致，版本解耦）。
         let no_title: RemoteTask = serde_json::from_value(json!({
@@ -792,7 +782,7 @@ mod tests {
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.expect("requirement prefilled");
         // 名称块在最前，溯源块次之、正文在后（用户先见任务身份，再核对目标环境，再读/改需求）。
-        assert!(requirement.starts_with("任务名称：Fix login\n\n本任务来自 DPMS 关联的工作项"));
+        assert!(requirement.starts_with("Fix login\n\n本任务来自 DPMS 关联的工作项"));
         assert!(requirement.contains("- 发布计划 ID: 538181"));
         assert!(requirement.contains("- 开发负责人: alice,bob"));
         assert!(requirement.contains("- 测试负责人: carol"));
@@ -800,7 +790,7 @@ mod tests {
         assert!(requirement.contains("- 需求链接: https://dpms.example.com/story/674290"));
         assert!(requirement.ends_with("Steps to repro..."));
         assert!(
-            requirement.find("任务名称").unwrap()
+            requirement.find("Fix login").unwrap()
                 < requirement.find("需求溯源信息").unwrap()
         );
         assert!(
@@ -815,7 +805,7 @@ mod tests {
         let requirement_en = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::En)
             .requirement
             .expect("requirement prefilled");
-        assert!(requirement_en.starts_with("Task name: Fix login\n\nThis task comes from a DPMS-linked work item"));
+        assert!(requirement_en.starts_with("Fix login\n\nThis task comes from a DPMS-linked work item"));
         assert!(requirement_en.contains("- Release plan ID: 538181"));
         assert!(
             requirement_en.contains("- Requirement link: https://dpms.example.com/story/674290")
@@ -855,7 +845,7 @@ mod tests {
         };
         assert_eq!(
             RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn).requirement,
-            Some("任务名称：Login bug\n\nSteps...".into())
+            Some("Login bug\n\nSteps...".into())
         );
 
         // 纯空白字符串字段视为缺失（逐字段空白过滤）：只剩一个非空白字段也渲染，空白字段不出行。
@@ -967,7 +957,7 @@ mod tests {
         let requirement = vm.requirement.as_deref().expect("requirement prefilled");
         // 预填四段锚点按出现位置严格递增：任务名称 → DPMS 溯源 → 上游交付说明 → 需求正文（正文收尾）。
         let anchors = [
-            requirement.find("任务名称").expect("task title block"),
+            requirement.find("Fix login").expect("task title block"),
             requirement.find("本任务来自 DPMS").expect("dpms block"),
             requirement
                 .find("上游（父工作项）")
@@ -1034,7 +1024,7 @@ mod tests {
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         assert_eq!(
             vm.requirement.as_deref(),
-            Some("任务名称：Fix login\n\nSteps...")
+            Some("Fix login\n\nSteps...")
         );
         let section =
             remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[]).expect("hidden section");
@@ -1047,7 +1037,7 @@ mod tests {
         };
         assert_eq!(
             RemoteTaskVm::from_detail(&blank, "ws-1", DesktopLanguage::ZhCn).requirement,
-            Some("任务名称：Fix login\n\nSteps...".into())
+            Some("Fix login\n\nSteps...".into())
         );
     }
 

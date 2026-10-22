@@ -9954,6 +9954,8 @@ mod tests {
             status: "completed".into(),
             title: format!("title-{remote}"),
             completed_at: "2026-08-13T00:00:00Z".into(),
+            issue_status_category: None,
+            issue_status_name: None,
         }
     }
 

@@ -3850,6 +3850,8 @@ mod tests {
                 status: "completed".to_string(),
                 title: "Fix bug".to_string(),
                 completed_at: "2026-08-06T01:00:00Z".to_string(),
+                issue_status_category: None,
+                issue_status_name: None,
             }],
             ..StateConfig::default()
         };
