@@ -636,7 +636,7 @@ async fn mark_issue_in_progress(
 ) {
     if let Some(issue) = in_progress_target(issue_id) {
         if let Err(e) = client
-            .update_issue_status(workspace_id, issue, MULTICA_ISSUE_IN_PROGRESS_STATUS, None)
+            .update_issue_status(workspace_id, issue, MULTICA_ISSUE_IN_PROGRESS_STATUS)
             .await
         {
             warn!(

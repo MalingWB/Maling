@@ -257,7 +257,7 @@ ACP session 建立  →  session_id 落 <attempt_dir>/worker-ref.json 的 contin
 lifecycle 事件（NodeStarted / NodeCompleted / RunCompleted / RunPaused / InterventionRequested）  ──转译──▶  multica 基础状态（started / 心跳 / completed / failed；Paused 期间 multica 继续 running，见下）
    ▼
 run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 + control/mod.rs:25-43 + orchestrator.rs:2388-2437）
-   ├─ RunCompleted{Success}  →  multica complete(output = 末轮产物摘要, session_id = ACP session_id) + PinTaskSession 写回 session_id
+   ├─ RunCompleted{Success}  →  multica complete(output = 末轮产物摘要, session_id = ACP session_id, completion_output = 交付说明（M5-cd，issue 任务）) + PinTaskSession 写回 session_id
    ├─ RunCompleted{Failure}  →  multica fail(error, failure_reason = agent_error.*)
    ├─ RunCompleted{Killed}   →  通常取消检测已命中 multica cancelled：仅清本地索引不上报；罕见本地强停 → fail(timeout) 兜底
    └─ RunPaused / InterventionRequested  →  不上报终态，转本地 elicitation/permission 处理（multica 继续 running）
@@ -273,7 +273,7 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
 - **run 终态 4 分支（订阅器必须穷举，不能只 match success）**：`RunCompleted{Success}`→complete / `{Failure}`→fail / `{Killed}`→不上报（取消检测命中则清本地索引，否则 fail(timeout) 兜底）/ `RunPaused`·`InterventionRequested`→**不上报终态**，转本地 elicitation/permission 处理。源码依据 `provider/mod.rs:1086-1100` stop_reason 分类 → `node_executor.rs:998-1067` → `control/mod.rs:25-43` → `orchestrator.rs:2388-2437`（详见开发设计 2.5 终态表）。
 - **Paused 盲区（已决策：接受，multica 不感知）**：multica task 状态机无 paused 态。码灵本地 run 因 elicitation/permission 进 Paused 时，multica 端继续显示 running、码灵本地全权处理，不主动上报、不超时兜底；代价是发起人此期间在 multica web 仅见 running。
 - **~~不监听 `AcpTurnFinished`~~（已过时，M5-bn 起消费）**：该事件 M5-bn 起已有发射点（`emit_acp_turn_finished`，携带 `attempt_dir`）并被 multica 订阅器消费（迟到补发触发）；**M5-bp 起兼作 direct 模式完成门控的 turn 级触发**（见「远程任务完成判定」要点）。
-- **远程任务完成判定（M5-bp，开发设计 §12.55）**：direct 模式下「run 跑完」只是一次对话轮的技术性成功，不等于任务业务完成——完成由**执行体显式声明**：issue 关联的 direct 任务，只有 agent 在最终回复末尾输出 `completion-output` 围栏块时才 `complete_task` + issue 流转 done；未输出块则**扣留完成**（远端保持 running，用户可继续多轮对话推进）。turn 收尾（`AcpTurnFinished`）与 run 收尾（`RunCompleted{Success}`）两个触发点走同一判定。**workflow 模式不受门控影响**（graph 终态即 definition of done；**M5-bs 起协议赋予收尾节点「整个工作项交付总结」职责**——综合前序产出、优先构建/部署/测试要点，防收尾节点只写本节点产物覆盖真实交付信息，见开发设计 §12.59；**M5-bw 起覆盖清单分级——构建包名/制品名 + 部署环境为核心必保输出（本次不涉及构建部署时明确写一句防歧义），且前序节点（尤其 CI/CD）已输出的构建/部署信息收尾节点必须携带进自己的块，见开发设计 §12.65**；**M5-by 起核心信息三项化（再增极其精简的改动范围）且支持任务完成后会话内修订——完成状态仍由首次块判定，后续用户在会话中要求调整时 agent 重新输出完整新块，经既有终态后补写通道（`relay_late_completion_output`，PUT 只带 `completion_output` 键）幂等覆盖 multica 侧内容，见开发设计 §12.67**）；非 issue 远程任务维持原语义（不注入协议块、fail-open）。逃生通道：会话补交（对话中说「完成」→ agent 输出块即完成）/ multica 看板取消。本地普通会话完全不受影响（门控仅存在于 multica bridge 层）。
+- **远程任务完成判定（M5-bp，开发设计 §12.55）**：direct 模式下「run 跑完」只是一次对话轮的技术性成功，不等于任务业务完成——完成由**执行体显式声明**：issue 关联的 direct 任务，只有 agent 在最终回复末尾输出 `completion-output` 围栏块时才 `complete_task` + issue 流转 done；未输出块则**扣留完成**（远端保持 running，用户可继续多轮对话推进）。turn 收尾（`AcpTurnFinished`）与 run 收尾（`RunCompleted{Success}`）两个触发点走同一判定。**workflow 模式不受门控影响**（graph 终态即 definition of done；**M5-bs 起协议赋予收尾节点「整个工作项交付总结」职责**——综合前序产出、优先构建/部署/测试要点，防收尾节点只写本节点产物覆盖真实交付信息，见开发设计 §12.59；**M5-bw 起覆盖清单分级——构建包名/制品名 + 部署环境为核心必保输出（本次不涉及构建部署时明确写一句防歧义），且前序节点（尤其 CI/CD）已输出的构建/部署信息收尾节点必须携带进自己的块，见开发设计 §12.65**；**M5-by 起核心信息三项化（再增极其精简的改动范围）且支持任务完成后会话内修订——完成状态仍由首次块判定，后续用户在会话中要求调整时 agent 重新输出完整新块，经既有终态后补写通道（`relay_late_completion_output`，PUT 只带 `completion_output` 键）幂等覆盖 multica 侧内容，见开发设计 §12.67**；**M5-cd 起交付通道升级——`completion_output` 改随 `/complete` 同事务回传（multica 侧协议改造，后写胜），码灵侧块优先、最终回复全文兜底（形态滑落时交付不落空），见开发设计 §12.72**）；非 issue 远程任务维持原语义（不注入协议块、fail-open）。逃生通道：会话补交（对话中说「完成」→ agent 输出块即完成）/ multica 看板取消。本地普通会话完全不受影响（门控仅存在于 multica bridge 层）。
 - **ACP session 跨重启可恢复性未验证**（多轮=续跑前提），列为 M1 首个集成测试验证项（开发设计 9.2）。
 - **首轮 prompt 不走 submit**：`create_task_from_requirement` 的 `requirement_content` 直接写入 `requirement.md`，Worker 节点自动读它作为首轮 prompt（`node_executor.rs:610`），无需 `submit_conversation_prompt`。
 - **断点续跑** = `app.run_continue_background_with_config_overrides(task_id, run_id, None, None, …)`，内部自动读 `worker-ref.json` 的 `continue_ref` 走 ACP `session/load` 恢复上次上下文（见 3.2.7），不重新建会话。
@@ -290,7 +290,7 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
 | `multica/state.rs` | 运行期状态：per-workspace runtime_id 映射、在飞 remote_task↔本地 task 映射（`multica_pending_issues` 失败待重试 issue 持久化在 StateConfig，非 state.rs 内存）；**执行注入**：claim 后由 composer 下拉选定的本地工作区 → 发送时随 `start_multica_conversation_run` 写入 `ActiveRemoteRun.local_project_id` → 按 `workspace_entry_for_project(&home_state, &local_project_id)` 解析 `workspace_path` → `App::with_repo_root`（参考 `commands_conversation.rs:257`）。**原 workspace 级 `binding_for_multica()` 已删除（M5-z）** |
 | `multica/loop.rs` | 心跳循环、**启动全量 register 已添加 workspace / 新添加 workspace 时 register**/recover-orphans/失败任务供 rerun、取消检测轮询 |
 | `multica/bridge.rs` | remote_task ↔ 本地 task/run 衔接（**直接调 `gold-band` 库层 App API** + 订阅 lifecycle bus；不走 Tauri command 层） |
-| `multica/handoff.rs` | issue 完成输出传递（M5-bj）：从最终 assistant 回复提取 `completion-output` 围栏块（纯函数提取 + timeline 投影），随 issue done 流转一次 PUT 上送；M5-bp 起提取结果兼作 direct 模式完成门控判据（有块才 complete，无块扣留——开发设计 §12.55），非 issue / workflow 路径仍 fail-open |
+| `multica/handoff.rs` | issue 完成输出传递（M5-bj）：从最终 assistant 回复提取 `completion-output` 围栏块（纯函数提取 + timeline 投影），M5-cd 起随 `/complete` 同事务回传（**块优先、最终回复全文兜底** + 16k 预截断带尾部标记——multica 协议改造对接，开发设计 §12.72；~~此前随 issue done 流转一次 PUT 上送~~）；M5-bp 起提取结果兼作 direct 模式完成门控判据（有块才 complete，无块扣留——开发设计 §12.55），非 issue / workflow 路径仍 fail-open |
 
 **边界**：multica **业务逻辑**（HTTP / 心跳 / claim / 重试 / 状态机）留在 src-tauri 薄壳层（依赖 reqwest、tauri state、AppHandle）；但**会话执行复用 `gold-band` 库层 App 公开 API**（`create_task_from_requirement` / `run_start_background` / `worker_ref_show` / `run_continue_background_with_config_overrides`，均公开），并把会话 VM 现有私有的 Direct/Auto workflow 构造上提到 `gold_band::dsl::presets` 公开复用（库层唯一轻微改动）。multica 不新造 runtime、不碰核心 lifecycle 契约。
 
@@ -593,8 +593,9 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 
 **C6. 完成** ✅
 - `POST /api/daemon/tasks/{taskId}/complete` ｜ PAT
-- 请求：`{ "output": "<末轮产物摘要>", "session_id": "<ACP session_id>", "work_dir": "..." }`（后两个可选）
+- 请求：`{ "output": "<末轮产物摘要>", "session_id": "<ACP session_id>", "work_dir": "...", "completion_output": "<可选，issue 交付说明>" }`（后三个可选，缺省不序列化）
 - 说明：任务 → completed。带重试、幂等。`session_id` = 该会话的 ACP session_id（来自 `worker-ref.json` 的 `continue_ref.acpSessionId`，续跑依赖，故 complete 前先调 C8 `PinTaskSession` 回写）；`work_dir` 取自该任务**任务级** `ActiveRemoteRun.local_project_id` → `conversation_workspaces.workspace_path`（M5-z：绑定下沉到任务级，不再走 workspace 级 `local_project_id`）。
+- **`completion_output`（M5-cd，multica 侧协议改造 2026-10）**：issue 交付说明随 complete **同事务**写入 `issue.completion_output`（后写胜——rerun 后再完成覆盖旧值；test 子任务 claim 的 `parent_output` 即该值）。缺省/空串不动现值；≤16,000 Unicode 字符（服务端按 rune 计数），超长 **400 且任务不置 completed**——码灵侧 16k 预截断（尾部截断标记计入上限）+ 携带字段收 400 时**立即降级**去字段重发一次保完成；仅 issue-bound 任务生效（其余 server 静默忽略）；旧 server 忽略未知键，安全灰度。取值：direct 门控命中传围栏块；工作流**块优先、最终回复全文兜底**（见 3.2.x 完成判定）。~~此前经 D2 issue done PUT 附带~~（M5-cd 起单一写入来源）。
 - **完成触发时机（M5-bp 门控，开发设计 §12.55）**：issue 关联的 direct 模式任务**不再「run 跑完即 complete」**——run 收尾（`RunCompleted{Success}`）或 turn 收尾（`AcpTurnFinished{Completed}`）时从最终回复提取 `completion-output` 围栏块：有块 → 本接口 + issue done；无块 → 扣留完成（远端保持 running，对话可继续）。workflow 模式与非 issue 任务维持原触发（run 终态驱动）。
 
 **C7. 失败** ❌
@@ -623,10 +624,10 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - 错误：400 = 业务错误（body 带 message，码灵透传原文直显、可重试——如「该 issue 已有 pending 任务」）；404 = 不存在 / 不属本 daemon。
 - 码灵消费：终态行（completed/failed）**且** B4 对账回填的 `issue_status_category ∈ {todo, backlog, done}` 时渲染【重新执行】按钮——**in_progress 排除**（issue 正被他端执行，multica 按 issue+agent 串行派发，重跑会撞 pending 槽）。202 后码灵**源终态行退场并重取列表**（server pending 单一事实源，按 task id 去重）：rerun 命令真删除源任务的本地终态历史行（旧会话本体不动、悬空可从会话列表直达），`get_remote_tasks` 构建列表时按 rerun 血缘（pending 行 `rerun_of_task_id`）过滤终态行兜底（他端发起的 rerun / 删除瞬时失败；读命令只过滤不写回）——看板呈现「已完成的任务移回待办」的**单行移动语义**，源终态行不与活跃后继同板。新任务（`rerun_of_task_id` 非空）在看板渲染「重新执行」徽标表达血缘。
 
-**D2. issue 状态流转** ★ M5-t（done）/ M5-w（in_progress）/ M5-bj（completion_output）
+**D2. issue 状态流转** ★ M5-t（done）/ M5-w（in_progress）
 - `PUT /api/issues/{id}` ｜ user PAT ｜ 需 `X-Workspace-ID` 头
-- 请求：`{ "status": "in_progress" | "done", "completion_output": "<可选，仅 done>" }`；**迟到补发（M5-bl）**：`{ "completion_output": "<必带>" }`（同一端点，**不带 status 键**——服务端字段级 merge，未触摸字段保留现值）
-- 说明：issue 列表流转（开始→in_progress 由 M5-w、完成→done 由 M5-t 引入，均为**码灵作为中介**用自己的 PAT 调用、agent 不感知 multica 业务接口）。M5-bj 起 done 请求可带 `completion_output`（≤16,000 Unicode 字符，服务端按 rune 计数、超长 400 且**整个 PUT 被拒、issue 不会标 done**——2026-09-21 从 64,000 收紧）：码灵从 agent 最终回复提取 `completion-output` 围栏块（见 `multica/handoff.rs`，客户端按 16k 截断兜底 + 提示词要求执行体控篇幅 ≤2k、超长走工作区文件 + 路径引用；workflow 模式提取源是**终态化 run 的收尾节点**回复——M5-bs 起协议要求该节点输出综合前序产出的**整体交付总结**，见开发设计 §12.59），**status 与 completion_output 一次 PUT 原子上送**；键缺席（serde skip_serializing_if）= 服务端保持原值——旧 server 忽略未知键、新 server 缺键不覆盖，双向兼容。提取失败 fail-open（issue 照常 done，写作可选、不门控）。**M5-bl 起补齐多 run 场景**：首 run fail-open 标 done 后，用户在同一本地会话追问、agent 补交了块 → 码灵按 local_task_id 反查「最近完成」历史找回 issue 关联，用**不带 status 键的 PATCH 只补写 `completion_output`**（issue 可能已被 reopen/人工流转，迟到写入不得拉回 done）；无块不补发、失败仅记日志（下次补交整体覆盖，服务端单值语义）。**触发事件（M5-bn 修正）**：终态后追问 **run**（`RunCompleted` 无在飞映射）与 Direct 后续追问 **turn**（`AcpTurnFinished`——Direct 追问在同一 attempt 内收尾、不产生新的 RunCompleted，事件携带 `attempt_dir` 供 timeline 提块）两个入口进同一补写通道，PUT 幂等覆盖。
+- 请求：`{ "status": "in_progress" | "done" }`；**迟到补发（M5-bl）**：`{ "completion_output": "<必带>" }`（同一端点，**不带 status 键**——服务端字段级 merge，未触摸字段保留现值；M5-by「任务完成后会话内修订」的补写通道，M5-cd 后保留）
+- 说明：issue 列表流转（开始→in_progress 由 M5-w、完成→done 由 M5-t 引入，均为**码灵作为中介**用自己的 PAT 调用、agent 不感知 multica 业务接口）。~~M5-bj 起 done 请求可带 `completion_output`，status 与 completion_output 一次 PUT 原子上送~~ **（M5-cd 起该字段迁移到 C6 `/complete` body——multica 侧协议改造：完成与写输出同事务、后写胜；本 PUT 回归纯状态流转，单一写入来源）**。上限与截断口径不变（≤16,000 Unicode 字符、服务端按 rune 计数，码灵预截断带尾部标记）。提取失败 fail-open（issue 照常 done，写作可选、不门控）。**M5-bl 起补齐多 run 场景**：首 run fail-open 标 done 后，用户在同一本地会话追问、agent 补交了块 → 码灵按 local_task_id 反查「最近完成」历史找回 issue 关联，用**不带 status 键的 PATCH 只补写 `completion_output`**（issue 可能已被 reopen/人工流转，迟到写入不得拉回 done）；无块不补发、失败仅记日志（下次补交整体覆盖，服务端单值语义）。**触发事件（M5-bn 修正）**：终态后追问 **run**（`RunCompleted` 无在飞映射）与 Direct 后续追问 **turn**（`AcpTurnFinished`——Direct 追问在同一 attempt 内收尾、不产生新的 RunCompleted，事件携带 `attempt_dir` 供 timeline 提块）两个入口进同一补写通道，PUT 幂等覆盖。
 
 #### E. 辅助查询（本地记录丢失时兜底）
 
@@ -1278,6 +1279,11 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **需求（用户提出）**：「任务名称：.....」的标签与冒号去掉，输入框开头直接是任务名称本身。
   - **实现**：标签删除后单变量模板失去存在意义，整条链路删除（`remote_task_title.md` 双语模板、`RUNTIME_REMOTE_TASK_TITLE` 常量/BUNDLED_PROMPTS 清单/渲染测试）；`title_block` 解码 + 空白过滤后直接返回标题，块序/解码边界/空白跳过/正文不回退 title 均不变（开发阶段破坏式更新）。顺带补齐 M5-cb 遗留的 lib 测试两处结构体字面量新字段。
   - **验证**：`multica::` 210/210、`prompts::` 16/16、lib `with_state`/`remote_completed` 绿；clippy 范围内零错误。真实输入框视觉效果留内网验收。
+
+- [x] **M5-cd**（2026-10-23）completion_output 随 `/complete` 回传——multica 协议改造对接（Rust，开发设计 §12.72 改动七十）：
+  - **需求（multica 侧协议改造）**：`/complete` body 新增可选 `completion_output`（完成与写输出**同事务**、后写胜；≤16k rune 超长 400 且任务不置 completed；仅 issue-bound 任务生效；旧 server 忽略未知键安全灰度；test 子任务 claim 的 `parent_output` 即该值）。事故背景：工作流任务完成时 `/complete` 的 `output` 字段填了节点名（「CRIS-收尾归档」），真实交付说明未送达 multica。
+  - **实现**：① `CompleteRequest` 增可选 `completion_output`（缺省不序列化）；`complete_task` 改自建请求回路（`complete_post_once` 四分类：Delivered/Retryable/Fatal/Rejected——不走 `map_status`+`post_json`：400 被并入 `NetworkFailed` 会被终态重试盲退避 6 次、降级无从谈起）：携带字段收 400 → **立即**降级去字段重发一次（完成优先于交付说明），401/403/404/409 立即上抛、传输/5xx 沿终态重试。② 工作流采集**块优先、最终回复全文兜底**（`workflow_completion_output`——围栏块提取失败/形态滑落时块内容仍嵌在全文里送达，交付不落空）+ 16k 预截断带尾部标记（标记计入上限）。③ `update_issue_status` 回归纯 status（`UpdateIssueStatusRequest` 删输出键，单一写入来源）；迟到补发 PATCH 通道（M5-bl/M5-by 修订链路）与 fail 路径（不带该字段）不受影响。direct 门控语义不变（块门控，块同样改经 `/complete` 携带）。
+  - **验证**：`multica::` 217/217（新增：socket 集成测试降级回路两请求断言 / 400 分类透传 server message / 404·500 分类；handoff 块优先·全文兜底（含 §12.55 事故形态作为兜底输入）·截断标记·标记计入预算；bridge 采集组合改共享单次 timeline 读）；clippy 我方改动零新增警告。内网验收对照 multica 改造清单验收用例 1-6。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

@@ -409,14 +409,15 @@ async fn handle_node_completed(
 
 /// RunCompleted：按 outcome 4 分支上报终态 + 清本地索引。
 ///
-/// Success 分支在 `complete_task` 送达后，额外用码灵 PAT 把关联 issue 流转到 `done`（接入方案 D2：
-/// 码灵作为中介），并在同一 PUT 内附带 `completion_output`——从 `attempt_dir` 的 acp.timeline 投影
-/// 最终 assistant 回复、提取 `completion-output` 围栏块（issue 完成输出传递特性）。
+/// Success 分支的 `completion_output` 随 `/complete` 同事务上送（multica C6 改造，2026-10：
+/// 完成与写输出单请求、后写胜）——从 `attempt_dir` 的 acp.timeline 投影最终 assistant 回复。
+/// `complete_task` 送达后另用码灵 PAT 把关联 issue 流转到 `done`（接入方案 D2：码灵作为中介，
+/// 纯状态流转）。
 ///
-/// **M5-bp（开发设计 §12.55）**：direct 模式 + issue 关联的 Success 由该块**门控**——无块 →
-/// 扣留完成（不上报、不 finalize，远端保持 running 供对话继续，块出现后由 turn 收尾补判）。
-/// 非 direct / 非 issue 维持既有 fail-open 路径（提取失败不带该键，issue 照常 done——写作可选、
-/// 不门控）。
+/// **M5-bp（开发设计 §12.55）**：direct 模式 + issue 关联的 Success 由 completion-output 块
+/// **门控**——无块 → 扣留完成（不上报、不 finalize，远端保持 running 供对话继续，块出现后由
+/// turn 收尾补判）。工作流等非 direct 路径不门控，交付说明**块优先、最终回复全文兜底**
+/// （提取形态滑落时块内容仍随全文送达，交付不落空）。
 async fn handle_run_completed(
     app: AppHandle,
     remote_task_id: String,
@@ -444,16 +445,14 @@ async fn handle_run_completed(
             session_id,
             work_dir,
         } => {
-            // 块提取只在 issue 关联存在时进行（门控判定 ⊆ issue 非空；fail-open 附带同样需要
-            // issue）——非 issue 任务不做这次大文件（acp.timeline）读，行为对齐旧实现。
-            let probe = if run
-                .issue_id
-                .as_deref()
-                .is_some_and(|s| !s.trim().is_empty())
-            {
-                completion_output_for_issue_done(attempt_dir.as_deref())
+            // 采集只在 issue 关联存在时进行（direct 门控判定 ⊆ issue 非空；工作流附带也仅 issue
+            // 维度生效——server 对非 issue 任务静默忽略该字段）——非 issue 任务不做这次大文件
+            // （acp.timeline）读，行为对齐旧实现。
+            let issue = run.issue_id.as_deref().filter(|s| !s.trim().is_empty());
+            let (final_reply, probe) = if issue.is_some() {
+                final_reply_and_probe(attempt_dir.as_deref())
             } else {
-                handoff::CompletionBlockProbe::default()
+                (None, handoff::CompletionBlockProbe::default())
             };
             // M5-bp 决策点 1（run 收尾）：direct + issue → completion-output 块门控。
             match decide_run_completion(&run, probe.block.clone()) {
@@ -483,26 +482,26 @@ async fn handle_run_completed(
                     .await;
                 }
                 DirectCompletionDecision::Passthrough => {
-                    // 非 direct / 非 issue：既有 fail-open 路径——run 终态驱动完成，块尽力附带、
-                    // 不门控。有 attempt（可读到执行体终态回复）却提不出块 → warn，用于内网联调
-                    // 观察指令层遵从度。
-                    if probe.block.is_none() && attempt_dir.is_some() {
-                        if let Some(issue) =
-                            run.issue_id.as_deref().filter(|s| !s.trim().is_empty())
-                        {
-                            warn!(
-                                task = %remote_task_id,
-                                %issue,
-                                "multica completion-output: nothing extracted from final reply (issue still marked done)"
-                            );
-                        }
+                    // 工作流/auto/非 issue：既有 fail-open 路径——run 终态驱动完成，不门控。
+                    // 交付说明**块优先、最终回复全文兜底**（multica C6 改造清单 §2.1）：块提不出
+                    // （含近似形态滑落）时块内容仍随全文送达，交付不落空。
+                    let completion_output = final_reply
+                        .as_deref()
+                        .and_then(handoff::workflow_completion_output);
+                    if let (Some(issue), Some(_)) = (issue, attempt_dir) {
+                        log_workflow_completion_delivery(
+                            &remote_task_id,
+                            issue,
+                            &completion_output,
+                            &probe,
+                        );
                     }
                     complete_with_issue_done(
                         &client,
                         &remote_task_id,
                         &run,
                         &output,
-                        probe.block.as_deref(),
+                        completion_output.as_deref(),
                         session_id.as_deref(),
                         work_dir.as_deref(),
                     )
@@ -526,10 +525,12 @@ async fn handle_run_completed(
 /// `complete_task` 送达 + 关联 issue 流转 done 的公共完成路径（M5-bp 起三处共用：run 收尾门控
 /// 命中 / run 收尾 fail-open / turn 收尾门控命中——同一完成语义不得有多份实现）。
 ///
-/// `completion_output` 随 issue done 一次 PUT 原子上送（None = 无块可附，fail-open：issue 照常
-/// done）。`complete_task` 失败仅 warn 且**不流转 issue**（server 未收到 complete，issue 不得变
-/// done）；issue done 失败仅 warn——任务终态已上报，issue 状态推进不阻断完成（issue 保持原状，
-/// server 扫描器/用户兜底）；issue 关联缺失（issue_id 为空，如非 issue 来源任务）则跳过流转。
+/// `completion_output` 随 `/complete` 同事务上送（multica C6 改造：完成与写输出单请求、后写胜；
+/// 超长 400 由 client 内「立即降级去字段重发」兜底，任务必须完成）。None = 无可附交付说明
+/// （键缺席，不动 issue 现值，fail-open：issue 照常 done）。`complete_task` 失败仅 warn 且
+/// **不流转 issue**（server 未收到 complete，issue 不得变 done）；issue done 失败仅 warn——
+/// 任务终态已上报，issue 状态推进不阻断完成（issue 保持原状，server 扫描器/用户兜底）；
+/// issue 关联缺失（issue_id 为空，如非 issue 来源任务）则跳过流转。
 async fn complete_with_issue_done(
     client: &MulticaClient,
     remote_task_id: &str,
@@ -540,29 +541,29 @@ async fn complete_with_issue_done(
     work_dir: Option<&str>,
 ) {
     if let Err(e) = client
-        .complete_task(remote_task_id, output, session_id, work_dir)
+        .complete_task(
+            remote_task_id,
+            output,
+            session_id,
+            work_dir,
+            completion_output,
+        )
         .await
     {
         warn!(task = %remote_task_id, %e, "multica complete_task failed");
         return;
     }
-    if let Some(issue) = run.issue_id.as_deref().filter(|s| !s.trim().is_empty()) {
-        if let Err(e) = client
-            .update_issue_status(
-                &run.workspace_id,
-                issue,
-                MULTICA_ISSUE_DONE_STATUS,
-                completion_output,
-            )
+    if let Some(issue) = run.issue_id.as_deref().filter(|s| !s.trim().is_empty())
+        && let Err(e) = client
+            .update_issue_status(&run.workspace_id, issue, MULTICA_ISSUE_DONE_STATUS)
             .await
-        {
-            warn!(
-                task = %remote_task_id,
-                issue = %issue,
-                %e,
-                "multica update_issue_status(done) failed (task already completed; ignored)"
-            );
-        }
+    {
+        warn!(
+            task = %remote_task_id,
+            issue = %issue,
+            %e,
+            "multica update_issue_status(done) failed (task already completed; ignored)"
+        );
     }
 }
 
@@ -587,7 +588,7 @@ async fn handle_turn_completion_gate(
     if !is_gated_direct_issue_run(&run) {
         return;
     }
-    let probe = completion_output_for_issue_done(attempt_dir.as_deref());
+    let (_final_reply, probe) = final_reply_and_probe(attempt_dir.as_deref());
     let Some(block) = probe.block else {
         log_completion_gate_miss(&remote_task_id, "turn finished", &probe);
         return;
@@ -664,8 +665,9 @@ async fn relay_late_completion_output(
     else {
         return;
     };
-    // 命中 multica 终态任务后再提块（attempt timeline 磁盘读）。
-    let probe = completion_output_for_issue_done(attempt_dir);
+    // 命中 multica 终态任务后再提块（attempt timeline 磁盘读）。补发通道只认块——它的语义是
+    // 「agent 事后补交了交付块」，不适用工作流的全文兜底（终态时未兜底的场景早已收尾）。
+    let (_final_reply, probe) = final_reply_and_probe(attempt_dir);
     let Some(output) = probe.block else {
         match probe.near_miss_reason {
             Some(reason) => warn!(
@@ -844,17 +846,55 @@ enum PendingUpdate {
     AddOnFailure,
 }
 
-/// Success 分支 issue done 流转附带的交付说明提取（issue 完成输出传递特性，fail-open）。
+/// Success 完成路径的最终回复采集（一次 timeline 读，纯本地）：投影最终 assistant 回复 +
+/// completion-output 块探测（direct 门控与工作流兜底共用同一次读，不再各读一遍）。
 ///
-/// attempt 缺失（非 ACP 完成路径）/ timeline 不可读 → 空 probe；最终回复无
+/// attempt 缺失（非 ACP 完成路径）/ timeline 不可读 → `(None, 空 probe)`；最终回复无
 /// `completion-output` 围栏块 → `block` None 且按近似形态探测给出 `near_miss_reason`
-/// （仅诊断，门控只看 `block`）。读取与提取均为纯本地操作（一次 timeline 读，探测复用
-/// 已读回复文本，不产生额外 I/O）。
-fn completion_output_for_issue_done(attempt_dir: Option<&str>) -> handoff::CompletionBlockProbe {
-    attempt_dir
-        .and_then(handoff::final_assistant_reply)
-        .map(|reply| handoff::completion_block_probe(&reply))
-        .unwrap_or_default()
+/// （仅诊断，门控只看 `block`）。探测复用已读回复文本，不产生额外 I/O。
+fn final_reply_and_probe(
+    attempt_dir: Option<&str>,
+) -> (Option<String>, handoff::CompletionBlockProbe) {
+    let reply = attempt_dir.and_then(handoff::final_assistant_reply);
+    let probe = reply
+        .as_deref()
+        .map(handoff::completion_block_probe)
+        .unwrap_or_default();
+    (reply, probe)
+}
+
+/// 工作流收尾的交付说明投递观测：全文兜底保证送达后，warn 只留给「连兜底都无内容」与近似
+/// 形态滑落（指令遵从度信号）；收尾节点未产出块的正常回复降为 info，不制造告警噪音。
+fn log_workflow_completion_delivery(
+    task: &str,
+    issue: &str,
+    completion_output: &Option<String>,
+    probe: &handoff::CompletionBlockProbe,
+) {
+    match (completion_output, probe.near_miss_reason) {
+        // 块命中：协议正路径。
+        (Some(_), _) if probe.block.is_some() => {}
+        // 块提不出 + 近似形态：格式滑落（§12.55 形态）——全文兜底已送达，仍观测指令遵从度。
+        (Some(_), Some(reason)) => warn!(
+            task,
+            issue,
+            reason,
+            "multica completion-output: near-miss fence rejected — delivered full final reply as fallback"
+        ),
+        // 无块（正常未产出）：全文兜底送达。
+        (Some(_), None) => info!(
+            task,
+            issue,
+            "multica completion-output: no fenced block — delivered full final reply as fallback"
+        ),
+        // 连全文都无内容（回复空/读失败）：交付说明缺席，issue 照常 done（fail-open）。
+        (None, _) => warn!(
+            task,
+            issue,
+            near_miss = ?probe.near_miss_reason,
+            "multica completion-output: no deliverable content from final reply (issue still marked done)"
+        ),
+    }
 }
 
 /// 完成门控未命中日志（开发设计 §12.55 根因修复）：回复里存在近似 completion-output 围栏
@@ -1267,25 +1307,25 @@ mod tests {
     // ===== issue 完成输出传递：Success 分支 completion_output 提取组合的接口层固化 =====
 
     #[test]
-    fn completion_output_for_issue_done_extracts_fenced_block_from_timeline() {
-        // attempt_dir 指向含 completion-output 围栏块的最终 assistant 回复 → Some（随 done 一次 PUT 上送）。
+    fn final_reply_and_probe_extracts_fenced_block_from_timeline() {
+        // attempt_dir 指向含 completion-output 围栏块的最终 assistant 回复 → 块命中 + 回复全文
+        // 一并返回（direct 门控用块，工作流兜底用全文，同一次读）。
         let (attempt_dir, _temp) =
             timeline_attempt_dir("工作完成。\n```completion-output\n交付说明\n```\n");
-        assert_eq!(
-            completion_output_for_issue_done(Some(attempt_dir.as_str())).block,
-            Some("交付说明".to_string())
-        );
+        let (reply, probe) = final_reply_and_probe(Some(attempt_dir.as_str()));
+        assert_eq!(probe.block, Some("交付说明".to_string()));
+        assert!(reply.as_deref().unwrap_or_default().contains("交付说明"));
     }
 
     #[test]
-    fn completion_output_for_issue_done_without_block_or_dir_is_none() {
-        // agent 未按协议产出块 / 非 ACP 完成路径（attempt_dir None）→ None：issue 照常 done（fail-open）。
+    fn final_reply_and_probe_without_block_or_dir_is_none() {
+        // agent 未按协议产出块 / 非 ACP 完成路径（attempt_dir None）→ 空块：issue 照常 done（fail-open）。
         let (attempt_dir, _temp) = timeline_attempt_dir("工作完成，无交付说明块。");
         assert_eq!(
-            completion_output_for_issue_done(Some(attempt_dir.as_str())).block,
+            final_reply_and_probe(Some(attempt_dir.as_str())).1.block,
             None
         );
-        assert_eq!(completion_output_for_issue_done(None).block, None);
+        assert_eq!(final_reply_and_probe(None).1.block, None);
     }
 
     #[test]
@@ -1295,7 +1335,7 @@ mod tests {
         let (attempt_dir, _temp) = timeline_attempt_dir(
             "```\ncompletion-output\n任务性质：测试性工作项，无实质代码变更。\n当前分支：sit\n```",
         );
-        let probe = completion_output_for_issue_done(Some(attempt_dir.as_str()));
+        let probe = final_reply_and_probe(Some(attempt_dir.as_str())).1;
         assert_eq!(probe.block, None);
         assert_eq!(
             probe.near_miss_reason,

@@ -444,7 +444,7 @@ pub struct RemoteTask { pub id: String, pub issue_id: Option<String>, pub status
 pub struct ClaimRequest {}   // 服务端 claim 处理器不解码 body；prior_session_id 是「响应只输出」字段（agent.go:311），客户端消费响应而非塞请求体（§12.14）
 pub struct PinTaskSessionRequest { pub session_id: String, pub work_dir: Option<String> }
 pub struct StartRequest { pub force_fresh_session: bool }          // rerun 时 true（详见 4.4 / 接入方案 3.2.7）
-pub struct CompleteRequest { pub output: String, pub session_id: Option<String>, pub work_dir: Option<String> }
+pub struct CompleteRequest { pub output: String, pub session_id: Option<String>, pub work_dir: Option<String>, pub completion_output: Option<String> }  // M5-cd：issue 交付说明随 complete 同事务回传（multica 协议改造，§12.72）
 pub struct FailRequest { pub error: String, pub failure_reason: String }
 ```
 
@@ -854,7 +854,7 @@ start_multica_runtime()
   │          本期只基础状态（start/complete/fail + 心跳），不上报 step/total 进度
   │          周期 GET /tasks/{tid}/status 检测取消（cancelled/failed/404 → 中断本地 run）
   └─ run outcome（**首轮 run 终结即触发，单轮即完成**；码灵不在单 remote task 多轮，多轮走新 task 续跑同 session，见 4.4）。订阅器穷举 4 分支（见 2.5 终态表）：
-       RunCompleted{Success} → POST /tasks/{tid}/complete {output, session_id=ACP session_id, work_dir=任务级 local_project_id 解析}（重试幂等）→ 清 multica_task_conversations[tid]
+       RunCompleted{Success} → POST /tasks/{tid}/complete {output, session_id=ACP session_id, work_dir=任务级 local_project_id 解析, completion_output=交付说明（M5-cd：issue 任务随 complete 同事务回传，块优先/全文兜底 + 超长 400 立即降级，§12.72）}（重试幂等）→ 清 multica_task_conversations[tid]
        RunCompleted{Failure} → POST /tasks/{tid}/fail {error, failure_reason=agent_error.*}（重试幂等；如实传值供 server 决定 auto-retry）+ 记 issue_id 进 multica_pending_issues（失败回显，供 rerun；M4 实现）
        RunCompleted{Killed}  → fail(timeout)（M4-d：cancel 路径皆经 run_pause→Paused 从不产生 Killed，Killed 必为 agent 真死，unconditional）
        RunPaused/InterventionRequested → **不上报终态**，转本地 elicitation/permission 处理（Paused 盲区，multica 继续 running，见 2.5）
@@ -2792,6 +2792,22 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **方案自评审**：过度设计——纯删除（模板文件×2/常量×3/清单项/上下文结构/渲染测试净减），无新增抽象。性能——少一次常数级模板渲染，其余不变。
 
 **验证结果**：`multica::` 全套件 210/210 绿（标题断言改为裸标题、标题块的 en 重复断言随语言分支消失而删）；`prompts::` 16/16 绿（标题模板测试随删除移除）；lib `with_state` 6/6、`remote_completed_tasks` roundtrip 1/1 绿；clippy（desktop bins+tests / gold-band lib）零错误（`gold-band --tests` 下 feishu 连接器 2 条既有 deny 与本改动无关）。真实输入框视觉效果留内网验收。
+
+---
+
+### 12.72 改动七十：completion_output 随 /complete 回传——multica 协议改造对接（M5-cd，2026-10-23）
+
+**背景（multica 侧协议改造）**：multica `POST /api/daemon/tasks/{taskId}/complete` body 新增可选 `completion_output`——完成与写输出**同事务**（后写胜、幂等）、≤16,000 Unicode 字符（rune 计数，超长 **400 且任务不置 completed**）、仅 issue-bound 任务生效（其余静默忽略）、旧 server 忽略未知键可安全灰度；test 子任务 claim 的 `parent_output` 即该值（领取侧无需改动）。事故动因：工作流任务完成时 `output` 字段被填节点名（「CRIS-收尾归档」），真实交付说明未送达 multica——旧通道（`update_issue_status(done)` PUT 附带）与 `output` 摘要混用，交付物无独立字段承载。
+
+**方案（multica 改造清单 §2 对接，通道统一 + 采集分级 + 客户端降级）**：
+- **通道统一**：`completion_output` 一律由 `/complete` 携带（daemon 统一回写，改造清单 §2.4 推荐项）；`update_issue_status` 回归纯 status（`UpdateIssueStatusRequest` 删输出键，开发阶段破坏式更新）；`complete_with_issue_done` 三处共用路径只改一处。迟到补发 PATCH（`update_issue_completion_output`，M5-bl/M5-by 修订链路）保留——「后写胜」语义天然兼容。fail 路径不带（改造清单 §2.3，`FailRequest` 本就无该字段）。
+- **采集分级（改造清单 §2.1，用户修正后的落地形态）**：**块仍是首选 payload**——direct 门控命中传围栏块（语义不变）；工作流**块优先、最终回复全文兜底**（`workflow_completion_output`：`completion_output_from_reply` 失败 → `clamp_completion_output(全文)`）——§12.55 形态滑落（info 串另起一行等提取 fail-closed 场景）时块内容原样嵌在全文里送达，交付不落空（本次改造的终极目标）。非 issue 任务不采集不读 timeline（server 忽略该字段，保持「非 issue 不做大文件读」既有优化）。
+- **超长自检 + 降级（改造清单 §2.2，必须项）**：发送前 16k 预截断、尾部截断标记（`[已截断：超出 16000 字符上限]`，**标记计入上限**——发送值恒 ≤16,000 rune，块/全文两路同口径）；`complete_task` 改自建请求回路 `complete_post_once` 四分类（Delivered/Retryable(5xx·传输)/Fatal(401/403/404/409)/Rejected(400 含 server message 透传))——不走 `post_json`+`map_status`（400 被并入 `NetworkFailed`，`with_terminal_retry` 会先盲退避 6 次才轮到降级）；携带字段收 400 → **立即**降级去字段重发一次（无退避，完成优先），降级后仍 400 才按可重试语义走终态重试上抛。
+- **观测**：工作流收尾投递日志分级——near-miss 形态滑落 WARN（指令遵从度信号，全文兜底已送达）、无块正常回复 INFO（兜底送达）、连全文都无内容 WARN（issue 照常 done，fail-open）；direct 门控 miss 日志（§12.55）不变。
+
+**方案自评审**：过度设计——无新增状态/缓存/聚合；`CompletePostOutcome` 四分类是「400 必须先于终态重试被识别」的必要载体（复用 `map_status` 做不到），自建请求沿 `rerun_task` 先例；降级态用 `Arc<AtomicBool>` 承载（`FnMut` 闭包可变捕获不能逃逸 async future）。性能——timeline 读次数不变（`final_reply_and_probe` 单次读共享给门控与兜底，替代原 `completion_output_for_issue_done`）；截断 O(n) 一次；降级重发仅罕见超长路径多一次 HTTP。
+
+**验证结果**：`multica::` 217/217 绿（新增：client socket 集成测试×4——携带字段单请求成功（旧 server 形态）/ 400 降级两请求断言（首请求带键、降级不带且 `output` 不丢）/ 400 分类透传 server message / 404·500 分类；handoff×5——块优先 / §12.55 事故形态全文兜底 / 兜底超长截断带标记 / 空回复 None / 16k 标记计入预算；bridge 采集组合改为 `(reply, probe)` 共享单次读）。clippy 我方改动零新增警告（2 条 collapsible-if 顺手修复，let-chains 与元组匹配为仓库既有风格）。内网验收对照 multica 改造清单验收用例 1-6（工作流带值 / 空串不动 / rerun 覆盖 / 超长截断与降级 / 旧 server 忽略 / 非 issue 忽略）。
 
 ---
 

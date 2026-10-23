@@ -391,9 +391,13 @@ pub struct TaskIssueStatus {
 
 // ===== M4 终态上报/会话固定/重跑 wire 类型（开发设计 2.2.7 / 接入方案 C6-C8/D1）=====
 
-/// complete 请求（接入方案 C6：body output + session_id + work_dir）。
+/// complete 请求（接入方案 C6 + multica C6 改造：body output + session_id? + work_dir? + completion_output?）。
 ///
 /// `output` = 会话产物摘要；`session_id`/`work_dir` 来自 worker_ref 采集（可能缺失）。
+/// `completion_output` = issue 交付说明（multica 改造清单 §1：随 complete 同事务写入
+/// `issue.completion_output`，后写胜；≤16_000 rune，超长 400 且任务不置 completed）：None 时键
+/// 整体缺席（不动 issue 现值）；仅 issue-bound 任务生效（其余 server 静默忽略）；旧 server
+/// 未知键忽略——新客户端对旧 server 安全灰度。
 #[derive(Debug, Serialize)]
 pub struct CompleteRequest {
     pub output: String,
@@ -401,6 +405,8 @@ pub struct CompleteRequest {
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub work_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_output: Option<String>,
 }
 
 /// fail 请求（接入方案 C7：body error + failure_reason）。
@@ -425,14 +431,12 @@ pub struct PinTaskSessionRequest {
 /// 码灵完成远程任务后用自身 PAT 把关联 issue 流转到 [`MULTICA_ISSUE_DONE_STATUS`]（码灵作为中介，
 /// 非 agent 直调 multica API）。issue 维度接口，path 不含 workspace，靠 `X-Workspace-ID` 头路由。
 ///
-/// `completion_output`（issue 完成输出传递特性）：码灵从 agent 最终回复提取的交付说明，与 `status`
-/// 同一 PUT 原子写入——对齐 multica「写输出 + 标 done 单请求」的时序设计。None 时键整体缺席：
-/// 服务端「未触摸字段保留现值」，旧 server 未知键被忽略；码灵无清除场景，永不发显式 null。
+/// multica C6 改造（2026-10）后纯状态流转：`completion_output` 改随 [`complete_task`] 携带
+/// （单一写入来源），本 PUT 不再携带输出键；迟到补写走 [`UpdateIssueCompletionOutputRequest`]
+/// 的单键形态。
 #[derive(Debug, Serialize)]
 struct UpdateIssueStatusRequest {
     status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    completion_output: Option<String>,
 }
 
 /// issue 迟到输出补发请求（issue 完成输出传递特性，多 run 场景）。
@@ -1278,28 +1282,111 @@ impl MulticaClient {
 
     // ===== M4 终态上报/会话固定/重跑（开发设计 2.5 / 接入方案 C6-C8/D1）=====
 
-    /// `POST /api/daemon/tasks/{tid}/complete` —— 成功终态（接入方案 C6）。
+    /// `POST /api/daemon/tasks/{tid}/complete` —— 成功终态（接入方案 C6 + multica C6 改造）。
     ///
     /// 终态回调严格重试（4/8/16/32/64s 共 6 次，服务端幂等）。`output` = 会话产物摘要，
     /// `session_id`/`work_dir` 来自 worker_ref 采集（可能缺失 → 不序列化该键）。
+    ///
+    /// `completion_output`（multica 改造清单 §1/§2.2）：issue 交付说明随 complete 同事务写入。
+    /// 携带该键收到 400（超长等业务拒绝）时**立即**降级——去字段重发一次（无退避，先于终态
+    /// 重试：`map_status` 把 400 并入 `NetworkFailed`，若走 `post_json` 会对业务拒绝盲退避
+    /// 6 次、任务反而送不出去），保证任务能完成；降级后仍 400 才按可重试错误走终态重试上抛。
     pub async fn complete_task(
         &self,
         task_id: &str,
         output: &str,
         session_id: Option<&str>,
         work_dir: Option<&str>,
+        completion_output: Option<&str>,
     ) -> Result<(), MulticaError> {
         let path = format!("/api/daemon/tasks/{task_id}/complete");
-        let body = CompleteRequest {
-            output: output.to_string(),
-            session_id: session_id.map(String::from),
-            work_dir: work_dir.map(String::from),
-        };
-        self.with_terminal_retry("complete", || async {
-            let _: serde_json::Value = self.post_json(&path, &body).await?;
-            Ok(())
+        // 降级态：携带 completion_output 的尝试收到 400 后置 false，后续重试（含降级重发后的
+        // 网络重试）均不带该键——完成优先于交付说明送达（multica 改造清单 §2.2）。闭包内可变
+        // 状态需跨 `FnMut` 逃逸（async future 不能借用闭包捕获），用共享原子标志承载。
+        let carrying = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            completion_output.is_some(),
+        ));
+        let degraded_flag = std::sync::Arc::clone(&carrying);
+        self.with_terminal_retry("complete", move || {
+            let degraded_flag = std::sync::Arc::clone(&degraded_flag);
+            let path = path.clone();
+            async move {
+                let carrying = degraded_flag.load(std::sync::atomic::Ordering::Relaxed);
+                let body = CompleteRequest {
+                    output: output.to_string(),
+                    session_id: session_id.map(String::from),
+                    work_dir: work_dir.map(String::from),
+                    completion_output: if carrying {
+                        completion_output.map(String::from)
+                    } else {
+                        None
+                    },
+                };
+                let outcome = self.complete_post_once(&path, &body).await;
+                match outcome {
+                    CompletePostOutcome::Delivered => Ok(()),
+                    CompletePostOutcome::Rejected(reason) if carrying => {
+                        degraded_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                        tracing::warn!(
+                            task = task_id,
+                            %reason,
+                            "multica complete: 400 rejected with completion_output — degraded resend without the field (completion first)"
+                        );
+                        let degraded = CompleteRequest {
+                            output: output.to_string(),
+                            session_id: session_id.map(String::from),
+                            work_dir: work_dir.map(String::from),
+                            completion_output: None,
+                        };
+                        self.complete_post_once(&path, &degraded)
+                            .await
+                            .into_result()
+                    }
+                    other => other.into_result(),
+                }
+            }
         })
         .await
+    }
+
+    /// `POST /api/daemon/tasks/{tid}/complete` 单次请求的分类结果（complete 专用）。
+    ///
+    /// 不进 `map_status`：400 必须单独分类——`map_status` 把 400 并入 `NetworkFailed` 会让
+    /// [`with_terminal_retry`] 对业务拒绝盲退避 6 次、降级无从谈起。401/403/404/409 与
+    /// 传输/5xx/解码沿用 `map_status` 的码表与重试语义。
+    async fn complete_post_once(
+        &self,
+        path: &str,
+        body: &CompleteRequest,
+    ) -> CompletePostOutcome {
+        // 自建请求先例（rerun_task / download_issue_attachment）：json_send 会把非 2xx 吞进
+        // map_status 的裸错误码（body 丢弃），而 400 需要识别状态 + 透传 server message 供降级。
+        let mut req = self.http.request(Method::POST, self.url(path));
+        if let Some(t) = self.token.as_deref().filter(|t| !t.is_empty()) {
+            req = req.bearer_auth(t);
+        }
+        let resp = match req.json(body).send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                return CompletePostOutcome::Retryable(MulticaError::NetworkFailed(format!(
+                    "POST {path} failed: {e}"
+                )))
+            }
+        };
+        let status = resp.status();
+        if status.is_success() {
+            return CompletePostOutcome::Delivered;
+        }
+        if status == StatusCode::BAD_REQUEST {
+            let message = extract_error_message(resp).await;
+            return CompletePostOutcome::Rejected(format!("{path}: HTTP 400 Bad Request: {message}"));
+        }
+        match map_status(path, status) {
+            Ok(()) => CompletePostOutcome::Delivered,
+            // map_status 的 `_` 分支（5xx 等）= NetworkFailed → 可重试；401/403/404/409 → 立即上抛。
+            Err(err @ MulticaError::NetworkFailed(_)) => CompletePostOutcome::Retryable(err),
+            Err(err) => CompletePostOutcome::Fatal(err),
+        }
     }
 
     /// `POST /api/daemon/tasks/{tid}/fail` —— 失败终态（接入方案 C7）。
@@ -1355,8 +1442,8 @@ impl MulticaClient {
     /// （3 次）；该步骤**失败仅记日志、不阻断任务终态**——complete 已送达、任务已 done，issue 状态推进
     /// 失败由调用方兜底（issue 保持原状，不影响 multica 任务生命周期）。
     ///
-    /// `completion_output`：done 流转时随同一请求写入的交付说明（agent 最终回复提取，见
-    /// `multica/handoff.rs`）。None = 不带该键（服务端保留现值；in_progress 流转恒 None）。
+    /// multica C6 改造后**纯状态流转**（body 恰为 `{status}`）：交付说明改随 [`complete_task`] 的
+    /// `completion_output` 携带，本接口不再写输出键。
     ///
     /// [`complete_task`]: MulticaClient::complete_task
     pub async fn update_issue_status(
@@ -1364,12 +1451,10 @@ impl MulticaClient {
         workspace_id: &str,
         issue_id: &str,
         status: &str,
-        completion_output: Option<&str>,
     ) -> Result<(), MulticaError> {
         let path = format!("/api/issues/{issue_id}");
         let body = UpdateIssueStatusRequest {
             status: status.to_string(),
-            completion_output: completion_output.map(str::to_string),
         };
         self.with_network_retry("update_issue_status", || async {
             // body 丢弃：issue 状态更新只关心 HTTP 状态（map_status 已校验），无需解码响应。
@@ -1505,6 +1590,32 @@ fn map_status(path: &str, status: StatusCode) -> Result<(), MulticaError> {
         _ => Err(MulticaError::NetworkFailed(format!(
             "{path}: HTTP {status}"
         ))),
+    }
+}
+
+/// [`MulticaClient::complete_post_once`] 的分类结果：`/complete` 专用，把 400 从可重试错误里
+/// 拆出来（携带 `completion_output` 收到 400 → 先降级重发再谈重试，multica 改造清单 §2.2）。
+#[derive(Debug)]
+enum CompletePostOutcome {
+    /// 2xx：终态已送达。
+    Delivered,
+    /// 传输/5xx/解码失败（`NetworkFailed`）——按终态语义退避重试。
+    Retryable(MulticaError),
+    /// 401/403/404/409：确定错误码，重试无意义，立即上抛。
+    Fatal(MulticaError),
+    /// HTTP 400 业务拒绝（含 server message 透传）——携带 completion_output 时先降级重发。
+    Rejected(String),
+}
+
+impl CompletePostOutcome {
+    /// 折叠为终态重试可消费的 `Result`：Rejected 归入 `NetworkFailed`（维持既有「400 可重试」
+    /// 语义，仅降级路径提前；完成回调的失败只进日志不进 UI）。
+    fn into_result(self) -> Result<(), MulticaError> {
+        match self {
+            Self::Delivered => Ok(()),
+            Self::Retryable(err) | Self::Fatal(err) => Err(err),
+            Self::Rejected(reason) => Err(MulticaError::NetworkFailed(reason)),
+        }
     }
 }
 
@@ -2216,25 +2327,30 @@ mod tests {
 
     #[test]
     fn complete_request_serializes_output_and_optional_fields() {
-        // 接入方案 C6：complete body {output, session_id?, work_dir?}（缺失字段不序列化）。
+        // 接入方案 C6 + multica C6 改造：complete body {output, session_id?, work_dir?, completion_output?}
+        // （缺失字段不序列化——completion_output 键缺席 = 不动 issue 现值，旧 server 未知键忽略）。
         let minimal = serde_json::to_value(CompleteRequest {
             output: "done".into(),
             session_id: None,
             work_dir: None,
+            completion_output: None,
         })
         .unwrap();
         assert_eq!(minimal["output"], "done");
         assert!(minimal.get("session_id").is_none());
         assert!(minimal.get("work_dir").is_none());
+        assert!(minimal.get("completion_output").is_none());
 
         let full = serde_json::to_value(CompleteRequest {
             output: "done".into(),
             session_id: Some("sess-9".into()),
             work_dir: Some("/repo".into()),
+            completion_output: Some("交付说明".into()),
         })
         .unwrap();
         assert_eq!(full["session_id"], "sess-9");
         assert_eq!(full["work_dir"], "/repo");
+        assert_eq!(full["completion_output"], "交付说明");
     }
 
     #[test]
@@ -2281,33 +2397,14 @@ mod tests {
 
     #[test]
     fn update_issue_status_request_serializes_status_key() {
-        // 接入方案 D2：PUT /api/issues/{id} body {status}。completion_output 为 None 时键
-        // 整体缺席——锁定「未触摸字段保留现值 + 旧 server 未知键忽略」的兼容契约
-        // （in_progress 流转与无交付说明的 done 流转均走此形态）。
+        // 接入方案 D2：PUT /api/issues/{id} body 恰为 {status}——multica C6 改造后 completion_output
+        // 改随 /complete 携带，issue PUT 回归纯状态流转（单一写入来源；迟到补写走
+        // UpdateIssueCompletionOutputRequest 的单键形态）。
         let body = serde_json::to_value(UpdateIssueStatusRequest {
             status: "done".into(),
-            completion_output: None,
         })
         .unwrap();
         assert_eq!(body, serde_json::json!({"status": "done"}));
-    }
-
-    #[test]
-    fn update_issue_status_request_serializes_completion_output_when_present() {
-        // issue 完成输出传递特性：status + completion_output 同一 PUT 原子写入（对齐 multica
-        // 「写输出 + 标 done 单请求」的时序设计——分两次请求存在 test 恰好 claim 在中间的竞态窗口）。
-        let body = serde_json::to_value(UpdateIssueStatusRequest {
-            status: "done".into(),
-            completion_output: Some("部署地址: https://t.example.com".into()),
-        })
-        .unwrap();
-        assert_eq!(
-            body,
-            serde_json::json!({
-                "status": "done",
-                "completion_output": "部署地址: https://t.example.com"
-            })
-        );
     }
 
     #[test]
@@ -2323,6 +2420,190 @@ mod tests {
             body,
             serde_json::json!({"completion_output": "部署地址: https://t.example.com"})
         );
+    }
+
+    // ===== /complete 携带 completion_output（multica C6 改造）：降级回路真 socket 集成测试 =====
+
+    /// 裸 TCP mock（`metrics/heartbeat.rs` 同款先例）：按序逐连接返回固定 (status, body)，
+    /// `Connection: close` 强制每请求新连接；记录收到的请求原文（headers + body）供断言。
+    fn mock_http_responses(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut requests = Vec::new();
+            for (status, body) in responses {
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if std::time::Instant::now() >= deadline {
+                                panic!("mock multica server did not receive all requests");
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("mock multica server failed: {error}"),
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                let mut raw = Vec::new();
+                let mut buffer = [0_u8; 8192];
+                // 读满 headers + Content-Length 字节（JSON body 可能晚于 headers 到达）。
+                loop {
+                    if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&raw[..pos]).to_string();
+                        let content_length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                if name.eq_ignore_ascii_case("content-length") {
+                                    value.trim().parse::<usize>().ok()
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(0);
+                        if raw.len() >= pos + 4 + content_length {
+                            break;
+                        }
+                    }
+                    match stream.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(n) => raw.extend_from_slice(&buffer[..n]),
+                        Err(_) => break,
+                    }
+                }
+                requests.push(String::from_utf8_lossy(&raw).to_string());
+                let reason = match status {
+                    200 => "OK",
+                    400 => "Bad Request",
+                    404 => "Not Found",
+                    500 => "Internal Server Error",
+                    _ => "Status",
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    /// 测试用 client：`no_proxy` 防 Windows 系统代理劫持 127.0.0.1（metrics 测试同款处理）。
+    fn test_client(base_url: String) -> MulticaClient {
+        let mut client = MulticaClient::new(base_url, Some("pat-test".into())).unwrap();
+        client.http = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        client
+    }
+
+    #[tokio::test]
+    async fn complete_task_carries_completion_output_and_succeeds() {
+        // 验收 1/5 形态：单请求成功（旧 server 未知键忽略 → 同样 200 路径），body 携带交付说明。
+        let (base, handle) = mock_http_responses(vec![(200, "{}")]);
+        let client = test_client(base);
+        client
+            .complete_task(
+                "t-1",
+                "CRIS-收尾归档",
+                Some("sess-9"),
+                Some("/repo"),
+                Some("交付说明"),
+            )
+            .await
+            .expect("complete must succeed");
+        let requests = handle.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].contains("\"completion_output\":\"交付说明\""));
+    }
+
+    #[tokio::test]
+    async fn complete_task_degrades_to_fieldless_resend_on_400() {
+        // 验收 4 后半（multica 改造清单 §2.2）：携带字段收到 400 → **立即**降级去字段重发（无退避，
+        // 不吃满 6 次终态重试），任务必须完成；降级只去 completion_output，既有字段不丢。
+        let (base, handle) = mock_http_responses(vec![
+            (
+                400,
+                r#"{"error":"completion_output exceeds 16000 characters"}"#,
+            ),
+            (200, "{}"),
+        ]);
+        let client = test_client(base);
+        client
+            .complete_task("t-1", "out", None, None, Some("超长交付说明"))
+            .await
+            .expect("degraded resend must complete the task");
+        let requests = handle.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("\"completion_output\""));
+        assert!(!requests[1].contains("\"completion_output\""));
+        assert!(requests[1].contains("\"output\":\"out\""));
+    }
+
+    #[tokio::test]
+    async fn complete_post_once_classifies_400_with_server_message() {
+        // 400 → Rejected 且透传 server message（供降级告警与最终错误上下文）。
+        let (base, handle) = mock_http_responses(vec![(
+            400,
+            r#"{"error":"completion_output exceeds 16000 characters"}"#,
+        )]);
+        let client = test_client(base);
+        let body = CompleteRequest {
+            output: "out".into(),
+            session_id: None,
+            work_dir: None,
+            completion_output: Some("超长".into()),
+        };
+        match client
+            .complete_post_once("/api/daemon/tasks/t-1/complete", &body)
+            .await
+        {
+            CompletePostOutcome::Rejected(reason) => {
+                assert!(reason.contains("completion_output exceeds 16000 characters"));
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+        assert_eq!(handle.join().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn complete_post_once_maps_404_fatal_and_500_retryable() {
+        let body = CompleteRequest {
+            output: "out".into(),
+            session_id: None,
+            work_dir: None,
+            completion_output: None,
+        };
+        // 404 → Fatal(TaskNotFound)：确定错误码，重试无意义。
+        let (base, handle) = mock_http_responses(vec![(404, "{}")]);
+        let client = test_client(base);
+        assert!(matches!(
+            client
+                .complete_post_once("/api/daemon/tasks/t-1/complete", &body)
+                .await,
+            CompletePostOutcome::Fatal(MulticaError::TaskNotFound)
+        ));
+        assert_eq!(handle.join().unwrap().len(), 1);
+
+        // 500 → Retryable(NetworkFailed)：终态重试语义继续（服务端幂等，退避后重试）。
+        let (base, handle) = mock_http_responses(vec![(500, "{}")]);
+        let client = test_client(base);
+        assert!(matches!(
+            client.complete_post_once("/p", &body).await,
+            CompletePostOutcome::Retryable(MulticaError::NetworkFailed(_))
+        ));
+        assert_eq!(handle.join().unwrap().len(), 1);
     }
 
     #[test]

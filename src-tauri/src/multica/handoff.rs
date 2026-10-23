@@ -1,18 +1,23 @@
 //! multica issue 完成输出（completion_output）提取（issue 完成输出传递特性，码灵侧设计方案 §5）。
 //!
 //! 写路径协议：agent 最终回复末尾附加 info 为 `completion-output` 的代码围栏块；run 成功收尾时
-//! [`extract_completion_output`] 从投影出的最终 assistant 回复中取**最后一个**匹配块，随
-//! `update_issue_status(done)` 一次 PUT 原子上送（status + completion_output 单请求，与 multica
-//! 服务端单 PATCH 设计对齐）。提取失败一律 fail-open（None）——issue 照常 done，写作可选、不门控。
+//! [`extract_completion_output`] 从投影出的最终 assistant 回复中取**最后一个**匹配块，作为
+//! `completion_output` 随 `POST /complete` 同事务上送（multica C6 改造，2026-10：完成与写输出
+//! 单请求、后写胜，取代此前 `update_issue_status(done)` PUT 附带通道）。direct 模式由该块**门控**
+//! 完成（缺块扣留，见 bridge）；工作流模式**块优先、全文兜底**（[`workflow_completion_output`]）——
+//! 提取形态滑落时块内容仍随最终回复全文送达，交付不落空。
 
 use gold_band::acp::events::{
     AcpAttemptPaths, AcpUiEvent, is_semantically_empty_agent_content, load_timeline_items,
 };
 
-/// 服务端同口径上限（multica 按 rune 计数，超长 400 会让整个 PUT 失败、issue 卡非 done）。
-/// 客户端按 Unicode 标量截断，保证状态流转优先于内容完整。
+/// 服务端同口径上限（multica 按 rune 计数，超长 400 且**任务不置 completed**——multica C6 改造）。
+/// 客户端按 Unicode 标量预截断（截断标记计入上限），保证完成优先于内容完整。
 /// 2026-09-21 服务端从 64_000 收紧为 16_000（改动清单 §1.2）。
 pub(crate) const MAX_COMPLETION_OUTPUT_CHARS: usize = 16_000;
+
+/// 预截断时追加的尾部标记（multica 改造清单 §2.2：截断到 16000 并加截断标记，标记计入上限）。
+const COMPLETION_OUTPUT_TRUNCATION_MARKER: &str = "\n[已截断：超出 16000 字符上限]";
 
 /// 从最终 assistant 回复提取交付说明块（设计方案 §5.1 规则，纯函数）。
 ///
@@ -84,20 +89,35 @@ fn is_closing_fence(line: &str, fence_len: usize) -> bool {
     len >= fence_len && len == trimmed.chars().count()
 }
 
-/// 提取 + trim + 16k 截断（设计方案 §5.1 组合入口，bridge Success 分支调用）。
-///
-/// trim 后为空 → None（空块不发送，服务端保持/清空由键缺席语义决定）。
-pub(crate) fn completion_output_from_reply(reply: &str) -> Option<String> {
-    let extracted = extract_completion_output(reply)?.trim();
-    if extracted.is_empty() {
+/// trim + 空判 + 16k 预截断（超长时尾部追加截断标记，标记计入上限——发送值恒 ≤16_000 rune，
+/// 规避 server 超长 400「任务不置 completed」的硬失败）。trim 后为空 → None（空值不发送，
+/// 服务端「缺省/空串不动现值」语义决定）。
+fn clamp_completion_output(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
         return None;
     }
-    Some(
-        extracted
-            .chars()
-            .take(MAX_COMPLETION_OUTPUT_CHARS)
-            .collect(),
-    )
+    if trimmed.chars().count() <= MAX_COMPLETION_OUTPUT_CHARS {
+        return Some(trimmed.to_string());
+    }
+    let kept = MAX_COMPLETION_OUTPUT_CHARS - COMPLETION_OUTPUT_TRUNCATION_MARKER.chars().count();
+    let mut clamped: String = trimmed.chars().take(kept).collect();
+    clamped.push_str(COMPLETION_OUTPUT_TRUNCATION_MARKER);
+    Some(clamped)
+}
+
+/// 提取块 + trim + 16k 预截断（设计方案 §5.1 组合入口，direct 门控路径调用）。
+pub(crate) fn completion_output_from_reply(reply: &str) -> Option<String> {
+    extract_completion_output(reply).and_then(clamp_completion_output)
+}
+
+/// 工作流收尾采集（multica C6 改造清单 §2.1）：**块优先、最终回复全文兜底**。
+///
+/// 收尾节点按协议产出 `completion-output` 围栏块 → 只传块（干净、有意图的交付物，非节点名/
+/// 任务摘要）；提不出块（未产出/近似形态滑落，如 §12.55 的 info 串另起一行）→ 传最终回复
+/// **全文**（预截断）——块内容原样嵌在全文里送达，交付不落空。
+pub(crate) fn workflow_completion_output(reply: &str) -> Option<String> {
+    completion_output_from_reply(reply).or_else(|| clamp_completion_output(reply))
 }
 
 /// 近似形态 1：info 串 `completion-output` 被写在裸围栏（或其它 info 围栏）开栏后的新行——
@@ -247,12 +267,50 @@ mod tests {
 
     #[test]
     fn completion_output_caps_at_16k_chars_by_unicode_scalar() {
-        // 16_001 个 CJK 字符：按 rune 截断到 16_000（服务端同口径收紧上限，非 UTF-16/字节）
+        // 16_001 个 CJK 字符：按 rune 截断到 16_000（服务端同口径收紧上限，非 UTF-16/字节），
+        // 且尾部追加截断标记（标记计入上限——发送值恒 ≤16_000，规避 server 400 任务不置 completed）。
         let body = "门".repeat(16_001);
         let reply = format!("```completion-output\n{body}\n```\n");
         let output = completion_output_from_reply(&reply).expect("hit");
         assert_eq!(output.chars().count(), MAX_COMPLETION_OUTPUT_CHARS);
-        assert!(output.chars().all(|c| c == '门'));
+        assert!(output.ends_with(COMPLETION_OUTPUT_TRUNCATION_MARKER));
+        let kept = MAX_COMPLETION_OUTPUT_CHARS - COMPLETION_OUTPUT_TRUNCATION_MARKER.chars().count();
+        assert!(output.chars().take(kept).all(|c| c == '门'));
+    }
+
+    #[test]
+    fn workflow_completion_output_prefers_fenced_block_over_full_reply() {
+        // 块优先：收尾节点按协议产出块 → 只传块内容，不混入回复全文。
+        let reply = "前置说明。\n```completion-output\n交付说明\n```\n收尾致意。";
+        assert_eq!(
+            workflow_completion_output(reply),
+            Some("交付说明".to_string())
+        );
+    }
+
+    #[test]
+    fn workflow_completion_output_falls_back_to_full_reply_on_near_miss() {
+        // §12.55 事故形态（info 串另起一行，提取 fail-closed）+ 工作流 fail-open：块提不出 →
+        // 最终回复全文兜底——块内容原样嵌在全文里送达 multica，交付不落空。
+        let reply =
+            "```\ncompletion-output\n任务性质：测试性工作项，无实质代码变更。\n当前分支：sit\n```";
+        assert_eq!(workflow_completion_output(reply), Some(reply.trim().to_string()));
+    }
+
+    #[test]
+    fn workflow_completion_output_full_reply_fallback_truncates_with_marker() {
+        // 兜底全文同样受 16k 预截断约束（超长标记计内）。
+        let reply = format!("无块的超长回复：{}", "长".repeat(20_000));
+        let output = workflow_completion_output(&reply).expect("fallback");
+        assert_eq!(output.chars().count(), MAX_COMPLETION_OUTPUT_CHARS);
+        assert!(output.ends_with(COMPLETION_OUTPUT_TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn workflow_completion_output_blank_reply_is_none() {
+        // 全文兜底后仍无内容（空/纯空白回复）→ None：键缺席，不动 issue 现值。
+        assert_eq!(workflow_completion_output("  \n "), None);
+        assert_eq!(workflow_completion_output(""), None);
     }
 
     #[test]
