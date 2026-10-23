@@ -410,14 +410,15 @@ async fn handle_node_completed(
 /// RunCompleted：按 outcome 4 分支上报终态 + 清本地索引。
 ///
 /// Success 分支的 `completion_output` 随 `/complete` 同事务上送（multica C6 改造，2026-10：
-/// 完成与写输出单请求、后写胜）——从 `attempt_dir` 的 acp.timeline 投影最终 assistant 回复。
+/// 完成与写输出单请求、后写胜）——从 `attempt_dir` 的 acp.timeline 投影 assistant 回复
+/// （direct 门控与工作流采集双口径，见 [`handoff::attempt_completion_scan`]）。
 /// `complete_task` 送达后另用码灵 PAT 把关联 issue 流转到 `done`（接入方案 D2：码灵作为中介，
 /// 纯状态流转）。
 ///
 /// **M5-bp（开发设计 §12.55）**：direct 模式 + issue 关联的 Success 由 completion-output 块
 /// **门控**——无块 → 扣留完成（不上报、不 finalize，远端保持 running 供对话继续，块出现后由
-/// turn 收尾补判）。工作流等非 direct 路径不门控，交付说明**块优先、最终回复全文兜底**
-/// （提取形态滑落时块内容仍随全文送达，交付不落空）。
+/// turn 收尾补判）。工作流等非 direct 路径不门控，交付说明只认块（M5-ce，开发设计 §12.73：
+/// attempt 全部 assistant 消息倒序找块；提不出 → 字段不发送，issue 现值保留）。
 async fn handle_run_completed(
     app: AppHandle,
     remote_task_id: String,
@@ -449,18 +450,17 @@ async fn handle_run_completed(
             // 维度生效——server 对非 issue 任务静默忽略该字段）——非 issue 任务不做这次大文件
             // （acp.timeline）读，行为对齐旧实现。
             let issue = run.issue_id.as_deref().filter(|s| !s.trim().is_empty());
-            let (final_reply, probe) = if issue.is_some() {
-                final_reply_and_probe(attempt_dir.as_deref())
-            } else {
-                (None, handoff::CompletionBlockProbe::default())
+            let scan = match (issue.is_some(), attempt_dir.as_deref()) {
+                (true, Some(dir)) => handoff::attempt_completion_scan(dir),
+                _ => handoff::AttemptCompletionScan::default(),
             };
             // M5-bp 决策点 1（run 收尾）：direct + issue → completion-output 块门控。
-            match decide_run_completion(&run, probe.block.clone()) {
+            match decide_run_completion(&run, scan.final_probe.block.clone()) {
                 DirectCompletionDecision::Withhold => {
                     // 扣留完成：不上报终态、不 finalize（保留 active_runs / task_conversations），
                     // 远端保持 running——用户继续对话推进任务，块出现后由 turn 收尾（决策点 2）
                     // 补判完成。心跳在续，server sweeper 不会误杀 running。
-                    log_completion_gate_miss(&remote_task_id, "run finished", &probe);
+                    log_completion_gate_miss(&remote_task_id, "run finished", &scan.final_probe);
                     return;
                 }
                 DirectCompletionDecision::Complete(block) => {
@@ -483,19 +483,18 @@ async fn handle_run_completed(
                 }
                 DirectCompletionDecision::Passthrough => {
                     // 工作流/auto/非 issue：既有 fail-open 路径——run 终态驱动完成，不门控。
-                    // 交付说明**块优先、最终回复全文兜底**（multica C6 改造清单 §2.1）：块提不出
-                    // （含近似形态滑落）时块内容仍随全文送达，交付不落空。
-                    let completion_output = final_reply
-                        .as_deref()
-                        .and_then(handoff::workflow_completion_output);
-                    if let (Some(issue), Some(_)) = (issue, attempt_dir) {
+                    // 交付说明只认块（multica C6 改造清单 §2.1）：attempt 全部 assistant 消息
+                    // 倒序找块（收尾节点带 JSON 输出验证时最后一条消息是裁决 JSON、块在它
+                    // 之前）；提不出 → 字段不发送（multica 保留 issue 现值），near-miss 可观测、
+                    // 终态后补交通道可恢复。
+                    if let (Some(issue), Some(_)) = (issue, attempt_dir.as_deref()) {
                         log_workflow_completion_delivery(
                             &remote_task_id,
                             issue,
-                            &completion_output,
-                            &probe,
+                            &scan.attempt_probe,
                         );
                     }
+                    let completion_output = scan.attempt_probe.block;
                     complete_with_issue_done(
                         &client,
                         &remote_task_id,
@@ -588,7 +587,11 @@ async fn handle_turn_completion_gate(
     if !is_gated_direct_issue_run(&run) {
         return;
     }
-    let (_final_reply, probe) = final_reply_and_probe(attempt_dir.as_deref());
+    // final 口径（最后一条 assistant 消息）：direct 门控的协议语义是块出现在「最终回复末尾」。
+    let probe = attempt_dir
+        .as_deref()
+        .map(handoff::final_completion_probe)
+        .unwrap_or_default();
     let Some(block) = probe.block else {
         log_completion_gate_miss(&remote_task_id, "turn finished", &probe);
         return;
@@ -666,8 +669,10 @@ async fn relay_late_completion_output(
         return;
     };
     // 命中 multica 终态任务后再提块（attempt timeline 磁盘读）。补发通道只认块——它的语义是
-    // 「agent 事后补交了交付块」，不适用工作流的全文兜底（终态时未兜底的场景早已收尾）。
-    let (_final_reply, probe) = final_reply_and_probe(attempt_dir);
+    // 「agent 事后补交了交付块」，只看最后一条消息（协议要求重新输出的完整块在回复末尾）。
+    let probe = attempt_dir
+        .map(handoff::final_completion_probe)
+        .unwrap_or_default();
     let Some(output) = probe.block else {
         match probe.near_miss_reason {
             Some(reason) => warn!(
@@ -846,53 +851,29 @@ enum PendingUpdate {
     AddOnFailure,
 }
 
-/// Success 完成路径的最终回复采集（一次 timeline 读，纯本地）：投影最终 assistant 回复 +
-/// completion-output 块探测（direct 门控与工作流兜底共用同一次读，不再各读一遍）。
-///
-/// attempt 缺失（非 ACP 完成路径）/ timeline 不可读 → `(None, 空 probe)`；最终回复无
-/// `completion-output` 围栏块 → `block` None 且按近似形态探测给出 `near_miss_reason`
-/// （仅诊断，门控只看 `block`）。探测复用已读回复文本，不产生额外 I/O。
-fn final_reply_and_probe(
-    attempt_dir: Option<&str>,
-) -> (Option<String>, handoff::CompletionBlockProbe) {
-    let reply = attempt_dir.and_then(handoff::final_assistant_reply);
-    let probe = reply
-        .as_deref()
-        .map(handoff::completion_block_probe)
-        .unwrap_or_default();
-    (reply, probe)
-}
-
-/// 工作流收尾的交付说明投递观测：全文兜底保证送达后，warn 只留给「连兜底都无内容」与近似
-/// 形态滑落（指令遵从度信号）；收尾节点未产出块的正常回复降为 info，不制造告警噪音。
+/// 工作流收尾的交付说明投递观测（块是唯一交付物，无全文兜底）：块命中即协议正路径静默；
+/// 块缺失 → 字段不发送（multica 保留 issue 现值，协议合法行为）——近似形态滑落（§12.55，
+/// 指令遵从度信号，终态后补交通道可恢复）升级 WARN 带机器可检索原因，完全无块降为 info，
+/// 不制造告警噪音。
 fn log_workflow_completion_delivery(
     task: &str,
     issue: &str,
-    completion_output: &Option<String>,
     probe: &handoff::CompletionBlockProbe,
 ) {
-    match (completion_output, probe.near_miss_reason) {
-        // 块命中：协议正路径。
-        (Some(_), _) if probe.block.is_some() => {}
-        // 块提不出 + 近似形态：格式滑落（§12.55 形态）——全文兜底已送达，仍观测指令遵从度。
-        (Some(_), Some(reason)) => warn!(
+    if probe.block.is_some() {
+        return;
+    }
+    match probe.near_miss_reason {
+        Some(reason) => warn!(
             task,
             issue,
             reason,
-            "multica completion-output: near-miss fence rejected — delivered full final reply as fallback"
+            "multica completion-output: near-miss fence rejected — completion_output not sent (issue value preserved)"
         ),
-        // 无块（正常未产出）：全文兜底送达。
-        (Some(_), None) => info!(
+        None => info!(
             task,
             issue,
-            "multica completion-output: no fenced block — delivered full final reply as fallback"
-        ),
-        // 连全文都无内容（回复空/读失败）：交付说明缺席，issue 照常 done（fail-open）。
-        (None, _) => warn!(
-            task,
-            issue,
-            near_miss = ?probe.near_miss_reason,
-            "multica completion-output: no deliverable content from final reply (issue still marked done)"
+            "multica completion-output: no fenced block in final attempt — completion_output not sent (issue value preserved)"
         ),
     }
 }
@@ -1304,44 +1285,8 @@ mod tests {
         );
     }
 
-    // ===== issue 完成输出传递：Success 分支 completion_output 提取组合的接口层固化 =====
-
-    #[test]
-    fn final_reply_and_probe_extracts_fenced_block_from_timeline() {
-        // attempt_dir 指向含 completion-output 围栏块的最终 assistant 回复 → 块命中 + 回复全文
-        // 一并返回（direct 门控用块，工作流兜底用全文，同一次读）。
-        let (attempt_dir, _temp) =
-            timeline_attempt_dir("工作完成。\n```completion-output\n交付说明\n```\n");
-        let (reply, probe) = final_reply_and_probe(Some(attempt_dir.as_str()));
-        assert_eq!(probe.block, Some("交付说明".to_string()));
-        assert!(reply.as_deref().unwrap_or_default().contains("交付说明"));
-    }
-
-    #[test]
-    fn final_reply_and_probe_without_block_or_dir_is_none() {
-        // agent 未按协议产出块 / 非 ACP 完成路径（attempt_dir None）→ 空块：issue 照常 done（fail-open）。
-        let (attempt_dir, _temp) = timeline_attempt_dir("工作完成，无交付说明块。");
-        assert_eq!(
-            final_reply_and_probe(Some(attempt_dir.as_str())).1.block,
-            None
-        );
-        assert_eq!(final_reply_and_probe(None).1.block, None);
-    }
-
-    #[test]
-    fn completion_output_probe_flags_near_miss_fence_from_timeline() {
-        // §12.55 内网实测形态：裸围栏 + info 串另起一行 → 块缺失（门控扣留、任务保持进行中）
-        // 但近似原因可检索——门控日志升级 WARN，内网不再需要导出 timeline 取证定位格式问题。
-        let (attempt_dir, _temp) = timeline_attempt_dir(
-            "```\ncompletion-output\n任务性质：测试性工作项，无实质代码变更。\n当前分支：sit\n```",
-        );
-        let probe = final_reply_and_probe(Some(attempt_dir.as_str())).1;
-        assert_eq!(probe.block, None);
-        assert_eq!(
-            probe.near_miss_reason,
-            Some(handoff::NEAR_MISS_INFO_ON_OWN_LINE)
-        );
-    }
+    // ===== issue 完成输出传递：提取/扫描接口已下沉 handoff（attempt_completion_scan /
+    // final_completion_probe），场景固化见 handoff 测试；此处不再重复桥接层副本 =====
 
     // ===== 终态后追问 run 的迟到 completion-output 补发（多 run 场景，纯函数固化）=====
 
@@ -1494,36 +1439,5 @@ mod tests {
             decide_run_completion(&gated_run("direct", None), None),
             DirectCompletionDecision::Passthrough
         ));
-    }
-
-    /// 造一个 attempt 目录，timeline 内含一条最终 assistant textDelta（`reply`）。
-    /// 返回 (attempt_dir, TempDir guard)——guard 由调用方持有，目录在测试结束才清理。
-    fn timeline_attempt_dir(reply: &str) -> (camino::Utf8PathBuf, tempfile::TempDir) {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let attempt_dir =
-            camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
-        let paths = gold_band::acp::events::AcpAttemptPaths::from_attempt_dir(attempt_dir.clone());
-        gold_band::acp::events::write_timeline_items(
-            &paths.timeline,
-            &[gold_band::acp::events::AcpUiEvent {
-                id: "assistant-final".into(),
-                seq: 1,
-                timestamp: "1Z".into(),
-                kind: "textDelta".into(),
-                session_id: None,
-                content: Some(reply.to_string()),
-                title: None,
-                tool_call_id: None,
-                status: None,
-                started_seq: Some(1),
-                ended_seq: Some(1),
-                started_at: Some("1Z".into()),
-                ended_at: Some("1Z".into()),
-                timing: None,
-                raw: None,
-            }],
-        )
-        .expect("write timeline");
-        (attempt_dir, temp)
     }
 }

@@ -2809,6 +2809,20 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证结果**：`multica::` 217/217 绿（新增：client socket 集成测试×4——携带字段单请求成功（旧 server 形态）/ 400 降级两请求断言（首请求带键、降级不带且 `output` 不丢）/ 400 分类透传 server message / 404·500 分类；handoff×5——块优先 / §12.55 事故形态全文兜底 / 兜底超长截断带标记 / 空回复 None / 16k 标记计入预算；bridge 采集组合改为 `(reply, probe)` 共享单次读）。clippy 我方改动零新增警告（2 条 collapsible-if 顺手修复，let-chains 与元组匹配为仓库既有风格）。内网验收对照 multica 改造清单验收用例 1-6（工作流带值 / 空串不动 / rerun 覆盖 / 超长截断与降级 / 旧 server 忽略 / 非 issue 忽略）。
 
+### 12.73 改动七十一：工作流 completion_output 采集改 attempt 级找块——裁决 JSON 误上送修复（M5-ce，2026-10-23）
+
+**背景（内网实测事故）**：轻量工作流（grill → dev-test → accept）的 accept 节点启用 AI 输出验证，按协议以 JSON 裁决（`{"reason":"String","result":"boolean"}`，`task-workflow.md` §5.3）作为**最后一条** assistant 消息收尾（provider 侧 `evaluate_output_artifact_from_run` 从终端消息提取该 JSON 判定节点成败）；而 §12.72 的工作流采集只投影**最后一条**消息并做全文兜底——两条协议竞争「最终 assistant 消息」槽位，agent 折中执行（主回复带块 → 裁决 JSON 收尾）后，采集拿到的是裁决 JSON：块提取失败 → 全文兜底把裁决 JSON 整条当交付物写入 `issue.completion_output`。暴露路径：完成后用户在会话内要求补时间，终态后补交通道（最后一条消息口径 + 只认块）写回了正确块内容——两通道行为分叉定位根因。
+
+**方案（采集口径按协议事实分叉 + 删兜底 + 提示词对齐）**：
+- **attempt 级找块（工作流口径）**：`attempt_completion_scan` 在最终 attempt 的**全部** assistant 消息中倒序找块、last-block-wins（与 multica「多次输出整体覆盖，只保留最终结论」同义）——块在哪里就到哪里取，不再假设它在最后一条消息。近似形态探测同步 attempt 级（无块时保留最新一条 near-miss 原因，诊断贴近终态）。
+- **删除全文兜底**：`workflow_completion_output` 移除。机器裁决/报告全文都不是交付物；提不出块 → **不发送该字段**（multica「缺省/空串不动现值」合法行为），near-miss WARN 可观测、终态后补交通道可恢复（本次事故已实测验证该恢复路径）。原文档「形态滑落时交付不落空」目标降级为「形态滑落可观测、可恢复」——兜底保证被证明会发出错误内容，宁可空缺不可错发。
+- **direct 门控 / 终态后补交维持最后一条消息口径**（`final_completion_probe`）：协议语义是「块在最终回复末尾」，direct 门控的扣留设计与补交的「重新输出完整新块」都以最后一条消息为判据，不随工作流口径变化。`AttemptCompletionScan` 一次 timeline 读出双口径（`final_probe` + `attempt_probe`），run 收尾路径零额外 I/O；turn 门控/补交仍单次读只算 final 口径。
+- **提示词对齐**（zh-CN/en `remote_task_completion_protocol.md`，工作流段落并入既有定义）：收尾节点需以 JSON 裁决收尾时，块输出在裁决 JSON **之前**的最后一条人类可读回复末尾——agent 行为与采集口径互相锁定。
+
+**方案自评审**：过度设计——净删除一条代码路径（兜底）与一个启发式候选（跳过纯 JSON 消息的兜底目标判定，评审中否决：结构判定代理「机器裁决」在自定义输出约束下会误伤），无新增状态/聚合/依赖；`AttemptCompletionScan` 双口径是「run 收尾一次读供 direct/工作流两分支」的必要载体。性能——`load_timeline_items` 调用次数不变（run 收尾 1 次、turn 门控/补交各 1 次），attempt 扫描是已物化消息上的内存倒序行扫描，相对文件读可忽略；补交通道仍先小文件过滤再读 timeline。
+
+**验证结果**：先红后绿——双消息 timeline（主回复带块 + 裁决 JSON 收尾）用例在旧实现（`final_assistant_reply` + `workflow_completion_output` 组合）上稳定失败，实际送出 `{"reason":"验收完成","result":true}` 与内网实测一致；修复后 `attempt_completion_scan` 同一 timeline 的 `attempt_probe.block` 命中前置块、`final_probe` 不命中。`multica::` 215/215 绿（handoff 新增 5 用例：裁决 JSON 回归 / 跨消息 last-block-wins / 前置消息 near-miss 只标记不发送 / 无块·缺目录默认 / final 口径仅看最后一条；删除兜底 4 用例与 bridge 采集组合 3 用例——场景由新 API 用例承接）。clippy 我方改动零新增警告。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检
