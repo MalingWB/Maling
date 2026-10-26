@@ -270,6 +270,11 @@ fn run() -> anyhow::Result<()> {
             state.install_scheduled_service(std::sync::Arc::new(
                 scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
             ))?;
+            // M5-cf：上游交付解析器（`$upstream.completion-output`）——AppHandle 就绪即可装入，
+            // 须在下方 `state.app()` 组装之前，否则首个 App 不带解析器。
+            state.install_upstream_output_resolver(std::sync::Arc::new(
+                multica::upstream::MulticaUpstreamResolver::new(app.handle().clone()),
+            ))?;
             if let Ok(runtime_app) = state.app() {
                 let im_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {

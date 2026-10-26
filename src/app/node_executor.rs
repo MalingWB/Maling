@@ -543,6 +543,32 @@ pub(crate) fn build_worker_invocation(
         .as_ref()
         .is_some_and(|profile| profile.dynamic_template);
 
+    // 上游交付引用（M5-cf）：goal / 角色正文携带 `$upstream.completion-output` 令牌 → 节点
+    // 启动前解析（桌面壳 multica 域解析器：父 issue 寻址 + 有限退避轮询，run 专用线程同步
+    // 等待）。解析器缺席 / 失败 → 结构化错误上抛，节点按执行失败处理（failure 边 / attempt
+    // 重试契约与其他节点执行错误同路）。解析结果注入首条 prompt 的隐式隐藏区段（「上游交付
+    // 说明」，随隐藏运行上下文可见可审计），正文中的令牌移除——按 AGENTS.md system/user
+    // prompt 划分，随执行变化的交付数据属 user prompt 区，不内联进 system prompt 的角色正文。
+    // 加载策略与首条隐藏区段一致：仅 `SessionMode::New` 解析（快照语义 = 节点启动时的值）；
+    // Continue 回合只移除令牌不重新解析（快照已随 session 首条 prompt 存在）。
+    let mut task_instruction = task_instruction;
+    let mut profile_content = profile_content;
+    let mut extra_hidden_sections = first_prompt_hidden_sections(app, task_id, session_mode);
+    if super::upstream::needs_upstream_resolution([
+        task_instruction.as_deref(),
+        profile_content.as_deref(),
+    ]) {
+        if session_mode == SessionMode::New {
+            let section =
+                super::upstream::upstream_hidden_section(app.resolve_upstream_output(task_id, node_id)?);
+            extra_hidden_sections.push(section);
+        }
+        task_instruction = task_instruction
+            .map(|text| super::upstream::strip_upstream_references(&text));
+        profile_content = profile_content
+            .map(|text| super::upstream::strip_upstream_references(&text));
+    }
+
     let runtime_context =
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
     let diagnostics = app.provider_diagnostics();
@@ -640,7 +666,8 @@ pub(crate) fn build_worker_invocation(
         extra_system_sections: Vec::new(),
         // 首条 prompt 的隐式隐藏区段（multica 远程任务上下文等，改动四十八）：策略见
         // [`first_prompt_hidden_sections`]——仅首次执行 / 自动重试加载，追问与续跑不重放。
-        extra_hidden_sections: first_prompt_hidden_sections(app, task_id, session_mode),
+        // 上游交付说明区段（M5-cf）在同一策略下追加（见上方装配注释）。
+        extra_hidden_sections,
         task_instruction,
         user_tips_instruction: None,
         resume_task_instruction: None,
@@ -1785,6 +1812,269 @@ mod tests {
             invocation.turn_control_mode,
             TurnControlMode::RuntimeControlled
         );
+    }
+
+    #[test]
+    fn upstream_token_resolution_appends_hidden_section_and_strips_token() {
+        use std::sync::Mutex;
+
+        struct RecordingResolver {
+            replacement: &'static str,
+            calls: Mutex<Vec<(String, String)>>,
+        }
+        impl crate::app::upstream::UpstreamOutputResolver for RecordingResolver {
+            fn resolve_upstream_output(
+                &self,
+                task_id: &str,
+                node_id: &str,
+            ) -> Result<String, crate::app::upstream::UpstreamResolveError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((task_id.to_string(), node_id.to_string()));
+                Ok(self.replacement.to_string())
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let resolver = std::sync::Arc::new(RecordingResolver {
+            replacement: "「上游交付说明：部署地址 https://t.example.com（父 issue in_progress）」",
+            calls: Mutex::new(Vec::new()),
+        });
+        let app = App::with_config(
+            repo_root,
+            crate::config::RuntimeConfig::default(),
+        )
+        .with_upstream_output_resolver(resolver.clone());
+        write_attachment_test_run(&app);
+        let mut workflow = attachment_test_workflow();
+        let NodeDsl::Worker(worker) = &mut workflow.raw.nodes[0] else {
+            panic!("expected worker node");
+        };
+        worker.goal = Some(
+            "基于 $upstream.completion-output 开始回归测试，再次参考 $upstream.completion-output"
+                .to_string(),
+        );
+        workflow
+            .nodes_by_id
+            .insert("dev".to_string(), workflow.raw.nodes[0].clone());
+
+        let invocation = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &workflow,
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        // 正文令牌全部移除（多处出现一并清除，不留残余）。
+        assert_eq!(
+            invocation.task_instruction.as_deref(),
+            Some("基于  开始回归测试，再次参考 ")
+        );
+        // 解析结果作为「上游交付说明」隐式隐藏区段追加（随首条 prompt 隐藏运行上下文下发，
+        // 会话内可展开审计——不再内联进 system prompt 的角色正文）。
+        let section = invocation
+            .extra_hidden_sections
+            .iter()
+            .find(|section| section.title == crate::app::upstream::UPSTREAM_HIDDEN_SECTION_TITLE)
+            .expect("upstream hidden section appended");
+        assert_eq!(
+            section.content,
+            "「上游交付说明：部署地址 https://t.example.com（父 issue in_progress）」"
+        );
+        assert_eq!(
+            resolver.calls.lock().unwrap().as_slice(),
+            [("task-001".to_string(), "dev".to_string())]
+        );
+    }
+
+    #[test]
+    fn upstream_token_on_continue_session_strips_without_resolving() {
+        use std::sync::Mutex;
+
+        struct RefusingResolver {
+            calls: Mutex<Vec<(String, String)>>,
+        }
+        impl crate::app::upstream::UpstreamOutputResolver for RefusingResolver {
+            fn resolve_upstream_output(
+                &self,
+                task_id: &str,
+                node_id: &str,
+            ) -> Result<String, crate::app::upstream::UpstreamResolveError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((task_id.to_string(), node_id.to_string()));
+                Err(crate::app::upstream::UpstreamResolveError::Timeout)
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let resolver = std::sync::Arc::new(RefusingResolver {
+            calls: Mutex::new(Vec::new()),
+        });
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default())
+            .with_upstream_output_resolver(resolver.clone());
+        write_attachment_test_run(&app);
+        let mut workflow = attachment_test_workflow();
+        let NodeDsl::Worker(worker) = &mut workflow.raw.nodes[0] else {
+            panic!("expected worker node");
+        };
+        worker.goal = Some("参考 $upstream.completion-output 继续执行".to_string());
+        workflow
+            .nodes_by_id
+            .insert("dev".to_string(), workflow.raw.nodes[0].clone());
+
+        // Continue 回合：快照已随 session 首条 prompt 存在，不重新解析（解析器不可达也不报错），
+        // 令牌仍要移除（避免字面令牌泄漏进 prompt）。
+        let invocation = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &workflow,
+            "dev",
+            SessionMode::Continue,
+            Some(serde_json::json!({ "acpSessionId": "session-001" })),
+            Some("continue".to_string()),
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        assert_eq!(
+            invocation.task_instruction.as_deref(),
+            Some("参考  继续执行")
+        );
+        assert!(invocation
+            .extra_hidden_sections
+            .iter()
+            .all(|section| section.title != crate::app::upstream::UPSTREAM_HIDDEN_SECTION_TITLE));
+        assert!(resolver.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn upstream_token_without_resolver_fails_structured() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
+        let mut workflow = attachment_test_workflow();
+        let NodeDsl::Worker(worker) = &mut workflow.raw.nodes[0] else {
+            panic!("expected worker node");
+        };
+        worker.goal = Some("等待 $upstream.completion-output 注入".to_string());
+        workflow
+            .nodes_by_id
+            .insert("dev".to_string(), workflow.raw.nodes[0].clone());
+
+        let error = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &workflow,
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect_err("build must fail without a resolver");
+
+        assert!(
+            error
+                .to_string()
+                .contains("resolver is not installed"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn upstream_resolver_never_invoked_without_token() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingResolver(AtomicUsize);
+        impl crate::app::upstream::UpstreamOutputResolver for CountingResolver {
+            fn resolve_upstream_output(
+                &self,
+                _task_id: &str,
+                _node_id: &str,
+            ) -> Result<String, crate::app::upstream::UpstreamResolveError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok("unused".to_string())
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let resolver = std::sync::Arc::new(CountingResolver(AtomicUsize::new(0)));
+        let app = App::with_config(
+            repo_root,
+            crate::config::RuntimeConfig::default(),
+        )
+        .with_upstream_output_resolver(resolver.clone());
+        write_attachment_test_run(&app);
+
+        let invocation = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        assert_eq!(
+            invocation.task_instruction.as_deref(),
+            Some("Do the work")
+        );
+        assert_eq!(resolver.0.load(Ordering::SeqCst), 0);
     }
 
     #[test]

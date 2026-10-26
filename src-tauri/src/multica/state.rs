@@ -26,6 +26,13 @@ pub struct MulticaRuntimeState {
     /// 手动刷新三处触发，慢响应期间可能再次触发——重复对账虽幂等（值 diff 后写），但重复
     /// 扇出 batch 请求无意义。全局单飞（对账无任务粒度，与 `completing` 的按 id 认领不同）。
     pub reconcile_in_flight: bool,
+    /// issue → 最近一次即时上送的 `completion_output` 值（M5-cf 工作流阶段性上传的发送侧
+    /// 去重投影：值未变即跳过 PUT，逐 turn 触发下不重发）。
+    ///
+    /// 权威值在服务端 `issue.completion_output`（后写胜）；本地仅内存缓存，进程重启丢失
+    /// 无害（最坏同值重发一次，PUT 幂等）。任务终态时随 [`MulticaRuntimeState::drop_active_run`]
+    /// 同生命周期清理（见 bridge `finalize_terminal`）。
+    pub issue_output_pushed: HashMap<String, String>,
 }
 
 /// 单个在飞 remote task 的本地映射。
@@ -62,6 +69,9 @@ pub struct ActiveRemoteRun {
 /// 门控命中的 run 模式字面量（`ConversationCreateInputVm.run_mode` 的 "direct" 值，
 /// 见 `view_models_conversation.rs` / `scheduled_content_snapshot` 的模式映射）。
 pub const REMOTE_RUN_MODE_DIRECT: &str = "direct";
+
+/// 工作流 run 模式字面量（同上，M5-cf 阶段性上传的作用域判定）。
+pub const REMOTE_RUN_MODE_WORKFLOW: &str = "workflow";
 
 /// 共享句柄：loop 创建（managed），bridge（M4）取同一份。
 pub type SharedMulticaState = Arc<Mutex<MulticaRuntimeState>>;
@@ -172,8 +182,18 @@ impl MulticaRuntimeState {
     }
 
     /// 移除 remote task 映射（终态/取消后调用），返回被移除项供副作用使用。
+    ///
+    /// 同生命周期清理该 issue 的即时上送去重缓存（`issue_output_pushed`）：任务终态后该键
+    /// 不再有消费方，遗留只会让 rerun 后的首个相同块被误判「已发送」而跳过（跳过无害——
+    /// 完成路径仍会携带，但清理更诚实）。
     pub fn drop_active_run(&mut self, remote_task_id: &str) -> Option<ActiveRemoteRun> {
-        self.active_runs.remove(remote_task_id)
+        let dropped = self.active_runs.remove(remote_task_id);
+        if let Some(run) = &dropped {
+            if let Some(issue) = run.issue_id.as_deref().filter(|s| !s.trim().is_empty()) {
+                self.issue_output_pushed.remove(issue);
+            }
+        }
+        dropped
     }
 
     /// 按 (local_task_id, local_run_id) 反查在飞 remote task（bridge 事件归属键）。
@@ -193,6 +213,20 @@ impl MulticaRuntimeState {
     /// 按 remote_task_id 取在飞映射（cancel 命令用，键即 remote_task_id）。
     pub fn active_run(&self, remote_task_id: &str) -> Option<ActiveRemoteRun> {
         self.active_runs.get(remote_task_id).cloned()
+    }
+
+    /// 按本地 task display id 反查在飞映射（M5-cf 拉取解析器用）。
+    ///
+    /// 一个本地任务同一时刻至多一个在飞 remote run（claim 单飞）；run 维度未知（引擎回调
+    /// 只携带 task/node）故按任务级扫描。返回 `(remote_task_id, run 克隆)`。
+    pub fn find_active_run_by_task(
+        &self,
+        local_task_id: &str,
+    ) -> Option<(String, ActiveRemoteRun)> {
+        self.active_runs
+            .iter()
+            .find(|(_, r)| r.local_task_id == local_task_id)
+            .map(|(rid, r)| (rid.clone(), r.clone()))
     }
 
     /// 原子认领完成路径（M5-bp 双事件竞态守卫）。
@@ -349,6 +383,25 @@ mod tests {
         // 已移除 → 再 drop 返回 None。
         assert!(state.drop_active_run("remote-9").is_none());
         assert!(state.active_runs.is_empty());
+    }
+
+    #[test]
+    fn drop_active_run_clears_issue_push_cache_same_lifecycle() {
+        // M5-cf：终态清 issue_output_pushed——rerun 后首个相同块不被误判「已发送」跳过。
+        let mut state = MulticaRuntimeState::default();
+        state.register_active_run("remote-9", sample_run("9"));
+        state
+            .issue_output_pushed
+            .insert("issue-9".into(), "阶段快照 v1".into());
+        state.drop_active_run("remote-9");
+        assert!(!state.issue_output_pushed.contains_key("issue-9"));
+        // 无 issue 关联的 run（非 issue 来源）drop 时无键可清，不 panic。
+        let mut bare = sample_run("8");
+        bare.issue_id = None;
+        let mut state2 = MulticaRuntimeState::default();
+        state2.register_active_run("remote-8", bare);
+        state2.drop_active_run("remote-8");
+        assert!(state2.issue_output_pushed.is_empty());
     }
 
     // ---- M5-bp：完成路径认领（RunCompleted / AcpTurnFinished 双事件竞态单飞）----

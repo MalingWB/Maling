@@ -12,6 +12,7 @@ mod runtime_recovery;
 mod state_access;
 mod state_factory;
 mod transition_context;
+pub mod upstream;
 
 pub use self::conversation_run::{
     CONVERSATION_METADATA_VERSION, CONVERSATION_SOURCE_CLI, CONVERSATION_SOURCE_DESKTOP,
@@ -1394,6 +1395,7 @@ pub struct App {
     pub config: RuntimeConfig,
     task_search_indexer: Arc<dyn Fn(&Utf8Path, &str) + Send + Sync>,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
+    upstream_output_resolver: Option<Arc<dyn upstream::UpstreamOutputResolver>>,
     provider_diagnostics:
         Option<Arc<dyn Fn() -> Result<BTreeMap<String, ProviderDiagnosticSnapshot>> + Send + Sync>>,
     acp_live_update: Option<
@@ -1710,6 +1712,7 @@ impl App {
             config: self.config.clone(),
             task_search_indexer: self.task_search_indexer.clone(),
             provider_override: self.provider_override.clone(),
+            upstream_output_resolver: self.upstream_output_resolver.clone(),
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
@@ -1773,6 +1776,7 @@ impl App {
             config,
             task_search_indexer: self.task_search_indexer.clone(),
             provider_override: self.provider_override.clone(),
+            upstream_output_resolver: self.upstream_output_resolver.clone(),
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
@@ -1862,6 +1866,31 @@ impl App {
     ) -> Self {
         self.prompt_turn_lifecycle = Some(callback);
         self
+    }
+
+    /// 注册上游交付引用解析器（M5-cf，`$upstream.completion-output` 令牌的消费端）。
+    ///
+    /// 桌面壳 multica 域在启动时装入；引擎侧仅当节点 prompt 携带令牌时调用
+    /// （`node_executor::build_worker_invocation`）。同步阻塞调用——在 run 专用线程上执行，
+    /// 实现侧以轮询预算约束等待上限。
+    pub fn with_upstream_output_resolver(
+        mut self,
+        resolver: Arc<dyn upstream::UpstreamOutputResolver>,
+    ) -> Self {
+        self.upstream_output_resolver = Some(resolver);
+        self
+    }
+
+    /// 解析节点的上游交付引用（未注册解析器 → [`upstream::UpstreamResolveError::NoResolver`]）。
+    pub(crate) fn resolve_upstream_output(
+        &self,
+        task_id: &str,
+        node_id: &str,
+    ) -> Result<String, upstream::UpstreamResolveError> {
+        self.upstream_output_resolver
+            .as_ref()
+            .ok_or(upstream::UpstreamResolveError::NoResolver)?
+            .resolve_upstream_output(task_id, node_id)
     }
 
     pub fn with_lifecycle_bus(mut self, lifecycle_bus: observability::RuntimeLifecycleBus) -> Self {
@@ -4393,6 +4422,7 @@ impl App {
             config,
             task_search_indexer: default_task_search_indexer(),
             provider_override: None,
+            upstream_output_resolver: None,
             provider_diagnostics: None,
             acp_live_update: None,
             acp_session_update: None,

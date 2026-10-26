@@ -439,6 +439,21 @@ struct UpdateIssueStatusRequest {
     status: String,
 }
 
+/// issue 详情的最小消费投影（`GET /api/issues/{id}`，M5-cf 拉取链路）。
+///
+/// 只解码码灵实际消费的字段：拉取侧解析自身 issue 的 `parent_issue_id`（父寻址）与轮询父
+/// issue 的 `completion_output`（阶段性快照判定）。`completion_output` 为内网 C6+ 服务端
+/// detail 响应才有的键（`*string` + `omitempty`——NULL 时键整个不下发）；旧服务端缺失 →
+/// None（版本解耦，与 `parent_output` 的 serde-optional 惯例一致）。
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+pub struct IssueDetail {
+    pub status: String,
+    #[serde(default)]
+    pub parent_issue_id: Option<String>,
+    #[serde(default)]
+    pub completion_output: Option<String>,
+}
+
 /// issue 迟到输出补发请求（issue 完成输出传递特性，多 run 场景）。
 ///
 /// 与 [`UpdateIssueStatusRequest`] 同一 `PUT /api/issues/{id}` 端点，但**只写
@@ -1495,6 +1510,29 @@ impl MulticaClient {
         .await
     }
 
+    /// `GET /api/issues/{id}` —— issue 详情（[`IssueDetail`] 最小投影，M5-cf 拉取链路）。
+    ///
+    /// 用途：① 解析自身 issue 的 `parent_issue_id`（父寻址，绑定时未随 claim 响应下发）；
+    /// ② 拉取角色轮询父 issue 的 `completion_output`（内网确认 2026-10-24：detail 带
+    /// `completion_output`，`*string` + `omitempty`）。PAT 认证 + `X-Workspace-ID` 路由，
+    /// 只读接口走一般网络重试；服务端无状态门槛（读侧天然无）。
+    pub async fn get_issue(
+        &self,
+        workspace_id: &str,
+        issue_id: &str,
+    ) -> Result<IssueDetail, MulticaError> {
+        let path = format!("/api/issues/{issue_id}");
+        self.with_network_retry("get_issue", || async {
+            let resp = self
+                .send(Method::GET, &path, Some(workspace_id), None)
+                .await?;
+            resp.json::<IssueDetail>().await.map_err(|e| {
+                MulticaError::NetworkFailed(format!("decode /api/issues detail failed: {e}"))
+            })
+        })
+        .await
+    }
+
     /// 浏览器登录（复刻 `cmd_auth.go:240-358`）：
     ///
     /// 1. 起 IPv4 本地 listener（`127.0.0.1:0`）
@@ -2419,6 +2457,42 @@ mod tests {
         assert_eq!(
             body,
             serde_json::json!({"completion_output": "部署地址: https://t.example.com"})
+        );
+    }
+
+    #[test]
+    fn issue_detail_decodes_optional_keys_and_tolerates_absence() {
+        // M5-cf 拉取链路 wire 契约：completion_output / parent_issue_id 均可缺失
+        // （内网 *string+omitempty：NULL 键整个不下发；顶层无父时 parent_issue_id 为 null）。
+        let full = serde_json::from_str::<IssueDetail>(
+            r#"{
+                "id": "5f0d1b2c",
+                "status": "in_progress",
+                "parent_issue_id": "7c9e4a1f",
+                "completion_output": "部署地址: https://t.example.com"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            full,
+            IssueDetail {
+                status: "in_progress".into(),
+                parent_issue_id: Some("7c9e4a1f".into()),
+                completion_output: Some("部署地址: https://t.example.com".into()),
+            }
+        );
+
+        let bare = serde_json::from_str::<IssueDetail>(
+            r#"{"id": "5f0d1b2c", "status": "todo", "parent_issue_id": null}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            bare,
+            IssueDetail {
+                status: "todo".into(),
+                parent_issue_id: None,
+                completion_output: None,
+            }
         );
     }
 

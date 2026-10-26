@@ -2823,6 +2823,45 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证结果**：先红后绿——双消息 timeline（主回复带块 + 裁决 JSON 收尾）用例在旧实现（`final_assistant_reply` + `workflow_completion_output` 组合）上稳定失败，实际送出 `{"reason":"验收完成","result":true}` 与内网实测一致；修复后 `attempt_completion_scan` 同一 timeline 的 `attempt_probe.block` 命中前置块、`final_probe` 不命中。`multica::` 215/215 绿（handoff 新增 5 用例：裁决 JSON 回归 / 跨消息 last-block-wins / 前置消息 near-miss 只标记不发送 / 无块·缺目录默认 / final 口径仅看最后一条；删除兜底 4 用例与 bridge 采集组合 3 用例——场景由新 API 用例承接）。clippy 我方改动零新增警告。
 
+### 12.74 改动七十二：completion-output 中段上送与主动拉取——`$upstream.completion-output` 令牌 + 外部角色（M5-cf，2026-10-24）
+
+**背景（并行诉求）**：M5-cd/M5-ce 后 `completion_output` 单一写入来源是工作流终态 `/complete` 回传——下游测试任务必须等父 issue done 才能拿到交付说明，开发/测试天然串行。目标：开发工作流的**中段节点**（如构建/部署节点）把阶段性交付提前发布到远程工作项，测试工作流的中段节点在父未 done 时拉到快照提前启动。难点在拉取侧：测试任务要读的是**父工作项**的 completion-output 而非自己的——跨任务读取必须由码灵做中介（agent 无凭证、无全局作用域工具）。
+
+**内网确认（2026-10-24，四项全确认，服务端零改动）**：① `GET /api/issues/{id}` 下发 `completion_output`（`*string` + omitempty，NULL 键省略）；② `PUT /api/issues/{id}` 单键写 `completion_output` **无状态门槛**（仅 ≤16,000 rune 上限；字段级 merge：缺省保留/携带覆盖/显式 null 或空串清空）；③ 子任务的 `parent_output` 派生读条件 = 父字段非空（不看父状态，「字段非空即下发」+ 派生读每轮自愈）；④ `parent_issue_id` 恒下发（无父为 null）。
+
+**方案（写侧复用 + 读侧令牌，两端各一个外部角色）**：
+- **写侧（中段上送通道）**：bridge 在 `NodeCompleted`（图节点成功边界，orchestrator 对工作流/自动编排节点发射，携带会话级 run_id + attempt_dir）后 `push_workflow_completion_snapshot`——复用 M5-ce `attempt_completion_scan` 找本轮 attempt 内最新块（last-block-wins），与 `MulticaRuntimeState.issue_output_pushed`（发送侧去重投影，内存态；`drop_active_run` 随生命周期清除防 rerun 首块误跳过）比较，**值变化才** `PUT` 单键 `completion_output`；失败仅 WARN 忽略（终态 `/complete` 仍是权威写入，后写胜自愈）。只作用于非 direct（workflow/auto 自动编排图）+ issue run（`is_workflow_issue_run`，与 `/complete` Passthrough 采集同口径）；不门控、不改完成判定、direct run 不涉及。**触发事件是 2026-10-25 内网实测回归后的修正**：初版挂在 `AcpTurnFinished` 上，但该事件是会话 prompt 层事件（仅聊天回合发射），图节点回合不经过——中段上送永不触发，multica 侧零写入（revision 停留在 claim 时刻）；同轮回归还发现谓词按字面量只认 "workflow"，漏掉 auto（发送默认模式、执行形态即工作流图）——两处已一并修正并以测试锁定。
+- **读侧（拉取令牌）**：引擎令牌 `$upstream.completion-output`（与 `$end`/`$new-round` 同 `$` 前缀引用语法）可出现在节点 goal 或角色正文；`node_executor` 构建调用时先 `needs_upstream_resolution` 检查（无令牌零成本，测试锁定 resolver 不被调用），命中则经 `App::resolve_upstream_output` 回调（`with_upstream_output_resolver`——`with_prompt_turn_lifecycle` 同款 App 回调注册模式）到桌面侧 `MulticaUpstreamResolver`：自身 issue detail 解析 `parent_issue_id` → **有限退避轮询**（用户决策：15s 起、×1.5、间隔上限 60s、总预算 15 分钟，模块常量集中定义）父 `completion_output` 非空即命中 → 按界面语言渲染 `remote_task_upstream_pull.md`（父状态行 + 「父未完成时是阶段性快照可能被覆盖」口径提示）替换全部令牌出现（2026-10-26 起改为注入隐式隐藏区段并移除令牌，见改动七十四）。**单次快照语义**：值取节点启动时，父后续覆盖不自动刷新，重新进入节点重新解析。错误结构化 `UpstreamResolveError`（NoResolver / NoParentIssue / Timeout / Network）——未绑定远程任务或无父直接结构化失败，不静默空串。
+- **角色交付（外部导入，用户决策：不进内置 profile，成熟后再内置）**：`docs/gold-band/产品设计文档/multica接入/外部角色/`——`导入包/`下「交付上传」（节点目标显式要求上传阶段性交付——completion 协议的显式例外条件由此满足）+「交付拉取」（角色正文嵌令牌，自包含）两角色文件，README 在导入包外（编排示例/使用前提/行为口径；「导入文件夹」递归扫 `.md`，README 混入会被误当角色导入失败）。
+- **提示词协议修订**（zh-CN/en `remote_task_completion_protocol.md` 工作流段并入既有定义，不追加例外句）：其他节点输出的块作为阶段性快照上送、供下游在工作流结束前拉取提前启动（多次输出整体覆盖）；节点目标明确要求上传阶段性交付时即使产出还会被后续加工也输出块并注明阶段性口径；收尾节点的块仍是最终交付说明。新增 `remote_task_upstream_pull.md` 双语模板 + 常量/清单登记 + 渲染契约测试。
+
+**方案自评审**：过度设计——服务端零改动、无新增表/状态机/持久字段；写侧复用 M5-ce attempt 扫描与 M5-by 单键 PUT 通道，读侧复用 App 回调注册模式与 remote_task_* 模板管线；`issue_output_pushed` 是发送侧幂等投影（值比较去重）而非第二事实源（权威值在服务端，重启丢失无害——PUT 幂等）；轮询为用户明确选择的等待策略且 15 分钟预算封顶，不为此引入长连接/推送（服务端无对应能力，不扩协议）；拒绝的替代：MCP 工具（全局作用域无会话身份、扩大写入面信任边界）、DSL schema 字段（连带前端改造）、内置 profile 特判（用户决策外部角色）。性能——上传通道每 turn 一次 attempt 内存倒序行扫描 + 值变化才网络 PUT（去重比较在锁内、PUT 在锁外，不持锁做网络 IO）；拉取仅含令牌节点启动时发生（先检查后解析），轮询最坏 ~17 次 GET（15s/22.5s/33.75s/50.6s/60s×n）预算封顶，阻塞发生在 run 专用 OS 线程（既有 orchestrator 线程模型，`block_on` 桥接为既有模式），不阻塞 UI/事件循环。
+
+**验证结果**：引擎 `upstream` 过滤 7/7（`app::upstream` 令牌检测/替换 2 + `node_executor` goal 替换命中/无 resolver 结构化失败/无令牌零调用 3）、`node_executor` 全量 15/15、`prompts::tests` 17/17（新增 upstream_pull 双语渲染契约——状态与交付内容插值 + 阶段性快照口径锁定；completion 协议契约扩阶段性快照语义 8 断言）；desktop `multica::` 221/221（新增 upstream 渲染插值/口径锁定/轮询常量决策锁定 3、`is_workflow_issue_run` 作用域 1、`drop_active_run` 去重缓存生命周期 1、`IssueDetail` 可选键解码容忍 1）。clippy 我方改动文件零新增警告。**内网回归（2026-10-25）**：双工作流实测暴露写侧两处缺陷——①**主因：触发事件挂错层**。初版把 push 挂在 `AcpTurnFinished` 上，但该事件仅由会话 prompt 路径（`submit_conversation_prompt_inner`）在聊天回合发射，工作流/自动编排的节点回合只产生 `NodeCompleted`，中段上送永不触发；multica 侧证据（issue #1721）：claim 后 revision/updated_at 零变化，PUT 从未到达 issue 更新处理器。修正：push 迁至 `NodeCompleted` 臂（节点成功边界，`outcome == "SUCCESS"`），同一 spawn 内先 pin session 后推快照。②谓词按字面量只认 "workflow"，漏掉 auto（发送默认模式、执行形态即工作流图）——修正为非 direct 判据（与 `/complete` Passthrough 采集同口径），作用域测试先红后绿锁定 auto 命中。下游症状（测试任务拉取节点「卡住」）为①的后果：父字段恒空 → 拉取侧按设计走满 15 分钟有限退避预算后结构化 Timeout。`multica::` 221/221 复绿。**内网复验（2026-10-26）**：写侧双缺陷修复后重测，上传节点中段上送正常、multica 侧正确写入开发任务 completion_output；读侧复盘结论：拉取实际生效（agent 首条回复即引用快照结构与内容、时序吻合），「未生效」为误判——内容被内联进 system prompt 角色正文，消息流不可见；上送逐节点触发与注入位置两项缺陷由改动七十四（§12.76）修复。
+
+### 12.75 改动七十三：completion 协议提示词重排——单一定义合并去冗（2026-10-26）
+
+**背景**：completion 协议（`runtime/remote_task_completion_protocol.md`，隐藏区段注入）经 M5-bs→M5-cf 六轮语义叠加，「多次输出整体覆盖」三处重复、工作流段单段 600+ 字嵌套从句，用户反馈隐藏上下文过于冗长。
+
+**方案**：按 prompt-authoring 规则 2（规则合并为单一定义、同一规则只留一处表述）整体重排，非语义删减：覆盖语义收敛到开头定义一次；内容分级（核心/次要/篇幅）合并为一段列表，CI/CD 携带条款并入核心信息条目；「何时输出」按 direct 门控 / 工作流收尾与阶段性例外 / JSON 裁决摆放 / 整工作项总结 / 完成后修订分段，每规则一处。全部既有语义锚点（围栏同行、门控双向、核心信息三项、阶段性快照口径、修订不改变完成状态等）原样保留——`remote_task_completion_protocol_templates_lock_fence_contract` 契约测试零改动通过，即语义无损的验收证据。两语言（该模板仅 zh-CN/en，属 `remote_task_*` 例外清单）结构对齐。
+
+**验证结果**：`prompts::tests` 17/17（契约测试未改动即通过，锚点全保留）；正文长度约为重排前 60%。
+
+### 12.76 改动七十四：上送语义收紧（节点声明门控）+ 拉取注入位置迁移（隐式隐藏区段）（2026-10-26）
+
+**背景（两项，同日）**：
+1. **上送**：M5-cf 中段上送对非 direct + issue run 的**每个成功节点**触发，而工作流节点普遍产出 completion-output 块——下游会在任意中间节点读到无交付语义的「交付」。用户语义要求：工作流模式下只有被指定承担阶段性上送职责的节点（配「交付上传」角色）或收尾节点产出并上送；direct 模式不变。
+2. **拉取**：内网复验确认拉取实际生效（agent 首条回复即引用快照结构与内容），但内容被内联替换进 system prompt 的角色正文（`runtime/system.md`「当前节点角色」段）——会话消息流不可见、不可审计（用户展开「隐藏运行上下文」找不到交付内容）。按 AGENTS.md system/user prompt 划分，随执行变化的交付数据属 user prompt 区。
+
+**方案**：
+- **上送门控（节点声明制）**：「交付上传」角色正文内置 HTML 注释声明标记 `<!-- gold-band:upstream-upload -->`（常量 `UPSTREAM_UPLOAD_MARKER`，goal 直写等效）；bridge `push_workflow_completion_snapshot` 在 attempt 扫描前经 `node_declares_staged_upload` 判定——数据源为 run 启动时落盘的工作流快照（`current_run_workflow`，run 中途编辑不改变已执行节点语义）+ profile 当前存储，goal / 角色正文任一携带标记才上送；快照不可读 / 节点缺员（AiDynamic 节点无 goal/profile，动态编排 worker 不在任务工作流快照里）/ profile 解析失败一律 fail-closed（误上送会让下游拿到无交付语义的中间产物，宁缺勿滥）。**不做收尾节点检测**：终态 `/complete` 整体携带最后一块已是权威路径，last-node 判定需引入 sink 分析且与 `/complete` 存在竞态，复杂度收益为负。协议提示词同步收紧：工作流例外条件从「节点目标明确要求上传阶段性交付」改为「被指定承担阶段性上送职责的节点（配置了交付上传角色，或目标中带其声明标记）」。
+- **拉取注入位置迁移**：`node_executor` 装配时解析结果不再内联替换令牌，改为追加首条 prompt 的隐式隐藏区段（标题 `Gold Band upstream deliverable`，内容即既有 `remote_task_upstream_pull.md` 渲染块，随「Gold Band runtime context」折叠块可见可审计）；正文中的令牌移除（`strip_upstream_references` 取代内联替换 API）。加载策略与首条隐藏区段完全一致：仅 `SessionMode::New` 解析并注入；Continue 回合只移除令牌不重新解析（快照已随 session 首条 prompt 存在，维持「节点启动时的值」单次快照语义）。拉取角色文件改写：令牌保留为声明开关，正文说明内容到达位置（隐藏运行上下文「上游交付说明」区段）。
+- **部署耦合（内网注意）**：两个角色文件正文均已更新，**升级桌面端后需重新导入**。方向安全：旧桌面端 + 新角色 = 无门控仍逐节点上送（桌面端旧语义）；新桌面端 + 旧上传角色 = 无标记不上送——收紧方向一致，不存在「错误上送」组合。
+
+**方案自评审**：过度设计——无新增持久化/状态机/跨层 identity：门控读既有 run 工作流快照 + profile 存储（节点成功边界、spawn 异步内、仅 multica 工作流 run 触发）；标记是纯文本声明，复用角色导入通道，无 DSL schema/前端改动；拒绝的替代：DSL 新字段（连带前端与旧工作流迁移成本）、last-node 检测（见上）。拉取迁移复用 `extra_hidden_sections` 既有通道与首条加载策略，消除 system prompt 中 ≤2000 字符的重复内联负载。性能——门控每成功节点至多两次小文件读（run 工作流快照 JSON + profile 文件），发生在 spawn 异步路径不阻塞热路径；隐藏区段使首条 user prompt 增量有界（交付块 ≤2000 字符 + 模板头）。
+
+**验证结果**：lib `upstream` 过滤 9/9（令牌检测/无 resolver 结构化失败/无令牌零调用既有 3 + strip 全清除、声明标记谓词（含「前缀片段不算声明」负例）2 新增 + goal 解析→隐藏区段追加且令牌移除、Continue 回合只移除不解析且不触发 resolver 2 改写）；desktop `multica::` 221/221；`prompts::tests` 契约 17/17（协议收紧未触动任何锚点断言）；clippy 我方改动文件零新增警告。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

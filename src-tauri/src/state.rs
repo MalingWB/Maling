@@ -25,8 +25,8 @@ use gold_band::app::{
     App, NotificationDedup, ProviderDoctorProbe, RuntimeLifecycleEvent, RuntimeRecoveryCoordinator,
 };
 use gold_band::config::{
-    DiagnosticError, ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig,
-    SettingsConfig, StateConfig,
+    ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig,
+    StateConfig,
 };
 use gold_band::process::recover_persisted_process_group;
 use gold_band::provider::DoctorResult;
@@ -305,6 +305,10 @@ fn for_each_diagnostic_agent(agent_ids: &[ManagedAgentId], probe: impl Fn(&Manag
 pub struct DesktopState {
     context: Mutex<DesktopContext>,
     scheduled_service: Mutex<Option<Arc<crate::scheduled_service::ScheduledTaskService>>>,
+    /// 上游交付引用解析器（M5-cf，`$upstream.completion-output` 令牌消费端）。setup 后装入，
+    /// `app()` 组装时挂载——引擎回调式介入的既有模式（同 lifecycle_bus 共享件）。
+    upstream_output_resolver:
+        Mutex<Option<Arc<dyn gold_band::app::upstream::UpstreamOutputResolver>>>,
     scheduler_coordinator: Mutex<Option<crate::scheduled_runtime::SchedulerCoordinatorHandle>>,
     scheduled_power: Mutex<
         crate::scheduled_runtime::power::ScheduledPowerManager<
@@ -351,6 +355,7 @@ impl DesktopState {
         Self {
             context: Mutex::new(context),
             scheduled_service: Mutex::new(None),
+            upstream_output_resolver: Mutex::new(None),
             scheduler_coordinator: Mutex::new(None),
             scheduled_power: Mutex::new(
                 crate::scheduled_runtime::power::ScheduledPowerManager::new(
@@ -532,7 +537,7 @@ impl DesktopState {
         let diagnostics = self.agent_diagnostics.clone();
         let model_catalogs = self.agent_model_catalogs.clone();
         let metrics_enabled = crate::metrics::core_metrics_collection_enabled(&context.config);
-        Ok(App::with_config(context.repo_root, context.config)
+        let app = App::with_config(context.repo_root, context.config)
             .with_lifecycle_bus(self.lifecycle_bus.clone())
             .with_observability_states(self.observability_states.clone())
             .with_active_metric_turns(self.active_metric_turns.clone())
@@ -543,7 +548,18 @@ impl DesktopState {
                     .into_iter()
                     .map(|(agent_type, diagnostic)| (agent_type.as_str().to_string(), diagnostic))
                     .collect())
-            })))
+            }));
+        // M5-cf：上游交付解析器非必装（装入前/未装时组装 App 不应失败），装了才挂。
+        let resolver = self
+            .upstream_output_resolver
+            .lock()
+            .map_err(|_| anyhow::anyhow!("upstream resolver lock poisoned"))?
+            .clone();
+        let app = match resolver {
+            Some(resolver) => app.with_upstream_output_resolver(resolver),
+            None => app,
+        };
+        Ok(app)
     }
 
     pub fn recover_interrupted_conversation_workspaces(
@@ -708,6 +724,19 @@ impl DesktopState {
             .scheduled_service
             .lock()
             .map_err(|_| anyhow::anyhow!("scheduled service lock poisoned"))? = Some(service);
+        Ok(())
+    }
+
+    /// 装入上游交付引用解析器（M5-cf）：main.rs setup 在 AppHandle 可用后调用一次，
+    /// [`Self::app`] 组装引擎 App 时挂载。重复装入覆盖前值（幂等，实际只装一次）。
+    pub fn install_upstream_output_resolver(
+        &self,
+        resolver: Arc<dyn gold_band::app::upstream::UpstreamOutputResolver>,
+    ) -> Result<()> {
+        *self
+            .upstream_output_resolver
+            .lock()
+            .map_err(|_| anyhow::anyhow!("upstream resolver lock poisoned"))? = Some(resolver);
         Ok(())
     }
 
@@ -1701,6 +1730,7 @@ fn recent_workspaces(state: &StateConfig, repo_root: &Utf8Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gold_band::config::DiagnosticError;
     use gold_band::domain::{NodeOutcome, NodeType, PauseReason, RoundTrigger, RunStatus, VERSION};
     use gold_band::runtime::{
         NodeState, RoundState, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase,

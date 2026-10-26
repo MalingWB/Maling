@@ -113,6 +113,8 @@ pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_completion_protocol.md");
 pub const RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_attachment_failures.md");
+pub const RUNTIME_REMOTE_TASK_UPSTREAM_PULL: LocalizedText =
+    localized_prompt_zh_en!("runtime/remote_task_upstream_pull.md");
 pub const RUNTIME_ARTIFACT_FINALIZE: LocalizedText =
     localized_prompt!("runtime/artifact_finalize.md");
 pub const RUNTIME_CONTROL_RESUME: LocalizedText =
@@ -281,6 +283,10 @@ pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
     (
         "runtime/remote_task_attachment_failures.md",
         RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES,
+    ),
+    (
+        "runtime/remote_task_upstream_pull.md",
+        RUNTIME_REMOTE_TASK_UPSTREAM_PULL,
     ),
     ("runtime/artifact_finalize.md", RUNTIME_ARTIFACT_FINALIZE),
     ("runtime/runtime_control_resume.md", RUNTIME_CONTROL_RESUME),
@@ -623,6 +629,47 @@ mod tests {
         assert!(en.contains("extremely brief"));
         assert!(en.contains("complete new block"));
         assert!(en.contains("does not change the task's completion status"));
+        // M5-cf（开发设计 §12.74；例外条件 2026-10-26 随改动七十四收紧）：工作流中段上传——
+        // 阶段性快照上送（下游可在工作流结束前拉取提前启动），「不要输出」默认规则必须让位于
+        // 显式例外：**被指定承担阶段性上送职责的节点**（配置了「交付上传」角色，或目标中带其
+        // 声明标记——桌面端按声明门控上送，非任意 goal 措辞），且快照须注明阶段性口径。收尾
+        // 节点块仍是最终交付说明。两语言均锁定。
+        assert!(zh.contains("阶段性快照"));
+        assert!(zh.contains("在工作流结束前拉取"));
+        assert!(zh.contains("被指定承担阶段性上送职责的节点"));
+        assert!(zh.contains("「交付上传」角色"));
+        assert!(zh.contains("声明标记"));
+        assert!(zh.contains("尚未最终完成"));
+        assert!(en.contains("staged snapshot"));
+        assert!(en.contains("pull before the workflow finishes"));
+        assert!(en.contains("explicitly designated for staged upload"));
+        assert!(en.contains("deliverable-upload role"));
+        assert!(en.contains("declaration marker"));
+        assert!(en.contains("with work still pending"));
+    }
+
+    #[test]
+    fn remote_task_upstream_pull_templates_render_parent_snapshot() {
+        // 上游交付拉取（M5-cf 读侧）：`$upstream.completion-output` 令牌的替换文本。模板需完整
+        // 渲染 parent_status 与 parent_output 两个变量，并锁定阶段性快照口径——父状态可见 +
+        // 未完成时是阶段性快照可能被覆盖 + 按当前值执行并在结论注明版本口径。两语言均锁定。
+        let ctx = json!({
+            "parent_status": "in_progress",
+            "parent_output": "包名：gold-band_0.19.0_x64.msi；部署环境：内网测试环境 http://t.example.com"
+        });
+        let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.zh_cn, ctx.clone());
+        assert!(zh.contains("in_progress"));
+        assert!(zh.contains("gold-band_0.19.0_x64.msi"));
+        assert!(zh.contains("阶段性快照"));
+        assert!(zh.contains("按当前值执行"));
+        assert!(zh.contains("版本口径"));
+
+        let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.en, ctx);
+        assert!(en.contains("in_progress"));
+        assert!(en.contains("gold-band_0.19.0_x64.msi"));
+        assert!(en.contains("staged snapshot"));
+        assert!(en.contains("execute against the current value"));
+        assert!(en.contains("version basis"));
     }
 
     #[test]

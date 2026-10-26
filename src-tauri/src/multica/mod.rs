@@ -27,6 +27,7 @@ pub mod local_skills;
 pub mod loop_;
 pub mod markdown_source;
 pub mod state;
+pub mod upstream;
 pub mod vm;
 
 pub use client::MulticaClient;

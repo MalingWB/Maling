@@ -117,7 +117,6 @@ use crate::view_models::{
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, ConversationTaskActivityVm, conversation_attempt_lifecycle_vm,
     conversation_is_orchestrated, conversation_run_mode, conversation_session_successor,
-    conversation_task_activity_from_prompt,
 };
 use crate::wallpaper::{
     ImportDesktopWallpaperInput, RestoreThemeDesktopWallpaperInput,
@@ -11787,6 +11786,7 @@ mod tests {
     use gold_band::app::{WorkflowTemplate, WorkflowTemplateStore};
     use gold_band::config::{ConversationWorkspaceEntry, ResolvedColorScheme, RuntimeConfig};
     use gold_band::dsl::{NodeDsl, WorkerNode, WorkflowDsl};
+    use crate::view_models_conversation::conversation_task_activity_from_prompt;
     use gold_band::dynamic::DynamicGraphState;
     use gold_band::runtime::RoundState;
     use gold_band::runtime::TaskState;
