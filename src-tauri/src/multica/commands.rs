@@ -31,7 +31,7 @@ use crate::multica::error::MulticaError;
 use crate::multica::local_skills::{
     assemble_pulled_skill_md, multica_skill_dir_name, own_global_skill_dir,
 };
-use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
+use crate::multica::state::{ActiveRemoteRun, SharedMulticaState, UpstreamPullDecision};
 use crate::multica::vm::{
     AttachmentFailure, MulticaPullItemResultVm, MulticaPullReportVm, MulticaSkillListItemVm,
     RemoteConversationSidebarVm, RemoteTaskVm, remote_task_hidden_section,
@@ -1224,6 +1224,62 @@ pub fn remove_remote_completed_task(
     if removed {
         crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
     }
+    Ok(())
+}
+
+/// 决策字符串（前端 → 命令）与 [`UpstreamPullDecision`] 的字面量约定。
+const UPSTREAM_DECISION_RETRY: &str = "retry";
+const UPSTREAM_DECISION_MANUAL: &str = "manual";
+const UPSTREAM_DECISION_SKIP: &str = "skip";
+
+/// 上游拉取决策（M5-ch 决策点）：拉取解析器首拉空值发 pending 事件后，用户三选一的
+/// 提交端——写入决策槽并唤醒等待中的 resolve（`retry` 恢复轮询 / `manual` 用用户提供文本
+/// / `skip` 跳过拉取直接继续）。
+///
+/// `task_id`/`node_id` 与 pending 事件载荷一致（node_id 为引擎节点 display id）。决策迟到
+/// （resolve 已收口或 run 已终态）→ 结构化错误 `multica.upstream-pull-not-pending`（前端
+/// 通常已随 settled 事件关弹窗，此为竞态兜底）。
+#[tauri::command]
+pub async fn decide_upstream_pull(
+    shared: State<'_, SharedMulticaState>,
+    task_id: String,
+    node_id: String,
+    decision: String,
+    manual_text: Option<String>,
+) -> CommandResult<()> {
+    let decision = match decision.as_str() {
+        UPSTREAM_DECISION_RETRY => UpstreamPullDecision::Retry,
+        UPSTREAM_DECISION_SKIP => UpstreamPullDecision::Skip,
+        UPSTREAM_DECISION_MANUAL => {
+            // manual 必须携带非空文本（trim 后）；空文本前端已禁提交，此处兜底拒绝。
+            let text = manual_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or(MulticaError::UpstreamPullNotPending)
+                .map_err(|e| command_error(e.into()))?;
+            UpstreamPullDecision::Manual(text.to_string())
+        }
+        // 未知决策字面量：不改槽（防手滑毁掉等待中的拉取），直接报错。
+        other => {
+            warn!(task = %task_id, node = %node_id, decision = %other, "multica decide_upstream_pull: unknown decision literal");
+            return Err(command_error(MulticaError::UpstreamPullNotPending.into()));
+        }
+    };
+    let mut guard = shared.lock().map_err(|_| {
+        command_error(MulticaError::NetworkFailed("multica state lock poisoned".into()).into())
+    })?;
+    // task_id → 在飞 run → run 级键（决策槽键含 local_run_id，不直接用 task_id）。
+    let Some((_, run)) = guard.find_active_run_by_task(&task_id) else {
+        return Err(command_error(MulticaError::UpstreamPullNotPending.into()));
+    };
+    // 锁内写决策取 notify，锁外 notify_one 唤醒 select 等待方（resolve 持锁仅短临界区）。
+    let Some(notify) = guard.decide_upstream_pull(&run.local_run_id, &node_id, decision) else {
+        return Err(command_error(MulticaError::UpstreamPullNotPending.into()));
+    };
+    drop(guard);
+    notify.notify_one();
+    info!(task = %task_id, node = %node_id, "multica upstream pull decision submitted");
     Ok(())
 }
 

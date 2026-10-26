@@ -33,6 +33,28 @@ pub struct MulticaRuntimeState {
     /// 无害（最坏同值重发一次，PUT 幂等）。任务终态时随 [`MulticaRuntimeState::drop_active_run`]
     /// 同生命周期清理（见 bridge `finalize_terminal`）。
     pub issue_output_pushed: HashMap<String, String>,
+    /// 等待用户决策的上游拉取槽（M5-ch 决策点）：键 `"{local_run_id}/{node_id}"`。
+    ///
+    /// 拉取解析器首拉空值时注册（发 pending 事件给前端），命令侧写入决策并 notify；resolve
+    /// 结束（任意路径）或 run 终态时移除。与 `issue_output_pushed` 同为 run 级内存态。
+    pub upstream_pull_decisions: HashMap<String, UpstreamPullPending>,
+}
+
+/// 上游拉取的等待决策（M5-ch）：父 `completion_output` 首拉为空时交还控制权。
+#[derive(Debug, Clone)]
+pub enum UpstreamPullDecision {
+    /// 继续等待（恢复轮询，占用同一总预算）。
+    Retry,
+    /// 跳过拉取，用户手动提供交付说明文本（已 trim 非空）。
+    Manual(String),
+    /// 跳过拉取，直接继续执行。
+    Skip,
+}
+
+/// 单个等待决策的拉取槽：notify 唤醒等待方，decision 为已到达的决策（None = 无人决策）。
+pub struct UpstreamPullPending {
+    pub notify: Arc<tokio::sync::Notify>,
+    pub decision: Option<UpstreamPullDecision>,
 }
 
 /// 单个在飞 remote task 的本地映射。
@@ -192,6 +214,11 @@ impl MulticaRuntimeState {
             if let Some(issue) = run.issue_id.as_deref().filter(|s| !s.trim().is_empty()) {
                 self.issue_output_pushed.remove(issue);
             }
+            // M5-ch：run 终态时同生命周期清掉该 run 的拉取决策槽（键前缀 "{local_run_id}/"），
+            // 防止 resolver 被中断后槽泄漏（后续同 run id 重跑不得继承旧槽）。
+            let prefix = format!("{}/", run.local_run_id);
+            self.upstream_pull_decisions
+                .retain(|key, _| !key.starts_with(&prefix));
         }
         dropped
     }
@@ -258,6 +285,60 @@ impl MulticaRuntimeState {
     pub fn end_reconcile(&mut self) {
         self.reconcile_in_flight = false;
     }
+
+    /// 注册上游拉取决策槽（M5-ch）：首拉空值时由拉取解析器调用，返回 notify 句柄供
+    /// select 等待。同键已存在时覆盖（同 run 同节点并发 resolve 不存在——claim 单飞；
+    /// 覆盖仅作异常残留防御）。
+    pub fn register_upstream_pull(
+        &mut self,
+        local_run_id: &str,
+        node_id: &str,
+    ) -> Arc<tokio::sync::Notify> {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        self.upstream_pull_decisions.insert(
+            upstream_pull_key(local_run_id, node_id),
+            UpstreamPullPending { notify: notify.clone(), decision: None },
+        );
+        notify
+    }
+
+    /// 写入决策并返回该槽的 notify 句柄（锁外 notify_one 唤醒等待方）；无槽 = 决策迟到
+    /// （resolve 已结束或 run 已终态），返回 None 由命令侧报结构化错误。
+    pub fn decide_upstream_pull(
+        &mut self,
+        local_run_id: &str,
+        node_id: &str,
+        decision: UpstreamPullDecision,
+    ) -> Option<Arc<tokio::sync::Notify>> {
+        let slot = self
+            .upstream_pull_decisions
+            .get_mut(&upstream_pull_key(local_run_id, node_id))?;
+        slot.decision = Some(decision);
+        Some(slot.notify.clone())
+    }
+
+    /// 取走已到达的决策（None = 尚无人决策）。槽保留——轮询期间迟到的 manual/skip 仍可写入。
+    pub fn take_upstream_pull_decision(
+        &mut self,
+        local_run_id: &str,
+        node_id: &str,
+    ) -> Option<UpstreamPullDecision> {
+        self.upstream_pull_decisions
+            .get_mut(&upstream_pull_key(local_run_id, node_id))?
+            .decision
+            .take()
+    }
+
+    /// resolve 结束（任意路径）时移除槽：后续决策命令按无槽报错（前端 settled 事件已收口 UI）。
+    pub fn drop_upstream_pull(&mut self, local_run_id: &str, node_id: &str) {
+        self.upstream_pull_decisions
+            .remove(&upstream_pull_key(local_run_id, node_id));
+    }
+}
+
+/// 拉取决策槽键：run + node 唯一定位（一个 run 的多个拉取节点可并行等待）。
+fn upstream_pull_key(local_run_id: &str, node_id: &str) -> String {
+    format!("{local_run_id}/{node_id}")
 }
 
 #[cfg(test)]
@@ -402,6 +483,119 @@ mod tests {
         state2.register_active_run("remote-8", bare);
         state2.drop_active_run("remote-8");
         assert!(state2.issue_output_pushed.is_empty());
+    }
+
+    // ---- M5-ch：上游拉取决策槽（首拉空值 → 用户三选一）----
+
+    /// 有界轮询 notify：50ms 内被唤醒 → true（无 reactor 的同步测试用，借临时 runtime）。
+    fn notify_wakes_within(notify: &Arc<tokio::sync::Notify>) -> bool {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime")
+            .block_on(async {
+                tokio::time::timeout(std::time::Duration::from_millis(50), notify.notified())
+                    .await
+                    .is_ok()
+            })
+    }
+
+    #[test]
+    fn upstream_pull_slot_roundtrip_manual_decision() {
+        // 注册 → 写决策（取回 notify 供锁外唤醒）→ 取走决策（槽保留）→ resolve 收口移除槽。
+        let mut state = MulticaRuntimeState::default();
+        let notify = state.register_upstream_pull("run-9", "node-1");
+        assert!(!notify_wakes_within(&notify), "新槽不得自带唤醒");
+
+        let woken = state
+            .decide_upstream_pull(
+                "run-9",
+                "node-1",
+                UpstreamPullDecision::Manual("手动交付说明".into()),
+            )
+            .expect("已注册槽应命中");
+        woken.notify_one();
+        assert!(
+            notify_wakes_within(&notify),
+            "decide 返回的 notify 应唤醒等待方"
+        );
+
+        // 取走决策：槽保留（轮询期间迟到的决策仍可写入），再取为 None。
+        assert!(matches!(
+            state.take_upstream_pull_decision("run-9", "node-1"),
+            Some(UpstreamPullDecision::Manual(ref text)) if text == "手动交付说明"
+        ));
+        assert!(state.take_upstream_pull_decision("run-9", "node-1").is_none());
+        // 迟到决策可再写入（槽仍在）：resolve 未收口前决策通道畅通。
+        assert!(
+            state
+                .decide_upstream_pull("run-9", "node-1", UpstreamPullDecision::Skip)
+                .is_some()
+        );
+        assert!(matches!(
+            state.take_upstream_pull_decision("run-9", "node-1"),
+            Some(UpstreamPullDecision::Skip)
+        ));
+
+        state.drop_upstream_pull("run-9", "node-1");
+        // 槽移除后：决策无落点（命令侧按 UpstreamPullNotPending 报错）。
+        assert!(
+            state
+                .decide_upstream_pull("run-9", "node-1", UpstreamPullDecision::Retry)
+                .is_none()
+        );
+        assert!(state.take_upstream_pull_decision("run-9", "node-1").is_none());
+    }
+
+    #[test]
+    fn upstream_pull_slot_keys_scoped_by_run_and_node() {
+        // 键 = run/node：同 run 不同节点互不串台；不同 run 同名节点也不串台。
+        let mut state = MulticaRuntimeState::default();
+        state.register_upstream_pull("run-9", "node-1");
+        state.register_upstream_pull("run-9", "node-2");
+        state.register_upstream_pull("run-other", "node-1");
+        assert_eq!(state.upstream_pull_decisions.len(), 3);
+
+        assert!(
+            state
+                .decide_upstream_pull("run-9", "node-2", UpstreamPullDecision::Skip)
+                .is_some()
+        );
+        // 只影响 node-2；node-1 与另一 run 的 node-1 均未决策。
+        assert!(state.take_upstream_pull_decision("run-9", "node-1").is_none());
+        assert!(state.take_upstream_pull_decision("run-other", "node-1").is_none());
+        assert!(matches!(
+            state.take_upstream_pull_decision("run-9", "node-2"),
+            Some(UpstreamPullDecision::Skip)
+        ));
+    }
+
+    #[test]
+    fn drop_active_run_clears_upstream_pull_slots_same_lifecycle() {
+        // run 终态 → 前缀清理该 run 全部拉取槽（resolver 被中断后不泄漏；rerun 不继承旧槽）。
+        let mut state = MulticaRuntimeState::default();
+        state.register_active_run("remote-9", sample_run("9"));
+        state.register_upstream_pull("run-9", "node-1");
+        state.register_upstream_pull("run-9", "node-2");
+        // 其他 run 的槽必须保留（前缀匹配只清自己的）。
+        state.register_upstream_pull("run-other", "node-1");
+        // 恶意前缀防护：run id "run-9" 不得清掉 "run-9x" 的槽（键含 "/" 分隔）。
+        state.register_upstream_pull("run-9x", "node-1");
+
+        state.drop_active_run("remote-9");
+
+        assert!(!state
+            .upstream_pull_decisions
+            .contains_key("run-9/node-1"));
+        assert!(!state
+            .upstream_pull_decisions
+            .contains_key("run-9/node-2"));
+        assert!(state
+            .upstream_pull_decisions
+            .contains_key("run-other/node-1"));
+        assert!(state
+            .upstream_pull_decisions
+            .contains_key("run-9x/node-1"));
     }
 
     // ---- M5-bp：完成路径认领（RunCompleted / AcpTurnFinished 双事件竞态单飞）----

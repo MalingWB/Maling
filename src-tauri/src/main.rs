@@ -106,8 +106,8 @@ use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
 use gold_band::storage::{GoldBandPaths, configure_storage_paths};
 use multica::commands::{
-    add_multica_workspace, cancel_remote_task, get_remote_task_requirement, get_remote_tasks,
-    list_remote_skills, list_server_multica_workspaces, pull_remote_skills,
+    add_multica_workspace, cancel_remote_task, decide_upstream_pull, get_remote_task_requirement,
+    get_remote_tasks, list_remote_skills, list_server_multica_workspaces, pull_remote_skills,
     recover_remote_work_dir_sessions, reconcile_remote_task_statuses, remove_multica_workspace,
     remove_remote_completed_task, rerun_remote_task, set_active_multica_workspace,
     start_remote_conversation_run,
@@ -591,6 +591,7 @@ fn run() -> anyhow::Result<()> {
             get_remote_task_requirement,
             start_remote_conversation_run,
             cancel_remote_task,
+            decide_upstream_pull,
             remove_remote_completed_task,
             reconcile_remote_task_statuses,
             rerun_remote_task,

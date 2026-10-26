@@ -981,6 +981,14 @@ export function subscribeRemoteSourceSettingsUpdates(listener: () => void) {
   return getRuntimeApi().subscribeRemoteSourceSettingsUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
+export function subscribeUpstreamPullEvents(listener: Parameters<NonNullable<RuntimeApi['subscribeUpstreamPullEvents']>>[0]) {
+  return getRuntimeApi().subscribeUpstreamPullEvents?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function decideUpstreamPull(taskId: string, nodeId: string, decision: Parameters<RuntimeApi['decideUpstreamPull']>[2], manualText?: string | null) {
+  return getRuntimeApi().decideUpstreamPull(taskId, nodeId, decision, manualText);
+}
+
 export function workspaceFilePreviewUrl(token: string, staticFrame = false) {
   return getRuntimeApi().workspaceFilePreviewUrl(token, staticFrame);
 }

@@ -1119,6 +1119,7 @@
       "runtime-offline": "O runtime ainda não está pronto. Tente novamente em breve.",
       "session-resume-failed": "Falha ao retomar sessão. Uma nova execução será iniciada.",
       "task-not-found": "Esta tarefa multica não foi encontrada.",
+      "upstream-pull-not-pending": "Esta busca já foi concluída; nenhuma escolha é necessária.",
       "workspace-already-bound": "Este espaço de trabalho já está vinculado.",
       "workspace-not-found": "Esta vinculação de espaço de trabalho não foi encontrada."
     },
@@ -3204,6 +3205,17 @@
         "todo": "A fazer",
         "backlog": "Backlog"
       }
+    },
+    "upstreamPull": {
+      "title": "Entrega do upstream ainda não obtida",
+      "description": "O nó {{node}} de \"{{task}}\" ainda não obteve a entrega do item de trabalho upstream {{issue}}.",
+      "fallbackNote": "Sem escolha em 60 segundos, a busca automática continua.",
+      "retry": "Continuar aguardando",
+      "manual": "Fornecer manualmente",
+      "skip": "Pular busca",
+      "manualLabel": "Entrega",
+      "manualPlaceholder": "Informações essenciais como artefatos construídos e ambientes de implantação…",
+      "manualSubmit": "Continuar com isto"
     }
   }
 }

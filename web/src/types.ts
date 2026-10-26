@@ -204,6 +204,20 @@ export interface RemoteConversationSidebarVm {
   connected: boolean;
 }
 
+/// 上游拉取决策事件载荷（M5-ch 决策点）：pending 与 settled 同形，pending 的 outcome 为 null。
+export interface MulticaUpstreamPullEventVm {
+  taskId: string;
+  runId: string;
+  nodeId: string;
+  parentIssueId: string;
+  taskTitle: string | null;
+  /// null = pending（等待选择）；resolved | manual | skipped | timeout = settled（拉取已收口）。
+  outcome: string | null;
+}
+
+/// 拉取决策三选一（decide_upstream_pull 的 decision 字面量）。
+export type UpstreamPullDecisionKind = 'retry' | 'manual' | 'skip';
+
 /// 「从远程同步」勾选列表项（list_remote_skills 返回）。
 export interface RemoteSkillListItemVm {
   id: string;

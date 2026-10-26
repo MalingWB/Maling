@@ -6,7 +6,7 @@ You are not designated to produce a `completion-output` block: this node's outpu
 Cover content by priority:
 
 - **Core information (always secure it first)**: build and deployment — the built artifact/package name (dependency package name, Docker image name, installer file name), the environment it was deployed to (environment name plus access address/namespace/target location), and the change scope (extremely brief — one or two lines, no detail). When predecessor outputs (especially those of CI/CD nodes) already contain build/deployment facts, carry that information forward into your block even if not performed by your own node; if this deliverable involves no build or deployment, state that explicitly in one line so downstream can tell "genuinely none" apart from "omitted by mistake".
-- Secondary details (add only when space allows, never at the cost of core information): test pointers and caveats for downstream, self-test conclusions and known limitations, environment/data/accounts downstream execution needs, verification URL or branch.
+- Secondary details (optional, one or two lines at most, never at the cost of core information): test pointers, environment/data downstream needs, verification URL.
 - Keep the body within 2,000 characters; overlong content makes the completion request rejected as a whole and the work item cannot be marked done. Write detailed execution logs or bulky material into workspace files and keep only file path references (inline code format) in the block.
 
 {% if designation == "final" %}

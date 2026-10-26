@@ -3306,6 +3306,13 @@ export const browserApi: RuntimeApi = {
   subscribeRemoteSourceSettingsUpdates() {
     return Promise.resolve(() => {});
   },
+  subscribeUpstreamPullEvents() {
+    // 浏览器桩：无 multica 拉取链路，永不产生决策事件。
+    return Promise.resolve(() => {});
+  },
+  decideUpstreamPull(_taskId: string, _nodeId: string, _decision: string, _manualText?: string | null) {
+    return Promise.resolve();
+  },
   workspaceFilePreviewUrl(token, _staticFrame = false) {
     const path = token.replace(/^browser-preview:/u, '');
     return browserSvgDataUrl(browserWorkspaceFiles.get(path) ?? '<svg xmlns="http://www.w3.org/2000/svg"/>');

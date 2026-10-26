@@ -1119,6 +1119,7 @@
       "runtime-offline": "Runtime no está listo. Vuelva a intentarlo en breve.",
       "session-resume-failed": "La reanudación de la sesión falló. Se iniciará una ejecución nueva.",
       "task-not-found": "No se pudo encontrar esta tarea de Multica.",
+      "upstream-pull-not-pending": "Esta obtención ya finalizó; no se necesita elegir.",
       "workspace-already-bound": "Este espacio de trabajo ya está vinculado.",
       "workspace-not-found": "No se pudo encontrar este vínculo de espacio de trabajo."
     },
@@ -3204,6 +3205,17 @@
         "todo": "Pendiente",
         "backlog": "Backlog"
       }
+    },
+    "upstreamPull": {
+      "title": "Entrega del upstream aún no obtenida",
+      "description": "El nodo {{node}} de «{{task}}» aún no ha obtenido la entrega del elemento de trabajo upstream {{issue}}.",
+      "fallbackNote": "Si no se elige en 60 segundos, el sondeo continúa automáticamente.",
+      "retry": "Seguir esperando",
+      "manual": "Proporcionar manualmente",
+      "skip": "Omitir obtención",
+      "manualLabel": "Entrega",
+      "manualPlaceholder": "Información clave como artefactos construidos y entornos de despliegue…",
+      "manualSubmit": "Continuar con esto"
     }
   }
 }

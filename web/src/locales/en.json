@@ -1122,6 +1122,7 @@
       "runtime-offline": "Runtime is not ready. Please try again shortly.",
       "session-resume-failed": "Session resume failed. It will rerun as a new task.",
       "task-not-found": "This multica task could not be found.",
+      "upstream-pull-not-pending": "This pull has already finished; no choice is needed.",
       "workspace-already-bound": "This workspace is already bound.",
       "workspace-not-found": "This workspace binding could not be found."
     },
@@ -3189,6 +3190,17 @@
       "account": {
         "connected": "Connected"
       }
+    },
+    "upstreamPull": {
+      "title": "Upstream deliverable not pulled yet",
+      "description": "Node {{node}} of \"{{task}}\" has not pulled the deliverable handoff from upstream work item {{issue}}.",
+      "fallbackNote": "If no choice is made within 60 seconds, polling resumes automatically.",
+      "retry": "Keep waiting",
+      "manual": "Provide manually",
+      "skip": "Skip pull",
+      "manualLabel": "Deliverable handoff",
+      "manualPlaceholder": "Key facts such as built artifacts and deployed environments…",
+      "manualSubmit": "Continue with this"
     },
     "connection": {
       "title": "Connection address settings",

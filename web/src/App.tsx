@@ -99,6 +99,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { WindowCloseCoordinator } from '@/components/WindowCloseCoordinator';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ReleaseNotesDialog } from '@/components/update/ReleaseNotesDialog';
+import { MulticaUpstreamPullDialog } from '@/components/conversation/MulticaUpstreamPullDialog';
 import { UpdateDialog } from '@/components/update/UpdateDialog';
 import { TitleBarUpdateButton } from '@/components/update/TitleBarUpdateButton';
 import { setUpdateDownloadProgress } from '@/components/update/update-progress-store';
@@ -2561,6 +2562,7 @@ export function App() {
         </AlertDialogContent>
       </AlertDialog>
       {content}
+      <MulticaUpstreamPullDialog />
       <ReleaseNotesDialog
         open={releaseNotesOpen}
         appName={appInfo.appName}

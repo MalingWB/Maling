@@ -2896,6 +2896,22 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证结果**：lib `prompts` remote_task 6/6（direct 契约改写——编排锚点移入 node 契约、direct 负锚点防两套产出规则并存；node 协议三变体 × 双语契约新增）；`app::upstream` + `app::node_executor` + `execution_plan` 过滤 30/30（新增 designation 判定：sink/标记/new-round 边非 sink/Acceptance 4 + resolver 嗅探 1 + `SessionMode::New` 才注入 1；反查函数与其 4 项测试删除后全绿）+ `orchestrator` 动态叶子指定（Acceptance=final / worker=prohibited）1；desktop `multica::` 222/222（新增 vm 按 run_mode 冻结协议 1、改写 `is_workflow_issue_run` 作用域——auto 退出中段上送 1）。clippy 我方改动文件零新增诊断（feishu/api.rs 两处 `unused_io_amount` 为 1.96 工具链 deny-by-default 存量问题，与本改动无关）。
 
+### 12.79 改动七十七：拉取决策点 + 交付说明结构精简（M5-ch，2026-10-26）
+
+**背景**：M5-cf/cg 在内网工作流全链路复测通过后，用户提出两项优化：①拉取节点首拉未命中时一律预算内轮询直至 Timeout（15 分钟）——父任务耗时长时用户只能干等，不灵活；应首拉空值后把控制权交给用户三选一：继续等待拉取 / 手动提供所需信息 / 跳过拉取直接继续后续步骤。②completion-output 结构中构建与部署信息是核心，产出、测试要点等附加信息应一两行带过，不得喧宾夺主。
+
+**方案**：
+- **拉取决策点（桌面侧 resolver 重构，引擎契约零改动——仍是 `resolve(task_id, node_id) -> String` 同步回调）**：
+  - 首拉立即执行：命中 → 快路径照旧；**成功但空值** → 注册决策槽（`MulticaRuntimeState.upstream_pull_decisions`，键 `"{local_run_id}/{node_id}"`，Notify 唤醒，沿用 `issue_output_pushed` 的 run 级内存态定位与 `drop_active_run` 同生命周期前缀清理）+ 发 `gold-band://multica-upstream-pull-pending` 事件，前端全局弹窗三选一；**首拉网络失败不发决策点**（「拉不到」≠「父未产出」），按旧口径预算内重试。
+  - resolve 主循环 `tokio::select!`：决策 notify（manual → 渲染用户文本变体、skip → 渲染跳过变体、retry → 恢复轮询并立即拉取一次）vs 决策窗口 `DECISION_FALLBACK_AFTER`（60s，无人应答自动回落轮询——无人值守语义≈旧口径，不挂死）；轮询期 fetch 命中 → resolved；总预算 15 分钟不变，耗尽仍结构化 Timeout。任意退出路径统一收口：移除槽 + 发 settled 事件（resolved/manual/skipped/timeout）关闭前端弹窗；决策槽在轮询期保留（迟到 manual/skip 仍生效）。
+  - 命令 `decide_upstream_pull`：决策字面量（retry/manual/skip）→ 枚举；manual 强制 trim 非空；锁内写决策取 notify、锁外 notify_one；无槽/无在飞 run/未知字面量 → `multica.upstream-pull-not-pending`（决策迟到竞态兜底，不改槽防手滑毁掉等待中的拉取）。
+  - 前端：App 级 `MulticaUpstreamPullDialog`（纯事件驱动：pending 入队幂等、settled 收口清理、直接关窗=不决策由 60s 回落自愈；多个在飞拉取按到达顺序逐个弹）；模板 `remote_task_upstream_pull.md` 拆三变体（parent/manual/skipped，双语）——manual 明确标注「用户手动提供，非父工作项快照」，skip 带「缺信息如实说明、不要臆测」防线。
+- **交付说明结构精简（协议文本收紧，无逻辑改动）**：`remote_task_{completion,node}_protocol.md` 与交付上传角色正文的次要信息段改为一两行带过且不得挤占核心信息（核心段——构建/部署事实——不动）。
+
+**方案自评审**：过度设计——决策槽是 run 级内存态，复用 `issue_output_pushed` 生命周期口径与 MulticaConnectCancel 的 Notify 先例，无持久化字段/跨层 identity/aggregate；弹窗单组件纯事件驱动，无轮询无全局 store；未引入为单一竞态复制 canonical 数据的机制。性能——快路径（首拉命中）零新增；决策等待期零轮询零请求（旧口径此阶段已在按 15–60s 间隔打请求）；60s 回落保证无人值守带宽行为 ≤ 旧口径；协议文本每区段净减约百字符（首条 prompt 负载下降）。
+
+**验证结果**：lib `prompts` remote_task 6/6（upstream_pull 三变体契约改写：parent/manual/skip 锚点 + manual 不带快照口径负锚点）；desktop `multica::` 228/228（新增：决策槽生命周期 3——注册/决策/取走保留槽、run+node 键隔离、drop_active_run 前缀清理含前缀投影视防；upstream 渲染 manual/skipped × 双语 2 + 决策窗口常量锁 1；错误码断言扩充）；前端 i18n 契约 7/7、locale parity/app-error 18/18、tsc 零错、`web:build` 通过。clippy 我方改动文件零新增诊断。弹窗实机交互需内网真实 multica 工作流验证（本地无法联调，见部署后复测）。
+
 
 ---
 

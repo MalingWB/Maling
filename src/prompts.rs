@@ -728,26 +728,52 @@ mod tests {
 
     #[test]
     fn remote_task_upstream_pull_templates_render_parent_snapshot() {
-        // 上游交付拉取（M5-cf 读侧）：`$upstream.completion-output` 令牌的替换文本。模板需完整
-        // 渲染 parent_status 与 parent_output 两个变量，并锁定阶段性快照口径——父状态可见 +
-        // 未完成时是阶段性快照可能被覆盖 + 按当前值执行并在结论注明版本口径。两语言均锁定。
-        let ctx = json!({
+        // 上游交付拉取（M5-cf 读侧；M5-ch 三变体）：`$upstream.completion-output` 令牌的替换
+        // 文本。parent 变体完整渲染 parent_status 与 parent_output 两个变量，并锁定阶段性快照
+        // 口径——父状态可见 + 未完成时是阶段性快照可能被覆盖 + 按当前值执行并在结论注明版本
+        // 口径。manual（用户手动提供，非父快照）与 skipped（跳过 + 不臆测缺失信息）为 M5-ch
+        // 决策点变体。两语言均锁定。
+        let parent_ctx = json!({
+            "source": "parent",
             "parent_status": "in_progress",
             "parent_output": "包名：gold-band_0.19.0_x64.msi；部署环境：内网测试环境 http://t.example.com"
         });
-        let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.zh_cn, ctx.clone());
+        let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.zh_cn, parent_ctx.clone());
         assert!(zh.contains("in_progress"));
         assert!(zh.contains("gold-band_0.19.0_x64.msi"));
         assert!(zh.contains("阶段性快照"));
         assert!(zh.contains("按当前值执行"));
         assert!(zh.contains("版本口径"));
 
-        let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.en, ctx);
+        let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.en, parent_ctx);
         assert!(en.contains("in_progress"));
         assert!(en.contains("gold-band_0.19.0_x64.msi"));
         assert!(en.contains("staged snapshot"));
         assert!(en.contains("execute against the current value"));
         assert!(en.contains("version basis"));
+
+        // manual：内容插值 + 标注「用户手动提供，非父工作项快照」。
+        let manual_ctx = json!({
+            "source": "manual",
+            "content": "包名：gold-band_0.19.0_x64.msi；部署环境：内网测试环境 http://t.example.com"
+        });
+        let zh_manual = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.zh_cn, manual_ctx.clone());
+        assert!(zh_manual.contains("手动提供"));
+        assert!(zh_manual.contains("gold-band_0.19.0_x64.msi"));
+        assert!(!zh_manual.contains("阶段性快照"), "manual 变体不带父快照口径");
+        let en_manual = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.en, manual_ctx);
+        assert!(en_manual.contains("provided manually by the user"));
+        assert!(en_manual.contains("gold-band_0.19.0_x64.msi"));
+        assert!(!en_manual.contains("staged snapshot"), "manual variant carries no snapshot caveat");
+
+        // skipped：跳过说明 + 「不要臆测」防线（缺信息时如实说明而非编造）。
+        let skip_ctx = json!({ "source": "skipped" });
+        let zh_skip = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.zh_cn, skip_ctx.clone());
+        assert!(zh_skip.contains("跳过"));
+        assert!(zh_skip.contains("不要臆测"));
+        let en_skip = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.en, skip_ctx);
+        assert!(en_skip.contains("skipped by the user"));
+        assert!(en_skip.contains("instead of guessing"));
     }
 
     #[test]

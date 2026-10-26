@@ -1,14 +1,22 @@
-//! `$upstream.completion-output` 令牌的桌面侧解析器（M5-cf 拉取链路）与完成输出协议区段
-//! 解析器（M5-cg 产出侧门禁的渲染端）。
+//! `$upstream.completion-output` 令牌的桌面侧解析器（M5-cf 拉取链路，M5-ch 决策点）与完成
+//! 输出协议区段解析器（M5-cg 产出侧门禁的渲染端）。
 //!
 //! # 上游拉取
 //!
 //! 链路：本地任务 → 在飞 multica 映射（workspace + 自身 issue）→ `GET /api/issues/{self}`
-//! 解析 `parent_issue_id` → 有限退避轮询 `GET /api/issues/{parent}` 直至 `completion_output`
-//! 非空（阶段性快照——父未 done 也可得，内网确认 2026-10-24：字段非空即下发、PUT 无状态
-//! 门槛）→ 按当前界面语言渲染「上游交付说明 + 父状态行」模板。渲染结果由引擎注入首条
-//! prompt 的隐式隐藏区段（「上游交付说明」），正文中的令牌随之移除（AGENTS.md system/user
-//! prompt 划分：随执行变化的交付数据属 user prompt 区，不内联进 system prompt 角色正文）。
+//! 解析 `parent_issue_id` → `GET /api/issues/{parent}`：
+//!
+//! - **首拉立即执行**：父 `completion_output` 非空即命中（阶段性快照——父未 done 也可得，
+//!   内网确认 2026-10-24：字段非空即下发、PUT 无状态门槛）。
+//! - **首拉成功但为空（M5-ch 决策点）**：不再直接轮询满预算，发 pending 事件把控制权交给
+//!   用户三选一——继续等待（恢复轮询）/ 手动提供交付说明 / 跳过拉取直接继续。60 秒无人
+//!   应答自动回落轮询（无人值守语义≈旧口径，不挂死）；总预算（15 分钟）不变，耗尽仍结构化
+//!   Timeout。首拉**网络失败**不走决策点（语义是「拉不到」不是「父未产出」），按旧口径
+//!   预算内重试。
+//! - 命中后按当前界面语言渲染「上游交付说明」模板（parent / manual / skipped 三变体）。
+//!   渲染结果由引擎注入首条 prompt 的隐式隐藏区段（「上游交付说明」），正文中的令牌随之
+//!   移除（AGENTS.md system/user prompt 划分：随执行变化的交付数据属 user prompt 区，不内联
+//!   进 system prompt 角色正文）。
 //!
 //! 引擎在 run 专用线程同步调用（`App::resolve_upstream_output`）；本侧经
 //! `tauri::async_runtime::block_on` 桥到异步客户端——阻塞上限 = 轮询总预算（15 分钟）。
@@ -28,16 +36,20 @@ use gold_band::app::upstream::{
     CompletionProtocolDesignation, CompletionProtocolSectionResolver, UpstreamOutputResolver,
     UpstreamResolveError,
 };
+use gold_band::config::DesktopLanguage;
 use gold_band::prompts::{
     RUNTIME_REMOTE_TASK_NODE_PROTOCOL, RUNTIME_REMOTE_TASK_UPSTREAM_PULL, prompt_by_language,
     render,
 };
 use gold_band::provider::PromptHiddenSection;
+use serde::Serialize;
 use serde_json::json;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tracing::{info, warn};
 
 use crate::multica::bridge::{desktop_context, multica_client, shared_multica_state};
+use crate::multica::client::IssueDetail;
+use crate::multica::state::{ActiveRemoteRun, SharedMulticaState, UpstreamPullDecision};
 
 /// 有限退避轮询参数（用户决策 2026-10-24：有限退避轮询）：15s 起、×1.5 退避、间隔上限
 /// 60s、总预算 15 分钟。集中定义为模块常量（AGENTS：业务常量集中定义）。
@@ -45,6 +57,18 @@ const POLL_INITIAL_INTERVAL: Duration = Duration::from_secs(15);
 const POLL_MAX_INTERVAL: Duration = Duration::from_secs(60);
 const POLL_BACKOFF_FACTOR: f32 = 1.5;
 const POLL_BUDGET: Duration = Duration::from_secs(15 * 60);
+
+/// 决策点等待窗口（M5-ch）：首拉空值后等用户三选一的时长；窗口内无人应答自动回落轮询
+/// （无人值守语义≈旧口径——不挂死、终态仍由总预算收口）。
+const DECISION_FALLBACK_AFTER: Duration = Duration::from_secs(60);
+
+/// 首拉空值、等待用户决策时发的前端事件（远程任务拉取决策弹窗）。
+pub(crate) const MULTICA_UPSTREAM_PULL_PENDING_EVENT: &str = "gold-band://multica-upstream-pull-pending";
+
+/// 决策点收口（任意 resolve 退出路径）时发的前端事件：outcome = resolved / manual /
+/// skipped / timeout，前端据此关闭决策弹窗。
+pub(crate) const MULTICA_UPSTREAM_PULL_SETTLED_EVENT: &str =
+    "gold-band://multica-upstream-pull-settled";
 
 /// multica 域解析器（main.rs setup 装入 DesktopState，`app()` 组装时挂到引擎 App）。
 pub(crate) struct MulticaUpstreamResolver {
@@ -63,11 +87,10 @@ impl MulticaUpstreamResolver {
             ));
         };
         // 任务级反查：一个本地任务同一时刻至多一个在飞 remote run（claim 单飞）。
-        let Some(run) = shared
+        let Some((_, run)) = shared
             .lock()
             .expect("multica state lock")
             .find_active_run_by_task(task_id)
-            .map(|(_, run)| run)
         else {
             return Err(UpstreamResolveError::Network(format!(
                 "no in-flight multica mapping for local task {task_id}"
@@ -110,18 +133,122 @@ impl MulticaUpstreamResolver {
             return Err(UpstreamResolveError::NoParentIssue);
         };
 
-        // 有限退避轮询：值存在即返回（不比较版本——「拿到当前快照」即目的）。
-        let mut interval = POLL_INITIAL_INTERVAL;
         let started = std::time::Instant::now();
+        // 首拉立即执行。网络失败 ≠ 空值：不发决策点（「拉不到」不是「父未产出」），直接进
+        // 预算内重试；成功且非空则快路径返回。
+        let mut polling;
+        match client.get_issue(&workspace_id, &parent).await {
+            Ok(detail) => {
+                if let Some(output) = parent_output(&detail) {
+                    self.settle_pull(&shared, &run, node_id, &parent, "resolved");
+                    info!(
+                        task = task_id,
+                        node = node_id,
+                        issue = %parent,
+                        "multica upstream pull resolved on first fetch"
+                    );
+                    return render_upstream_section(
+                        context.config.desktop_language,
+                        UpstreamSectionSource::Parent {
+                            status: &detail.status,
+                            output,
+                        },
+                    );
+                }
+                polling = false;
+            }
+            Err(e) => {
+                warn!(
+                    task = task_id,
+                    node = node_id,
+                    issue = %parent,
+                    %e,
+                    "multica upstream first fetch failed (will retry within budget)"
+                );
+                polling = true;
+            }
+        }
+
+        // M5-ch 决策点：首拉成功但为空——注册决策槽、通知前端，select 等用户三选一或 60s 回落。
+        let notify = shared
+            .lock()
+            .expect("multica state lock")
+            .register_upstream_pull(&run.local_run_id, node_id);
+        let _ = self.handle.emit(
+            MULTICA_UPSTREAM_PULL_PENDING_EVENT,
+            UpstreamPullEventVm::pending(&run, node_id, &parent),
+        );
+
+        let mut interval = POLL_INITIAL_INTERVAL;
         loop {
+            let wait = if polling { interval } else { DECISION_FALLBACK_AFTER };
+            if started.elapsed() + wait >= POLL_BUDGET {
+                self.settle_pull(&shared, &run, node_id, &parent, "timeout");
+                warn!(
+                    task = task_id,
+                    node = node_id,
+                    issue = %parent,
+                    budget_secs = POLL_BUDGET.as_secs(),
+                    "multica upstream pull timed out"
+                );
+                return Err(UpstreamResolveError::Timeout);
+            }
+            tokio::select! {
+                _ = notify.notified() => {
+                    let decision = shared
+                        .lock()
+                        .expect("multica state lock")
+                        .take_upstream_pull_decision(&run.local_run_id, node_id);
+                    match decision {
+                        Some(UpstreamPullDecision::Manual(text)) => {
+                            self.settle_pull(&shared, &run, node_id, &parent, "manual");
+                            info!(
+                                task = task_id,
+                                node = node_id,
+                                issue = %parent,
+                                "multica upstream pull decided: manual input"
+                            );
+                            return render_upstream_section(
+                                context.config.desktop_language,
+                                UpstreamSectionSource::Manual(&text),
+                            );
+                        }
+                        Some(UpstreamPullDecision::Skip) => {
+                            self.settle_pull(&shared, &run, node_id, &parent, "skipped");
+                            info!(
+                                task = task_id,
+                                node = node_id,
+                                issue = %parent,
+                                "multica upstream pull decided: skip"
+                            );
+                            return render_upstream_section(
+                                context.config.desktop_language,
+                                UpstreamSectionSource::Skipped,
+                            );
+                        }
+                        // 继续等待：恢复轮询（本次迭代末立即拉取一次）。
+                        Some(UpstreamPullDecision::Retry) | None => {
+                            polling = true;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(wait) => {
+                    if !polling {
+                        // 60s 无人应答：自动回落轮询（决策弹窗保留，期间决策仍生效）。
+                        polling = true;
+                        info!(
+                            task = task_id,
+                            node = node_id,
+                            issue = %parent,
+                            "multica upstream pull decision window elapsed, falling back to polling"
+                        );
+                    }
+                }
+            }
+            debug_assert!(polling, "decision branches either return or resume polling");
             match client.get_issue(&workspace_id, &parent).await {
                 Ok(detail) => {
-                    if let Some(output) = detail
-                        .completion_output
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                    {
+                    if let Some(output) = parent_output(&detail) {
                         info!(
                             task = task_id,
                             node = node_id,
@@ -129,10 +256,13 @@ impl MulticaUpstreamResolver {
                             waited_secs = started.elapsed().as_secs(),
                             "multica upstream pull resolved"
                         );
-                        return render_upstream_block(
+                        self.settle_pull(&shared, &run, node_id, &parent, "resolved");
+                        return render_upstream_section(
                             context.config.desktop_language,
-                            &detail.status,
-                            output,
+                            UpstreamSectionSource::Parent {
+                                status: &detail.status,
+                                output,
+                            },
                         );
                     }
                 }
@@ -145,28 +275,78 @@ impl MulticaUpstreamResolver {
                     "multica upstream poll fetch failed (will retry within budget)"
                 ),
             }
-            if started.elapsed() + interval >= POLL_BUDGET {
-                warn!(
-                    task = task_id,
-                    node = node_id,
-                    issue = %parent,
-                    budget_secs = POLL_BUDGET.as_secs(),
-                    "multica upstream pull timed out"
-                );
-                return Err(UpstreamResolveError::Timeout);
-            }
-            tokio::time::sleep(interval).await;
             interval = std::cmp::min(
                 interval.mul_f32(POLL_BACKOFF_FACTOR),
                 POLL_MAX_INTERVAL,
             );
         }
     }
+
+    /// 决策点收口（任意退出路径统一调用）：移除决策槽 + 发 settled 事件关闭前端弹窗。
+    fn settle_pull(
+        &self,
+        shared: &SharedMulticaState,
+        run: &ActiveRemoteRun,
+        node_id: &str,
+        parent: &str,
+        outcome: &'static str,
+    ) {
+        shared
+            .lock()
+            .expect("multica state lock")
+            .drop_upstream_pull(&run.local_run_id, node_id);
+        let _ = self.handle.emit(
+            MULTICA_UPSTREAM_PULL_SETTLED_EVENT,
+            UpstreamPullEventVm::settled(run, node_id, parent, outcome),
+        );
+    }
 }
 
 impl UpstreamOutputResolver for MulticaUpstreamResolver {
     fn resolve_upstream_output(&self, task_id: &str, node_id: &str) -> Result<String, UpstreamResolveError> {
         tauri::async_runtime::block_on(self.resolve(task_id, node_id))
+    }
+}
+
+/// 首拉/轮询命中的父交付输出（trim 非空才算产出；值存在即返回，不比较版本——「拿到当前
+/// 快照」即目的）。
+fn parent_output(detail: &IssueDetail) -> Option<&str> {
+    detail
+        .completion_output
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// 前端拉取决策事件载荷（pending 与 settled 同形：pending 的 `outcome` 为 null）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UpstreamPullEventVm {
+    task_id: String,
+    run_id: String,
+    node_id: String,
+    parent_issue_id: String,
+    task_title: Option<String>,
+    outcome: Option<&'static str>,
+}
+
+impl UpstreamPullEventVm {
+    fn pending(run: &ActiveRemoteRun, node_id: &str, parent: &str) -> Self {
+        Self {
+            task_id: run.local_task_id.clone(),
+            run_id: run.local_run_id.clone(),
+            node_id: node_id.to_string(),
+            parent_issue_id: parent.to_string(),
+            task_title: run.title.clone(),
+            outcome: None,
+        }
+    }
+
+    fn settled(run: &ActiveRemoteRun, node_id: &str, parent: &str, outcome: &'static str) -> Self {
+        Self {
+            outcome: Some(outcome),
+            ..Self::pending(run, node_id, parent)
+        }
     }
 }
 
@@ -216,19 +396,30 @@ impl CompletionProtocolSectionResolver for MulticaCompletionProtocolResolver {
     }
 }
 
-/// 渲染替换文本（复用 remote_task_* 模板管线；语言取当前界面语言，角色缺语言降级英文）。
-fn render_upstream_block(
-    language: gold_band::config::DesktopLanguage,
-    parent_status: &str,
-    parent_output: &str,
+/// 上游交付说明的来源（M5-ch 三变体：父快照 / 用户手动提供 / 跳过）。
+enum UpstreamSectionSource<'a> {
+    Parent { status: &'a str, output: &'a str },
+    Manual(&'a str),
+    Skipped,
+}
+
+/// 渲染上游交付说明区段正文（复用 remote_task_* 模板管线；语言取当前界面语言，角色缺语言
+/// 降级英文）。
+fn render_upstream_section(
+    language: DesktopLanguage,
+    source: UpstreamSectionSource<'_>,
 ) -> Result<String, UpstreamResolveError> {
     let template = prompt_by_language(language, RUNTIME_REMOTE_TASK_UPSTREAM_PULL);
-    render(
-        template,
-        json!({ "parent_status": parent_status, "parent_output": parent_output }),
-    )
-    .map(|rendered| rendered.trim().to_string())
-    .map_err(|e| UpstreamResolveError::Network(format!("upstream pull template render: {e}")))
+    let context = match source {
+        UpstreamSectionSource::Parent { status, output } => {
+            json!({ "source": "parent", "parent_status": status, "parent_output": output })
+        }
+        UpstreamSectionSource::Manual(text) => json!({ "source": "manual", "content": text }),
+        UpstreamSectionSource::Skipped => json!({ "source": "skipped" }),
+    };
+    render(template, context)
+        .map(|rendered| rendered.trim().to_string())
+        .map_err(|e| UpstreamResolveError::Network(format!("upstream pull template render: {e}")))
 }
 
 #[cfg(test)]
@@ -248,15 +439,22 @@ mod tests {
     }
 
     #[test]
-    fn render_upstream_block_interpolates_status_and_output() {
-        for language in [
-            gold_band::config::DesktopLanguage::ZhCn,
-            gold_band::config::DesktopLanguage::En,
-        ] {
-            let block = render_upstream_block(
+    fn decision_fallback_window_is_bounded_and_within_budget() {
+        // M5-ch：决策等待窗口必须远小于总预算（60s << 15min）——无人值守时回落轮询仍留足
+        // 轮询预算；窗口 >= 预算会让决策点变相吞掉全部预算。
+        assert_eq!(DECISION_FALLBACK_AFTER, Duration::from_secs(60));
+        assert!(DECISION_FALLBACK_AFTER < POLL_BUDGET);
+    }
+
+    #[test]
+    fn render_upstream_section_interpolates_status_and_output() {
+        for language in [DesktopLanguage::ZhCn, DesktopLanguage::En] {
+            let block = render_upstream_section(
                 language,
-                "in_progress",
-                "包名：gold-band_0.19.0_x64.msi\n部署环境：内网测试环境 http://t.example.com",
+                UpstreamSectionSource::Parent {
+                    status: "in_progress",
+                    output: "包名：gold-band_0.19.0_x64.msi\n部署环境：内网测试环境 http://t.example.com",
+                },
             )
             .expect("render upstream block");
             assert!(block.contains("in_progress"), "status visible in {block}");
@@ -272,24 +470,64 @@ mod tests {
     }
 
     #[test]
-    fn render_upstream_block_locks_staged_snapshot_caveat_both_languages() {
+    fn render_upstream_section_locks_staged_snapshot_caveat_both_languages() {
         // 阶段性快照口径是安全阀：拉到的值可能是父未完成时的中间态，执行方必须知道会被覆盖。
-        let zh = render_upstream_block(
-            gold_band::config::DesktopLanguage::ZhCn,
-            "done",
-            "最终交付",
+        let zh = render_upstream_section(
+            DesktopLanguage::ZhCn,
+            UpstreamSectionSource::Parent {
+                status: "done",
+                output: "最终交付",
+            },
         )
         .expect("zh render");
         assert!(zh.contains("阶段性快照"));
         assert!(zh.contains("done"));
 
-        let en = render_upstream_block(
-            gold_band::config::DesktopLanguage::En,
-            "done",
-            "final deliverable",
+        let en = render_upstream_section(
+            DesktopLanguage::En,
+            UpstreamSectionSource::Parent {
+                status: "done",
+                output: "final deliverable",
+            },
         )
         .expect("en render");
         assert!(en.contains("staged snapshot"));
         assert!(en.contains("done"));
+    }
+
+    #[test]
+    fn render_upstream_section_manual_marks_user_provided_source() {
+        // manual：内容插值 + 标注用户手动提供（非父快照），不带阶段性快照口径。
+        let zh = render_upstream_section(
+            DesktopLanguage::ZhCn,
+            UpstreamSectionSource::Manual("包名：gold-band_0.19.0_x64.msi"),
+        )
+        .expect("zh manual render");
+        assert!(zh.contains("手动提供"));
+        assert!(zh.contains("gold-band_0.19.0_x64.msi"));
+        assert!(!zh.contains("阶段性快照"), "manual must not carry snapshot caveat");
+
+        let en = render_upstream_section(
+            DesktopLanguage::En,
+            UpstreamSectionSource::Manual("package: gold-band_0.19.0_x64.msi"),
+        )
+        .expect("en manual render");
+        assert!(en.contains("provided manually by the user"));
+        assert!(en.contains("gold-band_0.19.0_x64.msi"));
+        assert!(!en.contains("staged snapshot"), "manual must not carry snapshot caveat");
+    }
+
+    #[test]
+    fn render_upstream_section_skipped_forbids_guessing() {
+        // skipped：跳过说明 + 「不要臆测」防线（缺信息时如实说明而非编造）。
+        let zh = render_upstream_section(DesktopLanguage::ZhCn, UpstreamSectionSource::Skipped)
+            .expect("zh skip render");
+        assert!(zh.contains("跳过"));
+        assert!(zh.contains("不要臆测"));
+
+        let en = render_upstream_section(DesktopLanguage::En, UpstreamSectionSource::Skipped)
+            .expect("en skip render");
+        assert!(en.contains("skipped by the user"));
+        assert!(en.contains("instead of guessing"));
     }
 }

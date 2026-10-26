@@ -1119,6 +1119,7 @@
       "runtime-offline": "ランタイムの準備ができていません。しばらくしてからもう一度お試しください。",
       "session-resume-failed": "セッションの再開に失敗しました。新たな実行が開始されます。",
       "task-not-found": "この Multica タスクが見つかりませんでした。",
+      "upstream-pull-not-pending": "この取得はすでに終了しました。選択は不要です。",
       "workspace-already-bound": "このワークスペースはすでにバインドされています。",
       "workspace-not-found": "このワークスペース バインディングが見つかりませんでした。"
     },
@@ -3204,6 +3205,17 @@
         "todo": "未着手",
         "backlog": "バックログ"
       }
+    },
+    "upstreamPull": {
+      "title": "上流の成果物説明を未取得",
+      "description": "「{{task}}」の {{node}} ノードは、上流ワークアイテム {{issue}} の成果物説明をまだ取得していません。",
+      "fallbackNote": "60 秒以内に選択しない場合、自動的にポーリングを再開します。",
+      "retry": "取得を待機",
+      "manual": "手動で入力",
+      "skip": "取得をスキップ",
+      "manualLabel": "成果物説明",
+      "manualPlaceholder": "ビルド成果物やデプロイ環境などの重要情報…",
+      "manualSubmit": "この内容で続行"
     }
   }
 }

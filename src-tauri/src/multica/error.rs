@@ -43,6 +43,10 @@ pub enum MulticaError {
     #[allow(dead_code)]
     #[error("multica session resume failed, will rerun")]
     SessionResumeFailed,
+    /// 上游拉取决策无对应等待槽（M5-ch）：决策迟到（resolve 已收口或 run 已终态）。
+    /// 前端通常已随 settled 事件关闭弹窗，此错误用于兜底（如弹窗与收口竞态的迟到提交）。
+    #[error("multica upstream pull decision has no pending slot")]
+    UpstreamPullNotPending,
 }
 
 impl MulticaError {
@@ -61,6 +65,7 @@ impl MulticaError {
             Self::ConnectCancelled => "multica.connect-cancelled",
             Self::AttachmentStageFailed(_) => "multica.attachment-stage-failed",
             Self::SessionResumeFailed => "multica.session-resume-failed",
+            Self::UpstreamPullNotPending => "multica.upstream-pull-not-pending",
         }
     }
 
@@ -119,6 +124,10 @@ mod tests {
         assert_eq!(
             MulticaError::SessionResumeFailed.code(),
             "multica.session-resume-failed"
+        );
+        assert_eq!(
+            MulticaError::UpstreamPullNotPending.code(),
+            "multica.upstream-pull-not-pending"
         );
     }
 

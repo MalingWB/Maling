@@ -78,6 +78,8 @@ import type {
   RemoteSkillListItemVm,
   RemoteSkillPullReportVm,
   MulticaWorkspaceRefVm,
+  MulticaUpstreamPullEventVm,
+  UpstreamPullDecisionKind,
   RemoteConversationSidebarVm,
   RemoteTaskVm,
   WorkflowDsl,
@@ -665,6 +667,11 @@ export interface RuntimeApi {
   subscribeWorkspaceFileChanges?(listener: (event: WorkspaceFileChangedEventVm) => void): Promise<() => void>;
   subscribeRemoteTaskUpdates?(listener: () => void): Promise<() => void>;
   subscribeRemoteSourceSettingsUpdates?(listener: () => void): Promise<() => void>;
+  /// multica 上游拉取决策点（M5-ch）：pending（outcome=null，弹决策）与 settled（收口，关弹窗）
+  /// 合流为同一事件流；仅桌面端实现。
+  subscribeUpstreamPullEvents?(listener: (event: MulticaUpstreamPullEventVm) => void): Promise<() => void>;
+  /// 提交拉取决策（三选一）；manual 必须带非空 manualText。决策迟到（拉取已收口）→ 结构化错误。
+  decideUpstreamPull(taskId: string, nodeId: string, decision: UpstreamPullDecisionKind, manualText?: string | null): Promise<void>;
   workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
   openExternalUrl(url: string): Promise<void>;
   browserCreatePage(input: BrowserCreatePageInput): Promise<BrowserPageNativeVm>;
