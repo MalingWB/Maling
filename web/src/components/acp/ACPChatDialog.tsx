@@ -2914,7 +2914,7 @@ export function ACPChatDialog(
     runtimeActive: runtimeActiveFromContext,
     sessionId: baseSession?.sessionId,
     sessionEstablished,
-    baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
+    baseSessionReady: hasAcpSessionCanonicalContentForInitialShell(baseSession),
     loadedEventCount: loadedEvents.length,
   });
   const sessionInitializationFailed = isAcpSessionInitializationFailed({
@@ -2925,7 +2925,7 @@ export function ACPChatDialog(
     runtimeErrorMessage: runtimeComposerContext?.runtimeError,
     sessionId: baseSession?.sessionId,
     sessionEstablished,
-    baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
+    baseSessionReady: hasAcpSessionCanonicalContentForInitialShell(baseSession),
     loadedEventCount: loadedEvents.length,
   });
   const composerLatestEvent = timeline.at(-1) ?? null;
@@ -7514,12 +7514,15 @@ function AcpErrorBanner({ reason, title, onDismiss }: {
 }) {
   const { t } = useTranslation();
   return (
-    <div className="flex shrink-0 items-start gap-3 border-b border-destructive/20 bg-destructive/5 px-5 py-3 text-sm">
+    <div
+      role="alert"
+      className="flex shrink-0 items-start gap-3 border-b border-destructive/20 bg-destructive/5 px-5 py-3 text-sm"
+    >
       <div className="min-w-0 flex-1">
-        <span className="font-semibold text-destructive">
+        <div className="font-semibold text-destructive">
           {title ?? t("acp.sessionFailed")}
-        </span>
-        <span className="ml-2 whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">{reason}</span>
+        </div>
+        <div className="mt-1 whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">{reason}</div>
       </div>
       {onDismiss ? (
         <Tooltip>
@@ -12387,7 +12390,19 @@ function isAcpSessionCanonicalHistoryReady(session: AcpSessionVm) {
   return isSessionIdleStatus(session.status) && session.events.length > 0;
 }
 
-function isAcpSessionReadyForInitialDisplay(session: AcpSessionVm | null | undefined) {
+function isAcpSessionCanonicalEmptyReady(session: AcpSessionVm) {
+  if (session.events.length > 0 || session.eventPage.total > 0) return false;
+  if (isSessionActiveStatus(session.status)) return false;
+  return (
+    isSessionIdleStatus(session.status) ||
+    isSessionTerminalStatus(session.status) ||
+    Boolean(session.turnError)
+  );
+}
+
+function hasAcpSessionCanonicalContentForInitialShell(
+  session: AcpSessionVm | null | undefined,
+) {
   return Boolean(
     session &&
     (
@@ -12396,6 +12411,16 @@ function isAcpSessionReadyForInitialDisplay(session: AcpSessionVm | null | undef
       isAcpSessionDisplayableDuringInitialLoad(session) ||
       isAcpSessionCanonicalHistoryReady(session) ||
       (isSessionTerminalStatus(session.status) && session.events.length > 0)
+    ),
+  );
+}
+
+function isAcpSessionReadyForInitialDisplay(session: AcpSessionVm | null | undefined) {
+  return Boolean(
+    session &&
+    (
+      hasAcpSessionCanonicalContentForInitialShell(session) ||
+      isAcpSessionCanonicalEmptyReady(session)
     ),
   );
 }
@@ -12592,6 +12617,7 @@ export {
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,
+  hasAcpSessionCanonicalContentForInitialShell,
   isAcpSessionReadyForInitialDisplay,
 };
 

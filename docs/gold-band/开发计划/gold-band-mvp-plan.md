@@ -1,5 +1,13 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-10-26 Direct 未物化失败投影第一阶段
+
+- 提示修正：`acp.session-restore-reference-missing` 的本地化 key 原本错误放在 `errors.conversation.*`，导致失败横幅只显示英文 diagnostic。七语言文案已迁移到 `errors.acp.*`；简体中文明确解释 Provider 会话引用缺失、原会话无法恢复，并引导新建会话后重新发送。横幅标题与原因改为上下分层并使用 alert 语义。错误映射与 DOM 最小用例先红后绿，相关 5 个测试文件 265 项、Web 生产构建、diff 校验通过；内置 iab 在 787px 视口确认无横向溢出。browser fixture 没有精确错误码，精确文案由 DOM 用例验收。不新增错误码、状态或请求，性能影响为常数级。
+- 根因：Attempt 详情查询把 unavailable、无 `sessionId`、空 timeline 的快照统一过滤为不存在，前端同时以“出现 canonical 消息”作为查询成功条件；因此已持久化的 terminal lifecycle / `turnError` 无法进入 UI，最终等待约 32 秒后才显示通用失败。该问题属于既有 canonical lifecycle、分页与 shell 分层设计的查询投影实现不完整，不需要新建状态机。
+- 实现：后端只继续过滤纯 runtime-control placeholder；存在非 `none` 的 `latestTurnStatus` 或合法 `turnError` 时返回 Attempt VM。前端将查询 readiness 与 canonical 内容物化资格拆开：settled 且 `eventPage.total=0` 的空响应进入 `ready-empty`，active 空响应继续等待，`eventPage.total>0` 但当前页为空继续分页；Workflow/AUTO 初始化中断/失败仍由 canonical 内容 helper 判定，不被空失败 VM 覆盖。本阶段不修改 create fence、identity、`session/new`、Prompt、snapshot schemaVersion 或恢复按钮。
+- 红绿证据：Rust 最小测试在原实现上因 VM 为 `None` 失败，Web 空历史/失败 readiness 用例在原实现上返回 false；复核新增“active + 旧 `turnError` 仍等待”的最小用例，原实现返回 true。修复后 Rust `acp_session_vm_` 过滤用例 5 项、ACP 相关 5 个 Web 文件 300 项通过；DOM 固定未物化失败首个响应立即显示错误且不再 readiness 重试。`cargo fmt --all -- --check`、桌面端 tests 编译、Web 生产构建和 diff 校验通过；内置 iab 验证 Direct settled、active、Workflow 暂停及 720px 响应式，精确空失败场景未打包真实 EXE。
+- 过度设计与性能评审：复用既有 snapshot lifecycle、Attempt VM、分页 `eventPage.total`、readiness 重试和 shell 判定，只增加常数级字段判断与两个职责明确的前端 helper；不新增 DTO、持久字段、状态机、缓存、队列、依赖或全量扫描。失败场景会提前结束重复查询，正常分页 I/O、事件窗口上限和 React 订阅范围不变，无需新增 benchmark。
+
 ## 2026-10-19 GitHub Release 统一构建 WB 跨平台安装包
 
 - 根因：GitHub 两条发布 workflow 固定使用 default，而 WB 渠道又将 `bundleTargets` 限定为 Windows NSIS，混合了产品渠道与打包平台。用户要求保留跨平台 GitHub Release，全部产出 WB/MALING 包。
