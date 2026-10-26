@@ -3,9 +3,11 @@
 //! 订阅 `RuntimeLifecycleBus`，把本地会话 lifecycle 事件转译为 multica 终态上报：
 //! - `NodeCompleted`：读 `worker-ref.json` 采 ACP session_id → `pin_task_session` + 落
 //!   `remote_task_conversations`（断点续跑依据）；session 变更才写（避免每节点重复 pin）。
-//!   **M5-cf：节点成功边界兼作阶段性交付上送触发**（`push_workflow_completion_snapshot`）——
-//!   工作流/自动编排图的节点回合只产生本事件（`AcpTurnFinished` 是会话 prompt 层事件，图节点
-//!   不经过），中段上送必须挂这里。
+//!   **M5-cf/M5-cg：节点成功边界兼作阶段性交付上送触发**（`push_workflow_completion_snapshot`，
+//!   **仅 workflow 模式**）——工作流图的节点回合只产生本事件（`AcpTurnFinished` 是会话 prompt
+//!   层事件，图节点不经过），中段上送必须挂这里。产出资格已在装配侧按节点身份门禁
+//!   （sink / 标记节点才收到产出协议），上送随产出走、无完成边界反查门控；auto 的最终交付
+//!   由 `/complete` 终态路径携带（无中段推送）。
 //! - `RunCompleted`：按 `RunOutcome` 穷举上报（Success→complete（complete 送达后再用 PAT 把关联
 //!   issue 流转到 done，接入方案 D2）+ completed 历史记 `completed` / Failure→fail + 历史记 `failed`
 //!   / Killed→fail(timeout)，agent 真死；cancel 路径皆经 run_pause→Paused 从不产生 Killed，故无需
@@ -153,16 +155,14 @@ fn is_gated_direct_issue_run(run: &ActiveRemoteRun) -> bool {
             .is_some_and(|s| !s.trim().is_empty())
 }
 
-/// M5-cf 阶段性上传作用域（纯函数）：非 direct（workflow / auto 自动编排图）+ issue 关联
-/// 的 run 走节点成功边界即时上送（节点级门控另见 [`node_declares_staged_upload`]）。
-///
-/// 判据与 `decide_run_completion` 的 Passthrough 采集同口径：auto 是发送时的默认模式且
-/// 执行形态就是工作流图（逐节点产生 turn），与显式 workflow 无区别；按字面量只认
-/// "workflow" 会让 auto run 的快照被静默跳过（2026-10-25 内网实测回归）。direct 任务不
-/// 经此通道（完成门控 + 终态补交的既有语义不变）；非 issue 任务无 issue 可写，同样不进。
-/// issue 空/纯空白视同非 issue（与门控判定的过滤惯例一致）。
+/// M5-cf/M5-cg 阶段性上传作用域（纯函数）：**workflow 模式** + issue 关联的 run 走节点成功
+/// 边界即时上送。M5-cg 起 auto 退出中段推送——动态图的「最后一个节点」在叶子启动时不可判定
+/// （图运行时生长），产出侧只能把验收节点指定为收尾产出者，其块随 `/complete` 终态路径整体
+/// 携带，中段逐叶上送会让下游读到无交付语义的中间产物。direct 任务不经此通道（完成门控 +
+/// 终态补交的既有语义不变）；非 issue 任务无 issue 可写，同样不进。issue 空/纯空白视同非
+/// issue（与门控判定的过滤惯例一致）。
 fn is_workflow_issue_run(run: &ActiveRemoteRun) -> bool {
-    run.run_mode != crate::multica::state::REMOTE_RUN_MODE_DIRECT
+    run.run_mode == crate::multica::state::REMOTE_RUN_MODE_WORKFLOW
         && run
             .issue_id
             .as_deref()
@@ -232,7 +232,6 @@ pub fn create_multica_subscriber(
             RuntimeLifecycleEvent::NodeCompleted {
                 task_id,
                 run_id,
-                node_id,
                 attempt_dir,
                 outcome,
                 ..
@@ -250,17 +249,12 @@ pub fn create_multica_subscriber(
                         attempt_dir.clone(),
                     )
                     .await;
-                    // M5-cf：节点成功边界即时上送阶段性快照（非 direct + issue run，且节点
-                    // 声明了交付上传职责；失败/取消节点无交付语义）。先 pin 后推——session
-                    // 采集是断点续跑关键路径，快照次之。
+                    // M5-cf/M5-cg：节点成功边界即时上送阶段性快照（workflow + issue run；
+                    // 失败/取消节点无交付语义）。先 pin 后推——session 采集是断点续跑关键路径，
+                    // 快照次之。产出资格已在装配侧门禁，上送随产出走。
                     if outcome == NODE_COMPLETED_OUTCOME_SUCCESS {
-                        push_workflow_completion_snapshot(
-                            &app_handle,
-                            &run,
-                            &node_id,
-                            Some(&attempt_dir),
-                        )
-                        .await;
+                        push_workflow_completion_snapshot(&app_handle, &run, Some(&attempt_dir))
+                            .await;
                     }
                 });
             }
@@ -669,56 +663,31 @@ async fn handle_turn_completion_gate(
 /// 发射口径：`"SUCCESS"` / `"FAILED"` / `"INVALID"` / `"KILLED"`）。
 const NODE_COMPLETED_OUTCOME_SUCCESS: &str = "SUCCESS";
 
-/// M5-cf 节点门控（语义收紧，2026-10-26）：节点是否声明了交付上传职责。
-///
-/// 判据 = 节点 goal 或 profile 正文携带 `UPSTREAM_UPLOAD_MARKER`（`gold_band::app::upstream`，
-/// 「交付上传」角色正文内置该标记，goal 直写等效；谓词见
-/// `gold_band::app::upstream::declares_staged_upload`）。数据源是
-/// run 启动时落盘的工作流快照（`current_run_workflow`，非 authoring 现值——run 中途编辑不应
-/// 改变已执行节点的语义）；profile 正文取当前 profile 存储（角色正文导入后稳定，运行中编辑
-/// 属边缘场景）。快照不可读 / 节点缺员（AiDynamic 节点无 goal/profile，动态编排 worker 不在
-/// 任务工作流快照里）/ profile 解析失败一律按未声明处理（fail-closed：误上送会让下游拿到
-/// 无交付语义的中间产物，宁缺勿滥）。
-fn node_declares_staged_upload(app: &App, task_id: &str, run_id: &str, node_id: &str) -> bool {
-    let Ok(workflow) = app.current_run_workflow(task_id, run_id) else {
-        return false;
-    };
-    let Some(node) = workflow.nodes.iter().find(|node| node.id() == node_id) else {
-        return false;
-    };
-    let profile_content = node
-        .profile()
-        .and_then(|profile_id| app.profile_show(profile_id).ok())
-        .map(|profile| profile.content);
-    gold_band::app::upstream::declares_staged_upload(node.goal(), profile_content.as_deref())
-}
-
-/// 图节点成功边界的即时上送（M5-cf 中途上传）：阶段性交付不必等工作项完成。
+/// 图节点成功边界的即时上送（M5-cf 中途上传，M5-cg 收窄为 workflow 专属）：阶段性交付
+/// 不必等工作项完成。
 ///
 /// 场景：开发任务工作流的中间节点（如构建部署后挂「交付上传」角色）产出
 /// `completion-output` 块——下游测试任务的拉取节点此刻即可取到，开发/测试工作流并行。
 ///
 /// 触发事件是 **`NodeCompleted`**（节点成功边界）：`AcpTurnFinished` 是会话 prompt 层
-/// 事件（仅 `submit_conversation_prompt_inner` 聊天回合发射），工作流/自动编排的节点回合
+/// 事件（仅 `submit_conversation_prompt_inner` 聊天回合发射），工作流图的节点回合
 /// 不经过该层——M5-cf 初版挂在 `AcpTurnFinished` 上导致中段上送永不触发（2026-10-25
 /// 内网实测：multica 侧零写入，revision 停留在 claim 时刻）。
 ///
-/// **节点门控（M5-cf 语义收紧，2026-10-26）**：仅声明了交付上传职责的节点上送
-/// （[`node_declares_staged_upload`]：goal / profile 正文携带 `UPSTREAM_UPLOAD_MARKER`）。
-/// 收紧前每个成功节点都上送，下游会在任意中间节点读到无交付语义的「交付」；收紧后阶段性
-/// 上送由「交付上传」角色显式声明，收尾交付不受影响（`/complete` 终态路径整体携带最后
-/// 一块）。无标记节点静默跳过（与无块节点同口径，不刷日志）。
+/// **无完成边界门控（M5-cg 产出侧门禁）**：产出资格已在装配时按节点身份判定（sink /
+/// 标记声明节点才收到产出协议，见 `gold_band::app::upstream::workflow_node_designation`），
+/// 此处节点成功 + attempt 有块即上送——判定与模型所见同源，完成边界反查（快照 + graph +
+/// profile 存储三跳）只会引入错位（M5-cf 改动七十四内网两轮回归的根因）。无块节点是常态
+/// （绝大多数节点被指定为 Prohibited），静默跳过防逐节点日志噪音。
 ///
 /// 口径与完成采集一致（[`handoff::attempt_completion_scan`]：attempt 全部 assistant 消息
 /// 倒序最后一块胜——节点按工作流要求以 JSON 裁决收尾、块在裁决之前时也不漏）。值与上次
 /// 上送相同 → 跳过（发送侧去重，锁内比较、PUT 在锁外——网络调用不进临界区）。PUT 走单键
 /// 形态（服务端无状态门槛，内网确认 2026-10-24），失败记 WARN 不重试：完成路径 `/complete`
-/// 仍整体携带 attempt 最后一块（后写胜），本通道失败自愈。无块的节点是常态（绝大多数节点
-/// 不产出交付块），静默跳过防逐节点日志噪音。
+/// 仍整体携带 attempt 最后一块（后写胜），本通道失败自愈。
 async fn push_workflow_completion_snapshot(
     app: &AppHandle,
     run: &ActiveRemoteRun,
-    node_id: &str,
     attempt_dir: Option<&str>,
 ) {
     if !is_workflow_issue_run(run) {
@@ -730,14 +699,6 @@ async fn push_workflow_completion_snapshot(
     let Some(context) = desktop_context(app) else {
         return;
     };
-    if !node_declares_staged_upload(
-        &context.app(),
-        &run.local_task_id,
-        &run.local_run_id,
-        node_id,
-    ) {
-        return;
-    }
     let issue = run
         .issue_id
         .as_deref()
@@ -1571,19 +1532,18 @@ mod tests {
 
     #[test]
     fn is_workflow_issue_run_scopes_mid_workflow_push() {
-        // M5-cf：非 direct（workflow / auto 自动编排图）+ issue 关联 → 节点成功边界
-        // （NodeCompleted）即时上送通道命中。auto 是发送时的默认模式且执行形态就是工作流图
-        // （与 /complete Passthrough 采集同口径）——内网实测（2026-10-25）：谓词最初只认
-        // 字面量 "workflow"，auto run 的快照被静默跳过，下游拉取节点轮询满预算超时。
+        // M5-cg：仅 workflow + issue 关联 → 节点成功边界（NodeCompleted）即时上送通道命中。
+        // auto 退出中途上送：动态编排的叶节点在装配时无法预知谁是最后一个（图运行中生长），
+        // 交付统一由 `/complete` 终态路径整体携带 attempt 最后一块（后写胜）。
         assert!(is_workflow_issue_run(&gated_run(
             "workflow",
             Some("iss-1")
         )));
-        assert!(is_workflow_issue_run(&gated_run(
+        // auto / direct（不经此通道）/ 非 issue / 空白 issue → 不上送。
+        assert!(!is_workflow_issue_run(&gated_run(
             "auto",
             Some("iss-1")
         )));
-        // direct（门控语义，不经此通道）/ 非 issue → 不上送。
         assert!(!is_workflow_issue_run(&gated_run(
             "direct",
             Some("iss-1")

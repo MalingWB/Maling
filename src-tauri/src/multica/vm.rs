@@ -270,7 +270,7 @@ fn detail_prefill(task: &RemoteTask, language: DesktopLanguage) -> Option<String
 
 /// 远程任务首条 prompt 的隐式上下文（M5-bk 引入，2026-09-21 二次修正收敛为两块、三次调整收敛为单块）：
 ///
-/// 1. 完成输出协议块（issue 关联任务才注入）——写侧协议指令收尾。
+/// 1. 完成输出协议块（**direct 模式**且 issue 关联的任务才注入，M5-cg 收敛）——写侧协议指令收尾。
 /// 2. 附件软失败清单块（M5-bu，issue 附件下载有失败才注入）——告知 agent 哪些需求附件未能落地，
 ///    需与用户确认替代来源（局部失败隔离：不阻断任务启动，但 agent 不得臆测缺失文件内容）。
 ///
@@ -280,14 +280,21 @@ fn detail_prefill(task: &RemoteTask, language: DesktopLanguage) -> Option<String
 /// issue done 时无输出可中继）。协议块属 runtime 决定的稳定执行上下文（AGENTS.md system/user prompt
 /// 划分标准），随发送时 claim 响应取值，以 `<hidden>` 区段附在首条 prompt 需求正文之后（对齐
 /// `scheduled_task_context` 隐式注入先例；发送前用户不再可见，会话内可点开审计）。
-/// 两块全缺省（非 issue 关联且无附件失败）→ None（无非隐式上下文，行为与引入区段前一致）。
+/// 两块全缺省（非 direct / 非 issue 关联且无附件失败）→ None（无非隐式上下文，行为与引入区段前一致）。
+///
+/// M5-cg 产出侧门禁：任务级冻结区段**只承载 direct 协议**——direct 的产出边界就是最终回复本身，
+/// 任务级一份即准；工作流 / auto 的产出资格按**节点身份**各不相同（sink / 标记节点 / 验收节点才
+/// 产出），冻结一份通用文本会让所有节点拿到同一套自我认定规则（M5-cf 内网回归根因）。编排形态的
+/// 协议在节点装配时按指定渲染（引擎 [`gold_band::app::upstream`] + 桌面
+/// `MulticaCompletionProtocolResolver`），冻结区段只留附件失败清单。
 pub(crate) fn remote_task_hidden_section(
     task: &RemoteTask,
     language: DesktopLanguage,
     attachment_failures: &[AttachmentFailure],
+    run_mode: &str,
 ) -> Option<PromptHiddenSection> {
     let content = [
-        completion_protocol_block(task, language),
+        completion_protocol_block(task, language, run_mode),
         attachment_failures_block(attachment_failures, language),
     ]
     .into_iter()
@@ -350,11 +357,21 @@ fn parent_output_block(task: &RemoteTask, language: DesktopLanguage) -> Option<S
 
 /// 完成输出协议块（`src/prompts/{zh-CN,en}/runtime/remote_task_completion_protocol.md`）。
 ///
-/// **注入条件：issue 关联任务**（`issue_id` 非空白）。非 issue 来源任务（chat / autopilot /
-/// quick-create）无 issue done 流转，指令无人消费 → 不注入。不看 `issue_kind`——是否真有下游
-/// 子任务无法从 claim 响应得知，顶层无子的输出无人消费、无害（multica 侧「一律带」亦成立）。
-fn completion_protocol_block(task: &RemoteTask, language: DesktopLanguage) -> Option<String> {
+/// **注入条件：direct 模式 + issue 关联任务**（`issue_id` 非空白、`run_mode` 为
+/// [`crate::multica::state::REMOTE_RUN_MODE_DIRECT`]）。M5-cg 起 direct 专属——编排形态
+/// （workflow / auto）的协议按节点身份在装配时注入（见 [`remote_task_hidden_section`] 文档），
+/// 冻结段不再承载。非 issue 来源任务（chat / autopilot / quick-create）无 issue done 流转，
+/// 指令无人消费 → 不注入。不看 `issue_kind`——是否真有下游子任务无法从 claim 响应得知，
+/// 顶层无子的输出无人消费、无害（multica 侧「一律带」亦成立）。
+fn completion_protocol_block(
+    task: &RemoteTask,
+    language: DesktopLanguage,
+    run_mode: &str,
+) -> Option<String> {
     blank_to_none(task.issue_id.as_deref())?;
+    if run_mode != crate::multica::state::REMOTE_RUN_MODE_DIRECT {
+        return None;
+    }
     let template = prompt_by_language(language, RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL);
     // 模板无变量（协议指令恒定文案），空上下文渲染即原文。
     let rendered =
@@ -905,7 +922,7 @@ mod tests {
             issue_attachments: Vec::new(),
             attribution: None,
         };
-        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[])
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
             .expect("hidden section assembled");
         assert_eq!(section.title, REMOTE_TASK_HIDDEN_SECTION_TITLE);
         let content = section.content;
@@ -916,9 +933,61 @@ mod tests {
         assert!(content.contains("completion-output"));
         // 英文侧同构（溯源块同样不进区段）。
         let section_en =
-            remote_task_hidden_section(&task, DesktopLanguage::En, &[]).expect("hidden section");
+            remote_task_hidden_section(&task, DesktopLanguage::En, &[], "direct").expect("hidden section");
         assert!(!section_en.content.contains("DPMS"));
         assert!(section_en.content.contains("completion-output"));
+    }
+
+    #[test]
+    fn remote_task_hidden_section_freezes_protocol_only_for_direct_runs() {
+        // M5-cg 产出侧门禁：issue 关联任务在 direct 模式冻结完成输出协议；workflow / auto 的
+        // 协议按节点身份在装配时注入（MulticaCompletionProtocolResolver），冻结区段只承载
+        // 附件失败清单（无失败 → 无区段）——不再给所有节点同一份通用协议文本。
+        let task = RemoteTask {
+            id: "t-2".into(),
+            issue_id: Some("iss-2".into()),
+            status: "queued".into(),
+            auth_token: None,
+            prior_session_id: None,
+            parent_task_id: None,
+            title: Some("Fix login".into()),
+            quick_create_prompt: None,
+            chat_message: None,
+            trigger_comment_content: None,
+            autopilot_description: None,
+            handoff_note: None,
+            issue_description: Some("Steps to repro...".into()),
+            last_activity_at: None,
+            issue_kind: Some("dev".into()),
+            is_ready: Some(true),
+            release_plan_id: None,
+            dev_user: None,
+            test_user: None,
+            business_story_id: None,
+            origin_url: None,
+            parent_output: None,
+            issue_attachments: Vec::new(),
+            attribution: None,
+        };
+        for mode in ["workflow", "auto"] {
+            assert!(
+                remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], mode).is_none(),
+                "{mode} run must not freeze the completion protocol"
+            );
+        }
+        // 有附件失败 → 区段仍在（清单块），但不得混入协议正文。
+        let failures = vec![AttachmentFailure {
+            filename: "spec.pdf".into(),
+            reason: "HTTP 404".into(),
+        }];
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &failures, "workflow")
+            .expect("failures-only section");
+        assert!(!section.content.contains("completion-output"));
+        assert!(section.content.contains("spec.pdf"));
+        // direct 仍冻结协议正文（既有行为不变）。
+        let direct = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
+            .expect("direct protocol section");
+        assert!(direct.content.contains("completion-output"));
     }
 
     // ===== 上游交付说明预填 + 完成输出协议区段（issue 完成输出传递特性）=====
@@ -974,7 +1043,7 @@ mod tests {
 
         // 隐式区段只剩协议块：不含上游块、不含父输出文本。
         let section =
-            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[]).expect("hidden section");
+            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct").expect("hidden section");
         assert!(!section.content.contains("上游"));
         assert!(!section.content.contains("部署地址: https://t.example.com"));
         assert!(section.content.contains("completion-output"));
@@ -986,7 +1055,7 @@ mod tests {
         assert!(requirement_en.contains("upstream (parent) work item"));
         assert!(requirement_en.ends_with("Steps to repro..."));
         let section_en =
-            remote_task_hidden_section(&task, DesktopLanguage::En, &[]).expect("hidden section");
+            remote_task_hidden_section(&task, DesktopLanguage::En, &[], "direct").expect("hidden section");
         assert!(!section_en.content.contains("upstream (parent)"));
         assert!(section_en.content.contains("completion-output"));
     }
@@ -1027,7 +1096,7 @@ mod tests {
             Some("Fix login\n\nSteps...")
         );
         let section =
-            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[]).expect("hidden section");
+            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct").expect("hidden section");
         assert!(section.content.contains("completion-output"));
 
         // 纯空白 parent_output 同样视为缺失（与 DPMS 字段的逐字段空白过滤惯例一致）。
@@ -1073,7 +1142,7 @@ mod tests {
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         assert_eq!(vm.requirement, None);
-        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[])
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
             .expect("protocol-only section");
         assert!(section.content.starts_with("本工作项关联远程工作项"));
         assert!(section.content.contains("completion-output"));
@@ -1090,7 +1159,7 @@ mod tests {
         assert!(prefill.contains("部署地址: https://t.example.com"));
         assert!(!prefill.contains("completion-output"));
         assert!(
-            remote_task_hidden_section(&with_parent_output, DesktopLanguage::ZhCn, &[])
+            remote_task_hidden_section(&with_parent_output, DesktopLanguage::ZhCn, &[], "direct")
                 .expect("protocol section")
                 .content
                 .starts_with("本工作项关联远程工作项")
@@ -1105,7 +1174,7 @@ mod tests {
             RemoteTaskVm::from_detail(&non_issue, "ws-1", DesktopLanguage::ZhCn).requirement,
             None
         );
-        assert!(remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &[]).is_none());
+        assert!(remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &[], "direct").is_none());
     }
 
     #[test]
@@ -1149,7 +1218,7 @@ mod tests {
                 reason: "timeout after 120s".into(),
             },
         ];
-        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &failures)
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &failures, "direct")
             .expect("protocol + failures section");
         assert_eq!(section.title, REMOTE_TASK_HIDDEN_SECTION_TITLE);
         assert!(section.content.contains("completion-output"));
@@ -1165,7 +1234,7 @@ mod tests {
         assert!(protocol_at < failures_at);
 
         // 英文侧同构（双语模板都渲染清单）。
-        let section_en = remote_task_hidden_section(&task, DesktopLanguage::En, &failures)
+        let section_en = remote_task_hidden_section(&task, DesktopLanguage::En, &failures, "direct")
             .expect("english section");
         assert!(section_en.content.contains("could not be downloaded locally"));
         assert!(section_en.content.contains("多值测试样本.zip (HTTP 404)"));
@@ -1173,7 +1242,7 @@ mod tests {
         // 空失败 → 区段只剩协议块，不含清单文案（byte 级与引入前单块区段一致；协议模板自身
         // 提及「附件」一词，故用清单块独有短语断言缺席）。
         let no_failures =
-            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[]).expect("protocol only");
+            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct").expect("protocol only");
         assert!(no_failures.content.contains("completion-output"));
         assert!(!no_failures.content.contains("未能下载到本地"));
 
@@ -1183,7 +1252,7 @@ mod tests {
             ..task
         };
         let failures_only =
-            remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &failures)
+            remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &failures, "direct")
                 .expect("failures-only section");
         assert!(!failures_only.content.contains("completion-output"));
         assert!(failures_only.content.contains("需求附件未能下载到本地"));

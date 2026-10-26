@@ -554,6 +554,27 @@ pub(crate) fn build_worker_invocation(
     let mut task_instruction = task_instruction;
     let mut profile_content = profile_content;
     let mut extra_hidden_sections = first_prompt_hidden_sections(app, task_id, session_mode);
+    // M5-cg 产出侧门禁：completion-output 块的产出资格在装配时按节点身份判定（sink > 标记
+    // 声明 > 禁止），判定数据 = 模型所见的同一份 goal / 角色正文 + 手头的工作流结构，零反查
+    // （喂给模型的正文含标记 ⇔ 判定为 Staged）。经桌面壳解析器渲染按节点协议变体注入，仅
+    // `SessionMode::New`（与首条区段加载策略一致，Continue 回合不重放）。注入先于上游拉取段：
+    // 冻结区段嗅探（旧任务冻结段已含协议正文则跳过，防两套产出规则并存）只看任务级冻结区段。
+    if session_mode == SessionMode::New {
+        let designation = super::upstream::workflow_node_designation(
+            workflow,
+            node_id,
+            task_instruction.as_deref(),
+            profile_content.as_deref(),
+        );
+        if let Some(section) = super::upstream::completion_protocol_designation_section(
+            app,
+            task_id,
+            designation,
+            &extra_hidden_sections,
+        ) {
+            extra_hidden_sections.push(section);
+        }
+    }
     if super::upstream::needs_upstream_resolution([
         task_instruction.as_deref(),
         profile_content.as_deref(),
@@ -2196,5 +2217,94 @@ mod tests {
         // fail-open：文件损坏 → 空区段，不阻断执行。
         std::fs::write(sections_file.as_std_path(), "not json").unwrap();
         assert!(load_first_prompt_hidden_sections(&app, task_id).is_empty());
+    }
+
+    /// 桩协议解析器：恒返回指定身份区段（记录调用，验证注入路径与加载策略）。
+    struct StubProtocolResolver {
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl crate::app::upstream::CompletionProtocolSectionResolver for StubProtocolResolver {
+        fn completion_protocol_section(
+            &self,
+            _task_id: &str,
+            designation: crate::app::upstream::CompletionProtocolDesignation,
+        ) -> Option<crate::provider::PromptHiddenSection> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(designation.as_str().to_string());
+            Some(crate::provider::PromptHiddenSection {
+                title: "Gold Band remote task protocol".to_string(),
+                content: format!("stub {}", designation.as_str()),
+            })
+        }
+    }
+
+    #[test]
+    fn completion_protocol_designation_injected_on_new_only() {
+        // M5-cg 产出侧门禁（workflow 面）：fixture 工作流的 "dev" 节点出边指向 $end（sink）→
+        // Final 指定；装配 New 时经解析器注入按节点协议区段，Continue 回合不重放。
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default())
+            .with_completion_protocol_section_resolver(std::sync::Arc::new(
+                StubProtocolResolver {
+                    calls: std::sync::Mutex::new(Vec::new()),
+                },
+            ));
+        write_attachment_test_run(&app);
+
+        let invocation_new = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+        assert!(invocation_new
+            .extra_hidden_sections
+            .iter()
+            .any(|section| section.content == "stub final"));
+
+        // Continue（追问 / 续跑）不注入按节点协议区段（与首条冻结区段策略一致）。
+        let invocation_continue = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::Continue,
+            Some(serde_json::json!({ "acpSessionId": "session-001" })),
+            Some("continue".to_string()),
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+        assert!(invocation_continue
+            .extra_hidden_sections
+            .iter()
+            .all(|section| !section.content.starts_with("stub ")));
     }
 }

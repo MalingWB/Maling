@@ -13098,14 +13098,30 @@ fn build_dynamic_worker_invocation(
         has_output_contract,
     )?;
     // 任务级首条 prompt 隐式区段（multica 远程任务上下文等，改动四十八）：AI-DYNAMIC 执行面与
-    // workflow 面共用同一策略（`SessionMode::New` 才加载）——Auto 模式入口即 AI-DYNAMIC 节点，
-    // 若只让 workflow 面加载，远程任务的完成输出协议会在这条路径上丢失。
+    // workflow 面共用同一策略（`SessionMode::New` 才加载）。M5-cg 起 issue 关联任务的冻结段
+    // 只含附件失败清单（协议正文仅 direct 冻结），编排面的完成输出协议改由下方按节点身份注入。
     // 排在动态区段之后：动态上下文（本节点身份与目录）在前，任务级上下文收尾。
-    extra_hidden_sections.extend(crate::app::node_executor::first_prompt_hidden_sections(
+    let frozen_sections = crate::app::node_executor::first_prompt_hidden_sections(
         ctx.app,
         ctx.task_id,
         session_mode,
-    ));
+    );
+    extra_hidden_sections.extend(frozen_sections.iter().cloned());
+    // M5-cg 产出侧门禁（auto 面）：动态图的「最后一个节点」在叶子启动时不可判定（图运行时
+    // 生长）——验收节点是装配时唯一可判定的收尾产出者身份，按 Final 指定；其余叶子一律禁止
+    // 产出 completion-output 块。auto 最终交付由 `/complete` 终态路径携带（auto 无中段推送）。
+    // 嗅探只看冻结区段（动态区段含节点任务正文，不作判据）。
+    if session_mode == SessionMode::New {
+        let designation = crate::app::upstream::dynamic_node_designation(node.kind);
+        if let Some(section) = crate::app::upstream::completion_protocol_designation_section(
+            ctx.app,
+            ctx.task_id,
+            designation,
+            &frozen_sections,
+        ) {
+            extra_hidden_sections.push(section);
+        }
+    }
     if let Some(contract) = output_contract
         .as_mut()
         .filter(|contract| contract.emission_mode == OutputEmissionMode::PostTurnProjection)
@@ -20937,6 +20953,71 @@ mod tests {
         )
         .unwrap();
         assert!(!has_remote_section(&invocation_continue));
+    }
+
+    /// 桩协议解析器：恒返回指定身份区段（验证 auto 面按叶子身份注入）。
+    struct StubProtocolResolver;
+
+    impl crate::app::upstream::CompletionProtocolSectionResolver for StubProtocolResolver {
+        fn completion_protocol_section(
+            &self,
+            _task_id: &str,
+            designation: crate::app::upstream::CompletionProtocolDesignation,
+        ) -> Option<crate::provider::PromptHiddenSection> {
+            Some(crate::provider::PromptHiddenSection {
+                title: "Gold Band remote task protocol".to_string(),
+                content: format!("stub {}", designation.as_str()),
+            })
+        }
+    }
+
+    #[test]
+    fn dynamic_invocation_designates_acceptance_final_workers_prohibited() {
+        // M5-cg 产出侧门禁（auto 面）：验收叶子按 Final 指定，普通 worker 叶子按 Prohibited
+        // 指定；装配 New 时注入对应协议区段。
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default())
+            .with_completion_protocol_section_resolver(std::sync::Arc::new(StubProtocolResolver));
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+
+        let stub_designation = |kind: crate::dynamic::DynamicNodeKind| {
+            let mut node = test_worktree_node("bootstrap");
+            node.kind = kind;
+            let graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![node.clone()]);
+            let invocation = build_dynamic_worker_invocation(
+                &ctx,
+                &graph,
+                &node,
+                &dynamic_attempt_id(&node),
+                None,
+                SessionMode::New,
+                None,
+                None,
+                "test-turn".to_string(),
+                None,
+                PromptVisibility::Visible,
+                UserPromptRenderMode::RequirementTask,
+                Vec::new(),
+                None,
+                None,
+            )
+            .unwrap();
+            invocation
+                .extra_hidden_sections
+                .iter()
+                .find(|section| section.content.starts_with("stub "))
+                .map(|section| section.content.clone())
+        };
+
+        assert_eq!(
+            stub_designation(crate::dynamic::DynamicNodeKind::Acceptance).as_deref(),
+            Some("stub final")
+        );
+        assert_eq!(
+            stub_designation(crate::dynamic::DynamicNodeKind::Worker).as_deref(),
+            Some("stub prohibited")
+        );
     }
 
     #[test]

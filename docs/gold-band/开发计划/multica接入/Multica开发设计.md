@@ -2856,11 +2856,46 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **方案**：
 - **上送门控（节点声明制）**：「交付上传」角色正文内置 HTML 注释声明标记 `<!-- gold-band:upstream-upload -->`（常量 `UPSTREAM_UPLOAD_MARKER`，goal 直写等效）；bridge `push_workflow_completion_snapshot` 在 attempt 扫描前经 `node_declares_staged_upload` 判定——数据源为 run 启动时落盘的工作流快照（`current_run_workflow`，run 中途编辑不改变已执行节点语义）+ profile 当前存储，goal / 角色正文任一携带标记才上送；快照不可读 / 节点缺员（AiDynamic 节点无 goal/profile，动态编排 worker 不在任务工作流快照里）/ profile 解析失败一律 fail-closed（误上送会让下游拿到无交付语义的中间产物，宁缺勿滥）。**不做收尾节点检测**：终态 `/complete` 整体携带最后一块已是权威路径，last-node 判定需引入 sink 分析且与 `/complete` 存在竞态，复杂度收益为负。协议提示词同步收紧：工作流例外条件从「节点目标明确要求上传阶段性交付」改为「被指定承担阶段性上送职责的节点（配置了交付上传角色，或目标中带其声明标记）」。
 - **拉取注入位置迁移**：`node_executor` 装配时解析结果不再内联替换令牌，改为追加首条 prompt 的隐式隐藏区段（标题 `Gold Band upstream deliverable`，内容即既有 `remote_task_upstream_pull.md` 渲染块，随「Gold Band runtime context」折叠块可见可审计）；正文中的令牌移除（`strip_upstream_references` 取代内联替换 API）。加载策略与首条隐藏区段完全一致：仅 `SessionMode::New` 解析并注入；Continue 回合只移除令牌不重新解析（快照已随 session 首条 prompt 存在，维持「节点启动时的值」单次快照语义）。拉取角色文件改写：令牌保留为声明开关，正文说明内容到达位置（隐藏运行上下文「上游交付说明」区段）。
-- **部署耦合（内网注意）**：两个角色文件正文均已更新，**升级桌面端后需重新导入**。方向安全：旧桌面端 + 新角色 = 无门控仍逐节点上送（桌面端旧语义）；新桌面端 + 旧上传角色 = 无标记不上送——收紧方向一致，不存在「错误上送」组合。
+- **部署耦合（内网注意）**：两个角色文件正文均已更新，**升级桌面端后需更新既有角色条目正文**（原地编辑替换，见 §12.77——「导入文件夹」是新建副本不是覆盖）。方向安全：旧桌面端 + 新角色 = 无门控仍逐节点上送（桌面端旧语义）；新桌面端 + 旧上传角色 = 无标记不上送——收紧方向一致，不存在「错误上送」组合。
 
 **方案自评审**：过度设计——无新增持久化/状态机/跨层 identity：门控读既有 run 工作流快照 + profile 存储（节点成功边界、spawn 异步内、仅 multica 工作流 run 触发）；标记是纯文本声明，复用角色导入通道，无 DSL schema/前端改动；拒绝的替代：DSL 新字段（连带前端与旧工作流迁移成本）、last-node 检测（见上）。拉取迁移复用 `extra_hidden_sections` 既有通道与首条加载策略，消除 system prompt 中 ≤2000 字符的重复内联负载。性能——门控每成功节点至多两次小文件读（run 工作流快照 JSON + profile 文件），发生在 spawn 异步路径不阻塞热路径；隐藏区段使首条 user prompt 增量有界（交付块 ≤2000 字符 + 模板头）。
 
 **验证结果**：lib `upstream` 过滤 9/9（令牌检测/无 resolver 结构化失败/无令牌零调用既有 3 + strip 全清除、声明标记谓词（含「前缀片段不算声明」负例）2 新增 + goal 解析→隐藏区段追加且令牌移除、Continue 回合只移除不解析且不触发 resolver 2 改写）；desktop `multica::` 221/221；`prompts::tests` 契约 17/17（协议收紧未触动任何锚点断言）；clippy 我方改动文件零新增警告。
+
+### 12.77 改动七十五：门控数据源修复（动态编排叶子反查）+ 可判定性与部署指引修正（2026-10-26）
+
+> **已被改动七十六（§12.78）取代**：完成边界反查（`completed_node_declaration`）整体删除——产出资格判定迁至装配侧按节点身份进行，与模型所见同源。本条的部署指引（原地编辑角色条目、新建任务验证）仍然有效。
+
+**背景**：改动七十四合入后内网复测（两个工作流）报告两项异常：①每个节点仍产出 completion-output 块；②上报节点未中段上送（旧正文已确认带标记，排除角色未更新）。
+
+**诊断**：
+- ②**主因：门控数据源缺陷（代码缺陷，改动七十四引入的回归）**。两个工作流是 auto 执行形态（multica 默认发送模式）——run 快照编译为单个 `ai-dynamic` 外层节点（`compile_auto_workflow`），实际干活的动态 worker 是运行时编排的叶子，其 goal/profile 记在所属 dynamic graph 的 `DynamicNodeState.task/profile`（dynamic.rs:183），**不在任务工作流快照里**。门控只查快照 → 查无节点 → fail-closed 拦下所有 auto 节点（包括挂「交付上传」角色的）。改动七十四把「动态 worker 不在快照 fail-closed」当设计预期，是把 multica 默认执行形态拦死了的设计错误。
+- ①**协议正文按任务冻结**：首条隐藏区段在任务创建时落盘（`first-prompt-hidden-sections`，node_executor），升级前创建的任务重跑沿用旧协议文本（「每节点上送」口径）——模型照旧文本产出属预期，新建任务才带新口径。
+- **次生发现（部署陷阱）**：`import_profiles_from_folder` 对同名角色经 `resolve_unique_name` **新建副本**（「交付上传-2」，profiles.rs:761）而非覆盖——「重新导入」指引不可靠，须原地编辑既有条目替换正文。
+
+**方案**：
+- **门控数据源按执行形态分派**：lib 新增 `execution_plan::completed_node_declaration`（`App::completed_node_declaration` 薄封装）——workflow DSL 节点取 run 快照（外层 ai-dynamic 节点自身完成时 goal/profile 均空自然按未声明处理）；动态叶子按 round trace **逆序**（最新 attempt 优先）反查外层 `(node_id, attempt_id)` 的 `dynamic_graph_file` → `load_dynamic_graph` → 叶子 `task/profile`，与执行侧喂给 node_executor 的 `profile_show(node.profile)` 同源。查无此节点 `Ok(None)`；IO 失败 `Err`（fail-closed 但可判定）。
+- **门控可判定性**：去静默 return——取数失败记 WARN，查无节点 / profile 引用悬空（含 builtin CI/CD profile 不在存储）记 debug，门控拦截处带 node_id 记 debug（区分「判定未声明」与「触发根本没跑」）。M5-bl 教训：静默 return 让触发缺失不可见。
+- **部署指引修正**（外部角色 README 前提 4）：更新角色正文须**编辑既有条目整体粘贴替换**（条目不变，引用保持有效），禁止盲目重复「导入文件夹」；标记是 HTML 注释、渲染视图不可见需编辑视图确认；验证新语义用新建任务。
+
+**方案自评审**：过度设计——无新增持久化/identity：动态叶子数据读既有 canonical 存储（dynamic graph 状态文件，orchestrator 同款 `load_dynamic_graph` 访问器，含既有版本迁移），返回值是纯读投影；不为单一 UI 竞态复制数据模型。性能——每成功节点至多快照 1 读 + trace 逆序至多每 attempt 一次 graph 存在性检查（workflow 节点无 dynamic 目录零额外读），小 JSON、spawn 异步路径低频，无热路径影响。
+
+**验证结果**：先红后绿——新增 `execution_plan` 测试 4 项锁定（auto 叶子 task/profile 反查命中、同名外层多 attempt 逆序最新优先、workflow 节点走快照分支、查无节点 `Ok(None)`）；desktop `multica::bridge` 既有 20/20 全绿。
+
+### 12.78 改动七十六：产出侧门禁（装配时节点身份指定产出资格）（M5-cg，2026-10-26）
+
+**背景**：改动七十四/七十五的上送门控是**消费侧反查**——节点完成后，bridge 经 run 快照 + round trace + dynamic graph + profile 存储三跳反查该节点的声明再决定是否上送。用户重申根本意图：门禁应在**产出侧**（「在产出 completion-output 的地方做严格门禁」）——direct 模式不变；auto 模式只有最后一个节点（验收）产出；工作流模式只有收尾节点和「交付上传」声明节点产出。反查式门禁与模型实际收到的指令分属两个数据源（模型每节点都收到「产出块」协议、门控却在发送端再判一次），是典型的补丁式修复：判定与所见不同源，注定持续错位（改动七十四内网两轮回归的共同根因）。
+
+**方案**：
+- **指定判定进引擎、渲染进桌面（resolver 回调模式，与 `UpstreamOutputResolver` 同款）**：引擎侧纯函数判定——`workflow_node_designation(workflow, node_id, goal, profile_content)`：节点所有出边指向 `$end`（含无出边）= sink → **Final**；非 sink 且 goal / profile 正文携带 `UPSTREAM_UPLOAD_MARKER` → **Staged**；其余 → **Prohibited**。`dynamic_node_designation(kind)`：`Acceptance`（验收节点）→ **Final**，其余叶子 → **Prohibited**（动态图运行中生长，装配时无法预知谁是最后叶子——auto 的交付统一由 `/complete` 终态路径携带，无中段上送）。新 trait `CompletionProtocolSectionResolver`：`node_executor`（workflow）/`orchestrator`（动态叶子）装配首条 prompt（`SessionMode::New`）时判定 designation 并回调桌面侧 `MulticaCompletionProtocolResolver`——任务在飞映射关联 issue 才注入新隐藏区段「Gold Band remote task protocol」（`runtime/remote_task_node_protocol.md` 按 `designation` 渲染 final / staged / prohibited 三变体，双语）；本地任务静默跳过。
+- **协议模板拆分**：`remote_task_completion_protocol.md` 收回 direct 专属（完成门控 + 整个工作项总结，删除工作流段）；新增 `remote_task_node_protocol.md` 承载图节点协议——final（收尾节点：整个工作项总结）、staged（阶段性上送 + 快照会被覆盖口径）、prohibited（不要输出块、不要复制前序块，短文本）三变体共享 JSON 裁决 / ≤2000 / fence 格式规则。
+- **消费端收窄**：bridge `push_workflow_completion_snapshot` 删除完成边界门控（`node_declares_staged_upload` 与其数据链 `execution_plan::completed_node_declaration`、`App::completed_node_declaration` 整体删除）——scope 收窄为 `run_mode == "workflow"` + issue（auto 退出中段上送，deliverable 走 `/complete`），NodeCompleted SUCCESS + attempt 有块即 PUT，值去重与失败自愈语义不变。
+- **冻结段联动**：claim 时冻结的隐藏区段（`first-prompt-hidden-sections.json`）改为按 run_mode 冻结——协议段仅 direct run 冻结（workflow/auto 只冻结附件失败段）；新协议区段注入前嗅探冻结段是否已含「completion-output」（仅比对冻结段列表——上游拉取区段含父任务任意文本，不得参与嗅探），旧任务沿用冻结正文重放。vm `remote_task_hidden_section` 增加 `run_mode` 参数。
+
+**方案自评审**：过度设计——净删除：完成边界反查三跳（快照/round/graph + profile 存储）整体移除，新判定是装配时纯内存计算（图遍历一次 + goal/profile 字符串扫描，数据已在手）；resolver 复用 `UpstreamOutputResolver` 既定模式，无新增持久化状态/identity。性能——NodeCompleted 路径每节点少 2–3 次小文件读；装配路径 designation 判定 O(出边数) + 模板渲染一次，无 IO 新增。
+
+**验证结果**：lib `prompts` remote_task 6/6（direct 契约改写——编排锚点移入 node 契约、direct 负锚点防两套产出规则并存；node 协议三变体 × 双语契约新增）；`app::upstream` + `app::node_executor` + `execution_plan` 过滤 30/30（新增 designation 判定：sink/标记/new-round 边非 sink/Acceptance 4 + resolver 嗅探 1 + `SessionMode::New` 才注入 1；反查函数与其 4 项测试删除后全绿）+ `orchestrator` 动态叶子指定（Acceptance=final / worker=prohibited）1；desktop `multica::` 222/222（新增 vm 按 run_mode 冻结协议 1、改写 `is_workflow_issue_run` 作用域——auto 退出中段上送 1）。clippy 我方改动文件零新增诊断（feishu/api.rs 两处 `unused_io_amount` 为 1.96 工具链 deny-by-default 存量问题，与本改动无关）。
+
 
 ---
 

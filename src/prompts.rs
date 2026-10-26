@@ -111,6 +111,8 @@ pub const RUNTIME_REMOTE_TASK_PARENT_OUTPUT: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_parent_output.md");
 pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_completion_protocol.md");
+pub const RUNTIME_REMOTE_TASK_NODE_PROTOCOL: LocalizedText =
+    localized_prompt_zh_en!("runtime/remote_task_node_protocol.md");
 pub const RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_attachment_failures.md");
 pub const RUNTIME_REMOTE_TASK_UPSTREAM_PULL: LocalizedText =
@@ -196,6 +198,9 @@ pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_ZH_CN: &str =
     RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL.zh_cn;
 pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN: &str =
     RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL.en;
+pub const RUNTIME_REMOTE_TASK_NODE_PROTOCOL_ZH_CN: &str =
+    RUNTIME_REMOTE_TASK_NODE_PROTOCOL.zh_cn;
+pub const RUNTIME_REMOTE_TASK_NODE_PROTOCOL_EN: &str = RUNTIME_REMOTE_TASK_NODE_PROTOCOL.en;
 pub const RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES_ZH_CN: &str =
     RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES.zh_cn;
 pub const RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES_EN: &str =
@@ -279,6 +284,10 @@ pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
     (
         "runtime/remote_task_completion_protocol.md",
         RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
+    ),
+    (
+        "runtime/remote_task_node_protocol.md",
+        RUNTIME_REMOTE_TASK_NODE_PROTOCOL,
     ),
     (
         "runtime/remote_task_attachment_failures.md",
@@ -595,30 +604,24 @@ mod tests {
         assert!(zh.contains("同一行"));
         assert!(en.contains("```completion-output"));
         assert!(en.contains("on the same line"));
-        // 工作流分支（开发设计 §12.59）：提取只读终态节点 attempt，但协议此前未赋予该节点
-        // 「整体交付总结」职责——收尾节点只写自己节点的产物（如仅一条 SQL），真正的构建/
-        // 部署/测试要点被覆盖丢失。必须锁定：整个工作项的综合总结 + 优先构建/部署/测试要点 +
-        // 不可得时简要总结兜底 + 不得只写本节点产物。两语言均锁定。
+        // 整体总结口径（§12.59 直面对应）：块总结整个工作项（会话全部产出与附件），不得只写
+        // 最后一轮；不可得时简要总结兜底。两语言均锁定。
         assert!(zh.contains("整个工作项"));
-        assert!(zh.contains("不得只写你自己节点的产物"));
+        assert!(zh.contains("不得只写最后一轮的内容"));
         assert!(zh.contains("简要总结"));
         assert!(en.contains("entire work item"));
-        assert!(en.contains("do not limit the block to your own node's output"));
+        assert!(en.contains("do not limit it to the last turn's content"));
         assert!(en.contains("brief summary"));
         // M5-bw（开发设计 §12.65）：覆盖清单由平铺改为分级——构建包名/制品名与部署环境是
         // 最重要输出（含「不涉及构建部署时明确说明」防歧义条款），测试要点/变更范围降为
-        // 锦上添花；工作流收尾节点必须把前序（尤其 CI/CD 节点）产出中的构建/部署核心信息
-        // 携带进自己的块——即使构建部署非本节点执行，防止核心信息在链路末端丢失。两语言均锁定。
+        // 锦上添花。两语言均锁定。（编排面的「前序 CI/CD 产出携带进块」条款随 M5-cg 移至
+        // remote_task_node_protocol——direct 会话无前序节点。）
         assert!(zh.contains("构建出的包名/制品名"));
         assert!(zh.contains("部署的环境"));
         assert!(zh.contains("不涉及构建或部署"));
-        assert!(zh.contains("尤其是 CI/CD 节点"));
-        assert!(zh.contains("携带进你的块"));
         assert!(en.contains("the built artifact/package name"));
         assert!(en.contains("the environment it was deployed to"));
         assert!(en.contains("no build or deployment"));
-        assert!(en.contains("especially those of CI/CD nodes"));
-        assert!(en.contains("carry that information forward into your block"));
         // M5-by（开发设计 §12.67）：核心信息三项化——改动范围（极其精简）升为第三核心项；
         // 新增完成后修订条款——任务完成后用户在会话中要求调整时重新输出完整新块（整块覆盖
         // 非增量、核心信息保留），只更新远程侧存储内容、不改变任务完成状态。完成门控语义不变
@@ -629,23 +632,98 @@ mod tests {
         assert!(en.contains("extremely brief"));
         assert!(en.contains("complete new block"));
         assert!(en.contains("does not change the task's completion status"));
-        // M5-cf（开发设计 §12.74；例外条件 2026-10-26 随改动七十四收紧）：工作流中段上传——
-        // 阶段性快照上送（下游可在工作流结束前拉取提前启动），「不要输出」默认规则必须让位于
-        // 显式例外：**被指定承担阶段性上送职责的节点**（配置了「交付上传」角色，或目标中带其
-        // 声明标记——桌面端按声明门控上送，非任意 goal 措辞），且快照须注明阶段性口径。收尾
-        // 节点块仍是最终交付说明。两语言均锁定。
-        assert!(zh.contains("阶段性快照"));
-        assert!(zh.contains("在工作流结束前拉取"));
-        assert!(zh.contains("被指定承担阶段性上送职责的节点"));
-        assert!(zh.contains("「交付上传」角色"));
-        assert!(zh.contains("声明标记"));
-        assert!(zh.contains("尚未最终完成"));
-        assert!(en.contains("staged snapshot"));
-        assert!(en.contains("pull before the workflow finishes"));
-        assert!(en.contains("explicitly designated for staged upload"));
-        assert!(en.contains("deliverable-upload role"));
-        assert!(en.contains("declaration marker"));
-        assert!(en.contains("with work still pending"));
+        // M5-cg（开发设计 改动七十六）：direct 协议收窄为纯 direct 语义——编排形态的产出
+        // 规则移至 remote_task_node_protocol（按节点身份指定）。direct 模板不得再含编排分支
+        // 文案（收尾节点 / 阶段性上送 / 交付上传角色），防止两套产出规则并存。
+        assert!(!zh.contains("阶段性"));
+        assert!(!zh.contains("交付上传"));
+        assert!(!zh.contains("收尾节点"));
+        assert!(!en.contains("staged snapshot"));
+        assert!(!en.contains("deliverable-upload"));
+        assert!(!en.contains("finishing node"));
+    }
+
+    #[test]
+    fn remote_task_node_protocol_templates_designation_contract() {
+        // 编排面完成输出协议（M5-cg 产出侧门禁，开发设计 改动七十六）：产出资格由运行时按节点
+        // 身份指定（收尾/验收节点 → 最终交付；标记声明节点 → 阶段性上送；其余 → 禁止产出），
+        // 模板按 `designation` 单变量三分支渲染。三态都必须锁定：指定权声明 + 各自身份指令；
+        // final/staged 另锁共享交付规则（核心信息分级、前序 CI/CD 携带、整体总结、≤2000、
+        // JSON 裁决前置、精确围栏格式）；prohibited 必须短且不含围栏示例与产出规则。
+        for language in [
+            RUNTIME_REMOTE_TASK_NODE_PROTOCOL_ZH_CN,
+            RUNTIME_REMOTE_TASK_NODE_PROTOCOL_EN,
+        ] {
+            for designation in ["final", "staged", "prohibited"] {
+                let rendered = assert_fully_rendered(
+                    language,
+                    json!({ "designation": designation }),
+                );
+                assert!(rendered.contains("completion-output"));
+            }
+        }
+        let zh = RUNTIME_REMOTE_TASK_NODE_PROTOCOL_ZH_CN;
+        let en = RUNTIME_REMOTE_TASK_NODE_PROTOCOL_EN;
+
+        // final：收尾节点产出最终交付说明。
+        let zh_final = assert_fully_rendered(zh, json!({ "designation": "final" }));
+        assert!(zh_final.contains("收尾节点"));
+        assert!(zh_final.contains("最终交付说明"));
+        let en_final = assert_fully_rendered(en, json!({ "designation": "final" }));
+        assert!(en_final.contains("finishing node"));
+        assert!(en_final.contains("final deliverable handoff"));
+
+        // staged：被指定承担阶段性上送的节点（角色 / 声明标记），须注明阶段性口径。
+        let zh_staged = assert_fully_rendered(zh, json!({ "designation": "staged" }));
+        assert!(zh_staged.contains("阶段性上送"));
+        assert!(zh_staged.contains("「交付上传」角色"));
+        assert!(zh_staged.contains("声明标记"));
+        assert!(zh_staged.contains("阶段性快照"));
+        assert!(zh_staged.contains("尚未最终完成"));
+        assert!(zh_staged.contains("在工作流结束前拉取"));
+        let en_staged = assert_fully_rendered(en, json!({ "designation": "staged" }));
+        assert!(en_staged.contains("staged upload"));
+        assert!(en_staged.contains("deliverable-upload role"));
+        assert!(en_staged.contains("declaration marker"));
+        assert!(en_staged.contains("staged snapshot"));
+        assert!(en_staged.contains("with work still pending"));
+        assert!(en_staged.contains("pull before the workflow finishes"));
+
+        // final/staged 共享交付规则：核心信息分级（含前序 CI/CD 携带）、整体总结（不得只写本
+        // 节点产物）、JSON 裁决前置、篇幅与围栏格式契约。
+        for rendered in [zh_final.clone(), zh_staged.clone()] {
+            assert!(rendered.contains("构建出的包名/制品名"));
+            assert!(rendered.contains("尤其是 CI/CD 节点"));
+            assert!(rendered.contains("携带进你的块"));
+            assert!(rendered.contains("整个工作项"));
+            assert!(rendered.contains("不得只写你自己节点的产物"));
+            assert!(rendered.contains("简要总结"));
+            assert!(rendered.contains("JSON 裁决"));
+            assert!(rendered.contains("2000 字符"));
+            assert!(rendered.contains("```completion-output"));
+            assert!(rendered.contains("同一行"));
+        }
+        for rendered in [en_final.clone(), en_staged.clone()] {
+            assert!(rendered.contains("especially those of CI/CD nodes"));
+            assert!(rendered.contains("carry that information forward into your block"));
+            assert!(rendered.contains("entire work item"));
+            assert!(rendered.contains("do not limit the block to your own node's output"));
+            assert!(rendered.contains("brief summary"));
+            assert!(rendered.contains("JSON verdict"));
+            assert!(rendered.contains("2,000 characters"));
+            assert!(rendered.contains("```completion-output"));
+            assert!(rendered.contains("on the same line"));
+        }
+
+        // prohibited：明确禁止产出，不含围栏示例与篇幅/核心信息规则（无产出即无格式契约）。
+        let zh_prohibited = assert_fully_rendered(zh, json!({ "designation": "prohibited" }));
+        assert!(zh_prohibited.contains("不要输出 `completion-output` 块"));
+        assert!(!zh_prohibited.contains("```completion-output"));
+        assert!(!zh_prohibited.contains("2000 字符"));
+        let en_prohibited = assert_fully_rendered(en, json!({ "designation": "prohibited" }));
+        assert!(en_prohibited.contains("do not output a `completion-output` block"));
+        assert!(!en_prohibited.contains("```completion-output"));
+        assert!(!en_prohibited.contains("2,000 characters"));
     }
 
     #[test]

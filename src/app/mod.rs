@@ -1396,6 +1396,8 @@ pub struct App {
     task_search_indexer: Arc<dyn Fn(&Utf8Path, &str) + Send + Sync>,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
     upstream_output_resolver: Option<Arc<dyn upstream::UpstreamOutputResolver>>,
+    completion_protocol_section_resolver:
+        Option<Arc<dyn upstream::CompletionProtocolSectionResolver>>,
     provider_diagnostics:
         Option<Arc<dyn Fn() -> Result<BTreeMap<String, ProviderDiagnosticSnapshot>> + Send + Sync>>,
     acp_live_update: Option<
@@ -1713,6 +1715,7 @@ impl App {
             task_search_indexer: self.task_search_indexer.clone(),
             provider_override: self.provider_override.clone(),
             upstream_output_resolver: self.upstream_output_resolver.clone(),
+            completion_protocol_section_resolver: self.completion_protocol_section_resolver.clone(),
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
@@ -1777,6 +1780,7 @@ impl App {
             task_search_indexer: self.task_search_indexer.clone(),
             provider_override: self.provider_override.clone(),
             upstream_output_resolver: self.upstream_output_resolver.clone(),
+            completion_protocol_section_resolver: self.completion_protocol_section_resolver.clone(),
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
@@ -1891,6 +1895,30 @@ impl App {
             .as_ref()
             .ok_or(upstream::UpstreamResolveError::NoResolver)?
             .resolve_upstream_output(task_id, node_id)
+    }
+
+    /// 注册完成输出协议区段解析器（M5-cg 产出侧门禁，按节点身份的协议变体渲染端）。
+    ///
+    /// 桌面壳 multica 域在启动时装入；引擎侧在节点装配（`SessionMode::New`）时按判定出的
+    /// [`upstream::CompletionProtocolDesignation`] 调用。同步调用——纯模板渲染 + 内存映射
+    /// 反查，无阻塞等待。
+    pub fn with_completion_protocol_section_resolver(
+        mut self,
+        resolver: Arc<dyn upstream::CompletionProtocolSectionResolver>,
+    ) -> Self {
+        self.completion_protocol_section_resolver = Some(resolver);
+        self
+    }
+
+    /// 取节点的完成输出协议区段（解析器缺席 / 非 multica issue 任务 → `None`，不注入）。
+    pub(crate) fn completion_protocol_section(
+        &self,
+        task_id: &str,
+        designation: upstream::CompletionProtocolDesignation,
+    ) -> Option<crate::provider::PromptHiddenSection> {
+        self.completion_protocol_section_resolver
+            .as_ref()?
+            .completion_protocol_section(task_id, designation)
     }
 
     pub fn with_lifecycle_bus(mut self, lifecycle_bus: observability::RuntimeLifecycleBus) -> Self {
@@ -4423,6 +4451,7 @@ impl App {
             task_search_indexer: default_task_search_indexer(),
             provider_override: None,
             upstream_output_resolver: None,
+            completion_protocol_section_resolver: None,
             provider_diagnostics: None,
             acp_live_update: None,
             acp_session_update: None,

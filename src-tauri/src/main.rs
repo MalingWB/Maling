@@ -275,6 +275,10 @@ fn run() -> anyhow::Result<()> {
             state.install_upstream_output_resolver(std::sync::Arc::new(
                 multica::upstream::MulticaUpstreamResolver::new(app.handle().clone()),
             ))?;
+            // M5-cg：完成输出协议区段解析器（按节点身份渲染协议变体）——同上，先装后组装。
+            state.install_completion_protocol_section_resolver(std::sync::Arc::new(
+                multica::upstream::MulticaCompletionProtocolResolver::new(app.handle().clone()),
+            ))?;
             if let Ok(runtime_app) = state.app() {
                 let im_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {

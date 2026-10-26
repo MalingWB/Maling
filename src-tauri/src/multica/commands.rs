@@ -974,12 +974,15 @@ pub async fn start_remote_conversation_run(
             .get_or_insert_with(Vec::new)
             .extend(staging.paths.iter().cloned());
     }
-    // 远程任务上下文隐式注入（原 ③ 处移此）：完成输出协议块（issue 关联）+ 附件软失败清单块
-    // （有失败才渲染）。claim 时刻数据即执行依据（multica 设计：领取即定版），前端不感知该字段。
+    // 远程任务上下文隐式注入（原 ③ 处移此）：完成输出协议块（**direct 模式** + issue 关联，
+    // M5-cg 收敛——编排形态的协议按节点身份在装配时注入，任务级冻结段不再承载）+ 附件软失败
+    // 清单块（有失败才渲染）。claim 时刻数据即执行依据（multica 设计：领取即定版），前端不
+    // 感知该字段。run_mode 与 ActiveRemoteRun 快照同源（下方 register 同字段）。
     input.first_prompt_hidden_sections = remote_task_hidden_section(
         &task,
         context.config.desktop_language,
         &staging.failures,
+        &input.run_mode,
     )
     .map(|section| vec![section]);
 

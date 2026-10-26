@@ -1,4 +1,7 @@
-//! `$upstream.completion-output` 令牌的桌面侧解析器（M5-cf 拉取链路）。
+//! `$upstream.completion-output` 令牌的桌面侧解析器（M5-cf 拉取链路）与完成输出协议区段
+//! 解析器（M5-cg 产出侧门禁的渲染端）。
+//!
+//! # 上游拉取
 //!
 //! 链路：本地任务 → 在飞 multica 映射（workspace + 自身 issue）→ `GET /api/issues/{self}`
 //! 解析 `parent_issue_id` → 有限退避轮询 `GET /api/issues/{parent}` 直至 `completion_output`
@@ -10,11 +13,26 @@
 //! 引擎在 run 专用线程同步调用（`App::resolve_upstream_output`）；本侧经
 //! `tauri::async_runtime::block_on` 桥到异步客户端——阻塞上限 = 轮询总预算（15 分钟）。
 //! 快照语义：节点启动时的值，父后续覆盖不自动刷新（再次进入该节点重新解析）。
+//!
+//! # 完成输出协议区段（M5-cg）
+//!
+//! 引擎在节点装配时按节点身份判定 [`CompletionProtocolDesignation`]（sink / 标记节点 /
+//! 验收节点 → Final，标记声明 → Staged，其余 → Prohibited）后同步调用
+//! [`MulticaCompletionProtocolResolver`]：任务在飞映射关联 issue（非空白）→ 按当前界面语言
+//! 渲染 `remote_task_node_protocol` 对应变体，注入首条 prompt 隐式隐藏区段。本地任务 /
+//! 非 issue 关联 → `None`（不注入，与 claim 时冻结段同口径）。纯内存映射 + 模板渲染，无 IO。
 
 use std::time::Duration;
 
-use gold_band::app::upstream::{UpstreamOutputResolver, UpstreamResolveError};
-use gold_band::prompts::{RUNTIME_REMOTE_TASK_UPSTREAM_PULL, prompt_by_language, render};
+use gold_band::app::upstream::{
+    CompletionProtocolDesignation, CompletionProtocolSectionResolver, UpstreamOutputResolver,
+    UpstreamResolveError,
+};
+use gold_band::prompts::{
+    RUNTIME_REMOTE_TASK_NODE_PROTOCOL, RUNTIME_REMOTE_TASK_UPSTREAM_PULL, prompt_by_language,
+    render,
+};
+use gold_band::provider::PromptHiddenSection;
 use serde_json::json;
 use tauri::AppHandle;
 use tracing::{info, warn};
@@ -149,6 +167,52 @@ impl MulticaUpstreamResolver {
 impl UpstreamOutputResolver for MulticaUpstreamResolver {
     fn resolve_upstream_output(&self, task_id: &str, node_id: &str) -> Result<String, UpstreamResolveError> {
         tauri::async_runtime::block_on(self.resolve(task_id, node_id))
+    }
+}
+
+/// 按节点协议区段标题（对齐 `Gold Band remote task context` 命名惯例；与冻结区段分列，
+/// 会话内点开即可审计该节点被判定成的产出身份）。
+pub(crate) const REMOTE_TASK_PROTOCOL_SECTION_TITLE: &str = "Gold Band remote task protocol";
+
+/// 完成输出协议区段解析器（M5-cg 产出侧门禁，main.rs setup 装入 DesktopState）。
+///
+/// 引擎装配节点 prompt（`SessionMode::New`）时同步调用；渲染端只做「任务是否关联 multica
+/// issue」的归属判定 + 变体渲染——指定判定（sink / 标记 / 验收）在引擎侧完成（数据与模型
+/// 所见同源）。非 multica 任务 / 无在飞映射（本地 run 的常态）→ `None` 静默跳过。
+pub(crate) struct MulticaCompletionProtocolResolver {
+    handle: AppHandle,
+}
+
+impl MulticaCompletionProtocolResolver {
+    pub(crate) fn new(handle: AppHandle) -> Self {
+        Self { handle }
+    }
+}
+
+impl CompletionProtocolSectionResolver for MulticaCompletionProtocolResolver {
+    fn completion_protocol_section(
+        &self,
+        task_id: &str,
+        designation: CompletionProtocolDesignation,
+    ) -> Option<PromptHiddenSection> {
+        let shared = shared_multica_state(&self.handle)?;
+        let run = shared
+            .lock()
+            .ok()?
+            .find_active_run_by_task(task_id)
+            .map(|(_, run)| run)?;
+        run.issue_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|issue| !issue.is_empty())?;
+        let language = desktop_context(&self.handle)?.config.desktop_language;
+        let template = prompt_by_language(language, RUNTIME_REMOTE_TASK_NODE_PROTOCOL);
+        let rendered = render(template, json!({ "designation": designation.as_str() }))
+            .expect("remote task node protocol renders");
+        Some(PromptHiddenSection {
+            title: REMOTE_TASK_PROTOCOL_SECTION_TITLE.to_string(),
+            content: rendered.trim().to_string(),
+        })
     }
 }
 

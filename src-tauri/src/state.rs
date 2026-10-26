@@ -309,6 +309,10 @@ pub struct DesktopState {
     /// `app()` 组装时挂载——引擎回调式介入的既有模式（同 lifecycle_bus 共享件）。
     upstream_output_resolver:
         Mutex<Option<Arc<dyn gold_band::app::upstream::UpstreamOutputResolver>>>,
+    /// 完成输出协议区段解析器（M5-cg 产出侧门禁，按节点身份的协议变体渲染端）。同上游
+    /// 解析器的装入 / 挂载模式。
+    completion_protocol_section_resolver:
+        Mutex<Option<Arc<dyn gold_band::app::upstream::CompletionProtocolSectionResolver>>>,
     scheduler_coordinator: Mutex<Option<crate::scheduled_runtime::SchedulerCoordinatorHandle>>,
     scheduled_power: Mutex<
         crate::scheduled_runtime::power::ScheduledPowerManager<
@@ -356,6 +360,7 @@ impl DesktopState {
             context: Mutex::new(context),
             scheduled_service: Mutex::new(None),
             upstream_output_resolver: Mutex::new(None),
+            completion_protocol_section_resolver: Mutex::new(None),
             scheduler_coordinator: Mutex::new(None),
             scheduled_power: Mutex::new(
                 crate::scheduled_runtime::power::ScheduledPowerManager::new(
@@ -559,6 +564,16 @@ impl DesktopState {
             Some(resolver) => app.with_upstream_output_resolver(resolver),
             None => app,
         };
+        // M5-cg：完成输出协议区段解析器同模式挂载。
+        let protocol_resolver = self
+            .completion_protocol_section_resolver
+            .lock()
+            .map_err(|_| anyhow::anyhow!("completion protocol resolver lock poisoned"))?
+            .clone();
+        let app = match protocol_resolver {
+            Some(resolver) => app.with_completion_protocol_section_resolver(resolver),
+            None => app,
+        };
         Ok(app)
     }
 
@@ -737,6 +752,19 @@ impl DesktopState {
             .upstream_output_resolver
             .lock()
             .map_err(|_| anyhow::anyhow!("upstream resolver lock poisoned"))? = Some(resolver);
+        Ok(())
+    }
+
+    /// 装入完成输出协议区段解析器（M5-cg 产出侧门禁）：同上游解析器的装入模式。
+    pub fn install_completion_protocol_section_resolver(
+        &self,
+        resolver: Arc<dyn gold_band::app::upstream::CompletionProtocolSectionResolver>,
+    ) -> Result<()> {
+        *self
+            .completion_protocol_section_resolver
+            .lock()
+            .map_err(|_| anyhow::anyhow!("completion protocol resolver lock poisoned"))? =
+            Some(resolver);
         Ok(())
     }
 
