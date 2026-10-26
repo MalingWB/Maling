@@ -297,7 +297,10 @@ impl MulticaRuntimeState {
         let notify = Arc::new(tokio::sync::Notify::new());
         self.upstream_pull_decisions.insert(
             upstream_pull_key(local_run_id, node_id),
-            UpstreamPullPending { notify: notify.clone(), decision: None },
+            UpstreamPullPending {
+                notify: notify.clone(),
+                decision: None,
+            },
         );
         notify
     }
@@ -525,7 +528,11 @@ mod tests {
             state.take_upstream_pull_decision("run-9", "node-1"),
             Some(UpstreamPullDecision::Manual(ref text)) if text == "手动交付说明"
         ));
-        assert!(state.take_upstream_pull_decision("run-9", "node-1").is_none());
+        assert!(
+            state
+                .take_upstream_pull_decision("run-9", "node-1")
+                .is_none()
+        );
         // 迟到决策可再写入（槽仍在）：resolve 未收口前决策通道畅通。
         assert!(
             state
@@ -544,7 +551,11 @@ mod tests {
                 .decide_upstream_pull("run-9", "node-1", UpstreamPullDecision::Retry)
                 .is_none()
         );
-        assert!(state.take_upstream_pull_decision("run-9", "node-1").is_none());
+        assert!(
+            state
+                .take_upstream_pull_decision("run-9", "node-1")
+                .is_none()
+        );
     }
 
     #[test]
@@ -562,8 +573,16 @@ mod tests {
                 .is_some()
         );
         // 只影响 node-2；node-1 与另一 run 的 node-1 均未决策。
-        assert!(state.take_upstream_pull_decision("run-9", "node-1").is_none());
-        assert!(state.take_upstream_pull_decision("run-other", "node-1").is_none());
+        assert!(
+            state
+                .take_upstream_pull_decision("run-9", "node-1")
+                .is_none()
+        );
+        assert!(
+            state
+                .take_upstream_pull_decision("run-other", "node-1")
+                .is_none()
+        );
         assert!(matches!(
             state.take_upstream_pull_decision("run-9", "node-2"),
             Some(UpstreamPullDecision::Skip)
@@ -584,18 +603,14 @@ mod tests {
 
         state.drop_active_run("remote-9");
 
-        assert!(!state
-            .upstream_pull_decisions
-            .contains_key("run-9/node-1"));
-        assert!(!state
-            .upstream_pull_decisions
-            .contains_key("run-9/node-2"));
-        assert!(state
-            .upstream_pull_decisions
-            .contains_key("run-other/node-1"));
-        assert!(state
-            .upstream_pull_decisions
-            .contains_key("run-9x/node-1"));
+        assert!(!state.upstream_pull_decisions.contains_key("run-9/node-1"));
+        assert!(!state.upstream_pull_decisions.contains_key("run-9/node-2"));
+        assert!(
+            state
+                .upstream_pull_decisions
+                .contains_key("run-other/node-1")
+        );
+        assert!(state.upstream_pull_decisions.contains_key("run-9x/node-1"));
     }
 
     // ---- M5-bp：完成路径认领（RunCompleted / AcpTurnFinished 双事件竞态单飞）----

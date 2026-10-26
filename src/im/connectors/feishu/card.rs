@@ -1011,6 +1011,9 @@ fn outcome_copy(
         ImResolutionOutcome::ElicitationDeclined => {
             localized(locale, "im.action.decline").to_owned()
         }
+        ImResolutionOutcome::ElicitationCancelled => {
+            localized(locale, "im.elicitation.cancelled").to_owned()
+        }
         ImResolutionOutcome::ManualCheck {
             outcome: NodeOutcome::Success,
         } => localized(locale, "im.action.success").to_owned(),
@@ -1912,6 +1915,33 @@ pub(super) mod tests {
             body.contains("\"tag\":\"select_static\"") && body.contains("\"disabled\":true"),
             "terminal card must keep and disable the original controls: {body}"
         );
+    }
+
+    #[test]
+    fn cancelled_resolution_preserves_disabled_controls_without_claiming_a_rejection() {
+        for (locale, cancelled, declined) in [
+            (ImLocale::ZhCn, "已取消", "拒绝"),
+            (ImLocale::En, "Cancelled", "Decline"),
+        ] {
+            let mut response = submitted_single_select_response();
+            response.outcome = Some(ImResolutionOutcome::ElicitationCancelled);
+            let reply = action_reply(&response, locale, &codec());
+            let body = reply["card"]["data"]["body"].to_string();
+            assert!(body.contains(cancelled), "missing cancellation: {body}");
+            assert!(
+                body.contains("\"disabled\":true"),
+                "controls remain active: {body}"
+            );
+            assert_eq!(
+                outcome_copy(response.outcome.as_ref().unwrap(), None, locale),
+                cancelled
+            );
+            assert_ne!(cancelled, declined);
+            assert!(
+                !body.contains("\"initial_index\""),
+                "cancel must not invent an answer: {body}"
+            );
+        }
     }
 
     #[test]

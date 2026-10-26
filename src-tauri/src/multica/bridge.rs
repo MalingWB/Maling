@@ -703,7 +703,10 @@ async fn push_workflow_completion_snapshot(
         .issue_id
         .as_deref()
         .expect("is_workflow_issue_run guarantees non-blank issue");
-    let Some(block) = handoff::attempt_completion_scan(attempt_dir).attempt_probe.block else {
+    let Some(block) = handoff::attempt_completion_scan(attempt_dir)
+        .attempt_probe
+        .block
+    else {
         return;
     };
     // 值去重：与上次上送相同即跳过。成功后回写缓存；失败不回写（下一 turn / 完成路径重试）。
@@ -1245,12 +1248,16 @@ mod tests {
         );
         assert_eq!(changed, 2);
         assert_eq!(
-            state.remote_completed_tasks[1].issue_status_category.as_deref(),
+            state.remote_completed_tasks[1]
+                .issue_status_category
+                .as_deref(),
             Some("done")
         );
         assert!(state.remote_completed_tasks[1].issue_status_name.is_none());
         assert_eq!(
-            state.remote_completed_tasks[0].issue_status_category.as_deref(),
+            state.remote_completed_tasks[0]
+                .issue_status_category
+                .as_deref(),
             Some("todo")
         );
         assert_eq!(
@@ -1270,11 +1277,16 @@ mod tests {
             0
         );
         assert_eq!(
-            apply_reconciled_issue_status(&mut state, &[status_row("rt-1", Some("in_progress"), None)]),
+            apply_reconciled_issue_status(
+                &mut state,
+                &[status_row("rt-1", Some("in_progress"), None)]
+            ),
             1
         );
         assert_eq!(
-            state.remote_completed_tasks[1].issue_status_category.as_deref(),
+            state.remote_completed_tasks[1]
+                .issue_status_category
+                .as_deref(),
             Some("in_progress")
         );
     }
@@ -1294,7 +1306,9 @@ mod tests {
         );
         assert_eq!(changed, 0);
         assert_eq!(
-            state.remote_completed_tasks[0].issue_status_category.as_deref(),
+            state.remote_completed_tasks[0]
+                .issue_status_category
+                .as_deref(),
             Some("done"),
             "不在响应行的条目保持原值"
         );
@@ -1535,24 +1549,12 @@ mod tests {
         // M5-cg：仅 workflow + issue 关联 → 节点成功边界（NodeCompleted）即时上送通道命中。
         // auto 退出中途上送：动态编排的叶节点在装配时无法预知谁是最后一个（图运行中生长），
         // 交付统一由 `/complete` 终态路径整体携带 attempt 最后一块（后写胜）。
-        assert!(is_workflow_issue_run(&gated_run(
-            "workflow",
-            Some("iss-1")
-        )));
+        assert!(is_workflow_issue_run(&gated_run("workflow", Some("iss-1"))));
         // auto / direct（不经此通道）/ 非 issue / 空白 issue → 不上送。
-        assert!(!is_workflow_issue_run(&gated_run(
-            "auto",
-            Some("iss-1")
-        )));
-        assert!(!is_workflow_issue_run(&gated_run(
-            "direct",
-            Some("iss-1")
-        )));
+        assert!(!is_workflow_issue_run(&gated_run("auto", Some("iss-1"))));
+        assert!(!is_workflow_issue_run(&gated_run("direct", Some("iss-1"))));
         assert!(!is_workflow_issue_run(&gated_run("workflow", None)));
-        assert!(!is_workflow_issue_run(&gated_run(
-            "workflow",
-            Some("   ")
-        )));
+        assert!(!is_workflow_issue_run(&gated_run("workflow", Some("   "))));
     }
 
     #[test]

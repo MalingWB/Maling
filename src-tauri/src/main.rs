@@ -108,7 +108,7 @@ use gold_band::storage::{GoldBandPaths, configure_storage_paths};
 use multica::commands::{
     add_multica_workspace, cancel_remote_task, decide_upstream_pull, get_remote_task_requirement,
     get_remote_tasks, list_remote_skills, list_server_multica_workspaces, pull_remote_skills,
-    recover_remote_work_dir_sessions, reconcile_remote_task_statuses, remove_multica_workspace,
+    reconcile_remote_task_statuses, recover_remote_work_dir_sessions, remove_multica_workspace,
     remove_remote_completed_task, rerun_remote_task, set_active_multica_workspace,
     start_remote_conversation_run,
 };
@@ -543,6 +543,7 @@ fn run() -> anyhow::Result<()> {
             get_git_commit_reachability,
             execute_git_mutation,
             get_git_comparison,
+            commands::prepare_git_push,
             start_git_operation,
             start_git_state_monitor,
             stop_git_state_monitor,

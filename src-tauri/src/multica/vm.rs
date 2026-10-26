@@ -9,8 +9,7 @@ use std::collections::BTreeMap;
 use gold_band::config::{DesktopLanguage, RemoteCompletedTask, RemoteWorkspaceRef};
 use gold_band::prompts::{
     RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES, RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
-    RUNTIME_REMOTE_TASK_CONTEXT, RUNTIME_REMOTE_TASK_PARENT_OUTPUT,
-    prompt_by_language, render,
+    RUNTIME_REMOTE_TASK_CONTEXT, RUNTIME_REMOTE_TASK_PARENT_OUTPUT, prompt_by_language, render,
 };
 use gold_band::provider::PromptHiddenSection;
 use serde::Serialize;
@@ -806,10 +805,7 @@ mod tests {
         assert!(requirement.contains("- 业务需求 ID: 674290"));
         assert!(requirement.contains("- 需求链接: https://dpms.example.com/story/674290"));
         assert!(requirement.ends_with("Steps to repro..."));
-        assert!(
-            requirement.find("Fix login").unwrap()
-                < requirement.find("需求溯源信息").unwrap()
-        );
+        assert!(requirement.find("Fix login").unwrap() < requirement.find("需求溯源信息").unwrap());
         assert!(
             requirement.find("需求溯源信息").unwrap()
                 < requirement.find("Steps to repro...").unwrap()
@@ -822,7 +818,9 @@ mod tests {
         let requirement_en = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::En)
             .requirement
             .expect("requirement prefilled");
-        assert!(requirement_en.starts_with("Fix login\n\nThis task comes from a DPMS-linked work item"));
+        assert!(
+            requirement_en.starts_with("Fix login\n\nThis task comes from a DPMS-linked work item")
+        );
         assert!(requirement_en.contains("- Release plan ID: 538181"));
         assert!(
             requirement_en.contains("- Requirement link: https://dpms.example.com/story/674290")
@@ -932,8 +930,8 @@ mod tests {
         assert!(!content.contains("Steps to repro..."));
         assert!(content.contains("completion-output"));
         // 英文侧同构（溯源块同样不进区段）。
-        let section_en =
-            remote_task_hidden_section(&task, DesktopLanguage::En, &[], "direct").expect("hidden section");
+        let section_en = remote_task_hidden_section(&task, DesktopLanguage::En, &[], "direct")
+            .expect("hidden section");
         assert!(!section_en.content.contains("DPMS"));
         assert!(section_en.content.contains("completion-output"));
     }
@@ -980,8 +978,9 @@ mod tests {
             filename: "spec.pdf".into(),
             reason: "HTTP 404".into(),
         }];
-        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &failures, "workflow")
-            .expect("failures-only section");
+        let section =
+            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &failures, "workflow")
+                .expect("failures-only section");
         assert!(!section.content.contains("completion-output"));
         assert!(section.content.contains("spec.pdf"));
         // direct 仍冻结协议正文（既有行为不变）。
@@ -1042,8 +1041,8 @@ mod tests {
         assert!(requirement.contains("测试要点: 回归登录链路"));
 
         // 隐式区段只剩协议块：不含上游块、不含父输出文本。
-        let section =
-            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct").expect("hidden section");
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
+            .expect("hidden section");
         assert!(!section.content.contains("上游"));
         assert!(!section.content.contains("部署地址: https://t.example.com"));
         assert!(section.content.contains("completion-output"));
@@ -1054,8 +1053,8 @@ mod tests {
             .expect("requirement prefilled");
         assert!(requirement_en.contains("upstream (parent) work item"));
         assert!(requirement_en.ends_with("Steps to repro..."));
-        let section_en =
-            remote_task_hidden_section(&task, DesktopLanguage::En, &[], "direct").expect("hidden section");
+        let section_en = remote_task_hidden_section(&task, DesktopLanguage::En, &[], "direct")
+            .expect("hidden section");
         assert!(!section_en.content.contains("upstream (parent)"));
         assert!(section_en.content.contains("completion-output"));
     }
@@ -1091,12 +1090,9 @@ mod tests {
             attribution: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
-        assert_eq!(
-            vm.requirement.as_deref(),
-            Some("Fix login\n\nSteps...")
-        );
-        let section =
-            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct").expect("hidden section");
+        assert_eq!(vm.requirement.as_deref(), Some("Fix login\n\nSteps..."));
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
+            .expect("hidden section");
         assert!(section.content.contains("completion-output"));
 
         // 纯空白 parent_output 同样视为缺失（与 DPMS 字段的逐字段空白过滤惯例一致）。
@@ -1174,7 +1170,9 @@ mod tests {
             RemoteTaskVm::from_detail(&non_issue, "ws-1", DesktopLanguage::ZhCn).requirement,
             None
         );
-        assert!(remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &[], "direct").is_none());
+        assert!(
+            remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &[], "direct").is_none()
+        );
     }
 
     #[test]
@@ -1224,7 +1222,11 @@ mod tests {
         assert!(section.content.contains("completion-output"));
         assert!(section.content.contains("需求附件未能下载到本地"));
         assert!(section.content.contains("多值测试样本.zip（HTTP 404）"));
-        assert!(section.content.contains("需求说明.pdf（timeout after 120s）"));
+        assert!(
+            section
+                .content
+                .contains("需求说明.pdf（timeout after 120s）")
+        );
         // 协议块在前、清单块在后（锚点顺序锁定）。
         let protocol_at = section.content.find("completion-output").expect("protocol");
         let failures_at = section
@@ -1234,15 +1236,20 @@ mod tests {
         assert!(protocol_at < failures_at);
 
         // 英文侧同构（双语模板都渲染清单）。
-        let section_en = remote_task_hidden_section(&task, DesktopLanguage::En, &failures, "direct")
-            .expect("english section");
-        assert!(section_en.content.contains("could not be downloaded locally"));
+        let section_en =
+            remote_task_hidden_section(&task, DesktopLanguage::En, &failures, "direct")
+                .expect("english section");
+        assert!(
+            section_en
+                .content
+                .contains("could not be downloaded locally")
+        );
         assert!(section_en.content.contains("多值测试样本.zip (HTTP 404)"));
 
         // 空失败 → 区段只剩协议块，不含清单文案（byte 级与引入前单块区段一致；协议模板自身
         // 提及「附件」一词，故用清单块独有短语断言缺席）。
-        let no_failures =
-            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct").expect("protocol only");
+        let no_failures = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
+            .expect("protocol only");
         assert!(no_failures.content.contains("completion-output"));
         assert!(!no_failures.content.contains("未能下载到本地"));
 
@@ -1411,7 +1418,10 @@ mod tests {
         let legacy_vm = RemoteTaskVm::from_completed(&legacy, "proj-1");
         assert!(legacy_vm.kind.is_none());
         assert!(legacy_vm.readiness.is_none());
-        assert!(legacy_vm.issue_status_category.is_none(), "未对账条目无 issue 状态");
+        assert!(
+            legacy_vm.issue_status_category.is_none(),
+            "未对账条目无 issue 状态"
+        );
 
         // title 空白 → 用 remote_task_id 兜底（不留空标签）。
         let blank = RemoteCompletedTask {

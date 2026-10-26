@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { parse } from 'yaml';
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptsDir, '..');
@@ -16,3 +17,38 @@ test('release-please declares the pre-1.0 breaking-change policy', async () => {
 
   assert.equal(config.packages?.['.']?.['bump-minor-pre-major'], true);
 });
+
+for (const [file, toolingRoot] of [
+  ['release-please.yml', ''],
+  ['release.yml', 'release-tools/'],
+]) {
+  test(`${file} builds signed WB packages for all four release platforms`, async () => {
+    const workflow = parse(await readFile(path.join(repoRoot, '.github/workflows', file), 'utf8'));
+    assert.equal(workflow.env.GOLD_BAND_RELEASE_CHANNEL, 'wb');
+    const build = workflow.jobs.build;
+    assert.deepEqual(build.strategy.matrix.platform, [
+      { name: 'windows-x64', runner: 'windows-latest' },
+      { name: 'linux-x64', runner: 'ubuntu-22.04' },
+      { name: 'macos-x64', runner: 'macos-15-intel' },
+      { name: 'macos-arm64', runner: 'macos-15' },
+    ]);
+    assert.equal(build.env.TAURI_SIGNING_PRIVATE_KEY, '${{ secrets.WB_TAURI_SIGNING_PRIVATE_KEY }}');
+    assert.equal(build.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD, '${{ secrets.WB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}');
+    assert.equal(build.env.GOLD_BAND_METRICS_API_KEY, '${{ secrets.GOLD_BAND_METRICS_API_KEY }}');
+
+    const prepareIndex = build.steps.findIndex((step) => step.id === 'channel');
+    assert.ok(prepareIndex >= 0, 'release credentials and channel config must be prepared before building');
+    assert.equal(build.steps[prepareIndex].run,
+      `node ${toolingRoot}scripts/prepare-release-build.mjs src-tauri/target/channel/tauri.release.conf.json`);
+    const installIndex = build.steps.findIndex((step) => step.run === 'npm ci');
+    assert.ok(installIndex > prepareIndex, 'missing credentials must fail before installing dependencies');
+    const actionIndex = build.steps.findIndex((step) => step.uses?.startsWith('tauri-apps/tauri-action@'));
+    assert.ok(actionIndex > prepareIndex);
+    const action = build.steps[actionIndex];
+    assert.equal(action.with.args, '--config src-tauri/target/channel/tauri.release.conf.json');
+    assert.equal(action.with.releaseName, '${{ steps.channel.outputs.release_name }}');
+    assert.equal(action.with.releaseDraft, true);
+    assert.equal(action.env?.GOLD_BAND_RELEASE_CHANNEL, undefined, 'the build must inherit the workflow channel');
+    assert.equal(action.env?.TAURI_SIGNING_PRIVATE_KEY, undefined, 'the action must use the validated WB key');
+  });
+}

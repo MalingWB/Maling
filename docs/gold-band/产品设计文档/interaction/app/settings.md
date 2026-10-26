@@ -109,7 +109,7 @@
 - 生成 CSS 中跨主题的 `@font-face` 必须通过 `runtimeFamily + weightMin/weightMax + style + coverage` 形成不会竞争的匹配身份，不能让同一匹配键指向多个主题 URL。Variable Font 必须以资产元数据范围内的连续区间注册，不能把同一 variable 文件重复伪装成 400/500/600/700 静态 face。主题切换和自定义字体栈只把已保存的作者 family 投影为当前主题 runtime family，不改写用户数据；浏览器只允许请求当前主题实际命中的字体资源。
 - 点击未选字体会追加到栈末尾；点击已选字体或删除按钮会取消；已选项显示从 1 开始的优先级，并可通过上移/下移调整。清空最后一项后必须写回 `source: theme`，不保存空的 custom 栈。
 - 自定义栈最多 16 项，family 去除首尾空白后按大小写不敏感去重；空值、超过 128 个 Unicode 字符及包含 `, ; { }` 的 family 无效。保存接口重新校验并返回 canonical 顺序。
-- UI 基准字号允许 `12–18px`；编辑器字号允许 `10–18px`，步长均为 `1px`。输入时只更新根级 CSS 变量进行即时预览，失焦后保存 `source: custom`；点击恢复时保存 `source: theme` 并立即展示当前主题预设，禁止写死 14/12、使用浏览器 zoom 或新增 localStorage 旁路。
+- UI 基准字号允许 `12–18px`；编辑器字号允许 `10–18px`，步长均为 `1px`。输入时只更新根级 CSS 变量进行即时预览，失焦后保存 `source: custom`；点击恢复时保存 `source: theme` 并立即展示当前主题预设，内置主题的明暗方案默认 UI 为 `14px`、编辑器为 `13px`，已有自定义字号（包括 `12px`）不变；禁止把恢复操作写成固定字号、使用浏览器 zoom 或新增 localStorage 旁路。
 - UI 字号控制侧栏、设置页、聊天正文、Thought 与普通 Markdown，并通过派生 token 覆盖紧凑说明、徽标和时间等层级；聊天行内代码与代码块只切换等宽字形，字号继续从 UI 基准派生。
 - 编辑器字体和字号只覆盖所有 CodeMirror 文件查看/编辑、运行产物、Markdown 编辑器以及 Git/本轮 Diff；技术标识使用等宽字体不等同于消费编辑器字号。
 - 全局字重语义采用 variable font 轻量轴映射：正文 `330`、常规强调 `380`、标题/强强调 `450`、最高强调 `520`；Inter face 暴露字体原生连续轴，MiSans face 暴露 `250–520` 连续轴，确保四档值命中真实字形而不是吸附到静态 400/500/600。最高中文视觉层级不超过 Semibold。保留视觉层次，不按页面机械替换字重类，也不通过透明度或错配字体文件伪造较细字重。
@@ -168,6 +168,7 @@
 - 客户端启动只让已持久化的当前语言进入关键路径：取得 bootstrap 后动态加载这一份语言包，加载并激活成功后才发布应用就绪状态和显示主窗口。其他六份语言包不参与启动下载与解析。
 - 七份 UI 语言包以英文 key 集合作为基准，在测试与 CI 中校验叶子 key 完全一致；新增或删除 UI key 必须同步全部语言。普通缺词视为构建缺陷，运行时不加载英文包、不使用英文 fallback。
 - 设置里还没有 `desktopLanguage` 时，桌面端第一次加载按系统界面语言写入一次。简体中文、繁体中文（含香港、澳门）、日语、韩语、巴西葡萄牙语、西班牙语映射到上表；葡萄牙语其他地区和其他语言写入 `en`。写入之后以设置为准，系统语言再变化不覆盖。
+- locale tag 的中文映射以显式文字标记优先：`Hans` 选简体、`Hant` 选繁体，不受地区覆盖；没有文字标记时，`TW/HK/MO` 选繁体，其余中文选简体。前端浏览器与 Rust locale 映射保持一致，大小写和下划线分隔不影响结果。Windows 桌面仍使用系统 UI LANGID 初始化；已有设置保持原值，用户可在设置页主动修改。
 - Prompt 本地化独立于 UI 语言包；角色缺少对应语言时仍按 Prompt 规则降级到英文，不改变 UI 语言包的无 fallback 契约。
 - Windows 安装包按系统界面语言选择 NSIS 语言，未匹配时使用英文，不弹出语言对话框。安装包语言不会写入应用设置。
 - 每个渠道在渠道配置 `mainBinaryName` 声明独立的主程序文件名（default 为 `gold-band-desktop.exe`，wb 为 `maling-desktop.exe`），构建时写入 Tauri `mainBinaryName`，渠道名重复或格式非法时构建失败。NSIS 安装与更新只按文件名检测并关闭运行中的进程，因此同一台机器上安装或更新一个渠道不会关闭另一个渠道的客户端。旧版本升级时由安装器删除旧文件名的程序并把开始菜单、桌面快捷方式改指向新程序；通知 AUMID、开始菜单快捷方式与内置 memory MCP 启动路径在启动时按当前程序路径自动校正。
@@ -249,7 +250,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 「高级」页中“记录详细日志”所在分组标题为「日志」（2026-10-03 起，原为与 tab 重名的「高级」）。
 - 设置页中的问号帮助入口（如“记录详细日志”“开启指标上报”）统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示说明文本；这些布尔开关统一采用“标题 + tips icon + switch”同一行布局，避免一部分开关右置、一部分行内导致对齐不一致；同时避免页面出现主题色 tooltip 与白底说明面板混用。
 - 2026-08-16 起高级设置移除“使用本地 Claude”开关及其本地探测请求；设置页保存偏好时固定提交 `useLocalClaude = false`，`RuntimeConfig` 加载入口同步固定为 `false`，历史设置中的 `true` 不再进入运行时。后端既有字段、接口与 ACP 本地解析能力保留，未来重新开放时只需恢复这一处配置投影和前端入口。
-- 更新能力使用 Tauri updater：`default` 渠道内置 GitHub Release `latest.json`，`wb` 渠道内置内网占位地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key，因此两个渠道不会通过改 URL 串包更新。default 渠道的安装包、签名和 `latest.json` 由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在并上传；该 workflow 可由 `main` push 自动触发，也可在 GitHub Actions 页面手动触发以补跑 release-please 主链路，release publish 后才对客户端 latest 检查可见。
+- 更新能力使用 Tauri updater：`default` 渠道内置上游 GitHub Release `latest.json`，`wb` 渠道内置渠道配置中的内网地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key。2026-10-19 起本 fork 的 GitHub Release 自动发布及手工重建统一产出四个平台的 WB 包、签名和更新清单，品牌为 MALING，版本以 tag 为准；完整构建与密钥契约见 [overview.md](overview.md)。GitHub 上传位置与客户端更新来源独立：WB 客户端继续访问内网，不因发布到 GitHub 而切换更新地址。
 - `wb` 渠道本地执行 `npm run build:wb` 生成 `latest.json` 时，必须优先选择与本次 `--version` 精确匹配的签名安装包；即使 `release/wb` 或构建产物目录里残留旧包，也不能把下载 URL 指回历史安装包。收集签名安装包时必须使用 Cargo 解析后的 target 目录：优先 `cargo metadata` 的 `target_directory`（覆盖本机 `CARGO_TARGET_DIR`、`CARGO_BUILD_TARGET_DIR` 与用户/项目 `build.target-dir`），再回退环境变量和仓库内 `target/`、`src-tauri/target/`；不得写死某台机器的绝对路径。清理过期 bundle 与生成 `latest.json` 使用同一组候选目录。
 - 桌面端启动 20 秒后执行首次后台更新检查（避开启动恢复与 Agent 诊断高峰），此后每 240 分钟检查一次；同一轮检查只请求一次渠道 manifest，检查所得的完整更新对象同时用于状态投影和渠道更新策略，不得为判断静默更新再次请求 manifest。`default` 与 `wb` 渠道均启用静默更新：非关键更新只更新状态并在标题栏提示用户，不自动下载或安装；仅在 manifest 明确声明 `critical: true` 时静默预下载已签名更新包，不立即安装，并在应用退出或后续启动阶段安装。pending 更新按渠道 `appKey` 隔离在临时目录，先原子写入安装包、最后提交 `pending.json`（版本 + 签名）；安装前必须用渠道 public key 重新校验签名并确认版本仍高于运行版本，校验失败清理目录且不安装。用户仍可在高级页手动检查，有新版本时点击下载并安装；上次检查时间持久化为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
 - 2026-05-27 起更新提示增加三级红点：后台发现当前可更新版本后，左侧 `Settings`、设置页 `Advanced` tab、`Updates` 分组标题同时显示红点。用户进入设置页时只清除 `Settings` 红点；切到 `Advanced` tab 时只清除 `Advanced` 红点；`Updates` 红点不因进入页面消失，只有当前已无可更新版本时才自动消失。
@@ -291,10 +292,10 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 
 ## 13. 多语言更新日志
 
-- 发布链路验收：两条 Release workflow 的 `updater-json` job 均等待构建完成，依次生成多语言清单、生成安装包校验和、上传 `release-output/latest*.json`、macOS 安装脚本与 `release-assets/*.sha256`。手动重建使用 `release-tools/scripts/`，自动发布使用 `scripts/`；契约测试解析 YAML 中的实际执行步骤并校验路径、发布版本与顺序，产物内容由生成器接口测试验证。
+- 发布链路验收：两条 Release workflow 的 `updater-json` job 均等待四组 WB 构建完成，依次生成多语言清单、生成安装包校验和、上传 `release-output/latest*.json` 与 `release-assets/*.sha256`。不上传指向上游 Gold Band 的 macOS 安装辅助脚本。手动重建使用 `release-tools/scripts/`，自动发布使用 `scripts/`；契约测试解析 YAML 中的实际执行步骤并校验渠道、四个平台、Secrets 映射、路径、发布版本与顺序，生成器接口测试验证 MALING 正文及四平台签名和下载地址。
 - 发布准备必须明确 Git 起止范围、目标版本，以及用户确认的普通更新 / 关键更新选择；已明确回答的同版本选择直接复用，缺失或含糊时先询问，不得根据提交类型、破坏性变更、安全修复或更新日志措辞推断关键性。普通更新只提示、由用户手动触发下载与安装；关键更新后台下载签名包，在正常退出生命周期或既有后续启动安装路径中安装，不因发现或下载完成而强制重启、中断当前工作。
-- `release-notes/<version>/release.json` 是 default 渠道该版本关键性的唯一事实源，与七语言 Markdown 同时准备；完整对象只能是 `{"critical": false}` 或 `{"critical": true}`，普通更新也必须显式写入 false。覆盖已有文件前必须读取并核对用户选择，有冲突先确认；已有文件本身不能替代用户确认。git-changelog 完成时报告目标版本、最终普通 / 关键选择及文件清单。
-- 生成器从实际发布 SHA/tag 对应版本目录读取元数据；七语言正文和 `release.json` 必须进入该发布 SHA/tag，不能只存在于工作区或另一 workflow 分支。历史版本缺少 `release.json` 时按普通更新处理；文件存在时必须严格校验为仅含布尔型 `critical` 的 JSON 对象，语法错误、缺字段、错误类型或额外字段均在写入任何生成产物前失败，不能静默回落或留下部分输出。七个 locale manifest 与兼容 `latest.json` 共八份 default manifest 必须携带相同 `critical` 值；`wb` 的单 manifest 与既有关键更新构建参数保持不变，不消费该 default 元数据。
+- `release-notes/<version>/release.json` 是 GitHub 正式发布（含 WB）该版本关键性的唯一事实源，与七语言 Markdown 同时准备；完整对象只能是 `{"critical": false}` 或 `{"critical": true}`，普通更新也必须显式写入 false。覆盖已有文件前必须读取并核对用户选择，有冲突先确认；已有文件本身不能替代用户确认。git-changelog 完成时报告目标版本、最终普通 / 关键选择及文件清单。
+- 生成器从实际发布 SHA/tag 对应版本目录读取元数据；七语言正文和 `release.json` 必须进入该发布 SHA/tag，不能只存在于工作区或另一 workflow 分支。历史版本缺少 `release.json` 时按普通更新处理；文件存在时必须严格校验为仅含布尔型 `critical` 的 JSON 对象，语法错误、缺字段、错误类型或额外字段均在写入任何生成产物前失败，不能静默回落或留下部分输出。GitHub 发布的七个 locale manifest 与兼容 `latest.json` 共八份 manifest 必须携带相同 `critical` 值；本地 `npm run build:wb` 的内网单 manifest 继续使用既有关键更新构建参数。
 - 文件准备不授权提交、push、打 tag 或发布；这些操作均需用户另行明确请求。
 - 「帮助 → 更新日志」查看当前版本的更新日志：构建时由 Vite 插件把 `release-notes/<package.json 版本>/<语言>.md` 打进前端，所有渠道（含 wb）都使用其基础版本的日志；每种语言是独立的懒加载分块（单个约 4–7 KB），启动时不加载，打开弹窗时只读取当前界面语言，缺少翻译时回退到 zh-CN，没有日志时显示“当前版本暂无更新日志”。只打包当前版本，不提供历史版本列表；日志随安装包固定，发布后修改需要发新版本。
 - Markdown 渲染分两类：`chat` 用于消息流内的回复（Agent 会话消息、Agent 提问卡片），标题字号接近正文；`document` 用于独立阅读的文档（会话系统提示词渲染视图、上下文管理正文），标题使用文档层级；`github-release` 是在 `document` 基础上增加单换行即换行与直接加载远程图片的更新日志渲染。
@@ -303,7 +304,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 更新日志以 GitHub Release 的显示效果为准，按 GitHub 兼容 Markdown 编写：提示框只使用 `NOTE / TIP / IMPORTANT / WARNING / CAUTION` 五种，`[!TYPE]` 单独占第一行，标题由类型固定、不可自定义，需要小标题时把下一行写成加粗文字；不使用 Obsidian 的 `[!attention]` 等 callout 和 `![…|500]` 图片宽度写法；单个换行即换行，编号列表写成 `1. 内容`。
 - 客户端更新弹窗使用共享 `Markdown` 的 `github-release` 渲染模式，与 GitHub Release 正文保持一致：单个换行显示为换行，五种 GitHub 提示框显示为带图标的提示框，标题跟随界面语言，颜色依次使用 `attention`、`success`、`emphasis`、`warning`、`danger` 主题 token，保证五种提示框在各主题下可区分且清晰；其他类型保持为普通引用。该模式下段落之间保留间距，避免与单个换行混淆；弹窗打开时焦点停在弹窗本身，不落到说明中的代码复制按钮等控件。提示框属于 GFM 通用语法，聊天和文件预览同样渲染（见[对话运行时](conversational-runtime.md)与[工作区文件](workspace-files.md)）；`github-release` 只额外把单个换行渲染为换行，并直接加载更新说明中的网络图片，不经过受信任图片域名。
 
-- `release-notes/<version>/<locale>.md` 是用户更新日志事实源，`CHANGELOG.md` 继续由 release-please 管理。default 发布生成七个 `latest.<locale>.json`，并保留与简体中文 manifest 相同的 `latest.json` 供旧客户端与缺失 locale 资产时回退；客户端按已保存界面语言选择 locale manifest；该选择只发生在后台更新请求中，设置页「更新地址」始终展示配置的 `latest.json`，不随语言变化。GitHub Draft Release 正文由同目录的 `zh-CN.md` 和 `en.md` 生成并覆盖 release-please 默认正文，格式为 `# Gold Band vX.Y.Z` 标题、中英文锚点跳转、`## 中文` / `## English` 两段，原文标题（代码块外）各降一级；图片继续引用 `static.dion.blue`。`wb`、自定义更新 URL 和 `npm run build:wb` 均保持单一 `latest.json`，不接入 locale 选择。
+- `release-notes/<version>/<locale>.md` 是用户更新日志事实源，`CHANGELOG.md` 继续由 release-please 管理。GitHub 发布生成七个 `latest.<locale>.json`，并保留与简体中文 manifest 相同的 `latest.json`；default 客户端按已保存界面语言选择 locale manifest，设置页「更新地址」始终展示配置的 `latest.json`。GitHub Draft Release 正文由同目录的 `zh-CN.md` 和 `en.md` 生成，标题使用渠道配置的 `productName`（本 fork 为 `# MALING vX.Y.Z`），保留中英文锚点跳转、`## 中文` / `## English` 两段与原文标题降级；图片继续引用 `static.dion.blue`。WB 客户端、自定义更新 URL 和本地 `npm run build:wb` 的内网分发仍使用单一 `latest.json`，GitHub 的额外 locale 附件不改变客户端选择逻辑。
 
 ## 14. 受信任的图片域名
 

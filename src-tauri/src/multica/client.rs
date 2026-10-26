@@ -1146,11 +1146,9 @@ impl MulticaClient {
                 resp.status()
             )));
         }
-        let mut file = tokio::fs::File::create(destination)
-            .await
-            .map_err(|e| {
-                MulticaError::NetworkFailed(format!("create attachment file failed: {e}"))
-            })?;
+        let mut file = tokio::fs::File::create(destination).await.map_err(|e| {
+            MulticaError::NetworkFailed(format!("create attachment file failed: {e}"))
+        })?;
         while let Some(chunk) = resp
             .chunk()
             .await
@@ -1248,9 +1246,9 @@ impl MulticaClient {
                 Some(Duration::from_secs(LIVENESS_TIMEOUT_SECS)),
             )
             .await?;
-        resp.json::<Vec<TaskIssueStatus>>().await.map_err(|e| {
-            MulticaError::NetworkFailed(format!("decode {PATH} failed: {e}"))
-        })
+        resp.json::<Vec<TaskIssueStatus>>()
+            .await
+            .map_err(|e| MulticaError::NetworkFailed(format!("decode {PATH} failed: {e}")))
     }
 
     /// `POST /api/daemon/tasks/{tid}/rerun` —— 重新执行终态任务（multica 任务重试改造）。
@@ -1369,11 +1367,7 @@ impl MulticaClient {
     /// 不进 `map_status`：400 必须单独分类——`map_status` 把 400 并入 `NetworkFailed` 会让
     /// [`with_terminal_retry`] 对业务拒绝盲退避 6 次、降级无从谈起。401/403/404/409 与
     /// 传输/5xx/解码沿用 `map_status` 的码表与重试语义。
-    async fn complete_post_once(
-        &self,
-        path: &str,
-        body: &CompleteRequest,
-    ) -> CompletePostOutcome {
+    async fn complete_post_once(&self, path: &str, body: &CompleteRequest) -> CompletePostOutcome {
         // 自建请求先例（rerun_task / download_issue_attachment）：json_send 会把非 2xx 吞进
         // map_status 的裸错误码（body 丢弃），而 400 需要识别状态 + 透传 server message 供降级。
         let mut req = self.http.request(Method::POST, self.url(path));
@@ -1385,7 +1379,7 @@ impl MulticaClient {
             Err(e) => {
                 return CompletePostOutcome::Retryable(MulticaError::NetworkFailed(format!(
                     "POST {path} failed: {e}"
-                )))
+                )));
             }
         };
         let status = resp.status();
@@ -1394,7 +1388,9 @@ impl MulticaClient {
         }
         if status == StatusCode::BAD_REQUEST {
             let message = extract_error_message(resp).await;
-            return CompletePostOutcome::Rejected(format!("{path}: HTTP 400 Bad Request: {message}"));
+            return CompletePostOutcome::Rejected(format!(
+                "{path}: HTTP 400 Bad Request: {message}"
+            ));
         }
         match map_status(path, status) {
             Ok(()) => CompletePostOutcome::Delivered,
@@ -1952,7 +1948,9 @@ mod tests {
         .unwrap();
         assert_eq!(task.id, "t-new");
         assert_eq!(
-            task.attribution.as_ref().and_then(|a| a.rerun_of_task_id.as_deref()),
+            task.attribution
+                .as_ref()
+                .and_then(|a| a.rerun_of_task_id.as_deref()),
             Some("t-old")
         );
 
@@ -1970,7 +1968,11 @@ mod tests {
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["task_ids"][0], "t-1");
         assert_eq!(json["task_ids"][1], "t-2");
-        assert_eq!(json.as_object().unwrap().len(), 1, "body 只有 task_ids 一个键");
+        assert_eq!(
+            json.as_object().unwrap().len(),
+            1,
+            "body 只有 task_ids 一个键"
+        );
     }
 
     #[test]
@@ -2010,7 +2012,10 @@ mod tests {
         );
         // message 字段次之；非 JSON 回退原文；空白体回退空串（不猜文案）。
         assert_eq!(pick_error_message(r#"{"message":"nope"}"#), "nope");
-        assert_eq!(pick_error_message("plain text failure"), "plain text failure");
+        assert_eq!(
+            pick_error_message("plain text failure"),
+            "plain text failure"
+        );
         assert_eq!(pick_error_message("   "), "");
         // 超长 body 截断至 200 字符（防 params 膨胀，前端 toast 有界）。
         let long = "x".repeat(500);

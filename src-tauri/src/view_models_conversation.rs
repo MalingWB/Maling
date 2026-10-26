@@ -663,7 +663,6 @@ pub struct ConversationRunVm {
     pub run_status: String,
     pub run_outcome: Option<String>,
     pub session_tree: ConversationSessionTreeVm,
-    pub selected_session: Option<crate::view_models::AcpSessionVm>,
     pub active_sessions: Vec<ConversationActiveSessionVm>,
     pub input_attachments: Vec<crate::view_models::AssetItemVm>,
     pub workflow_status: String,
@@ -4140,7 +4139,7 @@ pub fn conversation_run_vm(
     apply_session_successors_to_tree(&mut tree_rounds, &session_successors);
     apply_session_successors_to_active_sessions(&mut active_sessions, &session_successors);
 
-    // Determine which session leaf to load.
+    // Select the navigation leaf; ACP content is queried independently.
     let selected_leaf: Option<ConversationSessionLeafVm> = if let Some(key) = selected_session_key {
         // Find the leaf matching the key by searching the tree.
         find_leaf_by_key(&tree_rounds, key)
@@ -4151,10 +4150,6 @@ pub fn conversation_run_vm(
     };
 
     let effective_key: Option<String> = selected_leaf.as_ref().map(conversation_leaf_key);
-
-    // The run aggregate owns navigation and lifecycle only. ACPChatDialog is
-    // the single bounded正文 query boundary for the selected branch.
-    let selected_session: Option<crate::view_models::AcpSessionVm> = None;
 
     let input_attachments = input_attachments_vm(app, task_id);
 
@@ -4244,7 +4239,6 @@ pub fn conversation_run_vm(
             rounds: tree_rounds,
             selected_session_key: effective_key,
         },
-        selected_session,
         active_sessions,
         input_attachments,
         workflow_status: "valid".to_string(),
@@ -4680,7 +4674,6 @@ pub fn create_conversation_run_vm(
                     rounds: Vec::new(),
                     selected_session_key: None,
                 },
-                selected_session: None,
                 active_sessions: Vec::new(),
                 input_attachments: Vec::new(),
                 workflow_status: "valid".to_string(),
@@ -4766,7 +4759,6 @@ pub fn rerun_conversation_task_vm(
                 rounds: Vec::new(),
                 selected_session_key: None,
             },
-            selected_session: None,
             active_sessions: Vec::new(),
             input_attachments: Vec::new(),
             workflow_status: "valid".to_string(),
@@ -6712,7 +6704,12 @@ mod tests {
             .attempts[0]
             .clone();
 
-        assert!(vm.selected_session.is_none());
+        assert!(
+            serde_json::to_value(&vm)
+                .unwrap()
+                .get("selectedSession")
+                .is_none()
+        );
         assert_eq!(
             leaf.work_location,
             SessionWorkLocationVm::Worktree {
@@ -7735,11 +7732,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(vm.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
-        assert!(
-            vm.selected_session.is_none(),
-            "run aggregate must not query selected ACP正文"
-        );
         let serialized = serde_json::to_value(&vm).unwrap();
+        assert!(
+            serialized.get("selectedSession").is_none(),
+            "run aggregate must not expose an ACP content field"
+        );
         assert!(serialized.get("title").is_none());
         assert!(serialized.get("autoTitle").is_none());
         let task = conversation_task_row_vm(&app, "project-001", "task-046", false, None).unwrap();
@@ -7874,7 +7871,12 @@ mod tests {
             vm.session_tree.selected_session_key.as_deref(),
             Some("round-001/测试/attempt-002")
         );
-        assert!(vm.selected_session.is_none());
+        assert!(
+            serde_json::to_value(&vm)
+                .unwrap()
+                .get("selectedSession")
+                .is_none()
+        );
     }
 
     #[test]
@@ -7908,7 +7910,12 @@ mod tests {
         )
         .unwrap();
 
-        assert!(vm.selected_session.is_none());
+        assert!(
+            serde_json::to_value(&vm)
+                .unwrap()
+                .get("selectedSession")
+                .is_none()
+        );
         assert!(selected_leaf.session_established);
         assert_eq!(
             selected_leaf.session_id.as_deref(),

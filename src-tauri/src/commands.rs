@@ -4239,6 +4239,30 @@ pub async fn get_git_comparison(
 }
 
 #[tauri::command]
+pub async fn prepare_git_push(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    input: gold_band::git::GitPushIntent,
+) -> CommandResult<gold_band::git::GitPreparedPush> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .prepare_push(&workspace.workspace_path, &input)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn start_git_operation(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
@@ -11782,11 +11806,11 @@ fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, Co
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view_models_conversation::conversation_task_activity_from_prompt;
     use camino::Utf8PathBuf;
     use gold_band::app::{WorkflowTemplate, WorkflowTemplateStore};
     use gold_band::config::{ConversationWorkspaceEntry, ResolvedColorScheme, RuntimeConfig};
     use gold_band::dsl::{NodeDsl, WorkerNode, WorkflowDsl};
-    use crate::view_models_conversation::conversation_task_activity_from_prompt;
     use gold_band::dynamic::DynamicGraphState;
     use gold_band::runtime::RoundState;
     use gold_band::runtime::TaskState;
@@ -14226,7 +14250,13 @@ mod tests {
                     attempt_dir.as_deref(),
                     Some(
                         app.paths
-                            .attempt_dir("task-001", "run-001", "round-001", "node-001", "attempt-001")
+                            .attempt_dir(
+                                "task-001",
+                                "run-001",
+                                "round-001",
+                                "node-001",
+                                "attempt-001"
+                            )
                             .as_str()
                     )
                 );

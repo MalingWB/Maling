@@ -66,7 +66,8 @@ const POLL_BUDGET: Duration = Duration::from_secs(15 * 60);
 const DECISION_FALLBACK_AFTER: Duration = Duration::from_secs(60);
 
 /// 「确认父未产出」、开决策点时发的前端事件（远程任务会话内拉取决策卡片）。
-pub(crate) const MULTICA_UPSTREAM_PULL_PENDING_EVENT: &str = "gold-band://multica-upstream-pull-pending";
+pub(crate) const MULTICA_UPSTREAM_PULL_PENDING_EVENT: &str =
+    "gold-band://multica-upstream-pull-pending";
 
 /// 决策点收口（任意 resolve 退出路径）时发的前端事件：outcome = resolved / manual /
 /// skipped / timeout，前端据此关闭决策卡片。
@@ -185,7 +186,11 @@ impl MulticaUpstreamResolver {
 
         let mut interval = POLL_INITIAL_INTERVAL;
         loop {
-            let wait = if polling { interval } else { DECISION_FALLBACK_AFTER };
+            let wait = if polling {
+                interval
+            } else {
+                DECISION_FALLBACK_AFTER
+            };
             if started.elapsed() + wait >= POLL_BUDGET {
                 self.settle_pull(&shared, &run, node_id, &parent, "timeout");
                 warn!(
@@ -291,10 +296,7 @@ impl MulticaUpstreamResolver {
                     );
                 }
             }
-            interval = std::cmp::min(
-                interval.mul_f32(POLL_BACKOFF_FACTOR),
-                POLL_MAX_INTERVAL,
-            );
+            interval = std::cmp::min(interval.mul_f32(POLL_BACKOFF_FACTOR), POLL_MAX_INTERVAL);
         }
     }
 
@@ -340,7 +342,11 @@ impl MulticaUpstreamResolver {
 }
 
 impl UpstreamOutputResolver for MulticaUpstreamResolver {
-    fn resolve_upstream_output(&self, task_id: &str, node_id: &str) -> Result<String, UpstreamResolveError> {
+    fn resolve_upstream_output(
+        &self,
+        task_id: &str,
+        node_id: &str,
+    ) -> Result<String, UpstreamResolveError> {
         tauri::async_runtime::block_on(self.resolve(task_id, node_id))
     }
 }
@@ -608,7 +614,10 @@ mod tests {
         .expect("zh manual render");
         assert!(zh.contains("手动提供"));
         assert!(zh.contains("gold-band_0.19.0_x64.msi"));
-        assert!(!zh.contains("阶段性快照"), "manual must not carry snapshot caveat");
+        assert!(
+            !zh.contains("阶段性快照"),
+            "manual must not carry snapshot caveat"
+        );
 
         let en = render_upstream_section(
             DesktopLanguage::En,
@@ -617,7 +626,10 @@ mod tests {
         .expect("en manual render");
         assert!(en.contains("provided manually by the user"));
         assert!(en.contains("gold-band_0.19.0_x64.msi"));
-        assert!(!en.contains("staged snapshot"), "manual must not carry snapshot caveat");
+        assert!(
+            !en.contains("staged snapshot"),
+            "manual must not carry snapshot caveat"
+        );
     }
 
     #[test]

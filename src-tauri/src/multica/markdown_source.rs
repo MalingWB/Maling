@@ -108,10 +108,46 @@ fn is_closing_fence(line: &str, fence_char: char, open_len: usize) -> bool {
 /// 块级标签集（HTML 规范块级中影响文本布局的常见子集）：纯文本里表达为段落分隔（换行）。
 /// 不在此集合与 `br` 中的标签按行内处理：剥壳保留内容。
 const BLOCK_LEVEL_TAGS: &[&str] = &[
-    "address", "article", "aside", "blockquote", "caption", "dd", "details", "dialog", "div",
-    "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
-    "h5", "h6", "header", "hgroup", "hr", "li", "main", "nav", "ol", "p", "pre", "section",
-    "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "caption",
+    "dd",
+    "details",
+    "dialog",
+    "div",
+    "dl",
+    "dt",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hgroup",
+    "hr",
+    "li",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "tr",
+    "ul",
 ];
 
 /// HTML 标签的纯文本投影方式。
@@ -300,10 +336,9 @@ fn scan_open_tag_end(chars: &[char], from: usize) -> Option<usize> {
             Some('/') => return (chars.get(i + 1) == Some(&'>')).then_some(i + 2),
             Some(c) if c.is_ascii_alphabetic() || *c == '_' || *c == ':' => {
                 i += 1;
-                while chars
-                    .get(i)
-                    .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.' | '-'))
-                {
+                while chars.get(i).is_some_and(|c| {
+                    c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.' | '-')
+                }) {
                     i += 1;
                 }
                 if chars.get(i) == Some(&'=') {
@@ -323,13 +358,10 @@ fn scan_open_tag_end(chars: &[char], from: usize) -> Option<usize> {
                                 && !matches!(c, '"' | '\'' | '=' | '<' | '>' | '`') =>
                         {
                             i += 1;
-                            while chars
-                                .get(i)
-                                .is_some_and(|c| {
-                                    !c.is_ascii_whitespace()
-                                        && !matches!(c, '"' | '\'' | '=' | '<' | '>' | '`')
-                                })
-                            {
+                            while chars.get(i).is_some_and(|c| {
+                                !c.is_ascii_whitespace()
+                                    && !matches!(c, '"' | '\'' | '=' | '<' | '>' | '`')
+                            }) {
                                 i += 1;
                             }
                         }
@@ -447,10 +479,7 @@ mod tests {
     #[test]
     fn code_span_does_not_cross_paragraph_or_fence() {
         // 空行分段：段 1 未闭合的开栏不与段 2 配对，两段各自按字面 + 照常解码。
-        assert_eq!(
-            markdown_source_to_plain_text("`a\n\nb`\\_x"),
-            "`a\n\nb`_x",
-        );
+        assert_eq!(markdown_source_to_plain_text("`a\n\nb`\\_x"), "`a\n\nb`_x",);
         // 围栏打断段落：围栏前的未闭合开栏按字面，围栏内容逐字，围栏后照常解码。
         assert_eq!(
             markdown_source_to_plain_text("`open\n```\n\\_in fence\n```\n\\_after"),
@@ -557,10 +586,7 @@ mod tests {
             "a & b <c> \"d\"",
         );
         assert_eq!(markdown_source_to_plain_text("空&nbsp;格"), "空\u{00A0}格");
-        assert_eq!(
-            markdown_source_to_plain_text("&#65;&#x4e2d;"),
-            "A中",
-        );
+        assert_eq!(markdown_source_to_plain_text("&#65;&#x4e2d;"), "A中",);
         // 单遍解码不回环：&amp;lt; → 字面 &lt;（与浏览器口径一致）。
         assert_eq!(markdown_source_to_plain_text("&amp;lt;"), "&lt;");
         // 未知/非法实体按字面保留（&#0;/&#x0; 是非法字符引用，不得解出 NUL 注入预填）。
@@ -609,10 +635,7 @@ mod tests {
 
     #[test]
     fn removes_html_comments_only_when_closed() {
-        assert_eq!(
-            markdown_source_to_plain_text("前<!-- 注释 -->后"),
-            "前后",
-        );
+        assert_eq!(markdown_source_to_plain_text("前<!-- 注释 -->后"), "前后",);
         // 未闭合注释保守按字面（不吞后续全文）。
         assert_eq!(
             markdown_source_to_plain_text("未闭合 <!-- 注释"),

@@ -1,5 +1,34 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-10-19 GitHub Release 统一构建 WB 跨平台安装包
+
+- 根因：GitHub 两条发布 workflow 固定使用 default，而 WB 渠道又将 `bundleTargets` 限定为 Windows NSIS，混合了产品渠道与打包平台。用户要求保留跨平台 GitHub Release，全部产出 WB/MALING 包。
+- 实现：自动发布和手工 tag 重建统一设置 `GOLD_BAND_RELEASE_CHANNEL=wb`，保留 Windows x64、Linux x64、macOS x64/arm64 四组 runner；移除 WB 的 NSIS 专属覆盖，继承 Tauri 原生 `all` 平台目标。两条流程共用 `prepare-release-build.mjs` 校验签名与 metrics key、生成渠道 overlay 和 Release 名称，正式版本严格来自 release tag。本地 WB 时间戳版本入口不变；本地非 default 渠道仅在 Windows 通过 CLI 选择 NSIS，避免 WiX 不支持时间戳/提交号版本，Linux/macOS 使用原生目标。
+- 凭据：Actions Secrets 使用 `WB_TAURI_SIGNING_PRIVATE_KEY`、可选 `WB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 和 `GOLD_BAND_METRICS_API_KEY`；macOS 继续复用已有可选 Apple 证书和公证配置。私钥必须与 WB 渠道公钥配对。
+- 产物：Tauri 上传本渠道安装包及更新签名；后处理复用现有七语言 manifest、关键更新元数据和校验和生成器，Release 正文产品名从渠道配置读取。停止向 WB Release 上传指向上游的 macOS 安装辅助脚本。GitHub 下载 URL 使用当前仓库/tag；WB 客户端的内网更新地址、MCP、metrics、Multica 与渠道身份仍由 WB 配置提供，不因附件托管位置改变。
+- 红绿证据：原实现上 6 项接口/工作流断言失败（仅 NSIS、两条 workflow 渠道不匹配、Gold Band 正文、两条上传命令携带上游脚本）；复核时新增本地时间戳版本测试并观察到 Windows 缺少 NSIS 选择的失败，再将约束移到本地构建入口。修复后相关 52 项 Node 测试通过，覆盖四平台签名与下载地址、缺失/空白凭据在写入前失败、tag 版本、可选 Apple 签名以及原有渠道行为。发布契约测试已纳入 PR checks。
+- 验收边界：本机完成配置与生成器接口验收，尚未在 GitHub 使用真实密钥执行四平台生产打包；发布用的七语言日志及 `release.json` 仍必须进入目标 release commit。仓库中既有未提交版本、Catalog 和日志改动不属于本次变更。
+- 过度设计与性能评审：复用 release-please、tauri-action、Tauri 原生平台打包及现有渠道/清单生成器，只增加两条 workflow 共用的构建准备入口，不新增依赖、运行时状态或第二套发布流程；runner 数量仍为 4，校验为固定字段读取，产物处理范围仍局限本次 release，客户端性能无新增影响。
+
+## 2026-10-19 继续同步上游 main
+
+- 在已保留本地回归修复的 `9b58b3bb` 上合入上游 `4944b79d`，新增 3 个提交：ACP 后台用量缺口图标、runtime 重建后的用量去重、Git 提交审查的大批量路径统计。Fork `main` 仍为 `bbef7724`，继续沿用已有同步分支。
+- 三个提交自动合入，无文本冲突。额外回归发现历史日志仅有旧别名完成记录时，恢复内存仍按字符串身份累计同一 RPC 两次；恢复查找、接受记录与累计统一使用既有 `operationSeq`，不新增持久字段。原最小测试观察到完成数 2（应为 1），保留红绿证据。
+- 同步修正统计查询文档中的旧 pathspec 分组说明；已有 browser fixture 增加 `backgroundUsageGap=1` 场景以验证真实用量 Tooltip。验证结果和性能边界见[本轮验收记录](上游同步/2026-10-19-增量同步验收.md)。
+
+## 2026-10-19 合并回归的跨平台夹具与提示词检出修复
+
+- Linux 附件用例的源文件名原为 364 个 UTF-8 字节，在调用附件接口前就超过文件系统单段上限；改为 244 字节，并断言源文件名合法、深目录下原名确实超预算、最终存储名确实缩短，同时保留原名 metadata、扩展名和内容验收。附件生产实现不变。
+- 依照既有 `.gitattributes`，将本地七语言的 263 个提示词资源从 CRLF 规范化为 LF；仅替换换行字节，提示词 Git diff 为空。已有工作区的磁盘字节和重新编译要求同步补入 Prompt Bundle 规范，具体红绿证据见[同步验收记录](上游同步/2026-10-18-main同步验收.md)。
+- 过度设计与性能评审：复用现有测试、路径预算常量和 Git 属性，不增加依赖、运行时状态、请求或 I/O；规范化为一次性工作区修复，不引入消费端替换逻辑。
+
+## 2026-10-18 从 Fork main 同步上游
+
+- 基于最新 Fork `main` 的 `bbef7724`，在 `codex/sync-upstream-20261018` 合并上游 `66ea1853`；完整保留本地飞书审批、远程任务、首轮隐藏上下文与语言文件能力。
+- 20 个文件的冲突按领域契约处理：采用上游独立 ACP 会话和调用配置快照，保留本地 typed 飞书表单、稳健时间投影测试与远程任务导航；Agent catalog 使用较新的本地 registry snapshot 和上游版本策略重新生成。
+- 合并验证发现并修复 Cancel 动作缺少 IM 终态投影，以及独立会话 browser fixture 在无 DOM 环境访问 `window` 的问题；回归和证据边界见[同步验收记录](上游同步/2026-10-18-main同步验收.md)。
+- 评审：沿用既有状态、接口、依赖与组件，新增取消结果仅为 canonical action 的投影；不添加缓存、队列、历史扫描或额外网络请求。生产构建、接口测试与界面验证用于验收，真实 IM 平台与 EXE 另列边界。
+
 ## 2026-10-16 飞书协议封装与卡片类型化
 
 - 用户确认落实两项原设计偏差；协议隔离按 `ws` 模块职责验收，私有化底层帧，connector 只消费事件与回包能力。
@@ -15,6 +44,38 @@
 - 最终自动化通过：Rust 46 个目标、2871 通过、0 失败、18 ignored；前端 376 文件、2861 通过；Node 157 通过；生产构建、现有 CI Clippy 门禁及格式检查通过。用户真实验收、安装包与平台边界分开记录，详见[自动化回归修复记录](IM接入/自动化回归修复记录-2026-10-16.md)。既有失败记录保持历史，不以测试更新掩盖产品缺陷。
 - 2026-10-17 分组提交复核：本组 19 个非文档文件与历史通过快照一致；当前前端 257 项、Node 6 项通过，已有 Rust 编译快照复测 84 项通过，格式和暂存检查通过。范围及未重新编译 Rust 的验证边界见[修复记录 §6](IM接入/自动化回归修复记录-2026-10-16.md#6-2026-10-17-分组提交复核)，不扩展为本次全仓或安装包验收。
 - 评审：不新增依赖、持久状态或时钟抽象；复用已有暂停结果和 `Run.updated_at`。异常路径至多增加一次当前 Run 元数据读取，不扫描历史；正常路径、请求和 UI 订阅规模不变。
+
+## 2026-10-16 续接会话的模型与权限以会话快照为准
+
+- 根因：09-24 让 `session/new` 把不支持的模型、权限回滚为不指定，但同一会话再次构建调用（AI-DYNAMIC proposal repair、提交提醒、workflow continue）时，模型和权限仍从冻结的节点配置取值，只有 `config_options` 以 snapshot 为准。task-334 的 bootstrap 用 `deepseek-flash` 新建 Codex 会话并已回滚，proposal 因 `dynamic.fanout.workspace-dirty` 进入 repair 后又以 `continue` 发出 `deepseek-flash`，在已建立会话分支得到 `acp.session-config-value-unavailable`。属于「复用会话以 snapshot 为权威」契约只覆盖了配置项的设计缺口。
+- 实现：`invocation_config_option_overrides` 替换为 `invocation_session_config`，一次决定模型、权限和 `config_options`。复用会话以 `continue_ref.snapshotFile` 指向的被复用会话 snapshot 为准（sessionId 不符或不可读视为不指定），新建会话用作者态并按所选模型 retain；本次调用的显式切换优先。workflow `build_worker_invocation` 与 AI-DYNAMIC `build_dynamic_worker_invocation` 共用该入口，删除两处只读配置项的旧 reader。已建立会话收到用户显式非法值仍报 unavailable。
+- 验收：`dynamic_continue_takes_session_snapshot_after_new_session_rollback` 在修复前得到 `model = Some("deepseek-flash")`，修复后为不指定、权限不指定、`effort=high` 保留，显式切换仍生效；`continue_worker_invocation_takes_session_snapshot_after_new_session_rollback` 覆盖 workflow 节点及他会话 snapshot 不被采信；`session_config` 单测覆盖新旧会话与显式切换。
+- 过度设计与性能评审：不新增持久字段或状态，复用 snapshot 既有 `modelOverride / permissionModeOverride / configOptionOverrides`；每次续接调用只读一次被复用会话的 snapshot（只读、不回写），替换原先对当前 attempt snapshot 的一次读取。
+
+## 2026-10-15 追问附件路径长度预算
+
+- 根因：10-14 的内容寻址布局 `user-inputs/<64 位 BLAKE3>/<name>` 在 attempt 目录（默认数据目录下直连约 149 字符，动态节点再叠加 `dynamic/nodes/<AI 生成节点 ID>/attempt-NNN`）之上再加 65 个字符；原始文件名长度又由用户输入决定。task-326 追问附件的目标路径为 267 字符，超过 Windows MAX_PATH。`create_dir` 经 Rust 标准库自动加 `\\?\` 前缀成功，tempfile 的 `persist_noclobber` 直接调用 `MoveFileExW` 失败，返回 os error 3，留下空的摘要目录，并被兜底为 `app.unexpected`。属于布局没有路径预算的设计缺陷，不是单个调用缺少长路径前缀。持久路径还会交给 Agent、Shell 和预览，只给 tempfile 补前缀会让失败转移到下游。
+- 实现：摘要目录改为 128 位 BLAKE3 前缀（32 hex）。同一 attempt 作用域内碰撞概率可忽略，且复用前仍逐字节比对，碰撞会报错，不会混用内容。存储文件名在拷贝前按 259 个 UTF-16 单位的整路径预算，以及 255 个 UTF-16 单位/字节的单段上限截短主名并保留扩展名，同时去掉截短后尾部的点和空格；摘要目录已确定内容，截短不会让不同内容互相冒用。`AttachmentMeta.name` 保留原始文件名，`path` 仍是唯一读取定位。连「摘要目录 + 1 个字符 + 扩展名」都放不下时，在任何写入前返回结构化 `runtime.io.attachment-path-too-long`（`name`、`maxPathLength`），前端按错误码本地化，不再落到 `app.unexpected`。
+- 动态节点评估：默认数据目录下 41 字符节点 ID 的 attempt 目录约 205 字符，加上 `user-inputs/<32 hex>/` 后仍有约 20 字符留给文件名，常见文件名会被截短但能发送；节点 ID 没有长度上限，极端深度由上述结构化错误兜底。本次不限制节点 ID 长度。
+- 红绿证据：深度 160 的 attempt 加 UUID/长中文文件名用例，在原实现上稳定失败于 `系统找不到指定的路径。 (os error 3)`，与线上 `turnError` 一致；深度 240 用例原实现返回非结构化 IO 错误。修复后两项转绿，另加截短边界单测。
+- 性能与过度设计评审：只增加一次常数级长度计算和名称截短，不新增依赖、持久字段、缓存或状态；拷贝与哈希仍为单次流式处理。已经发布的 64 hex 历史附件路径仍按 metadata path 读取，不迁移。
+
+## 2026-10-14 分支与截断 Tooltip 打开生命周期修复
+
+- 根因：`useOverflowTooltip` 在 pointerenter 中提前打开，Radix 的 pointermove 延迟打开随后广播 `tooltip.open`，已挂载提示收到广播自行关闭；9 月 30 日焦点修复忽略后续 true，使关闭成为最终状态。属于受控 Tooltip 与组件库打开生命周期衔接不完整，不是 Git snapshot 刷新。
+- 实现：保留现有 shadcn/Radix Tooltip，让 Radix 成为唯一打开入口；共享 hook 仅在打开请求时判断溢出或 always 条件，非 `focus-visible` 的程序返焦在 focus 事件阶段阻止默认打开。分支、工作空间、ACP 单项/复合配置和文件名消费端删除手动 pointerenter 打开；工作空间 TooltipTrigger 改为整个控件，Select 保留自身 slot 与 open 状态投影。原鼠标关闭不返焦、键盘关闭返焦及紧凑分支 pointerdown→click 契约不变。
+- 红绿证据：普通/响应式分支的完整 pointerover→pointermove→零延迟定时器两项用例，在原实现上均因提示消失失败，修复后原用例转绿。共享生命周期测试覆盖溢出测量次数、图标态、延迟打开取消、互斥、触摸不触发、程序返焦不广播、键盘 focus/blur、滚动关闭与重入；分支另固定无关父级重渲染保留 DOM/提示及 Escape 关闭。受影响领域 18 个测试文件共 112 项通过，最终 TypeScript 检查与 Vite 生产构建通过。
+- 浏览器：生产预览 `/chat` 的隔离 browser mock 验证首次悬停、长分支 `fix/attachment-content-identity` 截断全文持续显示、Tooltip 已显示时单击打开菜单、鼠标选择后不残留提示/焦点、Tab→Enter→Escape 键盘返焦，以及 720px 图标态→1440px 拉宽、浅/深色主题和项目名提示。未操作真实 Git 分支，未打包验收 EXE；桌面端还需按下列清单实际回归。
+- 桌面回归：① 刚进入快速对话就首次 hover 长分支，停留并在按钮内移动应持续显示；② 移出、Escape、切换页面后提示清理，重新进入可再次显示；③ 提示显示时单击开分支菜单，测试仓库鼠标选择/点击外部关闭后无残留，键盘关闭仍归还焦点；④ 缩窄成图标再拉宽、浅/深色均正确；⑤ 单/多工作空间名称、ACP 模型/权限长值与文件工作区长名称的共用提示仍正常，普通未截断值不冗余显示，鼠标菜单返焦不弹出，键盘可访问全文。
+- 性能与过度设计评审：不新增依赖、状态、定时器、Observer、请求或缓存；删除重复打开入口，尺寸读取仍为单控件打开时 O(1)，普通 pointermove 不重复测量。复用原 canonical 业务数据与组件库生命周期，不扩大状态订阅或渲染范围。
+
+## 2026-10-14 同名追问附件不可覆盖与预览身份
+
+- 根因：`user-inputs/<name>` 同时充当显示名和持久定位，不同图片在同一 attempt 内被原子替换；Tab 按完整 locator/path 去重仍会读到最后一张。发送后按文件名猜测草稿 alias 还会激活错误的旧预览。
+- 实现：沿用 AttachmentMeta、完整 attempt locator、现有预览与 Tab 模型，原始文件边拷贝边计算 BLAKE3，以 `user-inputs/<完整摘要>/<name>` 通过 tempfile 不覆盖发布；相同目标验证字节与安全边界后复用，冲突不覆盖。删除追问附件的名称别名，草稿独立 Object URL 生命周期不变。
+- 验证：Rust 跨轮同名最小测试先稳定失败于两次都返回 `user-inputs/image.png`；前端真实 ACP DOM 测试先复现提交新同名附件后点击旧消息误激活 `draft-attachment`，两项均在修复后转绿。Provider 75 项、桌面附件读取/路径穿越 3 项、联合前端 7 文件 72 项通过，双 crate `cargo check --locked`、TypeScript 与生产构建通过。Unix 专属文件 symlink/非法名称文件系统用例未在 Windows 执行；Windows junction 拒绝用例已实测。
+- 浏览器：生产构建 deep link 以三张同名、不同路径和内容的 PNG 验证真实缩略图→工作区链路，逐次打开得到 1/2/3 个 Tab，像素分别为红/绿/蓝；重复第一张回到红图且仍为 3 个 Tab。1800→720→1800 宽度往返仍显示选中的绿图，无横向溢出或浏览器错误。验证使用隔离 browser fixture，不冒充真实任务文件或 EXE 验收；测试浏览器及服务已清理。
+- 性能与过度设计评审：复用已有 BLAKE3/tempfile、DTO 和作用域，不新增持久字段、缓存、队列或运行时状态机。单次持久化按文件字节线性处理、固定缓冲，重复文件仅流式比较；不扫描历史。真实历史附件不自动修复，恢复必须另行确认并备份。
 
 ## 2026-10-09 已获取的模型配置不再随 Doctor 失败丢失
 
@@ -207,7 +268,7 @@
 ## 2026-09-23 发送成功后消息图片复用已打开的预览
 
 - 根因：输入框预览的标签键是附件 id，消息图片的键是落盘路径。发送成功后点消息图片会再开一个标签，并把文件读成 base64。已打开的内存预览不该被换成第二次读取。
-- 实现：发送成功时用当前会话作用域和附件 id 找到已打开的 `draft-attachment`，把消息预览键记成 `previewAliasKey`。新会话用 `task-inputs/文件名`，追问用当前 attempt 的 `user-inputs/文件名`。点击消息图片时先按这个别名激活原标签。没打开过预览、标签已关闭，或应用重启后，仍读取持久文件。别名只留在当前进程的工作区标签上。
+- 实现：新会话发送成功时用当前会话作用域和附件 id 找到已打开的 `draft-attachment`，把 `task-inputs/文件名` 对应的消息预览键记成 `previewAliasKey`。追问附件不再按文件名构造别名：2026-10-14 起使用后端提供的 `user-inputs/<原始文件 BLAKE3 摘要>/<name>` 定位持久资源，草稿 Tab 保留独立预览生命周期。没打开过预览、标签已关闭，或应用重启后，仍读取持久文件。别名只留在当前进程的工作区标签上。
 - 验收：`right-workspace.test.ts` 固定新建会话提升后，按附件 id 记上任务输入别名，查到的仍是原来的内存预览；另一个 attempt 的同名路径查不到；未打开的 id 不加别名。
 - 过度设计与性能评审：不新增持久字段、图片 id 或文件读取。别名是已打开标签上的一个字符串。点击时只扫描当前会话已打开的标签。
 
@@ -928,6 +989,12 @@
 - 失败证据与验收：用户截图先证明整体 shadow 的双弧问题，移除后截图显示单条手绘弧；改用 CSS border 后的放大截图固定了上、下切点仍有旧直边重合加深；加入 radial underpaint 后的最新截图依然重合，证伪“仅补遮盖即可”的判断并触发 padding-box 坐标审计，这些均构成 jsdom 无法直接复现的现场像素证据。第一组最小测试同时渲染“仅分支”和完整信息，要求两者输出完全相同的非 SVG connector；旧 SVG 实现下两组定向测试共 33 项各有一项失败，替换后转绿。第二组最小契约要求填充从圆弧内缘覆盖描边带且禁止外缘 box-shadow；首版 CSS connector 下同一 33 项各有一项仅因缺少 radial underpaint 而失败，改正后全部转绿。第三组最小契约要求横向偏移同时消费 `radius + borderWidth` 并拒绝旧的 `right: -radius`；修改实现前 27 项中仅该契约失败，实际输出准确命中旧公式，修改后 27 项全部转绿，相关两文件扩大到 33/33。全量 Web 回归首次 1688 项通过 1686 项，另两项在与类型检查并行时超时；将两个无关文件隔离重跑后 16/16 通过。TypeScript、Web 生产构建、产物 CSS 公式检查与 `git diff --check` 均通过。用户最新截图已确认 connector 重合消失；本轮又在 WB 源码窗口分别打开完整信息与仅分支会话，确认单层阴影连续跟随角标、凹弧、可选堆叠面板与输入框的合并外轮廓，内部没有分段投影，凹槽没有恢复第二条硬弧；整体阴影的最小测试同时固定仅分支实渲染 rail 与源码契约：修改前 11 项中仅 rail 缺少单层 overlay 的两项失败，加入后 11/11 转绿，并要求 `drop-shadow` 恰好出现一次且源码完全不消费 `--gb-material-edge-shadow`。扩大到 7 个相关测试文件 47/47，通过后再独立执行全量 Web 回归 250 文件、1688/1688；TypeScript、Web 生产构建、产物 CSS 单层 filter 检查与 `git diff --check` 全部通过。
 - 阴影强度补充证据与验收：最新新旧版本对比截图证明 joined surface 的阴影所有权和连接几何已经正确，但 Gold Band 亮色的 `--gb-elevation-overlay` 为 `0 4px 16px / 6%`，扩散过大且近似不可见，未达到旧版 `0 1px 2px / 12%` 的紧实层次；因此撤回此前对亮色 overlay 观感的验收结论。最小契约改为固定亮色 material、暗色 overlay 和 rail 唯一一次 filter；实现修改前 11 项中仅这两项失败，准确命中直接使用 overlay 的旧实现，修改后 11/11 转绿，扩大到 7 个 composer 相关测试文件 47/47 通过。按用户本轮明确要求不再重复执行生产构建或全量测试，沿用前序 connector 验收记录但不把它冒充为本次阴影 token 调整后的新增结果。
 - 依赖、性能与过度设计评审：复用现有 joined surface、Tailwind、主题 radius/card/border 与 composer 边框变量，不新增依赖、React 状态、观察器、测量、mask、缓存、队列或业务抽象。删除 SVG 节点、path 栅格化、旧的双层 filter 与错误的 spread shadow；connector 只保留一个静态 span、一次 underpaint 和一个 CSS pseudo border，整组 elevation 只增加一个静态主题 filter；最终修正由一个静态 CSS 定位公式、一个 rail 局部 CSS 变量与一次父级合成投影构成，请求、订阅、历史加载和 React 渲染范围不变，常数级绘制无需专项 benchmark。没有为短角标、完整信息、主题或 DPR 增加 DOM、状态或业务补丁分支，复杂度与单一凹角问题匹配。
+
+## 2026-09-22：只读 Demo 输入框与信息 tab 左上连接
+
+- 根因：joined surface 的设计是对的。信息 tab 是否渲染，和主 surface 是否取消左上圆角，必须走同一个可见性判断。官网 Demo 把整棵会话树标成只读，并仍挂载禁用输入框；信息 tab 继续因会话累计、上下文或工作树显示，但连接口判断把 `readOnly` 直接当成“没有 composer”，左上圆角因此留下。桌面应用不是只读，所以同一条左缘是连续的。这是正确设计的实现遗漏，不是 Demo 主题或圆角 token 的问题。
+- 实现：只读且禁用输入框仍是最上层 surface 时，连接口目标回到 composer，输入框取消左上圆角。只读继续不挂载人工判断和待发送队列。
+- 验收：最小 DOM 测试在修复前失败于 `rounded-tl-none` 缺失，信息 tab 与 connector 已经存在；修复后同一测试转绿。
 
 ## 2026-08-30：Task 活动时间轻量投影与终态幂等
 
@@ -2798,8 +2865,8 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - 根因：元数据监听把临时锁文件的创建/删除当成已发布变更，普通工作区监听又能绕过元数据过滤；审阅接口把选中提交解析、文件列表和行数统计绑定，进程启动成本随选择数增长。前者是失效边界实现错误，后者是接口加载边界设计缺陷。
 - 元数据监听忽略仅涉及 .lock 的事件；rename 同时包含真实目标时仍失效。真实 index/HEAD/refs 修改、无路径事件、rescan、错误与队列溢出继续补读。源码管理的工作区事件消费端排除 .git 内部及 commonDir，保留普通源文件（包括 src/index.lock）的刷新；工作区 .git 入口本身变化走 repository 刷新。文件浏览器 watcher 语义不变。
 - commit-review 只返回选中完整 OID、revision、文件类型和不可变比较端点；一次 log --stdin 读取最小父提交信息，一次 diff-tree --stdin 批量读取文件变化。保留第一父提交、根提交、空提交、非连续选择、跨分支等价补丁去重与重命名链语义；不是首尾提交整体相减。机器输出达到 4 MiB 上限即拒绝解析，避免部分结果被当成完整列表。
-- commit-review-statistics 独立 DEBUG 请求，按相同比较端点及其选中文件路径分组；空树每次请求最多计算一次。不同路径集合保持独立 Git 查询，避免扩大扫描范围或改变重命名判定。统计未到达时 binary/addedLines/deletedLines 为 null，文件立即可点击；局部失败保留列表并可只重试统计。
-- 统计入口继续验证仓库/linked worktree 作用域；拒绝非完整 OID、非法相对路径、非选中 afterOid、超过 10000 文件或累计路径 1 MiB 的请求。路径按 literal pathspec 传递。Store 复用原有 48 项缓存和请求代次，合并在途统计，迟到结果不得覆盖新选择；已打开 Diff 按工作区和不可变端点补齐摘要，不重读正文。审阅会话 ID 包含工作区。
+- commit-review-statistics 独立 DEBUG 请求，按相同比较端点分组；空树每次请求最多计算一次。每组查询端点间的 numstat，再只向所选文件投影统计，不加载文件正文；统计未到达时 binary/addedLines/deletedLines 为 null，文件立即可点击；局部失败保留列表并可只重试统计。
+- 统计入口继续验证仓库/linked worktree 作用域；拒绝非完整 OID、非法相对路径、非选中 afterOid、超过 10000 文件或累计路径 1 MiB 的请求。每组端点执行一次不带 pathspec 的 numstat，再按审阅文件路径在进程内过滤；路径不进入命令行参数，避免大合并提交超过 Windows 32767 字符命令行上限。Store 复用原有 48 项缓存和请求代次，合并在途统计，迟到结果不得覆盖新选择；已打开 Diff 按工作区和不可变端点补齐摘要，不重读正文。审阅会话 ID 包含工作区。
 - 性能与过度设计评审：未新增依赖、缓存层、线程池或并发队列；移除原逐提交 worker，收益来自批量查询和缩短可见内容的关键路径。单提交核心列表固定 3 次 Git，普通六提交样例至多 4 次；桌面主仓库作用域检查另有 2 次，故首批列表预算分别为 5/6 次。跨分支等价补丁判定仍可能增加查询，统计另计；这些是命令预算，不是弱机器实测秒数。
 
 - 验收记录：修复前 Store 的 .git/index.lock 用例观察到快照读取 2 次而非 1 次；metadata monitor 锁文件用例观察到 invalidates=true；单提交核心预算用例观察到 6 次而非 3 次。修复后上述测试转绿。Rust source_control 56 项、metadata monitor 8 项、前端相关 Store/DOM/导航 82 项通过；TypeScript、Windows desktop cargo check、Vite 生产构建通过（保留现有 warning）。
@@ -2982,3 +3049,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - 验收及评审：复用现有组件和事件，不新增依赖、恢复按钮、轮询或无界积压。每 attempt 一条错误、最多 128 条，诊断和参数各限 16 KiB；常规加载不增加正文读取，锁内不执行 I/O。浏览器通过临时测试页面挂载实际 ACPChatDialog 验证，完成后移除测试入口。
 
 - [x] 验证结果：ACP lifecycle 118 项、RuntimeError 11 项、桌面错误 envelope 1 项、Web 相关 229 项测试通过；桌面端 `cargo check --tests`、前端 TypeScript 检查与 Vite 生产构建通过。浏览器在 480px 窄窗验证错误通知、停止处理、未确认工具、回复/草稿保留及切走重入。生产构建保留既有 chunk 大小与混合导入警告。
+
+## 2026-10-13 复合模型二级菜单在窄会话栏内原地展开
+
+- 根因：会话栏浮层以会话栏为碰撞边界，复合菜单的二级菜单固定 22rem 侧向弹出。会话栏变窄后左右两侧都放不下，Radix 翻到左侧并把宽度压到剩余空间，但定位仍按原宽度计算，菜单被挤到窗口最左边并覆盖侧边栏。
+- 实现：`portal-container` 新增纯函数 `overlayFitsBeside` / `overlayCollisionRect`；`AcpModelThoughtSelects` 把模型与配置分区收成同一个 `CompositeConfigSection`，`openSection` 统一记录 `{ id, presentation: flyout | inline }`。每次尝试打开时测量主菜单与边界：放得下走原有 Radix 侧弹；放不下时悬停不弹出，点击 / Enter / Space / → 在主菜单内原地展开，← 收起。
+- 证据：`web/tests/acp-model-thought-submenu-placement.test.tsx` 在修复前因窄边界下仍打开侧向菜单而失败，修复后与相关菜单、碰撞边界测试全部通过；浏览器 harness 验证 480px 会话栏原地展开且不越界，900px 会话栏保持悬停侧弹。
+- 过度设计与性能评审：只在打开二级菜单时读一次 `getBoundingClientRect`，无常驻监听、缓存或新的持久状态；两种载体共用同一份单选列表。

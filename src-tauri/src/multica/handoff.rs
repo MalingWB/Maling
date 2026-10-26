@@ -322,7 +322,8 @@ mod tests {
         let output = completion_output_from_reply(&reply).expect("hit");
         assert_eq!(output.chars().count(), MAX_COMPLETION_OUTPUT_CHARS);
         assert!(output.ends_with(COMPLETION_OUTPUT_TRUNCATION_MARKER));
-        let kept = MAX_COMPLETION_OUTPUT_CHARS - COMPLETION_OUTPUT_TRUNCATION_MARKER.chars().count();
+        let kept =
+            MAX_COMPLETION_OUTPUT_CHARS - COMPLETION_OUTPUT_TRUNCATION_MARKER.chars().count();
         assert!(output.chars().take(kept).all(|c| c == '门'));
     }
 
@@ -382,8 +383,9 @@ mod tests {
         assert_eq!(scan.attempt_probe.block, None);
         assert_eq!(scan.attempt_probe.near_miss_reason, None);
 
-        let missing = Utf8PathBuf::from_path_buf(std::env::temp_dir().join("gold-band-scan-missing"))
-            .expect("utf8 temp path");
+        let missing =
+            Utf8PathBuf::from_path_buf(std::env::temp_dir().join("gold-band-scan-missing"))
+                .expect("utf8 temp path");
         assert_eq!(
             attempt_completion_scan(missing.as_str()),
             AttemptCompletionScan::default()
@@ -398,10 +400,7 @@ mod tests {
             "```completion-output\n前置消息的块\n```\n",
             "最终致意，无块。",
         ]);
-        assert_eq!(
-            final_completion_probe(earlier_only.as_str()).block,
-            None
-        );
+        assert_eq!(final_completion_probe(earlier_only.as_str()).block, None);
 
         let (last_has_block, _temp2) = attempt_dir_with_texts(&[
             "前置说明。",

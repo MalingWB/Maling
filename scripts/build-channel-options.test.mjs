@@ -50,6 +50,22 @@ test('channel build options retain the legacy positional critical flag and rejec
   );
 });
 
+test('local timestamped WB builds use NSIS on Windows and native bundles elsewhere', () => {
+  for (const devtools of [false, true]) {
+    for (const platform of ['win32', 'darwin', 'linux']) {
+      const plan = channelBuildPlan('tauri.wb.conf.json', { channel: 'wb', devtools }, platform);
+      const bundlesIndex = plan.tauriArgs.indexOf('--bundles');
+      if (platform === 'win32') {
+        assert.ok(bundlesIndex >= 0, 'timestamped local versions cannot be packaged as MSI');
+        assert.equal(plan.tauriArgs[bundlesIndex + 1], 'nsis');
+      } else {
+        assert.equal(bundlesIndex, -1, 'use native bundle targets outside Windows');
+      }
+      assert.equal(plan.shouldCollectReleaseArtifacts, !devtools);
+    }
+  }
+});
+
 test('metrics-enabled channel requires a non-empty metrics API key', () => {
   assert.doesNotThrow(() => assertChannelBuildSecrets(
     'wb',
