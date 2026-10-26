@@ -2561,6 +2561,12 @@
     "im": {
       "title": "IM 원격 개입 및 알림",
       "enabled": "사용",
+      "channelEnabled": "{{channel}} 원격 개입 사용",
+      "channelSubtitle": "봇 · 1:1 채팅",
+      "expandChannel": "{{channel}} 설정 펼치기",
+      "collapseChannel": "{{channel}} 설정 접기",
+      "receiverAccount": "수신 계정",
+      "robotName": "봇 이름",
       "privateBinding": "1:1 채팅: {{name}}",
       "notificationKinds": "알림 유형",
       "notificationGroups": {
@@ -2596,10 +2602,12 @@
       "channels": {
         "weCom": {
           "title": "WeCom",
+          "identityLabel": "봇 ID",
           "identity": "봇 ID: {{id}}"
         },
         "feishu": {
           "title": "Feishu / Lark",
+          "identityLabel": "App ID",
           "identity": "App ID: {{id}}",
           "singleDeviceHint": "작업이 다른 기기에 전달되지 않도록 봇 하나는 기기 한 대에만 연결하세요.",
           "permissions": {

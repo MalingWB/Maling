@@ -2561,6 +2561,12 @@
     "im": {
       "title": "IM リモート介入と通知",
       "enabled": "有効",
+      "channelEnabled": "{{channel}} のリモート介入を有効にする",
+      "channelSubtitle": "ボット · プライベートチャット",
+      "expandChannel": "{{channel}} の設定を展開",
+      "collapseChannel": "{{channel}} の設定を折りたたむ",
+      "receiverAccount": "受信アカウント",
+      "robotName": "ボット名",
       "privateBinding": "プライベートチャット: {{name}}",
       "notificationKinds": "通知の種類",
       "notificationGroups": {
@@ -2596,10 +2602,12 @@
       "channels": {
         "weCom": {
           "title": "WeCom",
+          "identityLabel": "ボット ID",
           "identity": "ボット ID: {{id}}"
         },
         "feishu": {
           "title": "Feishu / Lark",
+          "identityLabel": "App ID",
           "identity": "App ID: {{id}}",
           "singleDeviceHint": "操作が別の端末に届かないよう、1 つのボットは 1 台の端末のみに接続してください。",
           "permissions": {

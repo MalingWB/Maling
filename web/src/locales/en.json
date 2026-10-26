@@ -2561,6 +2561,12 @@
     "im": {
       "title": "IM remote intervention and notifications",
       "enabled": "Enabled",
+      "channelEnabled": "Enable {{channel}} remote intervention",
+      "channelSubtitle": "Bot · Private chat",
+      "expandChannel": "Expand {{channel}} settings",
+      "collapseChannel": "Collapse {{channel}} settings",
+      "receiverAccount": "Recipient account",
+      "robotName": "Bot name",
       "privateBinding": "Private chat: {{name}}",
       "notificationKinds": "Notification types",
       "notificationGroups": {
@@ -2596,10 +2602,12 @@
       "channels": {
         "weCom": {
           "title": "WeCom",
+          "identityLabel": "Bot ID",
           "identity": "Bot ID: {{id}}"
         },
         "feishu": {
           "title": "Feishu / Lark",
+          "identityLabel": "App ID",
           "identity": "App ID: {{id}}",
           "singleDeviceHint": "Connect each bot to only one device so actions do not reach another device.",
           "permissions": {

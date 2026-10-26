@@ -2561,6 +2561,12 @@
     "im": {
       "title": "IM 远程干预与通知",
       "enabled": "启用",
+      "channelEnabled": "启用{{channel}}远程干预",
+      "channelSubtitle": "机器人 · 一对一私聊",
+      "expandChannel": "展开{{channel}}设置",
+      "collapseChannel": "收起{{channel}}设置",
+      "receiverAccount": "接收账号",
+      "robotName": "机器人名称",
       "privateBinding": "一对一私聊：{{name}}",
       "notificationKinds": "通知类型",
       "notificationGroups": {
@@ -2596,10 +2602,12 @@
       "channels": {
         "weCom": {
           "title": "企业微信",
+          "identityLabel": "机器人 ID",
           "identity": "机器人 ID：{{id}}"
         },
         "feishu": {
           "title": "飞书",
+          "identityLabel": "App ID",
           "identity": "App ID：{{id}}",
           "singleDeviceHint": "一个机器人只连接一台设备，避免操作被其他设备接收。",
           "permissions": {
