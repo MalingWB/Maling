@@ -2902,16 +2902,42 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **方案**：
 - **拉取决策点（桌面侧 resolver 重构，引擎契约零改动——仍是 `resolve(task_id, node_id) -> String` 同步回调）**：
-  - 首拉立即执行：命中 → 快路径照旧；**成功但空值** → 注册决策槽（`MulticaRuntimeState.upstream_pull_decisions`，键 `"{local_run_id}/{node_id}"`，Notify 唤醒，沿用 `issue_output_pushed` 的 run 级内存态定位与 `drop_active_run` 同生命周期前缀清理）+ 发 `gold-band://multica-upstream-pull-pending` 事件，前端全局弹窗三选一；**首拉网络失败不发决策点**（「拉不到」≠「父未产出」），按旧口径预算内重试。
+  - 首拉立即执行：命中 → 快路径照旧；**成功但空值** → 注册决策槽（`MulticaRuntimeState.upstream_pull_decisions`，键 `"{local_run_id}/{node_id}"`，Notify 唤醒，沿用 `issue_output_pushed` 的 run 级内存态定位与 `drop_active_run` 同生命周期前缀清理）+ 发 `gold-band://multica-upstream-pull-pending` 事件，前端决策 UI 三选一（M5-ci 起为会话内卡片；本版为 App 级全局弹窗）；**首拉网络失败不发决策点**（「拉不到」≠「父未产出」），预算内重试（M5-ci 修正：本版实现与该口径不符——网络失败也发了 pending，且首拉失败后即使后续轮询确认空值也永不开决策点）。
   - resolve 主循环 `tokio::select!`：决策 notify（manual → 渲染用户文本变体、skip → 渲染跳过变体、retry → 恢复轮询并立即拉取一次）vs 决策窗口 `DECISION_FALLBACK_AFTER`（60s，无人应答自动回落轮询——无人值守语义≈旧口径，不挂死）；轮询期 fetch 命中 → resolved；总预算 15 分钟不变，耗尽仍结构化 Timeout。任意退出路径统一收口：移除槽 + 发 settled 事件（resolved/manual/skipped/timeout）关闭前端弹窗；决策槽在轮询期保留（迟到 manual/skip 仍生效）。
   - 命令 `decide_upstream_pull`：决策字面量（retry/manual/skip）→ 枚举；manual 强制 trim 非空；锁内写决策取 notify、锁外 notify_one；无槽/无在飞 run/未知字面量 → `multica.upstream-pull-not-pending`（决策迟到竞态兜底，不改槽防手滑毁掉等待中的拉取）。
-  - 前端：App 级 `MulticaUpstreamPullDialog`（纯事件驱动：pending 入队幂等、settled 收口清理、直接关窗=不决策由 60s 回落自愈；多个在飞拉取按到达顺序逐个弹）；模板 `remote_task_upstream_pull.md` 拆三变体（parent/manual/skipped，双语）——manual 明确标注「用户手动提供，非父工作项快照」，skip 带「缺信息如实说明、不要臆测」防线。
+  - 前端：App 级 `MulticaUpstreamPullDialog`（纯事件驱动：pending 入队幂等、settled 收口清理、直接关窗=不决策由 60s 回落自愈；多个在飞拉取按到达顺序逐个弹；M5-ci 起整体移除，改为会话内 InterventionLayer 卡片）；模板 `remote_task_upstream_pull.md` 拆三变体（parent/manual/skipped，双语）——manual 明确标注「用户手动提供，非父工作项快照」，skip 带「缺信息如实说明、不要臆测」防线。
 - **交付说明结构精简（协议文本收紧，无逻辑改动）**：`remote_task_{completion,node}_protocol.md` 与交付上传角色正文的次要信息段改为一两行带过且不得挤占核心信息（核心段——构建/部署事实——不动）。
 
 **方案自评审**：过度设计——决策槽是 run 级内存态，复用 `issue_output_pushed` 生命周期口径与 MulticaConnectCancel 的 Notify 先例，无持久化字段/跨层 identity/aggregate；弹窗单组件纯事件驱动，无轮询无全局 store；未引入为单一竞态复制 canonical 数据的机制。性能——快路径（首拉命中）零新增；决策等待期零轮询零请求（旧口径此阶段已在按 15–60s 间隔打请求）；60s 回落保证无人值守带宽行为 ≤ 旧口径；协议文本每区段净减约百字符（首条 prompt 负载下降）。
 
 **验证结果**：lib `prompts` remote_task 6/6（upstream_pull 三变体契约改写：parent/manual/skip 锚点 + manual 不带快照口径负锚点）；desktop `multica::` 228/228（新增：决策槽生命周期 3——注册/决策/取走保留槽、run+node 键隔离、drop_active_run 前缀清理含前缀投影视防；upstream 渲染 manual/skipped × 双语 2 + 决策窗口常量锁 1；错误码断言扩充）；前端 i18n 契约 7/7、locale parity/app-error 18/18、tsc 零错、`web:build` 通过。clippy 我方改动文件零新增诊断。弹窗实机交互需内网真实 multica 工作流验证（本地无法联调，见部署后复测）。
 
+
+### 12.80 改动七十八：决策点收敛为会话内卡片 + 首拉网络失败口径修复（M5-ci，2026-10-26）
+
+**背景**：M5-ch 批次分支自检发现两项问题，叠加用户对决策 UI 形态的拍板：
+
+1. **UI 形态偏离产品先例（用户决策：改为会话内 InterventionLayer 卡片）**：权限请求、表单征询、人工检查等同类「运行中请求用户决策」均为会话内卡片（ACPChatDialog InterventionLayer），M5-ch 的 App 级全局弹窗是孤例——脱离任务上下文（看不到会话现场），且阻塞全局。
+2. **代码与文档口径不符（首拉网络失败也发决策点）**：`upstream.rs` 在首拉 `match` 两分支后**无条件**注册决策槽 + 发 pending 事件，网络失败（`polling = true`）也会弹三选一——与「首拉网络失败不发决策点（『拉不到』≠『父未产出』）」的文档口径直接矛盾。
+3. **根因是设计层缺陷而非实现笔误**：决策点开启绑定在「首拉」这个**时机**上，而正确的不变量应绑定在「首次**确认**父未产出」的**观察**上——拉取成功且空值才算确认。绑定时机导致两个症状：网络失败误开（把「拉不到」当成「父未产出」）；首拉失败后即使后续轮询确认空值也**永不**开决策点，用户在整个 15 分钟预算内无从介入，只能干等到 Timeout。
+4. **死代码**：`handoff.rs::final_assistant_reply` 自 /complete 直传（98afa60a）后无生产调用方，`cargo check` 报 never used。
+
+**方案**：
+
+- **决策点开启口径改为不变量「首次确认父未产出」**：抽出纯分类 `ParentFetchObservation { Produced, ConfirmedNotProduced, Unreachable }`（`observe_parent_fetch` + `opens_decision_point`），首拉与轮询两个拉取点统一由分类驱动：
+  - `Produced` → 快路径返回（不变）；
+  - `ConfirmedNotProduced` 且尚未开过（`decision_open`）→ 注册槽 + 发 pending——无论该确认来自首拉还是后续轮询（修复症状 3 的第二半）；
+  - `Unreachable` → 不开决策点，本地永不唤醒的 `Notify` 占位（select 纯走轮询 sleep），预算内静默重试（修复症状 2）。
+  - 「只开一次」由 `decision_open` 保证：60s 回落后槽保留、迟到决策仍生效，不重复注册/发事件。
+- **前端改会话内卡片**：删除 `MulticaUpstreamPullDialog.tsx` 与 App.tsx 挂载；新增 `web/src/components/conversation/MulticaUpstreamPullCard.tsx`：
+  - `MulticaUpstreamPullIntervention({ taskId, readOnly })` 挂入 ACPChatDialog InterventionLayer（`pendingElicitation` 之后）：订阅 pending/settled，按 `event.taskId === taskId` 过滤（用户看哪个会话，卡片出现在哪；未打开的会话由后端 60s 回落自愈）；pending 入队幂等、settled 按 `{runId}/{nodeId}` 精确移除。
+  - 卡片级 `MulticaUpstreamPullCard`：视觉对齐 PermissionRequestCard（同 `data-theme-role="permission-card"` 复用主题 recipe，图标 + 标题 + 描述 + 动作行），三选一 + manual 内联表单（trim 非空门控提交）；本地出队在**父级队列**而非卡片内部 state——同槽位 pending 再次入队时按 key 重建卡片（测试驱动修复：卡片内 `removed` state 会在实例复用时吞掉重入队的 pending）；`readOnly || useReadOnlyExperience()` 禁用全部决策入口；决策迟到（`multica.upstream-pull-not-pending`）幂等收起，其他错误保留卡片展示。
+  - 卡片无关闭按钮：不阻塞会话，忽略 = 不决策，60s 回落自愈（弹窗时代的 dismiss 按钮随阻塞语义一起删除）。locale 9 key 原样复用（文案不含弹窗措辞，7 语言零改动）。
+- **删除死代码**：`final_assistant_reply` 及其 2 项测试（`assistant_text_items`/`is_assistant_text` 仍有 scan/probe 生产调用方，保留）。
+
+**方案自评审**：过度设计——净删除为主（弹窗文件 + 死代码 + 死代码测试），卡片复用既有事件/命令/locale/主题 role，无新状态机/持久字段/依赖；`ParentFetchObservation` 是三值纯分类、被两个拉取点真实消费（非测试专用抽象）；`decision_open` 是单个布尔守卫，未引入新 aggregate。性能——事件频率不变（每任务每节点至多一对 pending/settled）；卡片状态在最小消费边界（介入组件持有队列、每卡片自持表单态），订阅按 ACPChatDialog 实例一对 listener，无高频路径、无额外请求。
+
+**验证结果**：desktop `multica::` 227/227（228 − 删 2 项死代码测试 + 新增 1：`decision_point_opens_only_on_confirmed_not_produced` 锁定口径——ConfirmedNotProduced 开、Unreachable 不开、trim 空白算未产出；resolve 装配依赖 AppHandle + 真实 client，无测试 harness，按 bug-fix-verification §3 例外以根因分析 + 纯函数契约锁定）；前端新增 `multica-upstream-pull-card.test.tsx` 6 例（taskId 过滤、重复 pending 幂等、settled 按槽位精确移除、retry/skip 决策参数、manual trim 门控与提交参数、not-pending 幂等收起 + 其他错误保留可重试、readOnly 全禁用）；`tsc -p web/tsconfig.build.json` 零错；web 全量 383 文件 2929 例通过；`cargo check` 警告数与改动前持平（20 条均为未触及模块存量）。实机事件链（pending 事件 → 卡片出现 → 决策 → settled 收口）本地无法触发（browser 模式事件订阅为 stub、multica 仅内网），待内网真实工作流复测。
 
 ---
 

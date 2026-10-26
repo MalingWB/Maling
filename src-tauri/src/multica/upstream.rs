@@ -8,11 +8,12 @@
 //!
 //! - **首拉立即执行**：父 `completion_output` 非空即命中（阶段性快照——父未 done 也可得，
 //!   内网确认 2026-10-24：字段非空即下发、PUT 无状态门槛）。
-//! - **首拉成功但为空（M5-ch 决策点）**：不再直接轮询满预算，发 pending 事件把控制权交给
-//!   用户三选一——继续等待（恢复轮询）/ 手动提供交付说明 / 跳过拉取直接继续。60 秒无人
-//!   应答自动回落轮询（无人值守语义≈旧口径，不挂死）；总预算（15 分钟）不变，耗尽仍结构化
-//!   Timeout。首拉**网络失败**不走决策点（语义是「拉不到」不是「父未产出」），按旧口径
-//!   预算内重试。
+//! - **首个「确认父未产出」开 M5-ch 决策点**（拉取成功但 `completion_output` 为空——含
+//!   首拉与其后轮询的首个确认）：发 pending 事件把控制权交给用户三选一——继续等待（恢复
+//!   轮询）/ 手动提供交付说明 / 跳过拉取直接继续。60 秒无人应答自动回落轮询（无人值守
+//!   语义≈旧口径，不挂死）；总预算（15 分钟）不变，耗尽仍结构化 Timeout。拉取**网络失
+//!   败**不开决策点（语义是「拉不到」不是「父未产出」），预算内静默重试，首个后续
+//!   「确认空」再开。
 //! - 命中后按当前界面语言渲染「上游交付说明」模板（parent / manual / skipped 三变体）。
 //!   渲染结果由引擎注入首条 prompt 的隐式隐藏区段（「上游交付说明」），正文中的令牌随之
 //!   移除（AGENTS.md system/user prompt 划分：随执行变化的交付数据属 user prompt 区，不内联
@@ -30,6 +31,7 @@
 //! 渲染 `remote_task_node_protocol` 对应变体，注入首条 prompt 隐式隐藏区段。本地任务 /
 //! 非 issue 关联 → `None`（不注入，与 claim 时冻结段同口径）。纯内存映射 + 模板渲染，无 IO。
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use gold_band::app::upstream::{
@@ -45,6 +47,7 @@ use gold_band::provider::PromptHiddenSection;
 use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
+use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use crate::multica::bridge::{desktop_context, multica_client, shared_multica_state};
@@ -62,11 +65,11 @@ const POLL_BUDGET: Duration = Duration::from_secs(15 * 60);
 /// （无人值守语义≈旧口径——不挂死、终态仍由总预算收口）。
 const DECISION_FALLBACK_AFTER: Duration = Duration::from_secs(60);
 
-/// 首拉空值、等待用户决策时发的前端事件（远程任务拉取决策弹窗）。
+/// 「确认父未产出」、开决策点时发的前端事件（远程任务会话内拉取决策卡片）。
 pub(crate) const MULTICA_UPSTREAM_PULL_PENDING_EVENT: &str = "gold-band://multica-upstream-pull-pending";
 
 /// 决策点收口（任意 resolve 退出路径）时发的前端事件：outcome = resolved / manual /
-/// skipped / timeout，前端据此关闭决策弹窗。
+/// skipped / timeout，前端据此关闭决策卡片。
 pub(crate) const MULTICA_UPSTREAM_PULL_SETTLED_EVENT: &str =
     "gold-band://multica-upstream-pull-settled";
 
@@ -134,30 +137,38 @@ impl MulticaUpstreamResolver {
         };
 
         let started = std::time::Instant::now();
-        // 首拉立即执行。网络失败 ≠ 空值：不发决策点（「拉不到」不是「父未产出」），直接进
-        // 预算内重试；成功且非空则快路径返回。
+        // 首拉立即执行，观察分类决定后续形态：Produced 快路径返回；ConfirmedNotProduced
+        // （拉取成功但父未产出）开 M5-ch 决策点；Unreachable 静默进预算内重试。
         let mut polling;
-        match client.get_issue(&workspace_id, &parent).await {
-            Ok(detail) => {
-                if let Some(output) = parent_output(&detail) {
-                    self.settle_pull(&shared, &run, node_id, &parent, "resolved");
-                    info!(
-                        task = task_id,
-                        node = node_id,
-                        issue = %parent,
-                        "multica upstream pull resolved on first fetch"
-                    );
-                    return render_upstream_section(
-                        context.config.desktop_language,
-                        UpstreamSectionSource::Parent {
-                            status: &detail.status,
-                            output,
-                        },
-                    );
-                }
+        let mut notify;
+        let mut decision_open;
+        let first = client.get_issue(&workspace_id, &parent).await;
+        match observe_parent_fetch(&first) {
+            ParentFetchObservation::Produced => {
+                let detail = first.as_ref().expect("produced implies Ok");
+                let output = parent_output(detail).expect("produced implies non-empty output");
+                self.settle_pull(&shared, &run, node_id, &parent, "resolved");
+                info!(
+                    task = task_id,
+                    node = node_id,
+                    issue = %parent,
+                    "multica upstream pull resolved on first fetch"
+                );
+                return render_upstream_section(
+                    context.config.desktop_language,
+                    UpstreamSectionSource::Parent {
+                        status: &detail.status,
+                        output,
+                    },
+                );
+            }
+            ParentFetchObservation::ConfirmedNotProduced => {
+                notify = self.open_decision_point(&shared, &run, node_id, &parent);
+                decision_open = true;
                 polling = false;
             }
-            Err(e) => {
+            ParentFetchObservation::Unreachable => {
+                let e = first.as_ref().expect_err("unreachable implies Err");
                 warn!(
                     task = task_id,
                     node = node_id,
@@ -165,19 +176,12 @@ impl MulticaUpstreamResolver {
                     %e,
                     "multica upstream first fetch failed (will retry within budget)"
                 );
+                // 不开决策点：本地 Notify 永不唤醒，select 只走轮询 sleep。
+                notify = Arc::new(Notify::new());
+                decision_open = false;
                 polling = true;
             }
         }
-
-        // M5-ch 决策点：首拉成功但为空——注册决策槽、通知前端，select 等用户三选一或 60s 回落。
-        let notify = shared
-            .lock()
-            .expect("multica state lock")
-            .register_upstream_pull(&run.local_run_id, node_id);
-        let _ = self.handle.emit(
-            MULTICA_UPSTREAM_PULL_PENDING_EVENT,
-            UpstreamPullEventVm::pending(&run, node_id, &parent),
-        );
 
         let mut interval = POLL_INITIAL_INTERVAL;
         loop {
@@ -234,7 +238,7 @@ impl MulticaUpstreamResolver {
                 }
                 _ = tokio::time::sleep(wait) => {
                     if !polling {
-                        // 60s 无人应答：自动回落轮询（决策弹窗保留，期间决策仍生效）。
+                        // 60s 无人应答：自动回落轮询（决策卡片保留，期间决策仍生效）。
                         polling = true;
                         info!(
                             task = task_id,
@@ -246,34 +250,46 @@ impl MulticaUpstreamResolver {
                 }
             }
             debug_assert!(polling, "decision branches either return or resume polling");
-            match client.get_issue(&workspace_id, &parent).await {
-                Ok(detail) => {
-                    if let Some(output) = parent_output(&detail) {
-                        info!(
-                            task = task_id,
-                            node = node_id,
-                            issue = %parent,
-                            waited_secs = started.elapsed().as_secs(),
-                            "multica upstream pull resolved"
-                        );
-                        self.settle_pull(&shared, &run, node_id, &parent, "resolved");
-                        return render_upstream_section(
-                            context.config.desktop_language,
-                            UpstreamSectionSource::Parent {
-                                status: &detail.status,
-                                output,
-                            },
-                        );
-                    }
+            let fetch = client.get_issue(&workspace_id, &parent).await;
+            match observe_parent_fetch(&fetch) {
+                ParentFetchObservation::Produced => {
+                    let detail = fetch.as_ref().expect("produced implies Ok");
+                    let output = parent_output(detail).expect("produced implies non-empty output");
+                    info!(
+                        task = task_id,
+                        node = node_id,
+                        issue = %parent,
+                        waited_secs = started.elapsed().as_secs(),
+                        "multica upstream pull resolved"
+                    );
+                    self.settle_pull(&shared, &run, node_id, &parent, "resolved");
+                    return render_upstream_section(
+                        context.config.desktop_language,
+                        UpstreamSectionSource::Parent {
+                            status: &detail.status,
+                            output,
+                        },
+                    );
                 }
+                // 首个「确认父未产出」补开决策点：首拉网络失败时 M5-ch 口径在此兑现——后续
+                // 轮询确认父确实未产出，与首拉空值同权，不能干等预算耗尽。
+                ParentFetchObservation::ConfirmedNotProduced if !decision_open => {
+                    notify = self.open_decision_point(&shared, &run, node_id, &parent);
+                    decision_open = true;
+                    polling = false;
+                }
+                ParentFetchObservation::ConfirmedNotProduced => {}
                 // 轮询期网络抖动不立即失败（等待窗口内重试是常态；预算耗尽由 Timeout 收口）。
-                Err(e) => warn!(
-                    task = task_id,
-                    node = node_id,
-                    issue = %parent,
-                    %e,
-                    "multica upstream poll fetch failed (will retry within budget)"
-                ),
+                ParentFetchObservation::Unreachable => {
+                    let e = fetch.as_ref().expect_err("unreachable implies Err");
+                    warn!(
+                        task = task_id,
+                        node = node_id,
+                        issue = %parent,
+                        %e,
+                        "multica upstream poll fetch failed (will retry within budget)"
+                    );
+                }
             }
             interval = std::cmp::min(
                 interval.mul_f32(POLL_BACKOFF_FACTOR),
@@ -282,7 +298,28 @@ impl MulticaUpstreamResolver {
         }
     }
 
-    /// 决策点收口（任意退出路径统一调用）：移除决策槽 + 发 settled 事件关闭前端弹窗。
+    /// 开 M5-ch 决策点：注册决策槽 + 发 pending 事件（会话内决策卡片），返回 notify 供
+    /// select 等待用户三选一。「只开一次」由调用方 `decision_open` 保证（60s 回落后卡片
+    /// 保留、槽仍可迟到决策，无需重复注册）。
+    fn open_decision_point(
+        &self,
+        shared: &SharedMulticaState,
+        run: &ActiveRemoteRun,
+        node_id: &str,
+        parent: &str,
+    ) -> Arc<Notify> {
+        let notify = shared
+            .lock()
+            .expect("multica state lock")
+            .register_upstream_pull(&run.local_run_id, node_id);
+        let _ = self.handle.emit(
+            MULTICA_UPSTREAM_PULL_PENDING_EVENT,
+            UpstreamPullEventVm::pending(run, node_id, parent),
+        );
+        notify
+    }
+
+    /// 决策点收口（任意退出路径统一调用）：移除决策槽 + 发 settled 事件关闭前端决策卡片。
     fn settle_pull(
         &self,
         shared: &SharedMulticaState,
@@ -316,6 +353,37 @@ fn parent_output(detail: &IssueDetail) -> Option<&str> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
+}
+
+/// 父工作项单次拉取的观察分类（M5-ch 决策点开启口径的纯函数化）。
+///
+/// 决策点开启的不变量：只在**首次「确认父未产出」**（拉取成功且 `completion_output`
+/// trim 为空）上开启——无论该确认来自首拉还是后续轮询。拉取失败不构成确认（「拉不到」
+/// ≠「父未产出」），不得开决策点打扰用户。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParentFetchObservation {
+    /// 拉取成功且父已产出——快路径直接返回，不进入等待循环。
+    Produced,
+    /// 拉取成功但父未产出——「确认父未产出」，决策点的唯一开启口径。
+    ConfirmedNotProduced,
+    /// 拉取失败——不构成确认，不开决策点，预算内静默重试。
+    Unreachable,
+}
+
+impl ParentFetchObservation {
+    /// 决策点只在「确认父未产出」上开启。
+    fn opens_decision_point(self) -> bool {
+        matches!(self, ParentFetchObservation::ConfirmedNotProduced)
+    }
+}
+
+/// 把一次父工作项拉取结果归类（错误细节由调用侧日志消化，不进入分类值）。
+fn observe_parent_fetch<E>(fetch: &Result<IssueDetail, E>) -> ParentFetchObservation {
+    match fetch {
+        Ok(detail) if parent_output(detail).is_some() => ParentFetchObservation::Produced,
+        Ok(_) => ParentFetchObservation::ConfirmedNotProduced,
+        Err(_) => ParentFetchObservation::Unreachable,
+    }
 }
 
 /// 前端拉取决策事件载荷（pending 与 settled 同形：pending 的 `outcome` 为 null）。
@@ -444,6 +512,41 @@ mod tests {
         // 轮询预算；窗口 >= 预算会让决策点变相吞掉全部预算。
         assert_eq!(DECISION_FALLBACK_AFTER, Duration::from_secs(60));
         assert!(DECISION_FALLBACK_AFTER < POLL_BUDGET);
+    }
+
+    #[test]
+    fn decision_point_opens_only_on_confirmed_not_produced() {
+        // M5-ch 决策点开启口径：充要条件是「拉取成功但父未产出」（含 trim 后空白值）。
+        // 网络失败（「拉不到」）不构成确认，不得开决策点——否则首拉网络故障会向用户弹
+        // 出无意义的三选一，且「父未产出」并未被确认。
+        let detail = |output: Option<&str>| IssueDetail {
+            status: "in_progress".into(),
+            parent_issue_id: None,
+            completion_output: output.map(str::to_string),
+        };
+        let produced: Result<IssueDetail, String> = Ok(detail(Some("v0.1 产物")));
+        let blank: Result<IssueDetail, String> = Ok(detail(Some("   ")));
+        let empty: Result<IssueDetail, String> = Ok(detail(None));
+        let unreachable: Result<IssueDetail, String> = Err("connect timeout".into());
+
+        assert_eq!(
+            observe_parent_fetch(&produced),
+            ParentFetchObservation::Produced
+        );
+        assert!(!observe_parent_fetch(&produced).opens_decision_point());
+        for confirmed_empty in [&empty, &blank] {
+            assert_eq!(
+                observe_parent_fetch(confirmed_empty),
+                ParentFetchObservation::ConfirmedNotProduced,
+                "trim-blank completion_output counts as not produced"
+            );
+            assert!(observe_parent_fetch(confirmed_empty).opens_decision_point());
+        }
+        assert_eq!(
+            observe_parent_fetch(&unreachable),
+            ParentFetchObservation::Unreachable
+        );
+        assert!(!observe_parent_fetch(&unreachable).opens_decision_point());
     }
 
     #[test]

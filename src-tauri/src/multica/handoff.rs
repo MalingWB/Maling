@@ -240,20 +240,6 @@ pub(crate) fn final_completion_probe(attempt_dir: &str) -> CompletionBlockProbe 
         .unwrap_or_default()
 }
 
-/// 投影 run 最终 attempt 的最终 assistant 回复文本（设计方案 §5.2 支撑改动 2）。
-///
-/// `acp.timeline.jsonl` 中同流 textDelta 已由 runtime 合并为单条目（`apply_streaming_delta`，
-/// 内容累积），`load_timeline_items` 物化后按 seq 排序——取**最后一条**非占位 textDelta 的 content
-/// 即最终 assistant 消息。读失败/无文本 → None（fail-open，调用方仍照常流转 issue）。
-pub(crate) fn final_assistant_reply(attempt_dir: &str) -> Option<String> {
-    assistant_text_items(attempt_dir)?
-        .iter()
-        .filter(|item| is_assistant_text(item))
-        .next_back()
-        .and_then(|item| item.content.clone())
-        .filter(|content| !content.trim().is_empty())
-}
-
 /// attempt timeline 物化（读失败 → None 并 WARN，fail-open）。调用方直接借用 items 探测，
 /// 不复制消息内容——补交通道逐 turn 触发，避免整份文本的无谓克隆。
 fn assistant_text_items(attempt_dir: &str) -> Option<Vec<AcpUiEvent>> {
@@ -460,48 +446,6 @@ mod tests {
         let probe = completion_block_probe("完成。\n```completion-output\n交付说明\n```\n");
         assert_eq!(probe.block, Some("交付说明".to_string()));
         assert_eq!(probe.near_miss_reason, None);
-    }
-
-    #[test]
-    fn final_assistant_reply_reads_last_non_placeholder_text_delta() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let attempt_dir =
-            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
-        let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir.clone());
-        gold_band::acp::events::write_timeline_items(
-            &paths.timeline,
-            &[
-                text_delta("user-echo", 1, "用户输入"),
-                text_delta("assistant-1", 2, "中间说明"),
-                text_delta(
-                    "assistant-final",
-                    3,
-                    "最终回复\n```completion-output\n交付\n```\n",
-                ),
-            ],
-        )
-        .expect("write timeline");
-
-        assert_eq!(
-            final_assistant_reply(attempt_dir.as_str()),
-            Some("最终回复\n```completion-output\n交付\n```\n".to_string())
-        );
-        assert_eq!(
-            completion_output_from_reply(
-                final_assistant_reply(attempt_dir.as_str())
-                    .as_deref()
-                    .unwrap_or_default()
-            ),
-            Some("交付".to_string())
-        );
-    }
-
-    #[test]
-    fn final_assistant_reply_missing_dir_is_none() {
-        let missing =
-            Utf8PathBuf::from_path_buf(std::env::temp_dir().join("gold-band-handoff-missing"))
-                .expect("utf8 temp path");
-        assert_eq!(final_assistant_reply(missing.as_str()), None);
     }
 
     /// 构造含多条 assistant 文本消息（按给定顺序、seq 递增）的 attempt timeline 目录。

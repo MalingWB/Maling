@@ -80,6 +80,7 @@ import {
   ConversationViewportFooter,
 } from "@/components/conversation/ConversationViewport";
 import { InterventionLayer } from "@/components/conversation/InterventionLayer";
+import { MulticaUpstreamPullIntervention } from "@/components/conversation/MulticaUpstreamPullCard";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { compactionSummaryEventId, hasCompactionSummary } from '@/lib/acp-compaction-summary';
 import {
@@ -6818,6 +6819,7 @@ export function ACPChatDialog(
                     }
                   />
                 ) : null}
+                <MulticaUpstreamPullIntervention taskId={taskId} readOnly={readOnly} />
               </InterventionLayer>
               <ConversationViewportFooter
                 className={cn(
