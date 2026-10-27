@@ -20,6 +20,9 @@ jobs:
     name: Verify release tag on Linux
     runs-on: ubuntu-22.04
 
+    env:
+      GOLD_BAND_WB_BASE_URL: ${{ secrets.GOLD_BAND_WB_BASE_URL }}
+
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4

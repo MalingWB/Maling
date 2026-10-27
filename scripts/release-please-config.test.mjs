@@ -22,6 +22,16 @@ for (const [file, toolingRoot] of [
   ['release-please.yml', ''],
   ['release.yml', 'release-tools/'],
 ]) {
+  test(`${file} passes the WB base URL to the release preflight Cargo check`, async () => {
+    const workflow = parse(await readFile(path.join(repoRoot, '.github/workflows', file), 'utf8'));
+    const preflight = workflow.jobs['release-preflight'];
+    const check = preflight.steps.find((step) => step.run === 'cargo check --workspace --all-targets');
+    assert.ok(check, 'release preflight must check the Rust workspace');
+    const env = { ...workflow.env, ...preflight.env, ...check.env };
+    assert.equal(env.GOLD_BAND_RELEASE_CHANNEL, 'wb');
+    assert.equal(env.GOLD_BAND_WB_BASE_URL, '${{ secrets.GOLD_BAND_WB_BASE_URL }}');
+  });
+
   test(`${file} builds signed WB packages for all four release platforms`, async () => {
     const workflow = parse(await readFile(path.join(repoRoot, '.github/workflows', file), 'utf8'));
     assert.equal(workflow.env.GOLD_BAND_RELEASE_CHANNEL, 'wb');
