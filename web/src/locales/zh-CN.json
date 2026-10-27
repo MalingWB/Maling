@@ -932,6 +932,7 @@
       "composer-history-query-failed": "输入历史加载失败，请重试。",
       "turn-execution-failed": "本次消息处理失败，请重试。",
       "session-request-failed": "会话准备失败，请重试。",
+      "session-restore-reference-missing": "当前 ACP 会话缺少 Provider 会话引用，无法恢复原会话。请新建会话后重新发送消息。",
       "missing-provider": "当前节点缺少 provider 配置。",
       "subagent-protocol-upgrade-required": "请将 Claude ACP 升级至 {{minimumVersion}} 或更高版本后重试。",
       "session-config-value-unavailable": "所选会话配置已不可用，请从最新列表中重新选择。",
@@ -1032,7 +1033,6 @@
       "workspace-file-read-failed": "读取引用文件信息失败，请重试。",
       "workspace-file-count-exceeded": "上下文最多包含 {{max}} 个引用和附件。",
       "session-restore-unsupported": "当前 Agent 不支持恢复已有会话。",
-      "session-restore-reference-missing": "当前会话缺少可恢复的 Provider 会话引用。",
       "history-sync-unsupported": "当前 Agent 不支持同步已有会话的完整历史。",
       "prompt-empty": "请输入要发送的内容。",
       "prompt-quote-invalid": "引用数据无效，请删除后重新引用。",
@@ -2561,6 +2561,12 @@
     "im": {
       "title": "IM 远程干预与通知",
       "enabled": "启用",
+      "channelEnabled": "启用{{channel}}远程干预",
+      "channelSubtitle": "机器人 · 一对一私聊",
+      "expandChannel": "展开{{channel}}设置",
+      "collapseChannel": "收起{{channel}}设置",
+      "receiverAccount": "接收账号",
+      "robotName": "机器人名称",
       "privateBinding": "一对一私聊：{{name}}",
       "notificationKinds": "通知类型",
       "notificationGroups": {
@@ -2582,6 +2588,8 @@
         "notConfigured": "尚未接入{{channel}}。接入后可设置远程干预与通知。",
         "connect": "扫码接入",
         "reauthorize": "重新授权",
+        "changeApp": "更换飞书应用",
+        "changeAppWarning": "完成授权后将替换当前飞书应用，并清除现有私聊绑定。请使用新机器人重新完成绑定。",
         "generating": "正在生成二维码…",
         "waiting": "请使用{{channel}}扫码并确认授权",
         "expiresIn": "二维码将在 {{countdown}} 后过期",
@@ -2594,10 +2602,12 @@
       "channels": {
         "weCom": {
           "title": "企业微信",
+          "identityLabel": "机器人 ID",
           "identity": "机器人 ID：{{id}}"
         },
         "feishu": {
           "title": "飞书",
+          "identityLabel": "App ID",
           "identity": "App ID：{{id}}",
           "singleDeviceHint": "一个机器人只连接一台设备，避免操作被其他设备接收。",
           "permissions": {

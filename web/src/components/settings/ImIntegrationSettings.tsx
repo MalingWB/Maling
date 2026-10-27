@@ -2,9 +2,14 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import {
+  Bot,
+  Copy,
+  CircleCheck,
+  ChevronDown,
+  Info,
   Loader2,
-  MoreHorizontal,
   QrCode,
+  Repeat2,
   RefreshCw,
   RotateCcw,
   Save,
@@ -38,6 +43,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   Dialog,
   DialogContent,
@@ -68,6 +74,7 @@ import {
 } from '@/lib/im-settings';
 import { useImSettings } from './useImSettings';
 import type {
+  FeishuScanMode,
   ImChannelKind,
   ImChannelSettingsVm,
   ImNotificationPreferencesVm,
@@ -88,6 +95,8 @@ const notificationGroups = [
   key: string;
   items: readonly (keyof ImNotificationPreferencesVm)[];
 }[];
+
+const channelOrder = ['weCom', 'feishu'] as const satisfies readonly ImChannelKind[];
 
 function displayImError(t: TFunction, error: unknown) {
   if (error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string') {
@@ -110,8 +119,11 @@ export function ImIntegrationSettings() {
   }
 
   return (
-    <div className="divide-y divide-border/45">
-      {settings.channels.map((channel) => (
+    <div className="space-y-3">
+      {channelOrder.flatMap((kind) => {
+        const channel = settings.channels.find((candidate) => candidate.kind === kind);
+        return channel ? [channel] : [];
+      }).map((channel) => (
         <ImChannelEditor key={channel.kind} channel={channel} onSettings={mergeSettings} />
       ))}
     </div>
@@ -130,14 +142,17 @@ const ImChannelEditor = memo(function ImChannelEditor({
   const [recoveryBusy, setRecoveryBusy] = useState(false);
   const [destructiveBusy, setDestructiveBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const [scanOpen, setScanOpen] = useState(false);
+  const [scanRequest, setScanRequest] = useState<ImScanRequest>(null);
   const [resetOpen, setResetOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [configurationMenuOpen, setConfigurationMenuOpen] = useState(false);
   const display = imChannelDisplayModel(channel);
   const channelTitle = t(`settings.im.channels.${channel.kind}.title`);
   const resetCopy = channel.kind === 'feishu' ? 'settings.im.channels.feishu.resetBinding' : 'settings.im.resetBinding';
   const titleId = `im-${channel.kind}-title`;
   const enabledId = `im-${channel.kind}-enabled`;
+  const contentId = `im-${channel.kind}-content`;
   const generation = channel.connection?.generation ?? 0;
   const busy = pendingEnabled !== null || recoveryBusy || destructiveBusy;
 
@@ -203,119 +218,214 @@ const ImChannelEditor = memo(function ImChannelEditor({
     : display.tone === 'destructive' ? 'destructive' : 'outline';
 
   return (
-    <section className="space-y-5 py-5 first:pt-3 last:pb-3" aria-labelledby={titleId}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1.5">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 id={titleId} className="text-sm font-semibold">
-              {channelTitle}
-            </h3>
-            <Badge variant={badgeVariant} data-im-status={display.status}>
+    <Collapsible
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) setConfigurationMenuOpen(false);
+      }}
+      asChild
+    >
+      <section
+        className={`overflow-hidden rounded-xl border bg-card transition-[border-color,box-shadow] ${open ? 'border-border shadow-sm' : 'border-border/55'}`}
+        aria-labelledby={titleId}
+        data-im-channel={channel.kind}
+      >
+        <div className={`flex flex-wrap items-center justify-between gap-3 px-4 py-3 transition-colors ${open ? 'bg-muted/25' : ''}`}>
+          <div className="flex min-w-0 items-center gap-3">
+            <span className={`flex size-9 shrink-0 items-center justify-center rounded-lg ${channel.kind === 'weCom' ? 'bg-gold-success/10 text-gold-success' : 'bg-gold-running/10 text-gold-running'}`} aria-hidden>
+              <Bot className="size-4" />
+            </span>
+            <div className="min-w-0">
+              <h3 id={titleId} className="truncate text-sm font-semibold">
+                {channelTitle}
+              </h3>
+              <p className="truncate text-xs text-muted-foreground">{t('settings.im.channelSubtitle')}</p>
+            </div>
+          </div>
+
+          <div className="flex min-h-9 shrink-0 items-center gap-2">
+            <Badge
+              variant={badgeVariant}
+              className={display.status === 'ready' ? 'border-gold-success/30 bg-gold-success/10 text-gold-success' : undefined}
+              data-im-status={display.status}
+            >
               {display.status === 'connecting' || display.status === 'reconnecting'
                 ? <Loader2 className="animate-spin" />
                 : null}
               {t(`settings.im.status.${display.status}`)}
             </Badge>
-          </div>
-          {channel.publicIdentity ? (
-            <p className="break-all text-xs text-muted-foreground">
-              {t(`settings.im.channels.${channel.kind}.identity`, { id: channel.publicIdentity })}
-            </p>
-          ) : null}
-          {channel.kind === 'feishu' && channel.connection?.identity?.displayName ? (
-            <p className="break-words text-xs text-muted-foreground">{channel.connection.identity.displayName}</p>
-          ) : null}
-          {channel.binding ? (
-            <p className="break-words text-xs text-muted-foreground">
-              {t('settings.im.privateBinding', { name: channel.binding.displayName })}
-            </p>
-          ) : null}
-        </div>
-
-        {channel.credentialConfigured ? (
-          <div className="flex min-h-9 items-center gap-2">
-            {pendingEnabled !== null ? <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden /> : null}
-            <Label htmlFor={enabledId} className="text-xs">{t('settings.im.enabled')}</Label>
-            <Switch
-              id={enabledId}
-              checked={pendingEnabled ?? channel.enabled}
-              disabled={busy}
-              aria-busy={pendingEnabled !== null}
-              onCheckedChange={(enabled) => void toggleEnabled(enabled)}
-            />
-          </div>
-        ) : null}
-      </div>
-
-      {channel.kind === 'feishu' ? (
-        <p className="text-xs text-muted-foreground">{t('settings.im.channels.feishu.singleDeviceHint')}</p>
-      ) : null}
-
-      {!channel.credentialConfigured ? (
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="min-w-0 text-sm text-muted-foreground">{t('settings.im.scan.notConfigured', { channel: channelTitle })}</p>
-          <Button type="button" size="sm" onClick={() => setScanOpen(true)}>
-            <QrCode className="size-4" />
-            {t('settings.im.scan.connect')}
-          </Button>
-        </div>
-      ) : (
-        <>
-          <ConnectionGuidance
-            channel={channel}
-            channelTitle={channelTitle}
-            recoveryBusy={recoveryBusy}
-            onReconnect={() => void reconnect()}
-            onReauthorize={() => setScanOpen(true)}
-          />
-          <Separator />
-          <NotificationPreferencesForm channel={channel} onSettings={onSettings} />
-          <Separator />
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-xs text-muted-foreground">{t('settings.im.configurationHint')}</p>
+            {channel.credentialConfigured ? (
+              <div className="flex items-center gap-2">
+                {pendingEnabled !== null ? <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden /> : null}
+                <Label htmlFor={enabledId} className="text-xs text-muted-foreground">{t('settings.im.enabled')}</Label>
+                <Switch
+                  id={enabledId}
+                  checked={pendingEnabled ?? channel.enabled}
+                  disabled={busy}
+                  aria-label={t('settings.im.channelEnabled', { channel: channelTitle })}
+                  aria-busy={pendingEnabled !== null}
+                  onCheckedChange={(enabled) => void toggleEnabled(enabled)}
+                />
+              </div>
+            ) : null}
             <Tooltip>
-              <DropdownMenu>
-                <TooltipTrigger asChild>
-                  <DropdownMenuTrigger asChild>
-                    <Button type="button" size="icon" variant="ghost" disabled={busy} aria-label={t('settings.im.configurationMenu')}>
-                      <MoreHorizontal className="size-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                </TooltipTrigger>
-                <DropdownMenuContent align="end">
-                  {channel.binding ? (
-                    <DropdownMenuItem onSelect={() => setResetOpen(true)}>
-                      <UserRoundCog />
-                      {t(`${resetCopy}.action`)}
-                    </DropdownMenuItem>
-                  ) : null}
-                  <DropdownMenuItem onSelect={() => setScanOpen(true)}>
-                    <QrCode />
-                    {t('settings.im.scan.reauthorize')}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem variant="destructive" onSelect={() => setDeleteOpen(true)}>
-                    <Trash2 />
-                    {t('settings.im.delete')}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <TooltipContent>{t('settings.im.configurationMenu')}</TooltipContent>
+              <TooltipTrigger asChild>
+                <CollapsibleTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="size-9 shrink-0"
+                    aria-controls={contentId}
+                    aria-label={t(open ? 'settings.im.collapseChannel' : 'settings.im.expandChannel', { channel: channelTitle })}
+                  >
+                    <ChevronDown className={`size-4 transition-transform ${open ? '' : '-rotate-90'}`} aria-hidden />
+                  </Button>
+                </CollapsibleTrigger>
+              </TooltipTrigger>
+              <TooltipContent>
+                {t(open ? 'settings.im.collapseChannel' : 'settings.im.expandChannel', { channel: channelTitle })}
+              </TooltipContent>
             </Tooltip>
           </div>
-        </>
-      )}
+        </div>
 
-      {error ? <p className="text-xs text-destructive" role="alert">{displayImError(t, error)}</p> : null}
+        <CollapsibleContent id={contentId} forceMount hidden={!open}>
+          <div className="space-y-4 border-t border-border/45 px-4 py-3.5">
+            {channel.credentialConfigured ? (
+              <ConnectionGuidance
+                channel={channel}
+                channelTitle={channelTitle}
+                recoveryBusy={recoveryBusy}
+                onReconnect={() => void reconnect()}
+                onReauthorize={() => setScanRequest({ mode: 'reauthorizeCurrent', replacesConfiguredApp: false })}
+              />
+            ) : null}
 
-      <ImScanDialog
+            {!channel.credentialConfigured ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0 space-y-1">
+                  <p className="text-sm font-medium">{t(`settings.im.guidance.${display.status}.title`, { channel: channelTitle })}</p>
+                  <p className="text-xs text-muted-foreground">{t('settings.im.scan.notConfigured', { channel: channelTitle })}</p>
+                </div>
+                <Button type="button" size="sm" onClick={() => setScanRequest({ mode: 'selectOrCreate', replacesConfiguredApp: false })}>
+                  <QrCode className="size-4" />
+                  {t('settings.im.scan.connect')}
+                </Button>
+              </div>
+            ) : (
+              <>
+                <Separator />
+                <div className="max-w-4xl space-y-3" data-im-configuration-section>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <p className="text-sm font-medium">{t('settings.im.configurationHint')}</p>
+                    <Tooltip>
+                      <DropdownMenu open={configurationMenuOpen} onOpenChange={setConfigurationMenuOpen}>
+                        <TooltipTrigger asChild>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              className="h-8 gap-1.5 border border-border/70 px-3 text-xs font-medium shadow-xs"
+                              disabled={busy}
+                              data-im-configuration-menu
+                            >
+                              {t('settings.im.configurationMenu')}
+                              <ChevronDown
+                                className={`size-3.5 transition-transform ${configurationMenuOpen ? 'rotate-180' : ''}`}
+                                aria-hidden
+                              />
+                            </Button>
+                          </DropdownMenuTrigger>
+                        </TooltipTrigger>
+                        <DropdownMenuContent align="end">
+                          {channel.binding ? (
+                            <DropdownMenuItem onSelect={() => setResetOpen(true)}>
+                              <UserRoundCog />
+                              {t(`${resetCopy}.action`)}
+                            </DropdownMenuItem>
+                          ) : null}
+                          {channel.kind === 'feishu' ? (
+                            <DropdownMenuItem onSelect={() => setScanRequest({ mode: 'selectOrCreate', replacesConfiguredApp: true })}>
+                              <Repeat2 />
+                              {t('settings.im.scan.changeApp')}
+                            </DropdownMenuItem>
+                          ) : null}
+                          <DropdownMenuItem onSelect={() => setScanRequest({ mode: 'reauthorizeCurrent', replacesConfiguredApp: false })}>
+                            <QrCode />
+                            {t('settings.im.scan.reauthorize')}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem variant="destructive" onSelect={() => setDeleteOpen(true)}>
+                            <Trash2 />
+                            {t('settings.im.delete')}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                      <TooltipContent>{t('settings.im.configurationMenu')}</TooltipContent>
+                    </Tooltip>
+                  </div>
+                  <dl className="grid max-w-3xl gap-x-8 gap-y-3 text-xs sm:grid-cols-2">
+                    {channel.binding ? (
+                      <div className="min-w-0 space-y-1">
+                        <dt className="text-muted-foreground">{t('settings.im.receiverAccount')}</dt>
+                        <dd className="truncate text-foreground">{channel.binding.displayName}</dd>
+                      </div>
+                    ) : null}
+                    {channel.publicIdentity ? (
+                      <div className="min-w-0 space-y-1">
+                        <dt className="text-muted-foreground">{t(`settings.im.channels.${channel.kind}.identityLabel`)}</dt>
+                        <dd className="flex min-w-0 items-center gap-1">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="truncate text-foreground">{channel.publicIdentity}</span>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-sm break-all">{channel.publicIdentity}</TooltipContent>
+                          </Tooltip>
+                          <CopyIdentityButton
+                            value={channel.publicIdentity}
+                            label={t(`settings.im.channels.${channel.kind}.identityLabel`)}
+                          />
+                        </dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                  {channel.kind === 'feishu' && channel.connection?.identity?.displayName ? (
+                    <div className="space-y-1 text-xs">
+                      <p className="text-muted-foreground">{t('settings.im.robotName')}</p>
+                      <p className="break-words text-foreground">{channel.connection.identity.displayName}</p>
+                    </div>
+                  ) : null}
+                  {channel.kind === 'feishu' ? (
+                    <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                      <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                      <span>{t('settings.im.channels.feishu.singleDeviceHint')}</span>
+                    </p>
+                  ) : null}
+                </div>
+                <Separator />
+                <NotificationPreferencesForm channel={channel} onSettings={onSettings} />
+              </>
+            )}
+
+            {error ? <p className="text-xs text-destructive" role="alert">{displayImError(t, error)}</p> : null}
+          </div>
+        </CollapsibleContent>
+
+        <ImScanDialog
         channel={channel}
         channelTitle={channelTitle}
-        open={scanOpen}
-        onOpenChange={setScanOpen}
+        mode={scanRequest?.mode ?? 'selectOrCreate'}
+        replacesConfiguredApp={scanRequest?.replacesConfiguredApp ?? false}
+        open={scanRequest !== null}
+        onOpenChange={(open) => {
+          if (!open) setScanRequest(null);
+        }}
         onSettings={onSettings}
-      />
-      <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
+        />
+        <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t(`${resetCopy}.title`)}</AlertDialogTitle>
@@ -332,8 +442,8 @@ const ImChannelEditor = memo(function ImChannelEditor({
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
-      </AlertDialog>
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        </AlertDialog>
+        <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t('settings.im.deleteTitle', { channel: channelTitle })}</AlertDialogTitle>
@@ -350,10 +460,46 @@ const ImChannelEditor = memo(function ImChannelEditor({
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
-      </AlertDialog>
-    </section>
+        </AlertDialog>
+      </section>
+    </Collapsible>
   );
 });
+
+function CopyIdentityButton({ value, label }: { value: string; label: string }) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1_500);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="size-6 shrink-0"
+          aria-label={t('common.copy')}
+          onClick={() => {
+            void navigator.clipboard?.writeText(value)
+              .then(() => setCopied(true))
+              .catch(() => undefined);
+          }}
+        >
+          {copied
+            ? <CircleCheck className="size-3 text-gold-success" aria-hidden />
+            : <Copy className="size-3" aria-hidden />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{copied ? t('common.copied') : `${t('common.copy')} ${label}`}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 function ConnectionGuidance({
   channel,
@@ -371,11 +517,14 @@ function ConnectionGuidance({
   const { t } = useTranslation();
   const display = imChannelDisplayModel(channel);
   const errorCode = channel.connection?.lastErrorCode;
-  const showGuidance = display.status !== 'ready' || Boolean(errorCode);
-  if (!showGuidance) return null;
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3" data-im-guidance={display.status}>
-      <div className="min-w-0 space-y-1">
+    <div
+      className={`flex max-w-4xl flex-wrap items-start justify-between gap-3 rounded-lg px-3 py-2.5 ${display.status === 'ready' && !errorCode ? 'bg-gold-success/10' : 'bg-muted/35'}`}
+      data-im-guidance={display.status}
+    >
+      <div className="flex min-w-0 items-start gap-2">
+        {display.status === 'ready' && !errorCode ? <CircleCheck className="mt-0.5 size-4 shrink-0 text-gold-success" aria-hidden /> : null}
+        <div className="min-w-0 space-y-0.5">
         <p className="text-sm font-medium">{t(`settings.im.guidance.${display.status}.title`, { channel: channelTitle })}</p>
         <p className="text-xs text-muted-foreground">{t(`settings.im.guidance.${display.status}.description`, { channel: channelTitle })}</p>
         {errorCode ? (
@@ -383,6 +532,7 @@ function ConnectionGuidance({
             {t(`settings.im.errors.${errorCode}`, { defaultValue: t('settings.im.errors.IM_OPERATION_FAILED') })}
           </p>
         ) : null}
+        </div>
       </div>
       {display.recoveryAction === 'reauthorize' ? (
         <Button type="button" size="sm" variant="outline" disabled={recoveryBusy} onClick={onReauthorize}>
@@ -442,17 +592,17 @@ function NotificationPreferencesForm({
   };
 
   return (
-    <fieldset className="space-y-4" aria-busy={saving}>
+    <fieldset className="max-w-4xl space-y-3" aria-busy={saving}>
       <legend className="text-sm font-medium">{t('settings.im.notificationKinds')}</legend>
-      <div className="grid gap-5 md:grid-cols-2">
+      <div className="space-y-3">
         {notificationGroups.map((group) => (
-          <div key={group.key} className="min-w-0 space-y-2">
+          <div key={group.key} className="min-w-0 space-y-1.5">
             <p className="text-xs font-medium text-muted-foreground">
               {t(`settings.im.notificationGroups.${group.key}`)}
             </p>
-            <div className="space-y-1">
+            <div className="flex flex-wrap gap-x-2 gap-y-1">
               {group.items.map((key) => (
-                <Label key={key} className="flex min-h-9 cursor-pointer items-center gap-2 text-sm font-normal">
+                <Label key={key} className="flex min-h-8 min-w-36 cursor-pointer items-center gap-2 rounded-md px-2 text-sm font-normal transition-colors hover:bg-muted/50">
                   <Checkbox
                     checked={draft[key]}
                     disabled={saving}
@@ -485,6 +635,8 @@ function NotificationPreferencesForm({
   );
 }
 
+type ImScanRequest = { mode: FeishuScanMode; replacesConfiguredApp: boolean } | null;
+
 type ImScanState =
   | { kind: 'idle' | 'starting' }
   | { kind: 'waitingQr'; qrUrl: string; expiresAtMs: number }
@@ -509,7 +661,7 @@ function ImQrCanvas({ value, label, onError }: { value: string; label: string; o
 }
 
 const IM_SCAN_AUTHORIZATION: Record<ImChannelKind, {
-  start: (sessionId: string, reauthorize: boolean) => Promise<ImScanAuthorizationVm>;
+  start: (sessionId: string, mode: FeishuScanMode) => Promise<ImScanAuthorizationVm>;
   complete: (sessionId: string) => Promise<ImSettingsVm>;
   cancel: (sessionId: string) => Promise<void>;
 }> = {
@@ -528,12 +680,16 @@ const IM_SCAN_AUTHORIZATION: Record<ImChannelKind, {
 function ImScanDialog({
   channel,
   channelTitle,
+  mode,
+  replacesConfiguredApp,
   open,
   onOpenChange,
   onSettings,
 }: {
   channel: ImChannelSettingsVm;
   channelTitle: string;
+  mode: FeishuScanMode;
+  replacesConfiguredApp: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSettings: (settings: ImSettingsVm) => void;
@@ -543,7 +699,6 @@ function ImScanDialog({
   const [now, setNow] = useState(() => Date.now());
   const activeSessionRef = useRef<string | null>(null);
   const scan = IM_SCAN_AUTHORIZATION[channel.kind];
-  const reauthorize = channel.credentialConfigured;
 
   const cancelActive = useCallback(() => {
     const sessionId = activeSessionRef.current;
@@ -563,7 +718,7 @@ function ImScanDialog({
     activeSessionRef.current = sessionId;
     setState({ kind: 'starting' });
     try {
-      const authorization = await scan.start(sessionId, reauthorize);
+      const authorization = await scan.start(sessionId, mode);
       if (activeSessionRef.current !== sessionId) return;
       setNow(Date.now());
       setState({ kind: 'waitingQr', qrUrl: authorization.qrUrl, expiresAtMs: authorization.expiresAtMs });
@@ -582,7 +737,7 @@ function ImScanDialog({
       activeSessionRef.current = null;
       setState({ kind: 'error', error });
     }
-  }, [cancelActive, channel.kind, close, onSettings, reauthorize, scan]);
+  }, [cancelActive, channel.kind, close, mode, onSettings, scan]);
 
   useEffect(() => {
     if (!open || state.kind !== 'idle' || channel.kind === 'feishu') return;
@@ -615,7 +770,11 @@ function ImScanDialog({
     <Dialog open={open} onOpenChange={(next) => { if (!next) close(); }}>
       <DialogContent className="max-w-sm">
         <DialogHeader>
-          <DialogTitle>{t('settings.im.scan.title', { channel: channelTitle })}</DialogTitle>
+          <DialogTitle>
+            {channel.kind === 'feishu' && replacesConfiguredApp && mode === 'selectOrCreate'
+              ? t('settings.im.scan.changeApp')
+              : t('settings.im.scan.title', { channel: channelTitle })}
+          </DialogTitle>
           <DialogDescription>{t('settings.im.scan.description', { channel: channelTitle })}</DialogDescription>
         </DialogHeader>
         <div className="flex min-h-64 flex-col items-center justify-center gap-4 py-2" data-im-scan-state={state.kind}>
@@ -627,6 +786,11 @@ function ImScanDialog({
                   <li key={permission}>{t(`settings.im.channels.feishu.permissions.${permission}`)}</li>
                 ))}
               </ul>
+              {replacesConfiguredApp && mode === 'selectOrCreate' ? (
+                <p className="text-xs text-muted-foreground" role="status">
+                  {t('settings.im.scan.changeAppWarning')}
+                </p>
+              ) : null}
               <Button type="button" className="w-full" onClick={() => void start()}>
                 <QrCode className="size-4" />
                 {t('settings.im.channels.feishu.permissions.confirm')}

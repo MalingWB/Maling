@@ -932,6 +932,7 @@
       "composer-history-query-failed": "Could not load input history. Please try again.",
       "turn-execution-failed": "This message could not be processed. Try again.",
       "session-request-failed": "The session could not be prepared. Try again.",
+      "session-restore-reference-missing": "This ACP session is missing its Provider session reference, so the original session cannot be resumed. Start a new session and send the message again.",
       "missing-provider": "The current node is missing provider configuration.",
       "subagent-protocol-upgrade-required": "Update Claude ACP to {{minimumVersion}} or later, then try again.",
       "session-config-value-unavailable": "The selected session configuration is no longer available. Choose another value from the latest list.",
@@ -1032,7 +1033,6 @@
       "workspace-file-read-failed": "Could not read the referenced file metadata. Try again.",
       "workspace-file-count-exceeded": "Context can contain at most {{max}} references and attachments.",
       "session-restore-unsupported": "This Agent cannot restore an existing session.",
-      "session-restore-reference-missing": "This session is missing its Provider session reference.",
       "history-sync-unsupported": "This Agent cannot synchronize the full history of an existing session.",
       "prompt-empty": "Enter a message to send.",
       "prompt-quote-invalid": "The quoted text is invalid. Remove it and quote the message again.",
@@ -2561,6 +2561,12 @@
     "im": {
       "title": "IM remote intervention and notifications",
       "enabled": "Enabled",
+      "channelEnabled": "Enable {{channel}} remote intervention",
+      "channelSubtitle": "Bot · Private chat",
+      "expandChannel": "Expand {{channel}} settings",
+      "collapseChannel": "Collapse {{channel}} settings",
+      "receiverAccount": "Recipient account",
+      "robotName": "Bot name",
       "privateBinding": "Private chat: {{name}}",
       "notificationKinds": "Notification types",
       "notificationGroups": {
@@ -2582,6 +2588,8 @@
         "notConfigured": "{{channel}} is not connected. Connect it to configure remote intervention and notifications.",
         "connect": "Scan to connect",
         "reauthorize": "Authorize again",
+        "changeApp": "Change Feishu app",
+        "changeAppWarning": "Completing authorization replaces the current Feishu app and clears the existing private-chat binding. Bind again with the new bot.",
         "generating": "Generating QR code…",
         "waiting": "Scan with {{channel}} and confirm authorization",
         "expiresIn": "QR code expires in {{countdown}}",
@@ -2594,10 +2602,12 @@
       "channels": {
         "weCom": {
           "title": "WeCom",
+          "identityLabel": "Bot ID",
           "identity": "Bot ID: {{id}}"
         },
         "feishu": {
           "title": "Feishu / Lark",
+          "identityLabel": "App ID",
           "identity": "App ID: {{id}}",
           "singleDeviceHint": "Connect each bot to only one device so actions do not reach another device.",
           "permissions": {
