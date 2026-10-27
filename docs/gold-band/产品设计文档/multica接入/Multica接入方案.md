@@ -384,7 +384,7 @@ multica.session-resume-failed   // 保留在码表但 M4-d 起不 emit（resume 
 `gold-band://multica-task-updated`、`gold-band://multica-runtime-status`。
 
 **channel config**（`configs/channels/*.json`，参考 metrics 四字段模式）：
-新增 `multicaBaseUrl`（API 地址，default 预填 `http://localhost:8080` 本地联调 / wb 预填 `http://maling.weoa.com:5005`，nginx 统一入口）、`multicaAppUrl`（Web 前端地址，浏览器登录用，default 预填 `http://localhost:3000` / wb 同 `http://maling.weoa.com:5005`，前后端同源）、`multicaEnabled` 默认开关（default/wb 均 `true`，零配置直连前提）。
+新增 `multicaBaseUrl`（API 地址，default 预填 `http://localhost:8080` 本地联调 / wb 预填 `WB Multica 服务地址`，nginx 统一入口）、`multicaAppUrl`（Web 前端地址，浏览器登录用，default 预填 `http://localhost:3000` / wb 同 `WB Multica 服务地址`，前后端同源）、`multicaEnabled` 默认开关（default/wb 均 `true`，零配置直连前提）。
 
 #### 3.2.6 登录、PAT 获取与 workspace 选择（首启链路）
 
@@ -1037,9 +1037,9 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **验证**：`cargo check` multica 零 warning（仅 main 既有 9 条非 multica）；`cargo test multica::` 83 过；tsc 零错；vitest 1124/1124。
 
 - [x] **M5-ar**（本轮）wb 渠道 multica 地址修正——默认端口 80 → nginx 统一入口 `:5005`（开发设计 §12.30）：
-  - **背景 / 根因**：跨机器部署连远程 multica（172.21.18.88，nginx 对外统一 `http://maling.weoa.com:5005`，前后端同源）。核查发现 `wb.json` 的 `multicaBaseUrl`/`multicaAppUrl` 仍是 `http://maling.weoa.com`（默认 80，过时）——渠道配置链路正确（json→build.rs 编译期 env→channel.rs），仅值滞后于服务端 nginx 端口；运行期不可改（connect 不收 URL、设置页区块已删、`save_multica_settings` 已删），须修正编译期值而非加运行期旁路。**（M5-ay 注记：「运行期不可改」结论已被 M5-ay 取代——连接地址现为运行期可配置，渠道值退为默认兜底；wb 渠道修正本身不变。）**
-  - **方案（修正过时值）**：wb 渠道本属 maling 生态（appName MALING、updater/metrics/内置 MCP 均指向 maling.weoa.com），multica 地址同生态，直接把 `multicaBaseUrl`/`multicaAppUrl` 改为 `http://maling.weoa.com:5005`（前后端同入口，消除前端 API 地址硬编码 localhost 隐患、无 CORS）；`browser_login` 的 `cli_callback` 仍走 Gold-Band 本机 127.0.0.1，nginx 透传 multica 后端登录成功的 302，跨机器 connect 不受影响（§3.2.6）。服务端 nginx 入口已由用户确认就绪。
-  - **验证**：`GOLD_BAND_RELEASE_CHANNEL=wb cargo check -p gold-band-desktop` 绿——build.rs 正确解析 wb.json 新值、编译期 env 生效 `maling.weoa.com:5005`；default 渠道无回归。纯渠道配置值修正，无运行时逻辑变化、无性能影响。
+  - **背景 / 根因**：跨机器部署连远程 multica（172.21.18.88，nginx 对外统一 `WB Multica 服务地址`，前后端同源）。核查发现 `wb.json` 的 `multicaBaseUrl`/`multicaAppUrl` 仍是 `WB 服务基础地址`（默认 80，过时）——渠道配置链路正确（json→build.rs 编译期 env→channel.rs），仅值滞后于服务端 nginx 端口；运行期不可改（connect 不收 URL、设置页区块已删、`save_multica_settings` 已删），须修正编译期值而非加运行期旁路。**（M5-ay 注记：「运行期不可改」结论已被 M5-ay 取代——连接地址现为运行期可配置，渠道值退为默认兜底；wb 渠道修正本身不变。）**
+  - **方案（修正过时值）**：wb 渠道本属 maling 生态（appName MALING、updater/metrics/内置 MCP 均指向 WB 服务域名），multica 地址同生态，直接把 `multicaBaseUrl`/`multicaAppUrl` 改为 `WB Multica 服务地址`（前后端同入口，消除前端 API 地址硬编码 localhost 隐患、无 CORS）；`browser_login` 的 `cli_callback` 仍走 Gold-Band 本机 127.0.0.1，nginx 透传 multica 后端登录成功的 302，跨机器 connect 不受影响（§3.2.6）。服务端 nginx 入口已由用户确认就绪。
+  - **验证**：`GOLD_BAND_RELEASE_CHANNEL=wb cargo check -p gold-band-desktop` 绿——build.rs 正确解析 wb.json 新值、编译期 env 生效 `WB 服务域名:5005`；default 渠道无回归。纯渠道配置值修正，无运行时逻辑变化、无性能影响。
 
 - [x] **M5-as**（本轮）二次合并 origin/main——会话创建契约对齐 + composer chip 重新集成（开发设计 §12.31）：
   - **背景**：feature 自 M5-ag 后再落后 main 约 200 commit（main 重构会话创建契约/心跳/个性化/composer UI），feature 领先 22 commit。策略同 M5-ag：冲突保 main，合并后修复 multica。备份分支 `feature_multica_premerge_20260824`，合并提交 `79ba1e26`。

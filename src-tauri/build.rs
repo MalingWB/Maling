@@ -1,3 +1,5 @@
+mod build_channel_config;
+
 use std::{env, fs, path::PathBuf};
 
 use serde::Deserialize;
@@ -37,6 +39,7 @@ struct ChannelConfig {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=GOLD_BAND_RELEASE_CHANNEL");
+    println!("cargo:rerun-if-env-changed=GOLD_BAND_WB_BASE_URL");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_METRICS_API_KEY");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_METRICS_BASE_URL");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_MULTICA_ENABLED");
@@ -61,7 +64,22 @@ fn main() {
             config_path.display()
         )
     });
-    let config: ChannelConfig = serde_json::from_str(&config_text).unwrap_or_else(|error| {
+    let mut config_value: serde_json::Value =
+        serde_json::from_str(&config_text).unwrap_or_else(|error| {
+            panic!(
+                "failed to parse channel config {}: {error}",
+                config_path.display()
+            )
+        });
+    let wb_urls = if channel == "wb" {
+        Some(build_channel_config::wb_urls(&config_value).unwrap_or_else(|error| panic!("{error}")))
+    } else {
+        None
+    };
+    if let Some(urls) = &wb_urls {
+        urls.resolve(&mut config_value);
+    }
+    let config: ChannelConfig = serde_json::from_value(config_value).unwrap_or_else(|error| {
         panic!(
             "failed to parse channel config {}: {error}",
             config_path.display()
@@ -158,12 +176,15 @@ fn main() {
                 bookmarks_path.display()
             )
         });
-    let channel_bookmarks = bookmarks_catalog
+    let mut channel_bookmarks = bookmarks_catalog
         .get(&channel)
         .cloned()
         .unwrap_or_else(|| serde_json::json!([]));
     if !channel_bookmarks.is_array() {
         panic!("browser bookmarks catalog {} must be an array", channel);
+    }
+    if let Some(urls) = &wb_urls {
+        urls.resolve(&mut channel_bookmarks);
     }
     let bookmarks_json = serde_json::to_string(&channel_bookmarks).unwrap_or_else(|_| "[]".into());
     println!("cargo:rustc-env=GOLD_BAND_BROWSER_BOOKMARKS={bookmarks_json}");

@@ -22,6 +22,16 @@ for (const [file, toolingRoot] of [
   ['release-please.yml', ''],
   ['release.yml', 'release-tools/'],
 ]) {
+  test(`${file} passes the WB base URL to the release preflight Cargo check`, async () => {
+    const workflow = parse(await readFile(path.join(repoRoot, '.github/workflows', file), 'utf8'));
+    const preflight = workflow.jobs['release-preflight'];
+    const check = preflight.steps.find((step) => step.run === 'cargo check --workspace --all-targets');
+    assert.ok(check, 'release preflight must check the Rust workspace');
+    const env = { ...workflow.env, ...preflight.env, ...check.env };
+    assert.equal(env.GOLD_BAND_RELEASE_CHANNEL, 'wb');
+    assert.equal(env.GOLD_BAND_WB_BASE_URL, '${{ secrets.GOLD_BAND_WB_BASE_URL }}');
+  });
+
   test(`${file} builds signed WB packages for all four release platforms`, async () => {
     const workflow = parse(await readFile(path.join(repoRoot, '.github/workflows', file), 'utf8'));
     assert.equal(workflow.env.GOLD_BAND_RELEASE_CHANNEL, 'wb');
@@ -35,6 +45,10 @@ for (const [file, toolingRoot] of [
     assert.equal(build.env.TAURI_SIGNING_PRIVATE_KEY, '${{ secrets.WB_TAURI_SIGNING_PRIVATE_KEY }}');
     assert.equal(build.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD, '${{ secrets.WB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}');
     assert.equal(build.env.GOLD_BAND_METRICS_API_KEY, '${{ secrets.GOLD_BAND_METRICS_API_KEY }}');
+    assert.equal(build.env.GOLD_BAND_WB_BASE_URL, '${{ secrets.GOLD_BAND_WB_BASE_URL }}');
+    const manifestStep = workflow.jobs['updater-json'].steps.find((step) => step.name === 'Generate localized updater manifests and release body');
+    assert.equal(manifestStep.env.GOLD_BAND_WB_BASE_URL, '${{ secrets.GOLD_BAND_WB_BASE_URL }}');
+    assert.ok(build.steps.some((step) => step.run === `node ${toolingRoot}scripts/check-wb-domain.mjs`));
 
     const prepareIndex = build.steps.findIndex((step) => step.id === 'channel');
     assert.ok(prepareIndex >= 0, 'release credentials and channel config must be prepared before building');

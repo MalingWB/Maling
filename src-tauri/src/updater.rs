@@ -946,7 +946,7 @@ mod tests {
 
     #[test]
     fn wb_and_custom_updater_urls_remain_single_manifest_endpoints() {
-        let wb_endpoint = "http://maling.weoa.com/api/file/download/latest.json";
+        let wb_endpoint = "http://example.invalid/api/file/download/latest.json";
         assert_eq!(
             updater_endpoint_strings("wb", wb_endpoint, None, DesktopLanguage::ZhCn),
             vec![wb_endpoint.to_string()]

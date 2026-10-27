@@ -253,16 +253,16 @@ mod tests {
     #[test]
     fn normalizes_multica_base_url_strips_trailing_slash_and_query() {
         assert_eq!(
-            normalize_multica_base_url(" http://maling.weoa.com/ ").as_deref(),
-            Some("http://maling.weoa.com")
+            normalize_multica_base_url(" http://example.invalid/ ").as_deref(),
+            Some("http://example.invalid")
         );
         // query/fragment 去除，path 保留
         assert_eq!(
-            normalize_multica_base_url("https://maling.weoa.com/app?x=1#frag").as_deref(),
-            Some("https://maling.weoa.com/app")
+            normalize_multica_base_url("https://example.invalid/app?x=1#frag").as_deref(),
+            Some("https://example.invalid/app")
         );
         // 非 http(s) / 无 host → None
-        assert_eq!(normalize_multica_base_url("ftp://maling.weoa.com"), None);
+        assert_eq!(normalize_multica_base_url("ftp://example.invalid"), None);
         assert_eq!(normalize_multica_base_url("not-a-url"), None);
         assert_eq!(normalize_multica_base_url(""), None);
     }
@@ -515,18 +515,18 @@ mod tests {
         let mut settings = gold_band::config::SettingsConfig::default();
         apply_multica_connection_address(
             &mut settings,
-            Some(" http://maling.weoa.com:5005/ "),
-            Some("http://maling.weoa.com:5005"),
+            Some(" http://example.invalid:5005/ "),
+            Some("http://example.invalid:5005"),
         )
         .unwrap();
         // 规范化后写入两字段（trim + 去尾斜杠）。
         assert_eq!(
             settings.desktop_multica_base_url.as_deref(),
-            Some("http://maling.weoa.com:5005")
+            Some("http://example.invalid:5005")
         );
         assert_eq!(
             settings.desktop_multica_app_url.as_deref(),
-            Some("http://maling.weoa.com:5005")
+            Some("http://example.invalid:5005")
         );
         let vm = multica_settings(&{
             let mut config = RuntimeConfig::default();
@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn apply_multica_connection_address_rejects_invalid_url() {
         let mut settings = gold_band::config::SettingsConfig::default();
-        for bad in ["not-a-url", "ftp://maling.weoa.com", ""] {
+        for bad in ["not-a-url", "ftp://example.invalid", ""] {
             assert!(
                 matches!(
                     apply_multica_connection_address(&mut settings, Some(bad), Some(bad)),
@@ -625,8 +625,8 @@ mod tests {
         // default 渠道的编译期兜底就是 localhost:8080，用它当「不同地址」判定恒假。
         apply_multica_connection_address(
             &mut settings,
-            Some("http://maling.weoa.com:5005"),
-            Some("http://maling.weoa.com:5005"),
+            Some("http://example.invalid:5005"),
+            Some("http://example.invalid:5005"),
         )
         .unwrap();
         let changed = multica_base_url_for_settings(&config, &settings);
