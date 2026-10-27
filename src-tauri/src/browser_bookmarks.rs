@@ -494,7 +494,7 @@ mod tests {
         assert_eq!(wb.len(), 7);
         assert!(
             wb.iter()
-                .any(|item| item["id"] == "maling" && item["url"] == "http://maling.weoa.com/")
+                .any(|item| item["id"] == "maling" && item["url"] == "${GOLD_BAND_WB_BASE_URL}/")
         );
         assert!(wb.iter().any(|item| item["id"] == "cmdb"));
     }

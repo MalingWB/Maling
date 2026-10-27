@@ -35,6 +35,10 @@ for (const [file, toolingRoot] of [
     assert.equal(build.env.TAURI_SIGNING_PRIVATE_KEY, '${{ secrets.WB_TAURI_SIGNING_PRIVATE_KEY }}');
     assert.equal(build.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD, '${{ secrets.WB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}');
     assert.equal(build.env.GOLD_BAND_METRICS_API_KEY, '${{ secrets.GOLD_BAND_METRICS_API_KEY }}');
+    assert.equal(build.env.GOLD_BAND_WB_BASE_URL, '${{ secrets.GOLD_BAND_WB_BASE_URL }}');
+    const manifestStep = workflow.jobs['updater-json'].steps.find((step) => step.name === 'Generate localized updater manifests and release body');
+    assert.equal(manifestStep.env.GOLD_BAND_WB_BASE_URL, '${{ secrets.GOLD_BAND_WB_BASE_URL }}');
+    assert.ok(build.steps.some((step) => step.run === `node ${toolingRoot}scripts/check-wb-domain.mjs`));
 
     const prepareIndex = build.steps.findIndex((step) => step.id === 'channel');
     assert.ok(prepareIndex >= 0, 'release credentials and channel config must be prepared before building');

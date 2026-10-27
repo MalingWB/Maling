@@ -9,29 +9,30 @@
   "mainBinaryName": "maling-desktop",
   "windowTitle": "maling",
   "identifier": "local.maling.desktop",
-  "updaterEndpoint": "http://maling.weoa.com/api/file/download/latest.json",
+  "updaterEndpoint": "${GOLD_BAND_WB_BASE_URL}/api/file/download/latest.json",
   "updaterPublicKey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI4MjQyQ0JEQUUxMUNFOApSV1RvSE9IYXkwS0NDeS9mS0hhblROeC9yVFNaR01HVUpvTVBQamg4NWVESjI2U3I0OUNzcjRlLwo=",
   "allowHttpUpdater": true,
   "releaseNotesUrl": "https://doc.weixin.qq.com/doc/w3_AVcA0wZGAHcCNDjqUpXiORNy2T15r?scode=AIUAHwfKAAoBS8kIP5",
-  "releaseBaseUrl": "http://maling.weoa.com/api/file/download",
+  "releaseBaseUrl": "${GOLD_BAND_WB_BASE_URL}/api/file/download",
   "metricsEnabled": true,
   "feedbackEnabled": true,
   "metricsToggleLocked": true,
-  "metricsBaseUrl": "http://maling.weoa.com",
+  "metricsBaseUrl": "${GOLD_BAND_WB_BASE_URL}",
   "metricsApiKey": "",
+  "multicaPort": 5005,
   "multicaEnabled": true,
   "multicaToggleLocked": true,
-  "multicaBaseUrl": "http://maling.weoa.com:5005",
-  "multicaAppUrl": "http://maling.weoa.com:5005",
+  "multicaBaseUrl": "${WB_MULTICA_URL}",
+  "multicaAppUrl": "${WB_MULTICA_URL}",
   "builtinMcpServers": [
     {
       "id": "maling-code-graph",
       "name": "码灵代码图谱",
-      "helpMessage": "码灵代码图谱提供代码搜索、调用链分析、节点详情等能力。\n\n接入方式：\n1. 在码灵代码图谱控制台(http://maling.weoa.com)接入项目\n2. 在 Agent 会话中通过工具直接调用",
+      "helpMessage": "码灵代码图谱提供代码搜索、调用链分析、节点详情等能力。\n\n接入方式：\n1. 在码灵代码图谱控制台(${GOLD_BAND_WB_BASE_URL})接入项目\n2. 在 Agent 会话中通过工具直接调用",
       "enabled": true,
       "transport": {
         "type": "http",
-        "url": "http://maling.weoa.com/mcp/",
+        "url": "${GOLD_BAND_WB_BASE_URL}/mcp/",
         "headers": {}
       }
     }

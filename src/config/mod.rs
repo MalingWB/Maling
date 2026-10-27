@@ -3691,8 +3691,8 @@ mod tests {
     fn apply_settings_propagates_multica_fields_with_provider_fallback() {
         let config = RuntimeConfig::default().apply_settings(&SettingsConfig {
             desktop_multica_enabled: Some(true),
-            desktop_multica_base_url: Some("http://maling.weoa.com".to_string()),
-            desktop_multica_app_url: Some("http://maling.weoa.com".to_string()),
+            desktop_multica_base_url: Some("http://example.invalid".to_string()),
+            desktop_multica_app_url: Some("http://example.invalid".to_string()),
             desktop_multica_default_provider: None,
             desktop_multica_workspaces: Some(vec![RemoteWorkspaceRef {
                 id: "ws-1".to_string(),
@@ -3705,7 +3705,7 @@ mod tests {
         assert!(config.desktop_multica_enabled);
         assert_eq!(
             config.desktop_multica_base_url.as_deref(),
-            Some("http://maling.weoa.com")
+            Some("http://example.invalid")
         );
         // default_provider=None 时 fallback 到 claude-acp（与 Default 一致）。
         assert_eq!(config.desktop_multica_default_provider, "claude-acp");
@@ -3724,7 +3724,7 @@ mod tests {
     fn settings_config_multica_fields_roundtrip_json() {
         let settings = SettingsConfig {
             desktop_multica_enabled: Some(true),
-            desktop_multica_base_url: Some("http://maling.weoa.com".to_string()),
+            desktop_multica_base_url: Some("http://example.invalid".to_string()),
             desktop_multica_pat: Some("secret-token".to_string()),
             desktop_multica_daemon_id: Some("daemon-1".to_string()),
             desktop_multica_workspaces: Some(vec![RemoteWorkspaceRef {

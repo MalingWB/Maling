@@ -264,7 +264,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 ## 9. 2026-06-12 指标上报地址展示
 
 - 设置页的指标上报区域只展示一个“上报服务地址”，不展示心跳与节点详情两个接口后缀。
-- `wb` 渠道默认服务地址为 `http://maling.weoa.com`，且随锁定开关一起禁止用户修改。
+- `wb` 渠道默认服务地址为 `WB 服务基础地址`，且随锁定开关一起禁止用户修改。
 - 实际上报接口由客户端统一拼接：心跳使用 `/api/client-report/heartbeat`，节点详情批量上报使用 `/api/client-report/metrics/batch`。
 - 保存设置时只持久化服务根地址 `metricsBaseUrl`，旧的心跳/节点完整接口地址配置不再读取。
 

@@ -127,6 +127,7 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.WB_TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.WB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       GOLD_BAND_METRICS_API_KEY: ${{ secrets.GOLD_BAND_METRICS_API_KEY }}
+      GOLD_BAND_WB_BASE_URL: ${{ secrets.GOLD_BAND_WB_BASE_URL }}
 
     steps:
       - name: Checkout release commit
@@ -161,6 +162,9 @@ jobs:
       - name: Sync release version from tag
         shell: bash
         run: npm run version:sync -- "${RELEASE_TAG#v}"
+
+      - name: Check repository for WB service domain
+        run: node scripts/check-wb-domain.mjs
 
       - name: Validate release credentials and prepare channel config
         id: channel
@@ -245,6 +249,8 @@ jobs:
         run: gh release download "${RELEASE_TAG}" --dir release-assets --clobber
 
       - name: Generate localized updater manifests and release body
+        env:
+          GOLD_BAND_WB_BASE_URL: ${{ secrets.GOLD_BAND_WB_BASE_URL }}
         shell: bash
         run: node scripts/generate-release-assets.mjs release-assets release-output --version "${RELEASE_TAG#v}"
 

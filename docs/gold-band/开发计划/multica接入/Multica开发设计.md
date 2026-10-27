@@ -381,8 +381,8 @@ channel 字段是**编译期常量**（option_env!，参考 metrics 字段 chann
 
 | 字段 | DesktopChannelConfig（channel.rs:4-22） | default.json | wb.json |
 |---|---|---|---|
-| `multica_base_url` | `&'static str` | `http://localhost:8080` | `http://maling.weoa.com:5005`（nginx 统一入口，见 §12.30） |
-| `multica_app_url` | `&'static str` | `http://localhost:3000` | `http://maling.weoa.com:5005`（前后端同源同入口） |
+| `multica_base_url` | `&'static str` | `http://localhost:8080` | `WB Multica 服务地址`（nginx 统一入口，见 §12.30） |
+| `multica_app_url` | `&'static str` | `http://localhost:3000` | `WB Multica 服务地址`（前后端同源同入口） |
 | `multica_enabled` | `bool` | `true` | `true` |
 | `multica_toggle_locked` | `bool` | `false` | `true` |
 
@@ -1848,18 +1848,18 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ### 12.30 改动二十八：wb 渠道 multica 地址修正——默认端口 80 → nginx 统一入口 `:5005`（M5-ar，2026-08-13）
 
-**背景（跨机器部署）**：将 MALING 客户端打包到非开发机运行、连远程 multica（部署在 172.21.18.88，经 nginx 统一转发，对外入口 `http://maling.weoa.com:5005`，前端 `/login` 与后端 `/api/*` 同源同端口）。核查发现 `configs/channels/wb.json` 的 `multicaBaseUrl`/`multicaAppUrl` 仍是 `http://maling.weoa.com`（默认 80 端口，过时）——与服务端实际 nginx 入口不符，连不上。
+**背景（跨机器部署）**：将 MALING 客户端打包到非开发机运行、连远程 multica（部署在 172.21.18.88，经 nginx 统一转发，对外入口 `WB Multica 服务地址`，前端 `/login` 与后端 `/api/*` 同源同端口）。核查发现 `configs/channels/wb.json` 的 `multicaBaseUrl`/`multicaAppUrl` 仍是 `WB 服务基础地址`（默认 80 端口，过时）——与服务端实际 nginx 入口不符，连不上。
 
 **根因（好设计、值过时）**：渠道配置链路本身正确（`configs/channels/wb.json` → `build.rs` 编译期 env → `channel.rs option_env!` → `config.rs multica_base_url/app_url`，且 `build.rs:146-157` 支持 env 覆盖 json），仅 multica 地址值滞后于服务端 nginx 端口调整。运行期不可改（`connect_multica` 不收 URL、设置页 multica 区块已移除、`save_multica_settings` 已删，见 §12.22/接入方案 §3.2.5），故必须修正编译期配置值而非加运行期旁路。
 
-**方案（修正过时值，非补丁）**：wb 渠道本就是 maling 生态（appName MALING、updater/metrics/内置 MCP 均指向 maling.weoa.com），multica 地址属同一生态，直接把过时默认端口修正为实际 nginx 入口：
-- `configs/channels/wb.json`：`multicaBaseUrl`/`multicaAppUrl` 由 `http://maling.weoa.com` → `http://maling.weoa.com:5005`。
+**方案（修正过时值，非补丁）**：wb 渠道本就是 maling 生态（appName MALING、updater/metrics/内置 MCP 均指向 WB 服务域名），multica 地址属同一生态，直接把过时默认端口修正为实际 nginx 入口：
+- `configs/channels/wb.json`：`multicaBaseUrl`/`multicaAppUrl` 由 `WB 服务基础地址` → `WB Multica 服务地址`。
 - 前后端同入口：`base_url`（API 根，client 拼 `/api/*`）与 `app_url`（浏览器登录页 `<app_url>/login`）同源，顺带消除「前端页面 API 地址硬编码 localhost」隐患（同源直接命中，无 CORS）。
 - `browser_login` 的 `cli_callback` 仍是 Gold-Band 本机 `127.0.0.1:<port>`，nginx 只透传 multica 后端登录成功的 302，跨机器 connect 不受影响（见接入方案 §3.2.6）。
 
-**部署前置（服务端，非本项目代码）**：multica 服务端经 nginx 对外统一 `maling.weoa.com:5005`，已由用户确认就绪；Gold-Band 侧无需关心 server 内部 5000/5050 监听细节。
+**部署前置（服务端，非本项目代码）**：multica 服务端经 nginx 对外统一 `WB 服务域名:5005`，已由用户确认就绪；Gold-Band 侧无需关心 server 内部 5000/5050 监听细节。
 
-**验证**：`GOLD_BAND_RELEASE_CHANNEL=wb cargo check -p gold-band-desktop` 绿——build.rs 正确解析 wb.json 新值，编译期 env `GOLD_BAND_MULTICA_BASE_URL/APP_URL=http://maling.weoa.com:5005` 生效；default 渠道 `cargo check` 无回归。纯渠道配置值修正，无运行时逻辑变化，无性能影响（仅连接地址常量）。
+**验证**：`GOLD_BAND_RELEASE_CHANNEL=wb cargo check -p gold-band-desktop` 绿——build.rs 正确解析 wb.json 新值，编译期 env `GOLD_BAND_MULTICA_BASE_URL/APP_URL=WB Multica 服务地址` 生效；default 渠道 `cargo check` 无回归。纯渠道配置值修正，无运行时逻辑变化，无性能影响（仅连接地址常量）。
 
 **文件**：`configs/channels/wb.json`（multica URL +端口 5005）；`开发设计.md` §2.2.4 表格 wb 列（泛描述 → 具体值）；`接入方案.md` §3.2.5 channel config 段（同）。
 
@@ -2106,7 +2106,7 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 - **Rust 定向单测** `cargo test --manifest-path src-tauri/Cargo.toml --bin gold-band-desktop multica::` → **127 过 / 0 失败**。新增覆盖：`RemoteTask` 解析两字段 / 缺字段仍可执行 / `executable_ready` 遍历 dev·bug·general + test(true/false/缺失)；`HeartbeatAck` diff 解析与缺失两态；`ClaimResponse`（denied/allowed/dev 三例）与 `TasksListResponse`（Wrapped/Bare 两形态）承载就绪字段；`ack_signals_readiness_change`（非空 true / `[]` false / 缺失 false）；`RemoteTaskVm::from_pending_passes_through_test_readiness`；`MulticaCompletedTask` JSON roundtrip + 旧条目（无键）→ None。
 - **前端**：`npx vitest run --config web/vitest.config.ts web/tests/multica-*` → **8 套件 / 69 过**（含 board 19 + page 19 + requirements-i18n 3 及 5 套既有 multica 套件零回归）。board 新增类型徽标渲染（dev/test/bug 渲染、general 不渲染）、未就绪置灰 + 执行按钮禁用且不触发 `onPrepare`、就绪 test 可执行、dev 即使 `isReady=false` 仍可执行；page 新增类型过滤切换往返（all→dev→test→all，且不产生额外拉取）、无 workspace 时过滤入口不渲染、`filterTasksByIssueKind` 四则纯函数不变量；requirements-i18n 新增类型/过滤/就绪/新错误码的**双语精确值**断言（文案是用户可见验收面，防漂移成 key 或英文兜底）。
 - `npx tsc -p web/tsconfig.build.json --noEmit` 零错（顺带修 `api/browser.ts` 的 `getMulticaTaskRequirement` 浏览器桩缺两字段）；`npm run web:build` 生产构建通过（构建产物中的主题生成文件仅 CRLF 行尾差异，已还原不入库）。
-- **未做的验证（如实披露）**：**未跑浏览器视觉验收**。本会话无内置浏览器工具，`agent-browser` CLI 亦未安装（`command not found`，其 Windows CDP helper 脚本属另一用户路径）；且该页面的看板数据必须来自已连接的 multica server，而内网地址在本机不可达（`http://maling.weoa.com:5005` 连接超时），故类型徽标 / 未就绪置灰 / 类型过滤三种新状态无法在此环境呈现。上述状态的验收证据为 **jsdom 渲染测试 + 双语精确值断言 + tsc + 生产构建**；**双主题视觉（sky/violet/destructive 三色调、`opacity-60` 置灰）仍待用户在桌面端连上 multica 后目视确认**。
+- **未做的验证（如实披露）**：**未跑浏览器视觉验收**。本会话无内置浏览器工具，`agent-browser` CLI 亦未安装（`command not found`，其 Windows CDP helper 脚本属另一用户路径）；且该页面的看板数据必须来自已连接的 multica server，而内网地址在本机不可达（`WB Multica 服务地址` 连接超时），故类型徽标 / 未就绪置灰 / 类型过滤三种新状态无法在此环境呈现。上述状态的验收证据为 **jsdom 渲染测试 + 双语精确值断言 + tsc + 生产构建**；**双主题视觉（sky/violet/destructive 三色调、`opacity-60` 置灰）仍待用户在桌面端连上 multica 后目视确认**。
 - **未覆盖项（如实披露）**：`commands.rs` 的 claim 拦截**接线**无自动化覆盖——该模块无 HTTP stub 基建（既有测试全为纯逻辑，唯一 stub 先例在 `metrics/heartbeat.rs` 且未设 `no_proxy`，有环境代理抖动风险）。故契约改由**包装层**固化（`ClaimResponse` / `TasksListResponse` 解析 + `executable_ready`），拦截动作本身（含回滚调用）依赖人工验收与代码评审。若后续需要端到端，应先补 `commands.rs` 的 stub-server 基建而非为单点加特例。
 
 **待 multica 侧最终确认（不阻塞码灵上线）**：心跳 ack 的就绪 diff 线格式 `pending_readiness_changes: [{task_id, is_ready}]` 仍是码灵侧提议方案，multica 侧尚未给出最终定义。若最终字段名/形状不同，**仅需改 `client.rs` 的反序列化**（后续消费路径与 `ack_signals_readiness_change` 判定不变）——这是把它做成独立 `ReadinessChange` 类型而非就地解析的原因。两条附加约束见 §12.41（diff 必须是**增量**；claim 路径**必须**回填 `is_ready`）。
@@ -2682,3 +2682,8 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 - ✅ 外部命令约束：multica 不起外部子进程（执行用 gold-band runtime），不涉及 background_command；若 future 需 helper 则经 `background_command`(process.rs:44)
 - ✅ 提示词 src/prompts/：multica 专用提示词已入 `src/prompts/{zh-CN,en}/runtime/remote_task_context.md` 双语同构（12.48 改动四十六），不在实现代码硬编码长 prompt 文本
 - ⏳ 同步维护 docs/gold-band/产品设计文档 + 开发计划：实现时同步（CLAUDE.md 强制）
+
+
+### WB 服务地址构建注入
+
+WB 渠道以 `GOLD_BAND_WB_BASE_URL` 为服务地址的构建期事实源，配置模板使用 `${GOLD_BAND_WB_BASE_URL}` 引用该地址。本地开发和构建须设置该变量，正式发布由同名 GitHub Actions Secret 注入；缺失或不是不含路径、凭据、查询和片段的 HTTP(S) origin 时构建失败。更新、发布资源、指标、MCP、帮助信息和官网书签从基础地址派生；Multica 使用渠道配置的端口。地址会进入客户端和发布产物，注入不提供运行时保密性。默认渠道不要求该变量。
