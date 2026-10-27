@@ -79,6 +79,7 @@ import type {
   RemoteSkillPullReportVm,
   MulticaWorkspaceRefVm,
   MulticaUpstreamPullEventVm,
+  MulticaUpstreamPullPendingVm,
   UpstreamPullDecisionKind,
   RemoteConversationSidebarVm,
   RemoteTaskVm,
@@ -676,6 +677,10 @@ export interface RuntimeApi {
   subscribeUpstreamPullEvents?(listener: (event: MulticaUpstreamPullEventVm) => void): Promise<() => void>;
   /// 提交拉取决策（三选一）；manual 必须带非空 manualText。决策迟到（拉取已收口）→ 结构化错误。
   decideUpstreamPull(taskId: string, nodeId: string, decision: UpstreamPullDecisionKind, manualText?: string | null): Promise<void>;
+
+  /// 待决上游拉取槽列表（M5-cj 卡片水合）：重进会话后恢复决策卡片/等待态；无在飞 run → 空列表。
+  /// 可选（对齐 subscribeUpstreamPullEvents）：测试 mock runtime api 不实现时 wrapper 兜底空列表。
+  listUpstreamPullPendings?(taskId: string): Promise<MulticaUpstreamPullPendingVm[]>;
   workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
   openExternalUrl(url: string): Promise<void>;
   browserCreatePage(input: BrowserCreatePageInput): Promise<BrowserPageNativeVm>;

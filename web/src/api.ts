@@ -993,6 +993,11 @@ export function decideUpstreamPull(taskId: string, nodeId: string, decision: Par
   return getRuntimeApi().decideUpstreamPull(taskId, nodeId, decision, manualText);
 }
 
+export function listUpstreamPullPendings(taskId: string) {
+  // 可选方法兜底空列表（mock runtime api 未实现 = 无 multica 链路，与 browser stub 语义一致）。
+  return getRuntimeApi().listUpstreamPullPendings?.(taskId) ?? Promise.resolve([]);
+}
+
 export function workspaceFilePreviewUrl(token: string, staticFrame = false) {
   return getRuntimeApi().workspaceFilePreviewUrl(token, staticFrame);
 }

@@ -2939,6 +2939,33 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证结果**：desktop `multica::` 227/227（228 − 删 2 项死代码测试 + 新增 1：`decision_point_opens_only_on_confirmed_not_produced` 锁定口径——ConfirmedNotProduced 开、Unreachable 不开、trim 空白算未产出；resolve 装配依赖 AppHandle + 真实 client，无测试 harness，按 bug-fix-verification §3 例外以根因分析 + 纯函数契约锁定）；前端新增 `multica-upstream-pull-card.test.tsx` 6 例（taskId 过滤、重复 pending 幂等、settled 按槽位精确移除、retry/skip 决策参数、manual trim 门控与提交参数、not-pending 幂等收起 + 其他错误保留可重试、readOnly 全禁用）；`tsc -p web/tsconfig.build.json` 零错；web 全量 383 文件 2929 例通过；`cargo check` 警告数与改动前持平（20 条均为未触及模块存量）。实机事件链（pending 事件 → 卡片出现 → 决策 → settled 收口）本地无法触发（browser 模式事件订阅为 stub、multica 仅内网），待内网真实工作流复测。
 
+### 12.81 改动七十九：PR 评审五项修复——解析注册竞态宽限、completion_output 写序、上传侧指定门禁、决策卡片水合、等待态保留（M5-cj，2026-10-27）
+
+**背景**：feature_multica 分支 PR 评审确认 3×P1 + 2×P2，全部根因修复（非补丁式）：
+
+1. **resolver 注册竞态（P1）**：`resolve()` 按 local task 反查 `active_runs`；run 启动发生在 `create_conversation_run_vm` 创建事务内，`register_active_run` 在其后（commands.rs fresh/resume 两路径均如此）——注册不是不发生，只可能**迟到**。上游拉取节点启动是引擎回调微秒级，旧实现 miss 即报「找不到在飞任务」直接失败节点。评审点：终态事件（秒级后）早有「先于事件归属反查」的守恒，但 resolver 路径（节点启动瞬间）未覆盖。
+2. **completion_output 乱序覆盖（P1）**：快照 PUT（NodeCompleted spawn）与 `/complete`（RunCompleted spawn，同样携带 completion_output）并发飞；早节点 stalled PUT 晚于终态写入落地 → 服务端后写胜 → 过期内容永久驻留（run 已终态、无后续写入自愈），下游父任务读到旧交付。发送侧去重（`issue_output_pushed`）只防重复发送，不保到达序。用户曾提议「附带发出时间字段」——比较必须发生在**接收侧**（服务端改动，跨团队依赖，内网已确认端点无状态 2026-10-24），客户端侧比较无法撤回在飞 PUT，否决。
+3. **上传侧门禁缺口（P1）**：M5-cg 产出门禁在**提示词侧**（装配时按 designation 注入协议），但协议块本质是自由文本——Prohibited 节点的回复仍可能含块（复述/引用上游交付说明），旧上送逻辑照单全收 → 禁止节点可覆写 issue 交付。
+4. **决策卡片无水合（P2）**：卡片只靠 pending/settled 即时事件，重进会话后已待决的卡片消失（后端槽仍在、60s 回落在跑）。
+5. **「继续等待」移除卡片（P2）**：前端 Retry 后 `onDone()` 收起卡片，但后端槽保留（`take` 不消费，迟到 manual/skip 仍可写入）——用户失去再次介入入口，与后端语义错位。
+
+**方案**：
+
+- **① 注册竞态宽限（#1）**：`resolve()` 反查 miss → `wait_for_active_run_within(MAPPING_GRACE=5s, POLL=50ms)` 轮询；注册到达即命中，宽限耗尽仍 miss 才报错（真异常）。不变量依据：fresh/resume 两路径注册都**无条件**紧跟 run 创建——「迟到毫秒级」是唯一正常形态，「5 秒仍不来」才是不变量被破坏。
+- **② completion_output 写序（#2，状态规则 §6 合规形态）**：
+  - `enum CompletionOutputJob { Snapshot {run,node_id,attempt_dir}, CompleteRun {remote_task_id,run,node_label,attempt_dir} }`；**事件回调内同步入队**（纯 channel send 不阻塞热路径，事件序 = 入队序）+ 全局单消费者 `drive_completion_output_jobs` 顺序执行（scan/dedup/PUT 全在消费者侧，临界区只有 send）。
+  - 入队方：NodeCompleted SUCCESS（**入队侧 workflow+issue 预过滤**——run 在手，auto/direct 的成功节点不产生注定被拒的死 job；预过滤与执行之间 run 可能被 cancel，队列残留作业仍由执行侧会籍门禁权威拒绝）→ Snapshot；RunCompleted Success → CompleteRun（与快照同序——事件序上 RunCompleted 晚于全部 NodeCompleted，FIFO 保证终态内容最后落定）。Failure/Killed 不写 completion_output，保持旁路 spawn。
+  - **不入队方及理由**：turn 收尾完成（direct 无快照写入方，与队列无并发交叠）；迟到补发（run 已终态，该任务队列作业已执行完，冲突仅「分钟级 stalled PUT 晚于补发」极端窗口，下次补发整体覆盖自愈）。
+  - **认领升级 `begin_completion_for_run`**：队列把 CompleteRun 延迟到消费者执行后，与 turn 收尾（旁路 spawn）顺序不再同步——他方可在「复验映射 → 认领」两步间完成并 finalize（认领随 finalize 释放），单纯认领成功 ≠ 无人完成过 → 二次 complete。修复：单锁内完成「映射仍在本 run 名下（remote 键 + 双 local 身份匹配，防同键重注册误放行）+ 认领」；CompleteRun 执行前另有廉价映射复验（他方已收尾则零成本跳过 timeline 扫描）。
+  - 全局单队列足够（不为 per-issue 建队列）：写入频率是节点边界/任务终态粒度，串行即该字段的正确语义；写入方按 run 聚簇，全局 FIFO 已保同 issue 序。
+- **③ 上传侧指定门禁（#3，与模型所见同源）**：`CompletionProtocolSectionResolver` 签名加 `node_id`；装配回调时 Final/Staged 记入 `designated_output_nodes: HashMap<local_run_id, HashSet<node_id>>`（Prohibited 不记）；快照上送前查会籍，非指定（含 frozen 旧 run 无记录）fail-closed 拒绝（info 日志）并**先于** context/timeline 扫描退出（零成本）；随 `drop_active_run` 同生命周期清理。不重开完成边界反查（M5-cf 改动七十四两轮回归的根因——记录时点与模型收到的协议同一装配时点，天然同源）。
+- **④ 卡片水合（#4）**：新命令 `list_upstream_pull_pendings(taskId)` → `find_active_run_by_task` → `list_upstream_pull_pendings(run)` 槽行（`MulticaUpstreamPullPendingVm`：taskId/runId/nodeId/parentIssueId/taskTitle/retried）；无在飞 run → 空列表（终态时槽已随 run 清理，空 = 无待决）。前端挂载时水合合并进既有事件队列，`settledKeys` 集合防护「settled 先于水合响应到达」的在途竞态（迟到行不复活已收口卡片）；失败静默（事件流仍是主数据源，不阻塞挂载）。
+- **⑤ 等待态（#5）**：后端 `decide_upstream_pull` 的 Retry 置槽 `retried=true`（槽不消费）；前端 Retry 成功 → 卡片转 `waiting` 模式而非收起（跳过/手动入口保留——正是后端槽保留的语义；manual 进入后返回回到等待态）；水合 `retried=true` → 初始即等待态。settled 事件仍是唯一收口。
+
+**方案自评审**：过度设计——② 是「事件序 = 执行序」的最小正确结构（unbounded channel + 单消费者，无重试/优先级/持久化队列这类假设性机制；测试执行器注入化后无生产专用抽象）；③ 是一张 HashMap<run, HashSet> 内存表，随 run 生命周期清理、零存储改动，未引入新 aggregate（不变量「只有装配时被指定的节点可写交付」在既有 canonical 状态里无法表达，属必要新增）；①④⑤ 均为单点小改。性能——热路径新增仅一次 channel send（O(1) 无锁快路径）；消费者串行化该字段本就低频（节点边界/终态粒度），快照 PUT 本身秒级 HTTP，串行不构成瓶颈且换来的正是正确性；③ 会籍检查在快照路径**前置于** timeline 大文件读，禁止节点成本反而下降；④ 水合每会话挂载一次、只读内存锁；无新增网络调用、无缓存增长（designated 集与 retried 标记随 run 清理）。
+
+**验证结果**：desktop `multica::` 232/232（新增 5：`completion_output_queue_executes_jobs_in_fifo_order`——慢快照（120ms 挂起）不重排后入队 /complete，固化评审 #2 根因；`begin_completion_for_run_claims_only_on_live_mapping`——含身份不匹配拒绝与映射清除后拒绝；`designated_output_nodes_lifecycle_scoped`——记录幂等/默认 false/终态清理/run 隔离；`upstream_pull_pending_rows_carry_parent_and_retried`——水合行字段与 run 前缀过滤；宽限等待 2 例——120ms 迟到注册命中、宽限耗尽返回 None 且不早退）；lib `upstream` 16 + `node_executor` 18 + `orchestrator` 145 全绿（trait 签名变更消费方）；前端 `multica-upstream-pull-card` 10/10（新增水合恢复 + retried 等待态、settled-水合竞态不复活、水合失败静默、Retry 转等待态不收起且 settled 收口、等待态 manual 提交收口、manual 返回回等待态）；`waitingNote` 7 语言同步；`tsc -p web/tsconfig.build.json` 零错。resolve/快照/认领的 HTTP 端到端依赖内网 server，按 bug-fix-verification §3 以纯函数与注入化执行器契约锁定，实机链路待内网打包复测。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

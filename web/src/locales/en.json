@@ -3214,7 +3214,8 @@
       "skip": "Skip pull",
       "manualLabel": "Deliverable handoff",
       "manualPlaceholder": "Key facts such as built artifacts and deployed environments…",
-      "manualSubmit": "Continue with this"
+      "manualSubmit": "Continue with this",
+      "waitingNote": "Still waiting for the upstream completion note to update. You can provide it manually or skip at any time."
     },
     "connection": {
       "title": "Connection address settings",

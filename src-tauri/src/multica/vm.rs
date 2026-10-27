@@ -496,6 +496,20 @@ pub struct MulticaPullReportVm {
     pub results: Vec<MulticaPullItemResultVm>,
 }
 
+/// 待决上游拉取槽（M5-cj 卡片水合）：重进会话后恢复「拉取决策卡片/等待态」的数据源。
+/// `task_id` 为本地任务 display id（前端对话归属键）、`task_title` 取自 run 快照；`retried`
+/// 标识「继续等待」已选过一轮（前端水合时直接进入等待态而非选择态）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticaUpstreamPullPendingVm {
+    pub task_id: String,
+    pub run_id: String,
+    pub node_id: String,
+    pub parent_issue_id: String,
+    pub task_title: Option<String>,
+    pub retried: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

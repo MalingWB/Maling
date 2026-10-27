@@ -13092,11 +13092,8 @@ fn build_dynamic_worker_invocation(
     // workflow 面共用同一策略（`SessionMode::New` 才加载）。M5-cg 起 issue 关联任务的冻结段
     // 只含附件失败清单（协议正文仅 direct 冻结），编排面的完成输出协议改由下方按节点身份注入。
     // 排在动态区段之后：动态上下文（本节点身份与目录）在前，任务级上下文收尾。
-    let frozen_sections = crate::app::node_executor::first_prompt_hidden_sections(
-        ctx.app,
-        ctx.task_id,
-        session_mode,
-    );
+    let frozen_sections =
+        crate::app::node_executor::first_prompt_hidden_sections(ctx.app, ctx.task_id, session_mode);
     extra_hidden_sections.extend(frozen_sections.iter().cloned());
     // M5-cg 产出侧门禁（auto 面）：动态图的「最后一个节点」在叶子启动时不可判定（图运行时
     // 生长）——验收节点是装配时唯一可判定的收尾产出者身份，按 Final 指定；其余叶子一律禁止
@@ -13107,6 +13104,7 @@ fn build_dynamic_worker_invocation(
         if let Some(section) = crate::app::upstream::completion_protocol_designation_section(
             ctx.app,
             ctx.task_id,
+            &node.id,
             designation,
             &frozen_sections,
         ) {
@@ -21009,6 +21007,7 @@ mod tests {
         fn completion_protocol_section(
             &self,
             _task_id: &str,
+            _node_id: &str,
             designation: crate::app::upstream::CompletionProtocolDesignation,
         ) -> Option<crate::provider::PromptHiddenSection> {
             Some(crate::provider::PromptHiddenSection {

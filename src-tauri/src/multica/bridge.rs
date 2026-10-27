@@ -6,7 +6,9 @@
 //!   **M5-cf/M5-cg：节点成功边界兼作阶段性交付上送触发**（`push_workflow_completion_snapshot`，
 //!   **仅 workflow 模式**）——工作流图的节点回合只产生本事件（`AcpTurnFinished` 是会话 prompt
 //!   层事件，图节点不经过），中段上送必须挂这里。产出资格已在装配侧按节点身份门禁
-//!   （sink / 标记节点才收到产出协议），上送随产出走、无完成边界反查门控；auto 的最终交付
+//!   （sink / 标记节点才收到产出协议），上送侧再按装配时同源记录的指定节点集会籍门禁
+//!   （M5-cj `designated_output_nodes`，fail-closed）；快照与 Success 终态的 completion_output
+//!   写入均经写序队列（M5-cj：事件回调入队、单消费者顺序执行）；auto 的最终交付
 //!   由 `/complete` 终态路径携带（无中段推送）。
 //! - `RunCompleted`：按 `RunOutcome` 穷举上报（Success→complete（complete 送达后再用 PAT 把关联
 //!   issue 流转到 done，接入方案 D2）+ completed 历史记 `completed` / Failure→fail + 历史记 `failed`
@@ -29,14 +31,14 @@
 //! 反查 (local_task_id, local_run_id) → remote_task_id（多 workspace/多 run 不串台）。
 //! HTTP 调用经 `tauri::async_runtime::spawn` 异步执行（订阅器回调在 runtime 热路径，不可阻塞）。
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use gold_band::app::{AcpTurnOutcome, App, RuntimeLifecycleEvent};
 use gold_band::config::{RemoteCompletedTask, RemoteTaskConversation, StateConfig};
 use gold_band::domain::{PauseReason, RunOutcome};
 use gold_band::runtime::WorkerRefState;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::multica::client::{MULTICA_ISSUE_DONE_STATUS, MulticaClient};
 use crate::multica::config::{get_pat, multica_base_url, multica_settings};
@@ -232,6 +234,7 @@ pub fn create_multica_subscriber(
             RuntimeLifecycleEvent::NodeCompleted {
                 task_id,
                 run_id,
+                node_id,
                 attempt_dir,
                 outcome,
                 ..
@@ -240,6 +243,23 @@ pub fn create_multica_subscriber(
                 else {
                     return; // 非 multica 在飞任务（本地普通 run）→ 不处理。
                 };
+                // M5-cf/M5-cg：节点成功边界即时上送阶段性快照（workflow + issue run；失败/
+                // 取消节点无交付语义）。M5-cj 写序：快照在**事件回调内同步入队**（= 事件序），
+                // 由 completion_output 顺序消费者执行——旧实现 spawn 后与 /complete 并发飞
+                // HTTP，早节点的 stalled PUT 可晚于终态写入落地，服务端后写胜 → 过期内容
+                // 永久驻留（run 已终态无后续写入自愈）。入队是纯 channel send，回调热路径
+                // 仍只做轻量工作。入队侧 workflow+issue 预过滤（run 在手）——auto/direct 的
+                // 成功节点不产生死 job；执行侧门禁仍是权威判定（预过滤与执行之间 run 可能
+                // 被 cancel，队列残留作业须由执行侧拒绝）。
+                if outcome == NODE_COMPLETED_OUTCOME_SUCCESS && is_workflow_issue_run(&run) {
+                    enqueue_completion_output_job(CompletionOutputJob::Snapshot {
+                        run: run.clone(),
+                        node_id: node_id.clone(),
+                        attempt_dir: attempt_dir.clone(),
+                    });
+                }
+                // pin 路径不写 completion_output（session 采集是断点续跑关键路径），保持旁路
+                // spawn：不参与写序，也不被写序阻塞。
                 let app_handle = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     handle_node_completed(
@@ -249,13 +269,6 @@ pub fn create_multica_subscriber(
                         attempt_dir.clone(),
                     )
                     .await;
-                    // M5-cf/M5-cg：节点成功边界即时上送阶段性快照（workflow + issue run；
-                    // 失败/取消节点无交付语义）。先 pin 后推——session 采集是断点续跑关键路径，
-                    // 快照次之。产出资格已在装配侧门禁，上送随产出走。
-                    if outcome == NODE_COMPLETED_OUTCOME_SUCCESS {
-                        push_workflow_completion_snapshot(&app_handle, &run, Some(&attempt_dir))
-                            .await;
-                    }
                 });
             }
             RuntimeLifecycleEvent::RunCompleted {
@@ -286,18 +299,28 @@ pub fn create_multica_subscriber(
                     }
                     return;
                 };
-                let app_handle = app_handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    handle_run_completed(
-                        app_handle,
-                        remote_task_id,
-                        run,
-                        outcome,
-                        node_label,
-                        attempt_dir,
-                    )
-                    .await;
-                });
+                match outcome {
+                    // Success 的 `/complete` 携带 completion_output（与服务端该字段同事务），
+                    // 必须与快照写入同序（M5-cj 写序）：事件回调内同步入队——事件序上
+                    // RunCompleted 晚于全部 NodeCompleted 快照，FIFO 消费保终态内容最后落定。
+                    RunOutcome::Success => {
+                        enqueue_completion_output_job(CompletionOutputJob::CompleteRun {
+                            remote_task_id,
+                            run,
+                            node_label,
+                            attempt_dir,
+                        });
+                    }
+                    // Failure/Killed 不写 completion_output（fail 上报），无写序诉求——
+                    // 保持旁路 spawn，不被写序队列阻塞。
+                    _ => {
+                        let app_handle = app_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            handle_run_failed(app_handle, remote_task_id, run, node_label, outcome)
+                                .await;
+                        });
+                    }
+                }
             }
             RuntimeLifecycleEvent::AcpTurnFinished {
                 task_id,
@@ -357,17 +380,21 @@ fn lookup_active_run(
     guard.find_active_run_by_local(local_task_id, local_run_id)
 }
 
-/// 原子认领完成路径（M5-bp 双事件竞态守卫，语义见 `MulticaRuntimeState::begin_completion`）。
+/// 原子「映射复验 + 认领」完成路径（M5-bp 双事件竞态守卫 + M5-cj，语义见
+/// `MulticaRuntimeState::begin_completion_for_run`）。
 ///
 /// 状态不可达（managed state 缺失/锁中毒）时放行（fail-open：守卫缺失退回旧行为，不让
 /// 竞态守卫反过来卡死完成）。
-fn begin_completion(app: &AppHandle, remote_task_id: &str) -> bool {
+fn begin_completion_for_run(app: &AppHandle, remote_task_id: &str, run: &ActiveRemoteRun) -> bool {
     shared_multica_state(app)
         .and_then(|shared| {
-            shared
-                .lock()
-                .ok()
-                .map(|mut guard| guard.begin_completion(remote_task_id))
+            shared.lock().ok().map(|mut guard| {
+                guard.begin_completion_for_run(
+                    remote_task_id,
+                    &run.local_task_id,
+                    &run.local_run_id,
+                )
+            })
         })
         .unwrap_or(true)
 }
@@ -442,117 +469,136 @@ async fn handle_node_completed(
     emit_remote_tasks_updated(&app);
 }
 
-/// RunCompleted：按 outcome 4 分支上报终态 + 清本地索引。
-///
-/// Success 分支的 `completion_output` 随 `/complete` 同事务上送（multica C6 改造，2026-10：
-/// 完成与写输出单请求、后写胜）——从 `attempt_dir` 的 acp.timeline 投影 assistant 回复
-/// （direct 门控与工作流采集双口径，见 [`handoff::attempt_completion_scan`]）。
-/// `complete_task` 送达后另用码灵 PAT 把关联 issue 流转到 `done`（接入方案 D2：码灵作为中介，
-/// 纯状态流转）。
+/// RunCompleted 终态上报（M5-cj 拆分）：Success → [`execute_complete_run`]（写序队列消费者，
+/// `/complete` 携带 completion_output，与服务端该字段同事务、后写胜，multica C6 改造 2026-10；
+/// 从 `attempt_dir` 的 acp.timeline 投影 assistant 回复，direct 门控与工作流采集双口径，见
+/// [`handoff::attempt_completion_scan`]）；Failure/Killed → [`handle_run_failed`]（不写
+/// completion_output，无写序诉求）。`complete_task` 送达后另用码灵 PAT 把关联 issue 流转到
+/// `done`（接入方案 D2：码灵作为中介，纯状态流转）。
 ///
 /// **M5-bp（开发设计 §12.55）**：direct 模式 + issue 关联的 Success 由 completion-output 块
 /// **门控**——无块 → 扣留完成（不上报、不 finalize，远端保持 running 供对话继续，块出现后由
 /// turn 收尾补判）。工作流等非 direct 路径不门控，交付说明只认块（M5-ce，开发设计 §12.73：
 /// attempt 全部 assistant 消息倒序找块；提不出 → 字段不发送，issue 现值保留）。
-async fn handle_run_completed(
-    app: AppHandle,
-    remote_task_id: String,
+async fn execute_complete_run(
+    app: &AppHandle,
+    remote_task_id: &str,
     run: ActiveRemoteRun,
-    outcome: RunOutcome,
     node_label: String,
     attempt_dir: Option<String>,
 ) {
-    let Some(context) = desktop_context(&app) else {
+    // 执行时映射复验（M5-cj）：入队（事件回调）到执行（消费者）之间隔着前序作业的 HTTP，
+    // 同 turn 的收尾门控（AcpTurnFinished 旁路 spawn）可在等待期间完成并 finalize 同一任务
+    // （active_runs 已清）。事件时快照不回头，此处按 (local_task_id, local_run_id) 重查在飞
+    // 映射：映射已落 = 他方已终态收尾 → 本作业整体退出（终态上报/历史/刷新均由认领方完成），
+    // 防对已终态任务二次 complete。复验后、认领前的窗口仍由 begin_completion 兜底。
+    let mapping_alive = shared_multica_state(app).is_some_and(|shared| {
+        shared
+            .lock()
+            .expect("multica state lock")
+            .find_active_run_by_local(&run.local_task_id, &run.local_run_id)
+            .is_some()
+    });
+    if !mapping_alive {
+        info!(task = %remote_task_id, "multica complete-run job skip: run already finalized");
+        return;
+    }
+    let Some(context) = desktop_context(app) else {
         return;
     };
-    let (session_id, work_dir) = current_session(context.app(), &remote_task_id);
-    let action = classify_terminal(
-        outcome,
-        &node_label,
-        session_id.as_deref(),
-        work_dir.as_deref(),
-    );
+    let (session_id, work_dir) = current_session(context.app(), remote_task_id);
     let Some(client) = multica_client(&context) else {
         return;
     };
-    let pending = match action {
-        TerminalAction::Complete {
-            output,
-            session_id,
-            work_dir,
-        } => {
-            // 采集只在 issue 关联存在时进行（direct 门控判定 ⊆ issue 非空；工作流附带也仅 issue
-            // 维度生效——server 对非 issue 任务静默忽略该字段）——非 issue 任务不做这次大文件
-            // （acp.timeline）读，行为对齐旧实现。
-            let issue = run.issue_id.as_deref().filter(|s| !s.trim().is_empty());
-            let scan = match (issue.is_some(), attempt_dir.as_deref()) {
-                (true, Some(dir)) => handoff::attempt_completion_scan(dir),
-                _ => handoff::AttemptCompletionScan::default(),
-            };
-            // M5-bp 决策点 1（run 收尾）：direct + issue → completion-output 块门控。
-            match decide_run_completion(&run, scan.final_probe.block.clone()) {
-                DirectCompletionDecision::Withhold => {
-                    // 扣留完成：不上报终态、不 finalize（保留 active_runs / task_conversations），
-                    // 远端保持 running——用户继续对话推进任务，块出现后由 turn 收尾（决策点 2）
-                    // 补判完成。心跳在续，server sweeper 不会误杀 running。
-                    log_completion_gate_miss(&remote_task_id, "run finished", &scan.final_probe);
-                    return;
-                }
-                DirectCompletionDecision::Complete(block) => {
-                    // 门控命中 + 块在：完成路径（output = 块内容即交付摘要，node_label 无下游语义）。
-                    // 同一终 turn 会并发触发 turn 收尾（AcpTurnFinished），认领守卫保证完成路径
-                    // 单飞；认领失败 = turn 收尾先到 → 本 handler 整体退出（finalize 由认领方负责）。
-                    if !begin_completion(&app, &remote_task_id) {
-                        return;
-                    }
-                    complete_with_issue_done(
-                        &client,
-                        &remote_task_id,
-                        &run,
-                        &block,
-                        Some(block.as_str()),
-                        session_id.as_deref(),
-                        work_dir.as_deref(),
-                    )
-                    .await;
-                }
-                DirectCompletionDecision::Passthrough => {
-                    // 工作流/auto/非 issue：既有 fail-open 路径——run 终态驱动完成，不门控。
-                    // 交付说明只认块（multica C6 改造清单 §2.1）：attempt 全部 assistant 消息
-                    // 倒序找块（收尾节点带 JSON 输出验证时最后一条消息是裁决 JSON、块在它
-                    // 之前）；提不出 → 字段不发送（multica 保留 issue 现值），near-miss 可观测、
-                    // 终态后补交通道可恢复。
-                    if let (Some(issue), Some(_)) = (issue, attempt_dir.as_deref()) {
-                        log_workflow_completion_delivery(
-                            &remote_task_id,
-                            issue,
-                            &scan.attempt_probe,
-                        );
-                    }
-                    let completion_output = scan.attempt_probe.block;
-                    complete_with_issue_done(
-                        &client,
-                        &remote_task_id,
-                        &run,
-                        &output,
-                        completion_output.as_deref(),
-                        session_id.as_deref(),
-                        work_dir.as_deref(),
-                    )
-                    .await;
-                }
-            }
-            PendingUpdate::ClearOnSuccess
-        }
-        TerminalAction::Fail { error, reason } => {
-            if let Err(e) = client.fail_task(&remote_task_id, &error, &reason).await {
-                warn!(task = %remote_task_id, %e, "multica fail_task failed");
-            }
-            PendingUpdate::AddOnFailure
-        }
+    // Success 的终态动作（classify_terminal Success 分支内联：output = node_label，无下游语义）。
+    let output = node_label;
+    // 采集只在 issue 关联存在时进行（direct 门控判定 ⊆ issue 非空；工作流附带也仅 issue
+    // 维度生效——server 对非 issue 任务静默忽略该字段）——非 issue 任务不做这次大文件
+    // （acp.timeline）读，行为对齐旧实现。
+    let issue = run.issue_id.as_deref().filter(|s| !s.trim().is_empty());
+    let scan = match (issue.is_some(), attempt_dir.as_deref()) {
+        (true, Some(dir)) => handoff::attempt_completion_scan(dir),
+        _ => handoff::AttemptCompletionScan::default(),
     };
-    finalize_terminal(&app, &remote_task_id, &run, pending);
+    match decide_run_completion(&run, scan.final_probe.block.clone()) {
+        DirectCompletionDecision::Withhold => {
+            // 扣留完成：不上报终态、不 finalize（保留 active_runs / task_conversations），
+            // 远端保持 running——用户继续对话推进任务，块出现后由 turn 收尾（决策点 2）
+            // 补判完成。心跳在续，server sweeper 不会误杀 running。
+            log_completion_gate_miss(remote_task_id, "run finished", &scan.final_probe);
+            return;
+        }
+        DirectCompletionDecision::Complete(block) => {
+            // 门控命中 + 块在：完成路径（output = 块内容即交付摘要）。同一终 turn 会并发触发
+            // turn 收尾（AcpTurnFinished 旁路 spawn），认领守卫保证完成路径单飞；原子「映射
+            // 复验 + 认领」失败 = turn 收尾先到（认领占用中）或已完成（映射已清）→ 本路径
+            // 整体退出（finalize 由认领方负责）。
+            if !begin_completion_for_run(app, remote_task_id, &run) {
+                return;
+            }
+            complete_with_issue_done(
+                &client,
+                remote_task_id,
+                &run,
+                &block,
+                Some(block.as_str()),
+                session_id.as_deref(),
+                work_dir.as_deref(),
+            )
+            .await;
+        }
+        DirectCompletionDecision::Passthrough => {
+            // 工作流/auto/非 issue：既有 fail-open 路径——run 终态驱动完成，不门控。
+            // 交付说明只认块（multica C6 改造清单 §2.1）：attempt 全部 assistant 消息
+            // 倒序找块（收尾节点带 JSON 输出验证时最后一条消息是裁决 JSON、块在它
+            // 之前）；提不出 → 字段不发送（multica 保留 issue 现值），near-miss 可观测、
+            // 终态后补交通道可恢复。
+            if let (Some(issue), Some(_)) = (issue, attempt_dir.as_deref()) {
+                log_workflow_completion_delivery(remote_task_id, issue, &scan.attempt_probe);
+            }
+            let completion_output = scan.attempt_probe.block;
+            complete_with_issue_done(
+                &client,
+                remote_task_id,
+                &run,
+                &output,
+                completion_output.as_deref(),
+                session_id.as_deref(),
+                work_dir.as_deref(),
+            )
+            .await;
+        }
+    }
+    finalize_terminal(app, remote_task_id, &run, PendingUpdate::ClearOnSuccess);
     // 远程任务终态（complete/fail）已上报 + 本地索引已清 → 通知前端刷新 sidebar。
+    emit_remote_tasks_updated(app);
+}
+
+/// Failure/Killed 终态失败路径（原 run 收尾 Fail 分支拆出，M5-cj）：fail 上报 + failed 历史 +
+/// 通知刷新。终态表（Failure→agent_error / Killed→timeout）仍以 [`classify_terminal`] 为单一
+/// 真源。不写 completion_output（无交付语义）→ 不进写序队列，事件回调旁路 spawn 即可。
+async fn handle_run_failed(
+    app: AppHandle,
+    remote_task_id: String,
+    run: ActiveRemoteRun,
+    node_label: String,
+    outcome: RunOutcome,
+) {
+    let TerminalAction::Fail { error, reason } =
+        classify_terminal(outcome, &node_label, None, None)
+    else {
+        return; // 不可达：订阅器只对 Failure/Killed 分支路由到此。
+    };
+    let Some(context) = desktop_context(&app) else {
+        return;
+    };
+    let Some(client) = multica_client(&context) else {
+        return;
+    };
+    if let Err(e) = client.fail_task(&remote_task_id, &error, &reason).await {
+        warn!(task = %remote_task_id, %e, "multica fail_task failed");
+    }
+    finalize_terminal(&app, &remote_task_id, &run, PendingUpdate::AddOnFailure);
     emit_remote_tasks_updated(&app);
 }
 
@@ -633,6 +679,9 @@ async fn handle_turn_completion_gate(
     };
     // 双事件竞态守卫：run 收尾（RunCompleted）可能已认领同一任务的完成路径——认领失败
     // = 对方在完成中，本 handler 整体退出（其 finalize 会清 active_runs 并通知刷新）。
+    // M5-cj：认领升级为原子「映射复验 + 认领」——写序队列把 run 收尾完成路径延迟执行后，
+    // 本 handler 与其顺序不再同步，他方可能已完成并 finalize（认领随 finalize 释放，单纯
+    // 认领成功不再等价于「无人完成过」）；映射已清 → 同样整体退出，防二次 complete。
     // 认领放在 context/client 取得**之后**：断连等早退路径不认领（认领后无 finalize 释放，
     // 会阻塞该任务后续事件的完成路径直到重启）。
     let Some(context) = desktop_context(&app) else {
@@ -641,7 +690,7 @@ async fn handle_turn_completion_gate(
     let Some(client) = multica_client(&context) else {
         return;
     };
-    if !begin_completion(&app, &remote_task_id) {
+    if !begin_completion_for_run(&app, &remote_task_id, &run) {
         return;
     }
     let (session_id, work_dir) = current_session(context.app(), &remote_task_id);
@@ -663,6 +712,108 @@ async fn handle_turn_completion_gate(
 /// 发射口径：`"SUCCESS"` / `"FAILED"` / `"INVALID"` / `"KILLED"`）。
 const NODE_COMPLETED_OUTCOME_SUCCESS: &str = "SUCCESS";
 
+// ── M5-cj：completion_output 有序写入 ─────────────────────────────────────────
+//
+// 根因（P1 乱序覆盖）：阶段性快照 PUT 与终态 `/complete`（同样携带 completion_output）是
+// 两个并发 spawn 的 HTTP，早节点 stalled 的 PUT 可晚于终态写入落地；服务端后写胜 → 过期
+// 内容永久驻留（run 已终态、无后续写入自愈），下游父任务读到旧交付。发送侧内容去重
+// （`issue_output_pushed`）只防重复发送，不保到达序。
+//
+// 修复形态（状态规则 §6「锁不覆盖网络调用」的合规实现）：**事件回调内同步入队**（纯
+// channel send，事件序 = 入队序）+ 单消费者顺序执行（scan/dedup/PUT 都在消费者任务里，
+// 临界区只有入队）。全局单队列足够：写入频率是节点边界/任务终态粒度，串行即该字段的
+// 正确语义；不引入 per-issue 队列（写入方天然按 run 聚簇，全局 FIFO 已保证同 issue 序）。
+// turn 收尾完成与迟到补发**不入队**：direct 任务无快照写入方（快照是 workflow 专属），
+// 与本队列无并发交叠；迟到补发仅在 run 终态后触发（此时队列中该任务的作业已全部执行
+// 完），冲突只剩「分钟级 stalled 的 PUT 晚于补发落地」的极端窗口，且下次补发整体覆盖
+// 自愈（既有语义）。
+
+/// completion_output 写入作业（事件回调入队的轻量描述子，重活由消费者执行）。
+enum CompletionOutputJob {
+    /// 节点成功边界的阶段性快照（M5-cf/M5-cg，workflow 专属）。
+    Snapshot {
+        run: ActiveRemoteRun,
+        node_id: String,
+        attempt_dir: String,
+    },
+    /// run 成功终态的 `/complete`（completion_output 随 complete 同事务上送）。
+    CompleteRun {
+        remote_task_id: String,
+        run: ActiveRemoteRun,
+        node_label: String,
+        attempt_dir: Option<String>,
+    },
+}
+
+/// 全局写序队列句柄（main.rs setup 经 [`init_completion_output_queue`] 装配一次）。
+static COMPLETION_OUTPUT_QUEUE: OnceLock<tokio::sync::mpsc::UnboundedSender<CompletionOutputJob>> =
+    OnceLock::new();
+
+/// 装配写序队列并启动消费者（main.rs setup 调用，须早于 lifecycle 订阅器注册）。
+pub fn init_completion_output_queue(app: tauri::AppHandle) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let _ = COMPLETION_OUTPUT_QUEUE.set(tx);
+    tauri::async_runtime::spawn(async move {
+        drive_completion_output_jobs(rx, move |job| {
+            let app = app.clone();
+            async move {
+                execute_completion_output_job(&app, job).await;
+            }
+        })
+        .await;
+    });
+}
+
+/// 事件回调侧入队（纯 send，不阻塞；队列未装配/已关闭时记 warn 丢弃——消费者只在进程
+/// 退出时关闭，正常运行期间不发生）。
+fn enqueue_completion_output_job(job: CompletionOutputJob) {
+    match COMPLETION_OUTPUT_QUEUE.get() {
+        Some(tx) => {
+            if tx.send(job).is_err() {
+                warn!("multica completion-output write queue closed; job dropped");
+            }
+        }
+        None => warn!(
+            "multica completion-output write queue not initialized; job dropped (init in main.rs setup)"
+        ),
+    }
+}
+
+/// 顺序消费：逐个 await 执行，入队序 = 执行序（= 事件序）。执行器注入化供写序回归测试
+/// 固定「先入队先完成、慢作业不重排」的不变量。
+async fn drive_completion_output_jobs<F, Fut>(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<CompletionOutputJob>,
+    mut execute: F,
+) where
+    F: FnMut(CompletionOutputJob) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    while let Some(job) = rx.recv().await {
+        execute(job).await;
+    }
+}
+
+/// 消费者分发：Snapshot → 快照上送（含 M5-cj 资格门禁）；CompleteRun → 成功终态完成路径。
+async fn execute_completion_output_job(app: &tauri::AppHandle, job: CompletionOutputJob) {
+    match job {
+        CompletionOutputJob::Snapshot {
+            run,
+            node_id,
+            attempt_dir,
+        } => {
+            push_workflow_completion_snapshot(app, &run, &node_id, Some(&attempt_dir)).await;
+        }
+        CompletionOutputJob::CompleteRun {
+            remote_task_id,
+            run,
+            node_label,
+            attempt_dir,
+        } => {
+            execute_complete_run(app, &remote_task_id, run, node_label, attempt_dir).await;
+        }
+    }
+}
+
 /// 图节点成功边界的即时上送（M5-cf 中途上传，M5-cg 收窄为 workflow 专属）：阶段性交付
 /// 不必等工作项完成。
 ///
@@ -674,11 +825,14 @@ const NODE_COMPLETED_OUTCOME_SUCCESS: &str = "SUCCESS";
 /// 不经过该层——M5-cf 初版挂在 `AcpTurnFinished` 上导致中段上送永不触发（2026-10-25
 /// 内网实测：multica 侧零写入，revision 停留在 claim 时刻）。
 ///
-/// **无完成边界门控（M5-cg 产出侧门禁）**：产出资格已在装配时按节点身份判定（sink /
-/// 标记声明节点才收到产出协议，见 `gold_band::app::upstream::workflow_node_designation`），
-/// 此处节点成功 + attempt 有块即上送——判定与模型所见同源，完成边界反查（快照 + graph +
-/// profile 存储三跳）只会引入错位（M5-cf 改动七十四内网两轮回归的根因）。无块节点是常态
-/// （绝大多数节点被指定为 Prohibited），静默跳过防逐节点日志噪音。
+/// **上送侧会籍门禁（M5-cj）**：提示词门禁只约束「模型被要求产出交付」，协议块本质是自由
+/// 文本——Prohibited 节点的回复仍可能含块（复述/引用上游交付说明），旧实现照单上送 → 禁止
+/// 节点可覆写 issue 交付。此处按 `designated_output_nodes`（装配时随产出协议同源记录的
+/// Final/Staged 节点集，见 `MulticaCompletionProtocolResolver::completion_protocol_section`）
+/// 会籍判定：非指定节点（含 frozen 旧 run 无记录）的块一律不上送——fail-closed，开发阶段
+/// 破坏式更新不留兼容路径。记录与模型所见同源（同一装配时点写入），不重开完成边界反查
+/// （M5-cf 改动七十四回归的根因）。无记录节点是常态（绝大多数节点 Prohibited 且零成本
+/// 跳过），无块节点静默跳过防逐节点日志噪音。
 ///
 /// 口径与完成采集一致（[`handoff::attempt_completion_scan`]：attempt 全部 assistant 消息
 /// 倒序最后一块胜——节点按工作流要求以 JSON 裁决收尾、块在裁决之前时也不漏）。值与上次
@@ -688,6 +842,7 @@ const NODE_COMPLETED_OUTCOME_SUCCESS: &str = "SUCCESS";
 async fn push_workflow_completion_snapshot(
     app: &AppHandle,
     run: &ActiveRemoteRun,
+    node_id: &str,
     attempt_dir: Option<&str>,
 ) {
     if !is_workflow_issue_run(run) {
@@ -696,6 +851,22 @@ async fn push_workflow_completion_snapshot(
     let Some(attempt_dir) = attempt_dir else {
         return;
     };
+    // M5-cj 上送侧会籍门禁：先于 context/采集获取（无会籍即零成本退出，不做 timeline 读）。
+    let designated = shared_multica_state(app).is_some_and(|shared| {
+        shared
+            .lock()
+            .expect("multica state lock")
+            .is_designated_output_node(&run.local_run_id, node_id)
+    });
+    if !designated {
+        // 无记录节点是常态（多数节点 Prohibited），逐节点 info 只会成为噪音——debug 级。
+        debug!(
+            task_run = %run.local_run_id,
+            node = %node_id,
+            "multica completion-output snapshot skipped: node not designated"
+        );
+        return;
+    }
     let Some(context) = desktop_context(app) else {
         return;
     };
@@ -1592,5 +1763,65 @@ mod tests {
             decide_run_completion(&gated_run("direct", None), None),
             DirectCompletionDecision::Passthrough
         ));
+    }
+
+    // ---- M5-cj：completion_output 写序（事件回调入队 → 单消费者顺序执行）----
+
+    fn snapshot_job(local_run: &str, node_id: &str) -> CompletionOutputJob {
+        let mut run = gated_run("workflow", Some("iss-1"));
+        run.local_run_id = local_run.to_string();
+        CompletionOutputJob::Snapshot {
+            run,
+            node_id: node_id.to_string(),
+            attempt_dir: format!("attempts/{local_run}"),
+        }
+    }
+
+    fn complete_job(local_run: &str) -> CompletionOutputJob {
+        let mut run = gated_run("workflow", Some("iss-1"));
+        run.local_run_id = local_run.to_string();
+        CompletionOutputJob::CompleteRun {
+            remote_task_id: format!("remote-{local_run}"),
+            run,
+            node_label: "收尾".to_string(),
+            attempt_dir: Some(format!("attempts/{local_run}")),
+        }
+    }
+
+    #[tokio::test]
+    async fn completion_output_queue_executes_jobs_in_fifo_order() {
+        // M5-cj 写序回归（PR 评审 #2 根因固化）：入队序 = 执行序。首作业是 stalled PUT
+        // （120ms 挂起）时，后入队的 `/complete` 不得先落——旧实现的两个并发 spawn 正是
+        // 「早节点快照晚于终态写入落地、服务端后写胜」的乱序来源。
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let finished = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+        let recorded = finished.clone();
+        let consumer = tokio::spawn(async move {
+            drive_completion_output_jobs(rx, move |job| {
+                let finished = finished.clone();
+                async move {
+                    let label = match job {
+                        CompletionOutputJob::Snapshot { .. } => "snapshot",
+                        CompletionOutputJob::CompleteRun { .. } => "complete",
+                    };
+                    if label == "snapshot" {
+                        // 模拟 stalled PUT：挂起期间后续作业已在队列里。
+                        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                    }
+                    finished.lock().expect("test order lock").push(label);
+                }
+            })
+            .await;
+        });
+        tx.send(snapshot_job("run-1", "node-a")).expect("enqueue");
+        tx.send(complete_job("run-1")).expect("enqueue");
+        tx.send(snapshot_job("run-2", "node-b")).expect("enqueue");
+        drop(tx);
+        consumer.await.expect("consumer task");
+        assert_eq!(
+            *recorded.lock().expect("test order lock"),
+            vec!["snapshot", "complete", "snapshot"],
+            "慢快照不得重排后续 /complete：FIFO = 事件序"
+        );
     }
 }

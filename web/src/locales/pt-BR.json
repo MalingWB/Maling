@@ -3229,7 +3229,8 @@
       "skip": "Pular busca",
       "manualLabel": "Entrega",
       "manualPlaceholder": "Informações essenciais como artefatos construídos e ambientes de implantação…",
-      "manualSubmit": "Continuar com isto"
+      "manualSubmit": "Continuar com isto",
+      "waitingNote": "Ainda aguardando a atualização da nota de entrega upstream. Você pode fornecê-la manualmente ou pular a qualquer momento."
     }
   }
 }

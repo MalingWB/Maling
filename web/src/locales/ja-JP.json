@@ -3229,7 +3229,8 @@
       "skip": "取得をスキップ",
       "manualLabel": "成果物説明",
       "manualPlaceholder": "ビルド成果物やデプロイ環境などの重要情報…",
-      "manualSubmit": "この内容で続行"
+      "manualSubmit": "この内容で続行",
+      "waitingNote": "上流の成果物メモの更新を待機しています。待機中はいつでも手動で入力またはスキップできます。"
     }
   }
 }

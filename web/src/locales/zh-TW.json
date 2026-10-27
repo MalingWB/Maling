@@ -3229,7 +3229,8 @@
       "skip": "跳過拉取",
       "manualLabel": "交付說明",
       "manualPlaceholder": "構建產物、部署環境等關鍵資訊……",
-      "manualSubmit": "使用此資訊繼續"
+      "manualSubmit": "使用此資訊繼續",
+      "waitingNote": "已繼續等待上游交付說明更新，期間可隨時手動提供或跳過。"
     }
   }
 }

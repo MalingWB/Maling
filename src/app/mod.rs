@@ -1914,11 +1914,12 @@ impl App {
     pub(crate) fn completion_protocol_section(
         &self,
         task_id: &str,
+        node_id: &str,
         designation: upstream::CompletionProtocolDesignation,
     ) -> Option<crate::provider::PromptHiddenSection> {
         self.completion_protocol_section_resolver
             .as_ref()?
-            .completion_protocol_section(task_id, designation)
+            .completion_protocol_section(task_id, node_id, designation)
     }
 
     pub fn with_lifecycle_bus(mut self, lifecycle_bus: observability::RuntimeLifecycleBus) -> Self {

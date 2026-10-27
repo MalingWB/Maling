@@ -3214,7 +3214,8 @@
       "skip": "跳过拉取",
       "manualLabel": "交付说明",
       "manualPlaceholder": "构建产物、部署环境等关键信息……",
-      "manualSubmit": "使用此信息继续"
+      "manualSubmit": "使用此信息继续",
+      "waitingNote": "已继续等待上游交付说明更新，期间可随时手动提供或跳过。"
     },
     "connection": {
       "title": "连接地址设置",

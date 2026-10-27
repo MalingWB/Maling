@@ -198,8 +198,7 @@ pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_ZH_CN: &str =
     RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL.zh_cn;
 pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN: &str =
     RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL.en;
-pub const RUNTIME_REMOTE_TASK_NODE_PROTOCOL_ZH_CN: &str =
-    RUNTIME_REMOTE_TASK_NODE_PROTOCOL.zh_cn;
+pub const RUNTIME_REMOTE_TASK_NODE_PROTOCOL_ZH_CN: &str = RUNTIME_REMOTE_TASK_NODE_PROTOCOL.zh_cn;
 pub const RUNTIME_REMOTE_TASK_NODE_PROTOCOL_EN: &str = RUNTIME_REMOTE_TASK_NODE_PROTOCOL.en;
 pub const RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES_ZH_CN: &str =
     RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES.zh_cn;
@@ -655,10 +654,8 @@ mod tests {
             RUNTIME_REMOTE_TASK_NODE_PROTOCOL_EN,
         ] {
             for designation in ["final", "staged", "prohibited"] {
-                let rendered = assert_fully_rendered(
-                    language,
-                    json!({ "designation": designation }),
-                );
+                let rendered =
+                    assert_fully_rendered(language, json!({ "designation": designation }));
                 assert!(rendered.contains("completion-output"));
             }
         }
@@ -757,18 +754,26 @@ mod tests {
             "source": "manual",
             "content": "包名：gold-band_0.19.0_x64.msi；部署环境：内网测试环境 http://t.example.com"
         });
-        let zh_manual = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.zh_cn, manual_ctx.clone());
+        let zh_manual =
+            assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.zh_cn, manual_ctx.clone());
         assert!(zh_manual.contains("手动提供"));
         assert!(zh_manual.contains("gold-band_0.19.0_x64.msi"));
-        assert!(!zh_manual.contains("阶段性快照"), "manual 变体不带父快照口径");
+        assert!(
+            !zh_manual.contains("阶段性快照"),
+            "manual 变体不带父快照口径"
+        );
         let en_manual = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.en, manual_ctx);
         assert!(en_manual.contains("provided manually by the user"));
         assert!(en_manual.contains("gold-band_0.19.0_x64.msi"));
-        assert!(!en_manual.contains("staged snapshot"), "manual variant carries no snapshot caveat");
+        assert!(
+            !en_manual.contains("staged snapshot"),
+            "manual variant carries no snapshot caveat"
+        );
 
         // skipped：跳过说明 + 「不要臆测」防线（缺信息时如实说明而非编造）。
         let skip_ctx = json!({ "source": "skipped" });
-        let zh_skip = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.zh_cn, skip_ctx.clone());
+        let zh_skip =
+            assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.zh_cn, skip_ctx.clone());
         assert!(zh_skip.contains("跳过"));
         assert!(zh_skip.contains("不要臆测"));
         let en_skip = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.en, skip_ctx);

@@ -65,6 +65,35 @@ const POLL_BUDGET: Duration = Duration::from_secs(15 * 60);
 /// （无人值守语义≈旧口径——不挂死、终态仍由总预算收口）。
 const DECISION_FALLBACK_AFTER: Duration = Duration::from_secs(60);
 
+/// 映射注册竞态宽限（M5-cj）：`register_active_run` 在建 run 后无条件紧跟（新建/续跑两条
+/// 路径皆是），等待有界且必然终止。50ms 轮询本地态（纯内存读，零网络）。
+const MAPPING_GRACE: Duration = Duration::from_secs(5);
+const MAPPING_POLL_TICK: Duration = Duration::from_millis(50);
+
+/// 在 `grace` 内轮询等待任务级映射注册（M5-cj 注册竞态宽限）：注册是创建链路的无条件
+/// 紧跟步骤，短暂等待后仍缺失 = 真非 multica 在飞任务（或已终态），由调用方按错误处理。
+/// `grace` 参数化供测试注入短窗（生产恒 [`MAPPING_GRACE`]）。
+async fn wait_for_active_run_within(
+    shared: &SharedMulticaState,
+    task_id: &str,
+    grace: Duration,
+) -> Option<(String, ActiveRemoteRun)> {
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        if let Some(found) = shared
+            .lock()
+            .expect("multica state lock")
+            .find_active_run_by_task(task_id)
+        {
+            return Some(found);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(MAPPING_POLL_TICK).await;
+    }
+}
+
 /// 「确认父未产出」、开决策点时发的前端事件（远程任务会话内拉取决策卡片）。
 pub(crate) const MULTICA_UPSTREAM_PULL_PENDING_EVENT: &str =
     "gold-band://multica-upstream-pull-pending";
@@ -90,11 +119,12 @@ impl MulticaUpstreamResolver {
                 "multica shared state unavailable".into(),
             ));
         };
-        // 任务级反查：一个本地任务同一时刻至多一个在飞 remote run（claim 单飞）。
-        let Some((_, run)) = shared
-            .lock()
-            .expect("multica state lock")
-            .find_active_run_by_task(task_id)
+        // 任务级反查：一个本地任务同一时刻至多一个在飞 remote run（claim 单飞）。注册竞态
+        // 宽限（M5-cj）：run 启动（节点装配在即）与 register_active_run 之间存在微秒级窗口
+        // ——两条创建/续跑路径的注册都在建 run 后无条件紧跟，本地态短暂等待即可拿到事实，
+        // 不得把「尚未登记」误判为「非 multica 任务」让节点启动失败（也非网络错误，预算内
+        // 重试救不了）。
+        let Some((_, run)) = wait_for_active_run_within(&shared, task_id, MAPPING_GRACE).await
         else {
             return Err(UpstreamResolveError::Network(format!(
                 "no in-flight multica mapping for local task {task_id}"
@@ -313,7 +343,7 @@ impl MulticaUpstreamResolver {
         let notify = shared
             .lock()
             .expect("multica state lock")
-            .register_upstream_pull(&run.local_run_id, node_id);
+            .register_upstream_pull(&run.local_run_id, node_id, parent);
         let _ = self.handle.emit(
             MULTICA_UPSTREAM_PULL_PENDING_EVENT,
             UpstreamPullEventVm::pending(run, node_id, parent),
@@ -447,18 +477,24 @@ impl CompletionProtocolSectionResolver for MulticaCompletionProtocolResolver {
     fn completion_protocol_section(
         &self,
         task_id: &str,
+        node_id: &str,
         designation: CompletionProtocolDesignation,
     ) -> Option<PromptHiddenSection> {
         let shared = shared_multica_state(&self.handle)?;
-        let run = shared
-            .lock()
-            .ok()?
-            .find_active_run_by_task(task_id)
-            .map(|(_, run)| run)?;
+        let mut guard = shared.lock().ok()?;
+        let run = guard.find_active_run_by_task(task_id).map(|(_, run)| run)?;
         run.issue_id
             .as_deref()
             .map(str::trim)
             .filter(|issue| !issue.is_empty())?;
+        // M5-cj 上传侧门禁事实源：判定为获准产出（Final/Staged）的节点顺手记入 run 级
+        // 资格集——与模型所见同源同刻，零存储反查（旧版完成边界反查的错位教训）。
+        // Prohibited 不记录（默认拒绝）；旧版冻结段任务不走本解析器 → 集合为空 → 快照
+        // 上送拒绝（破坏式更新，不做兼容放行）。
+        if !matches!(designation, CompletionProtocolDesignation::Prohibited) {
+            guard.record_designated_output_node(&run.local_run_id, node_id);
+        }
+        drop(guard);
         let language = desktop_context(&self.handle)?.config.desktop_language;
         let template = prompt_by_language(language, RUNTIME_REMOTE_TASK_NODE_PROTOCOL);
         let rendered = render(template, json!({ "designation": designation.as_str() }))
@@ -499,6 +535,53 @@ fn render_upstream_section(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn mapping_grace_wait_finds_late_registration() {
+        // M5-cj 根因（注册竞态）：建 run（节点装配在即）与 register_active_run 之间存在
+        // 微秒级窗口——宽限轮询必须等到迟到的注册，而不是立即判「非 multica 任务」。
+        let shared: SharedMulticaState = Default::default();
+        let late = shared.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            late.lock()
+                .expect("multica state lock")
+                .register_active_run(
+                    "remote-1",
+                    crate::multica::state::ActiveRemoteRun {
+                        workspace_id: "ws-1".into(),
+                        local_project_id: "proj-1".into(),
+                        local_task_id: "task-1".into(),
+                        local_run_id: "run-1".into(),
+                        issue_id: Some("issue-1".into()),
+                        title: None,
+                        started_at: "2026-10-27T00:00:00".into(),
+                        issue_kind: None,
+                        run_mode: "workflow".into(),
+                    },
+                );
+        });
+        let found = wait_for_active_run_within(&shared, "task-1", Duration::from_secs(2)).await;
+        assert!(
+            found.is_some(),
+            "late registration must be found within grace"
+        );
+        assert_eq!(found.expect("checked some").1.local_run_id, "run-1");
+    }
+
+    #[tokio::test]
+    async fn mapping_grace_wait_expires_without_registration() {
+        // 宽限有界：真非 multica 在飞任务（或已终态）不得无限等——超窗返回 None，
+        // 由调用方按 Network 错误处理。
+        let shared: SharedMulticaState = Default::default();
+        let started = std::time::Instant::now();
+        let found = wait_for_active_run_within(&shared, "task-1", Duration::from_millis(90)).await;
+        assert!(found.is_none());
+        assert!(
+            started.elapsed() >= Duration::from_millis(90),
+            "must wait the full grace before giving up"
+        );
+    }
 
     #[test]
     fn poll_constants_match_approved_finite_backoff_decision() {

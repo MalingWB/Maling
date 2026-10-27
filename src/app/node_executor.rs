@@ -560,6 +560,7 @@ pub(crate) fn build_worker_invocation(
         if let Some(section) = super::upstream::completion_protocol_designation_section(
             app,
             task_id,
+            node_id,
             designation,
             &extra_hidden_sections,
         ) {
@@ -571,14 +572,15 @@ pub(crate) fn build_worker_invocation(
         profile_content.as_deref(),
     ]) {
         if session_mode == SessionMode::New {
-            let section =
-                super::upstream::upstream_hidden_section(app.resolve_upstream_output(task_id, node_id)?);
+            let section = super::upstream::upstream_hidden_section(
+                app.resolve_upstream_output(task_id, node_id)?,
+            );
             extra_hidden_sections.push(section);
         }
-        task_instruction = task_instruction
-            .map(|text| super::upstream::strip_upstream_references(&text));
-        profile_content = profile_content
-            .map(|text| super::upstream::strip_upstream_references(&text));
+        task_instruction =
+            task_instruction.map(|text| super::upstream::strip_upstream_references(&text));
+        profile_content =
+            profile_content.map(|text| super::upstream::strip_upstream_references(&text));
     }
 
     let runtime_context =
@@ -1920,11 +1922,8 @@ mod tests {
             replacement: "「上游交付说明：部署地址 https://t.example.com（父 issue in_progress）」",
             calls: Mutex::new(Vec::new()),
         });
-        let app = App::with_config(
-            repo_root,
-            crate::config::RuntimeConfig::default(),
-        )
-        .with_upstream_output_resolver(resolver.clone());
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default())
+            .with_upstream_output_resolver(resolver.clone());
         write_attachment_test_run(&app);
         let mut workflow = attachment_test_workflow();
         let NodeDsl::Worker(worker) = &mut workflow.raw.nodes[0] else {
@@ -2092,9 +2091,7 @@ mod tests {
         .expect_err("build must fail without a resolver");
 
         assert!(
-            error
-                .to_string()
-                .contains("resolver is not installed"),
+            error.to_string().contains("resolver is not installed"),
             "unexpected error: {error}"
         );
     }
@@ -2119,11 +2116,8 @@ mod tests {
         let repo_root =
             Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
         let resolver = std::sync::Arc::new(CountingResolver(AtomicUsize::new(0)));
-        let app = App::with_config(
-            repo_root,
-            crate::config::RuntimeConfig::default(),
-        )
-        .with_upstream_output_resolver(resolver.clone());
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default())
+            .with_upstream_output_resolver(resolver.clone());
         write_attachment_test_run(&app);
 
         let invocation = build_worker_invocation(
@@ -2147,10 +2141,7 @@ mod tests {
         )
         .expect("invocation should build");
 
-        assert_eq!(
-            invocation.task_instruction.as_deref(),
-            Some("Do the work")
-        );
+        assert_eq!(invocation.task_instruction.as_deref(), Some("Do the work"));
         assert_eq!(resolver.0.load(Ordering::SeqCst), 0);
     }
 
@@ -2289,6 +2280,7 @@ mod tests {
         fn completion_protocol_section(
             &self,
             _task_id: &str,
+            _node_id: &str,
             designation: crate::app::upstream::CompletionProtocolDesignation,
         ) -> Option<crate::provider::PromptHiddenSection> {
             self.calls
@@ -2310,11 +2302,9 @@ mod tests {
         let repo_root =
             Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
         let app = App::with_config(repo_root, crate::config::RuntimeConfig::default())
-            .with_completion_protocol_section_resolver(std::sync::Arc::new(
-                StubProtocolResolver {
-                    calls: std::sync::Mutex::new(Vec::new()),
-                },
-            ));
+            .with_completion_protocol_section_resolver(std::sync::Arc::new(StubProtocolResolver {
+                calls: std::sync::Mutex::new(Vec::new()),
+            }));
         write_attachment_test_run(&app);
 
         let invocation_new = build_worker_invocation(
@@ -2337,10 +2327,12 @@ mod tests {
             None,
         )
         .expect("invocation should build");
-        assert!(invocation_new
-            .extra_hidden_sections
-            .iter()
-            .any(|section| section.content == "stub final"));
+        assert!(
+            invocation_new
+                .extra_hidden_sections
+                .iter()
+                .any(|section| section.content == "stub final")
+        );
 
         // Continue（追问 / 续跑）不注入按节点协议区段（与首条冻结区段策略一致）。
         let invocation_continue = build_worker_invocation(
@@ -2363,9 +2355,11 @@ mod tests {
             None,
         )
         .expect("invocation should build");
-        assert!(invocation_continue
-            .extra_hidden_sections
-            .iter()
-            .all(|section| !section.content.starts_with("stub ")));
+        assert!(
+            invocation_continue
+                .extra_hidden_sections
+                .iter()
+                .all(|section| !section.content.starts_with("stub "))
+        );
     }
 }

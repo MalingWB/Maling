@@ -3229,7 +3229,8 @@
       "skip": "가져오기 건너뛰기",
       "manualLabel": "산출물 설명",
       "manualPlaceholder": "빌드 산출물, 배포 환경 등 핵심 정보…",
-      "manualSubmit": "이 내용으로 계속"
+      "manualSubmit": "이 내용으로 계속",
+      "waitingNote": "업스트림 산출물 메모 업데이트를 계속 기다리는 중입니다. 대기 중 언제든 수동 입력하거나 건너뛸 수 있습니다."
     }
   }
 }

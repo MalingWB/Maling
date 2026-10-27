@@ -218,6 +218,17 @@ export interface MulticaUpstreamPullEventVm {
 /// 拉取决策三选一（decide_upstream_pull 的 decision 字面量）。
 export type UpstreamPullDecisionKind = 'retry' | 'manual' | 'skip';
 
+/// 待决上游拉取槽（M5-cj 卡片水合，list_upstream_pull_pendings 返回）：重进会话后恢复
+/// 决策卡片/等待态的数据源；`retried` 标识「继续等待」已选过一轮（恢复为等待态而非选择态）。
+export interface MulticaUpstreamPullPendingVm {
+  taskId: string;
+  runId: string;
+  nodeId: string;
+  parentIssueId: string;
+  taskTitle: string | null;
+  retried: boolean;
+}
+
 /// 「从远程同步」勾选列表项（list_remote_skills 返回）。
 export interface RemoteSkillListItemVm {
   id: string;

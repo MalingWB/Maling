@@ -107,10 +107,10 @@ use gold_band::storage::sqlite::init_search_index;
 use gold_band::storage::{GoldBandPaths, configure_storage_paths};
 use multica::commands::{
     add_multica_workspace, cancel_remote_task, decide_upstream_pull, get_remote_task_requirement,
-    get_remote_tasks, list_remote_skills, list_server_multica_workspaces, pull_remote_skills,
-    reconcile_remote_task_statuses, recover_remote_work_dir_sessions, remove_multica_workspace,
-    remove_remote_completed_task, rerun_remote_task, set_active_multica_workspace,
-    start_remote_conversation_run,
+    get_remote_tasks, list_remote_skills, list_server_multica_workspaces,
+    list_upstream_pull_pendings, pull_remote_skills, reconcile_remote_task_statuses,
+    recover_remote_work_dir_sessions, remove_multica_workspace, remove_remote_completed_task,
+    rerun_remote_task, set_active_multica_workspace, start_remote_conversation_run,
 };
 // Heartbeat signals are projected by the RuntimeLifecycleBus metrics subscriber.
 use image_actions::{copy_image_to_clipboard, save_image_as};
@@ -288,6 +288,9 @@ fn run() -> anyhow::Result<()> {
                         warn!(error = %error, "IM runtime failed to initialize");
                     }
                 });
+                // M5-cj：completion_output 写序队列必须先于 lifecycle 订阅器装配（订阅器
+                // 事件回调会入队快照/终态作业，队列句柄缺失 = 作业被丢）。
+                multica::bridge::init_completion_output_queue(app.handle().clone());
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
                 // home repo 自愈（单一 repo、有界）：远程来源 work_dir 定点自愈移入下方 spawn_blocking
                 // 恢复管线（P2），不再阻塞窗口启动关键路径。
@@ -593,6 +596,7 @@ fn run() -> anyhow::Result<()> {
             start_remote_conversation_run,
             cancel_remote_task,
             decide_upstream_pull,
+            list_upstream_pull_pendings,
             remove_remote_completed_task,
             reconcile_remote_task_statuses,
             rerun_remote_task,

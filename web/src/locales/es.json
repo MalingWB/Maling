@@ -3229,7 +3229,8 @@
       "skip": "Omitir obtención",
       "manualLabel": "Entrega",
       "manualPlaceholder": "Información clave como artefactos construidos y entornos de despliegue…",
-      "manualSubmit": "Continuar con esto"
+      "manualSubmit": "Continuar con esto",
+      "waitingNote": "Seguimos esperando la actualización de la nota de entrega del upstream. Puede proporcionarla manualmente o omitirla en cualquier momento."
     }
   }
 }

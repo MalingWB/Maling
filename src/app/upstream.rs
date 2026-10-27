@@ -61,7 +61,11 @@ pub enum UpstreamResolveError {
 /// `task_id` 为本地任务 display id（与 lifecycle 事件同形）；实现侧据此反查在飞 multica
 /// 任务映射取 workspace / issue 关联。成功返回替换文本（已含上游状态行）。
 pub trait UpstreamOutputResolver: Send + Sync {
-    fn resolve_upstream_output(&self, task_id: &str, node_id: &str) -> Result<String, UpstreamResolveError>;
+    fn resolve_upstream_output(
+        &self,
+        task_id: &str,
+        node_id: &str,
+    ) -> Result<String, UpstreamResolveError>;
 }
 
 /// 文本是否携带上游交付引用令牌。
@@ -74,10 +78,7 @@ pub(crate) fn needs_upstream_resolution<'a, I>(texts: I) -> bool
 where
     I: IntoIterator<Item = Option<&'a str>>,
 {
-    texts
-        .into_iter()
-        .flatten()
-        .any(has_upstream_reference)
+    texts.into_iter().flatten().any(has_upstream_reference)
 }
 
 /// 把文本中的令牌全部移除（解析结果已注入隐式隐藏区段，正文不再内联交付内容）。
@@ -138,9 +139,12 @@ pub(crate) fn workflow_node_designation(
     goal: Option<&str>,
     profile_content: Option<&str>,
 ) -> CompletionProtocolDesignation {
-    let is_sink = workflow.raw.edges.iter().filter(|edge| edge.from == node_id).all(
-        |edge| edge.to == crate::dsl::END_NODE,
-    );
+    let is_sink = workflow
+        .raw
+        .edges
+        .iter()
+        .filter(|edge| edge.from == node_id)
+        .all(|edge| edge.to == crate::dsl::END_NODE);
     if is_sink {
         CompletionProtocolDesignation::Final
     } else if declares_staged_upload(goal, profile_content) {
@@ -170,9 +174,12 @@ pub(crate) fn dynamic_node_designation(
 /// → 按当前界面语言渲染对应协议变体，返回首条 prompt 隐式隐藏区段；本地任务 / 非 issue
 /// 关联 / 解析器缺席 → `None`（无区段，不注入——与 claim 时冻结段「非 issue 不注入」同口径）。
 pub trait CompletionProtocolSectionResolver: Send + Sync {
+    /// `node_id`：引擎装配中的节点 display id——桌面壳据此把「该节点获准产出」的事实
+    /// 记入 run 级快照（M5-cj 上传侧门禁的事实源，与模型所见同源同刻）。
     fn completion_protocol_section(
         &self,
         task_id: &str,
+        node_id: &str,
         designation: CompletionProtocolDesignation,
     ) -> Option<crate::provider::PromptHiddenSection>;
 }
@@ -191,6 +198,7 @@ const FROZEN_PROTOCOL_SNIPPET: &str = "completion-output";
 pub(crate) fn completion_protocol_designation_section(
     app: &super::App,
     task_id: &str,
+    node_id: &str,
     designation: CompletionProtocolDesignation,
     frozen_sections: &[crate::provider::PromptHiddenSection],
 ) -> Option<crate::provider::PromptHiddenSection> {
@@ -200,7 +208,7 @@ pub(crate) fn completion_protocol_designation_section(
     {
         return None;
     }
-    app.completion_protocol_section(task_id, designation)
+    app.completion_protocol_section(task_id, node_id, designation)
 }
 
 /// 隐式隐藏区段标题（对齐 `Gold Band remote task context` 命名惯例；RuntimeManaged
@@ -228,7 +236,11 @@ mod tests {
             Some("goal 无令牌"),
             Some("角色正文引用 $upstream.completion-output 处的交付说明")
         ]));
-        assert!(!needs_upstream_resolution([Some("goal 无令牌"), Some("角色正文也没有"), None]));
+        assert!(!needs_upstream_resolution([
+            Some("goal 无令牌"),
+            Some("角色正文也没有"),
+            None
+        ]));
         assert!(!needs_upstream_resolution([None::<&str>, None]));
     }
 
@@ -399,12 +411,10 @@ mod tests {
         fn completion_protocol_section(
             &self,
             task_id: &str,
+            _node_id: &str,
             designation: CompletionProtocolDesignation,
         ) -> Option<crate::provider::PromptHiddenSection> {
-            self.designation
-                .lock()
-                .unwrap()
-                .push(designation.as_str());
+            self.designation.lock().unwrap().push(designation.as_str());
             (task_id == "task-remote").then(|| crate::provider::PromptHiddenSection {
                 title: "stub protocol".to_string(),
                 content: format!("stub {}", designation.as_str()),
@@ -415,8 +425,8 @@ mod tests {
     #[test]
     fn completion_protocol_designation_section_gates_and_sniffs() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let repo_root = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf())
-            .expect("utf8 temp path");
+        let repo_root =
+            camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
         let app = super::super::App::with_config(
             repo_root.clone(),
             crate::config::RuntimeConfig::default(),
@@ -425,7 +435,7 @@ mod tests {
             StubProtocolResolver {
                 designation: std::sync::Mutex::new(Vec::new()),
             },
-            ));
+        ));
 
         let frozen_clean = vec![crate::provider::PromptHiddenSection {
             title: "Gold Band remote task context".to_string(),
@@ -435,6 +445,7 @@ mod tests {
         let section = completion_protocol_designation_section(
             &app,
             "task-remote",
+            "node-sink",
             CompletionProtocolDesignation::Final,
             &frozen_clean,
         )
@@ -442,13 +453,16 @@ mod tests {
         assert_eq!(section.title, "stub protocol");
 
         // 非 multica 任务（解析器返回 None）→ 不注入。
-        assert!(completion_protocol_designation_section(
-            &app,
-            "task-local",
-            CompletionProtocolDesignation::Final,
-            &frozen_clean,
-        )
-        .is_none());
+        assert!(
+            completion_protocol_designation_section(
+                &app,
+                "task-local",
+                "node-sink",
+                CompletionProtocolDesignation::Final,
+                &frozen_clean,
+            )
+            .is_none()
+        );
 
         // 旧任务冻结段已含协议正文（M5-cg 前 claim 时定版）→ 跳过（不调用解析器叠加变体）。
         let frozen_legacy = vec![crate::provider::PromptHiddenSection {
@@ -463,13 +477,16 @@ mod tests {
             crate::config::RuntimeConfig::default(),
         )
         .with_completion_protocol_section_resolver(resolver.clone());
-        assert!(completion_protocol_designation_section(
-            &app_legacy,
-            "task-remote",
-            CompletionProtocolDesignation::Final,
-            &frozen_legacy,
-        )
-        .is_none());
+        assert!(
+            completion_protocol_designation_section(
+                &app_legacy,
+                "task-remote",
+                "node-sink",
+                CompletionProtocolDesignation::Final,
+                &frozen_legacy,
+            )
+            .is_none()
+        );
         assert!(
             resolver.designation.lock().unwrap().is_empty(),
             "frozen legacy protocol must short-circuit before the resolver"
@@ -478,12 +495,15 @@ mod tests {
         // 解析器缺席（本地引擎默认）→ None，不注入。
         let app_bare =
             super::super::App::with_config(repo_root, crate::config::RuntimeConfig::default());
-        assert!(completion_protocol_designation_section(
-            &app_bare,
-            "task-remote",
-            CompletionProtocolDesignation::Final,
-            &[],
-        )
-        .is_none());
+        assert!(
+            completion_protocol_designation_section(
+                &app_bare,
+                "task-remote",
+                "node-sink",
+                CompletionProtocolDesignation::Final,
+                &[],
+            )
+            .is_none()
+        );
     }
 }

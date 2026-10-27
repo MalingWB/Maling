@@ -34,7 +34,8 @@ use crate::multica::local_skills::{
 use crate::multica::state::{ActiveRemoteRun, SharedMulticaState, UpstreamPullDecision};
 use crate::multica::vm::{
     AttachmentFailure, MulticaPullItemResultVm, MulticaPullReportVm, MulticaSkillListItemVm,
-    RemoteConversationSidebarVm, RemoteTaskVm, remote_task_hidden_section,
+    MulticaUpstreamPullPendingVm, RemoteConversationSidebarVm, RemoteTaskVm,
+    remote_task_hidden_section,
 };
 use crate::remote::remote_task_source;
 use crate::state::DesktopState;
@@ -1281,6 +1282,38 @@ pub async fn decide_upstream_pull(
     notify.notify_one();
     info!(task = %task_id, node = %node_id, "multica upstream pull decision submitted");
     Ok(())
+}
+
+/// 待决上游拉取槽列表（M5-cj 卡片水合）：重进会话后恢复决策卡片/等待态的数据源。
+///
+/// 输入是本地任务 display id（前端对话归属键），run 内的槽按 `list_upstream_pull_pendings`
+/// 枚举；无在飞 run（任务已终态 / 普通本地会话）→ 空列表（常态出口，不报错）——终态时
+/// `drop_active_run` 已清全部槽，空列表与「无待决」一致。
+#[tauri::command]
+pub async fn list_upstream_pull_pendings(
+    shared: State<'_, SharedMulticaState>,
+    task_id: String,
+) -> CommandResult<Vec<MulticaUpstreamPullPendingVm>> {
+    let guard = shared.lock().map_err(|_| {
+        command_error(MulticaError::NetworkFailed("multica state lock poisoned".into()).into())
+    })?;
+    // task_id → 在飞 run → run 级槽枚举（与 decide_upstream_pull 同一归属口径）。
+    let Some((_, run)) = guard.find_active_run_by_task(&task_id) else {
+        return Ok(Vec::new());
+    };
+    let pendings = guard
+        .list_upstream_pull_pendings(&run.local_run_id)
+        .into_iter()
+        .map(|row| MulticaUpstreamPullPendingVm {
+            task_id: task_id.clone(),
+            run_id: run.local_run_id.clone(),
+            node_id: row.node_id,
+            parent_issue_id: row.parent_issue_id,
+            task_title: run.title.clone(),
+            retried: row.retried,
+        })
+        .collect();
+    Ok(pendings)
 }
 
 // ===== 状态对账 + 任务重新执行（multica 任务重试改造）=====
