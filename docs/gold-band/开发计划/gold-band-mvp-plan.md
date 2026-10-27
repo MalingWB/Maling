@@ -8,12 +8,20 @@
 - 红绿证据：Rust 最小测试在原实现上因 VM 为 `None` 失败，Web 空历史/失败 readiness 用例在原实现上返回 false；复核新增“active + 旧 `turnError` 仍等待”的最小用例，原实现返回 true。修复后 Rust `acp_session_vm_` 过滤用例 5 项、ACP 相关 5 个 Web 文件 300 项通过；DOM 固定未物化失败首个响应立即显示错误且不再 readiness 重试。`cargo fmt --all -- --check`、桌面端 tests 编译、Web 生产构建和 diff 校验通过；内置 iab 验证 Direct settled、active、Workflow 暂停及 720px 响应式，精确空失败场景未打包真实 EXE。
 - 过度设计与性能评审：复用既有 snapshot lifecycle、Attempt VM、分页 `eventPage.total`、readiness 重试和 shell 判定，只增加常数级字段判断与两个职责明确的前端 helper；不新增 DTO、持久字段、状态机、缓存、队列、依赖或全量扫描。失败场景会提前结束重复查询，正常分页 I/O、事件窗口上限和 React 订阅范围不变，无需新增 benchmark。
 
+## 2026-10-20 WB 更新清单遵循渠道下载地址
+
+- 根因：GitHub 发布汇总入口读取了渠道产品名，却未将 `releaseBaseUrl` 传给清单生成器，导致 WB 清单沿用 GitHub 下载 URL；原回归测试也固定了错误地址。自定义地址分支另有版本筛选缺陷：同目录出现带版本号的签名包时，遗漏不含版本号的 macOS updater archive。
+- 实现：两条发布 workflow 已共用 `generate-release-assets.mjs`，该入口显式传递渠道 `releaseBaseUrl`，优先于环境变量；未配置渠道下载地址时保留 GitHub 仓库/tag 默认规则。生成器保留当前版本安装包和无版本号的原生更新包，继续排除旧版本安装包。七个语言 manifest 与 `latest.json` 使用相同规则，安装包及签名内容不变。
+- 红绿证据：修改实现前，3 项测试分别复现 GitHub URL 错误和两种调用路径遗漏 macOS 平台；修复后 51 项发布相关 Node 测试通过，覆盖 WB 渠道地址优先级、四平台完整性、七语言与默认清单、其他版本排除，以及 default 渠道的 GitHub 地址和现有关键更新契约。相关测试继续由既有 PR checks 执行。
+- 发布边界：修复只影响之后生成的清单，已有 Release 附件需使用修复后的工具重新生成并上传；仅修正清单下载地址不需要重新编译或签名安装包。WB 内网分发仍需部署清单引用的安装包及 `latest.json`。
+- 过度设计与性能评审：复用现有渠道配置、生成器和 Node 测试，不增加依赖、工作流或客户端状态。只扫描本次 release 的资产文件名并读取签名/发布说明，新增筛选为线性处理，不读取安装包正文，不影响客户端运行性能。
+
 ## 2026-10-19 GitHub Release 统一构建 WB 跨平台安装包
 
 - 根因：GitHub 两条发布 workflow 固定使用 default，而 WB 渠道又将 `bundleTargets` 限定为 Windows NSIS，混合了产品渠道与打包平台。用户要求保留跨平台 GitHub Release，全部产出 WB/MALING 包。
 - 实现：自动发布和手工 tag 重建统一设置 `GOLD_BAND_RELEASE_CHANNEL=wb`，保留 Windows x64、Linux x64、macOS x64/arm64 四组 runner；移除 WB 的 NSIS 专属覆盖，继承 Tauri 原生 `all` 平台目标。两条流程共用 `prepare-release-build.mjs` 校验签名与 metrics key、生成渠道 overlay 和 Release 名称，正式版本严格来自 release tag。本地 WB 时间戳版本入口不变；本地非 default 渠道仅在 Windows 通过 CLI 选择 NSIS，避免 WiX 不支持时间戳/提交号版本，Linux/macOS 使用原生目标。
 - 凭据：Actions Secrets 使用 `WB_TAURI_SIGNING_PRIVATE_KEY`、可选 `WB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 和 `GOLD_BAND_METRICS_API_KEY`；macOS 继续复用已有可选 Apple 证书和公证配置。私钥必须与 WB 渠道公钥配对。
-- 产物：Tauri 上传本渠道安装包及更新签名；后处理复用现有七语言 manifest、关键更新元数据和校验和生成器，Release 正文产品名从渠道配置读取。停止向 WB Release 上传指向上游的 macOS 安装辅助脚本。GitHub 下载 URL 使用当前仓库/tag；WB 客户端的内网更新地址、MCP、metrics、Multica 与渠道身份仍由 WB 配置提供，不因附件托管位置改变。
+- 产物：Tauri 上传本渠道安装包及更新签名；后处理复用现有七语言 manifest、关键更新元数据和校验和生成器，Release 正文产品名从渠道配置读取。停止向 WB Release 上传指向上游的 macOS 安装辅助脚本。GitHub 附件托管在当前仓库/tag；清单内下载 URL 按 2026-10-20 修正后的渠道 `releaseBaseUrl` 契约生成。WB 客户端的内网更新地址、MCP、metrics、Multica 与渠道身份仍由 WB 配置提供，不因附件托管位置改变。
 - 红绿证据：原实现上 6 项接口/工作流断言失败（仅 NSIS、两条 workflow 渠道不匹配、Gold Band 正文、两条上传命令携带上游脚本）；复核时新增本地时间戳版本测试并观察到 Windows 缺少 NSIS 选择的失败，再将约束移到本地构建入口。修复后相关 52 项 Node 测试通过，覆盖四平台签名与下载地址、缺失/空白凭据在写入前失败、tag 版本、可选 Apple 签名以及原有渠道行为。发布契约测试已纳入 PR checks。
 - 验收边界：本机完成配置与生成器接口验收，尚未在 GitHub 使用真实密钥执行四平台生产打包；发布用的七语言日志及 `release.json` 仍必须进入目标 release commit。仓库中既有未提交版本、Catalog 和日志改动不属于本次变更。
 - 过度设计与性能评审：复用 release-please、tauri-action、Tauri 原生平台打包及现有渠道/清单生成器，只增加两条 workflow 共用的构建准备入口，不新增依赖、运行时状态或第二套发布流程；runner 数量仍为 4，校验为固定字段读取，产物处理范围仍局限本次 release，客户端性能无新增影响。
