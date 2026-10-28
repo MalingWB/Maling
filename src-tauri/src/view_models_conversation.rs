@@ -7799,7 +7799,7 @@ mod tests {
                 display_text: "persist after stop".to_string(),
                 quotes: Vec::new(),
                 role: None,
-                workspace_files: vec![gold_band::provider::PromptWorkspaceFileRef {
+                workspace_files: vec![gold_band::provider::PromptWorkspaceFileRef::Workspace {
                     project_id: "project-001".to_string(),
                     relative_path: "src/a.ts".to_string(),
                 }],

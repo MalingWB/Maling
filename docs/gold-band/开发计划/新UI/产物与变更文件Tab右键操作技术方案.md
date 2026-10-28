@@ -268,3 +268,13 @@ revealRightWorkspaceFile(source: PromptFileRef): Promise<void>;
 - 内置浏览器导航超时，且无已连接 Chrome，按项目工具顺序改用独立 agent-browser 会话。夹具使用真实 `openWorkspaceFileReference`、文件面板、CodeMirror、Composer bridge 与引用 chip，仅替换文件 API；接收工作树设为 released。正常宽度下 Git 再引用保留来源 worktree；390×760 窄窗口下 turn-file 再引用保留完整 locator，长路径截断且按钮可见、无页面横向溢出；切换目录后拉宽到 1200×760，来源正文、引用 chip 和已收回目录状态均保留。本次未重新打包或验证真实 EXE，也未向远端 Agent 发送消息。
 - 过度设计与性能复核：复用已有根校验、来源类型、identity 和 UI 组件，没有新增持久字段、状态、缓存或依赖。预览仅增加一次根目录 metadata 检查，引用继续只传轻量来源；没有新增全量扫描、正文读取或订阅范围。现有 `state-lifecycle-and-data-integrity.md` 已覆盖完整作用域和软链接边界，无需新增经验规则。
 - 已关闭本轮独立浏览器会话与内置浏览器测试页，停止 1420 端口 Vite，删除临时验证入口与截图；保留用户原有验证页和无关工作区改动。
+
+### 10.7 Rust 测试调用点迁移补齐（2026-10-28）
+
+- 审查发现来源联合迁移遗漏 5 处旧 struct 构造、2 处字段访问，以及 1 处工作区根初始化。修复前核心 prompt 集成测试编译报 `E0574`、`E0063`；桌面测试编译报 `E0574`、`E0615`、`E0609`，阻断 CI 的 workspace 全部目标检查。
+- 将任务 prompt、定时任务、定时续聊和停止会话队列测试统一迁移为 `PromptWorkspaceFileRef::Workspace`，为只测试普通工作空间文件的根补充 `paths: None`；续聊接口测试改为断言完整引用集合，固定来源变体、project 与相对路径保留契约。
+- 核心回归：`cargo test -p gold-band --test provider_prompt_bundle` 从编译失败转为 38 项通过。
+- 桌面回归：`cargo test -p gold-band-desktop --bin gold-band-desktop workspace_file` 从测试目标编译失败转为 78 项通过、2 项按原有标记跳过；`cargo test -p gold-band-desktop --bin gold-band-desktop direct_conversation_run_vm_keeps_prompt_queue_on_stopped_leaf` 的停止会话队列回归 1 项通过。
+- `cargo fmt --all -- --check` 与 `git diff --check` 通过；全局检索确认旧 struct 构造和直接字段访问已清除。桌面测试仍有 2 项既有未使用方法警告。
+- 与 CI 相同的 `cargo clippy --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods` 通过，核心与桌面的所有目标均不再出现此次类型迁移导致的编译错误；输出仍包含既有未使用项警告。
+- 过度设计与性能复核：仅补齐现有测试调用点和文档，没有新增运行时抽象、依赖、状态、缓存、I/O 或渲染成本。复用既有接口测试，无需新增专用检查框架。

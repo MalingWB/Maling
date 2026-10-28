@@ -4054,7 +4054,7 @@ mod tests {
             workflow_authoring: None,
             first_prompt_hidden_sections: None,
             role: None,
-            workspace_files: vec![gold_band::provider::PromptWorkspaceFileRef {
+            workspace_files: vec![gold_band::provider::PromptWorkspaceFileRef::Workspace {
                 project_id: "project-b".to_string(),
                 relative_path: "src/lib.rs".to_string(),
             }],
@@ -4072,9 +4072,13 @@ mod tests {
         assert_eq!(prompt.quotes[0].text, "frozen");
 
         assert_eq!(prompt.display_text, "检查状态");
-        assert_eq!(prompt.workspace_files.len(), 1);
-        assert_eq!(prompt.workspace_files[0].project_id, "project-b");
-        assert_eq!(prompt.workspace_files[0].relative_path, "src/lib.rs");
+        assert_eq!(
+            prompt.workspace_files,
+            vec![gold_band::provider::PromptWorkspaceFileRef::Workspace {
+                project_id: "project-b".to_string(),
+                relative_path: "src/lib.rs".to_string(),
+            }]
+        );
     }
 
     #[test]
