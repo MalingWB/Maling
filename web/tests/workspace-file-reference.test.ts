@@ -1,16 +1,42 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { resolveWorkspaceFileLink } from '@/api';
-import { fileWorkspaceResourceKey } from '@/components/workspace/right-workspace-context';
+import { resolveRightWorkspaceFileTarget, resolveWorkspaceFileLink } from '@/api';
+import { createInitialRightWorkspaceState, fileWorkspaceResourceKey, projectWorkspaceTabRoots, rightWorkspaceReducer, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
+import type { PromptWorkspaceFileRef } from '@/types';
 import { openWorkspaceFileReference } from '@/lib/workspace-file-reference';
 
 vi.mock('@/api', () => ({
   resolveWorkspaceFileLink: vi.fn(),
+  resolveRightWorkspaceFileTarget: vi.fn(),
 }));
 
 describe('workspace file reference opening', () => {
   beforeEach(() => {
     vi.mocked(resolveWorkspaceFileLink).mockReset();
+    vi.mocked(resolveRightWorkspaceFileTarget).mockReset();
+  });
+
+  const fixedSources: PromptWorkspaceFileRef[] = [
+    { kind: 'git-file', projectId: 'project-1', workspacePath: 'D:/source', relativePath: 'src/a.ts' },
+    { kind: 'turn-file', locator: { projectId: 'project-1', taskId: 'task-source', taskUuid: 'uuid-source',
+      runId: 'run-1', roundId: 'round-1', nodeId: 'node-1', attemptId: 'attempt-1', branchId: 'main' },
+      changeSetId: 'set-1', changeId: 'change-1' },
+  ];
+  it.each(fixedSources)('opens a $kind from its own root when the receiving worktree is unavailable', async (source) => {
+    const locator = { projectId: 'project-1', canonicalPath: 'D:/source/src/a.ts', relativePath: 'src/a.ts', scope: 'workspace' as const };
+    vi.mocked(resolveRightWorkspaceFileTarget).mockResolvedValue({ source, projectId: 'project-1', name: 'a.ts',
+      absolutePath: locator.canonicalPath, relativePath: locator.relativePath, relativeBase: 'workspace',
+      workspacePath: 'D:/source', byteLength: 1, mimeType: 'text/plain', availability: { kind: 'available' } });
+    vi.mocked(resolveWorkspaceFileLink).mockResolvedValue({ locator, target: null, externalAccessGrant: null });
+    let state = createInitialRightWorkspaceState();
+    const open = vi.fn((resource: RightWorkspaceResource) => { state = rightWorkspaceReducer(state, { type: 'open', resource }); });
+    await openWorkspaceFileReference({ source, projectId: 'project-1', relativePath: 'src/a.ts' }, 'scope', open, null);
+    expect(resolveWorkspaceFileLink).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: 'D:/source' }, locator.canonicalPath);
+    const released = { kind: 'unavailable', reason: 'released', workspacePath: 'D:/receiver' } as const;
+    state = projectWorkspaceTabRoots(state, released);
+    expect(state.tabs[0]).toMatchObject({ root: released, browseMain: false, selectedFile: { locator, workspacePath: 'D:/source', source } });
+    state = projectWorkspaceTabRoots(state, { kind: 'available', workspacePath: 'D:/receiver-restored' });
+    expect(state.tabs[0]).toMatchObject({ root: { workspacePath: 'D:/receiver-restored' }, selectedFile: { locator, workspacePath: 'D:/source', source } });
   });
 
   it('resolves a lightweight reference before creating a workspace file resource', async () => {

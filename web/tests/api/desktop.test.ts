@@ -22,6 +22,19 @@ import { desktopApi } from '../../src/api/desktop';
 import { invokeCommand } from '../../src/api/shared';
 
 describe('desktopApi', () => {
+  it('passes a controlled file source to metadata and reveal without sending a local absolute path', async () => {
+    const source = { kind: 'git-file' as const, projectId: 'project-a', workspacePath: null, relativePath: 'src/a.ts' };
+    await desktopApi.resolveRightWorkspaceFileTarget(source);
+    await desktopApi.revealRightWorkspaceFile(source);
+    expect(invokeCommand).toHaveBeenCalledWith('resolve_right_workspace_file_target', { source });
+    expect(invokeCommand).toHaveBeenCalledWith('reveal_right_workspace_file', { source });
+  });
+  it('reads only the selected conversation summary with its canonical identity', async () => {
+    await desktopApi.getConversationTaskSummary('project-a', 'task-001', 'uuid-a');
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_task_summary', {
+      projectId: 'project-a', taskId: 'task-001', taskUuid: 'uuid-a',
+    });
+  });
   beforeEach(() => {
     vi.mocked(invokeCommand).mockClear();
     openerMocks.openUrl.mockClear();

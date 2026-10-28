@@ -1091,6 +1091,7 @@ pub struct ConversationMissingItemVm {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSearchResultVm {
     pub project_id: String,
+    pub task_uuid: Option<String>,
     pub workspace_path: String,
     pub workspace_name: String,
     pub task_id: String,
@@ -7714,6 +7715,28 @@ mod tests {
         assert_eq!(task.task_id, "task-broken-run");
         assert!(task.latest_run.is_none());
         assert!(task.runs.is_empty());
+    }
+
+    #[test]
+    fn conversation_search_target_summary_is_lightweight_and_preserves_identity() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        let row = conversation_task_row_vm(&app, "project-001", "task-046", false, None).unwrap();
+        assert_eq!(row.project_id, "project-001");
+        assert_eq!(row.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
+        assert!(row.latest_run.is_some());
+        assert!(row.runs.is_empty());
+        assert_eq!(row.run_history_status, "not-loaded");
+        let json = serde_json::to_value(&row).unwrap();
+        for field in [
+            "sessionTree",
+            "selectedSession",
+            "workflowJson",
+            "requirement",
+        ] {
+            assert!(json.get(field).is_none(), "summary must not load {field}");
+        }
     }
 
     #[test]

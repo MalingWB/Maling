@@ -2808,6 +2808,8 @@ export interface ConversationRunSummaryVm {
 }
 
 export interface ConversationSidebarVm {
+  // A single search target outside the regular paging window; its row stays in tasksByWorkspace.
+  locatedTask?: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'> | null;
   loadStatus: ConversationLoadStatus;
   workspaces: ConversationWorkspaceVm[];
   pinRefs: PinRef[];
@@ -2952,9 +2954,24 @@ export interface ConversationPromptInput {
   workspaceFiles?: PromptWorkspaceFileRef[];
 }
 
-export interface PromptWorkspaceFileRef {
+export type PromptWorkspaceFileRef =
+  | { kind: 'workspace'; projectId: string; relativePath: string }
+  | { kind: 'artifact'; locator: TurnFileLocatorVm & { taskUuid?: string | null }; name: string }
+  | { kind: 'turn-file'; locator: TurnFileLocatorVm & { taskUuid?: string | null }; changeSetId: string; changeId: string }
+  | { kind: 'turn-attachment'; locator: TurnFileLocatorVm & { taskUuid?: string | null }; changeSetId: string; attachmentId: string }
+  | { kind: 'git-file'; projectId: string; workspacePath: string | null; relativePath: string };
+
+export interface RightWorkspaceFileTargetVm {
+  source: PromptWorkspaceFileRef;
   projectId: string;
-  relativePath: string;
+  name: string;
+  absolutePath: string | null;
+  relativePath: string | null;
+  relativeBase: 'attempt' | 'workspace' | 'attachment' | null;
+  workspacePath: string | null;
+  byteLength: number | null;
+  mimeType: string;
+  availability: { kind: 'available' } | { kind: 'unavailable'; code: string; params: Record<string, unknown> };
 }
 
 export interface ConversationPromptQueueVm {
@@ -3280,6 +3297,7 @@ export interface WorkflowRepairTarget {
 
 export interface ConversationSearchResultVm {
   projectId: string;
+  taskUuid?: string | null;
   workspacePath: string;
   workspaceName: string;
   taskId: string;

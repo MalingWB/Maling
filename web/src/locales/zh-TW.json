@@ -633,6 +633,8 @@
       "switchToTreeView": "切換為樹狀目錄",
       "copyAbsolutePath": "複製絕對路徑",
       "copyRelativePath": "複製相對路徑",
+      "relativeToRunDirectory": "相對於執行目錄",
+      "relativeToAttachmentDirectory": "相對於附件目錄", "relativeToSourceWorkspace": "相對於來源工作目錄",
       "openWorkspaceFile": "開啟工作區檔案",
       "referenceToConversation": "引用到對話",
       "removeWorkspaceReference": "移除檔案引用",

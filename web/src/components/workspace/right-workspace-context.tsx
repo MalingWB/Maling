@@ -100,6 +100,8 @@ export type FileWorkspaceResource = RightWorkspaceResourceBase & {
   projectId: string;
   /** Root the file was resolved in; `null` is the project root. */
   workspacePath: string | null;
+  /** Explicit file provenance is independent of the receiving session's directory. */
+  source?: Extract<import('@/types').PromptWorkspaceFileRef, { kind: 'git-file' | 'turn-file' | 'turn-attachment' }>;
   locator: import('@/types').WorkspaceFileLocatorVm;
   target: import('@/types').FileTargetLocationVm | null;
   targetRevision: number;
@@ -876,6 +878,7 @@ export function projectWorkspaceTabRoots(
     changed = true;
     if (tab.kind === 'source-control') return { ...tab, root, browseMain };
     const selectedFile = tab.selectedFile
+      && !tab.selectedFile.source
       && root.kind === 'available'
       && !sameWorkspacePath(tab.selectedFile.workspacePath, root.workspacePath)
       ? null

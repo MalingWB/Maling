@@ -10,9 +10,81 @@ import {
   applyConversationTaskPage,
   beginConversationSidebarBootstrap,
   createEmptyConversationSidebar,
+  clearConversationLocatedTask,
+  locateConversationSidebarTask,
 } from '@/lib/conversation-sidebar-loading';
+import { applyConversationTaskSnapshot } from '@/lib/conversation-task-state';
+import { applyConversationSidebarTaskActivity, applyConversationSidebarTerminalResultUpdate } from '@/lib/conversation-sidebar-activity';
 
 describe('conversation sidebar progressive loading', () => {
+  it.each(['activity', 'terminal', 'snapshot'] as const)('retains a located conversation after renewed %s and navigation away', (update) => {
+    const tasks = Array.from({ length: CONVERSATION_SIDEBAR_TASK_WINDOW }, (_, index) => ({
+      projectId: 'a', taskId: `task-${200 - index}`, taskUuid: `uuid-${index}`, title: 'Recent',
+      autoTitle: false, runMode: 'direct' as const, runs: [], runHistoryStatus: 'not-loaded' as const,
+      pinned: false, lastActivityAt: '2026-10-27T00:00:00Z',
+    }));
+    const target = { ...tasks[0], taskId: 'task-001', taskUuid: 'uuid-old', lastActivityAt: '2026-01-01T00:00:00Z' };
+    const located = locateConversationSidebarTask({
+      ...createEmptyConversationSidebar(), workspaces: [{ projectId: 'a', name: 'A', workspacePath: 'D:/A' }],
+      tasksByWorkspace: { a: tasks },
+    }, target);
+    const taskActivityAt = '2026-10-28T00:00:00Z';
+    const active = update === 'activity'
+      ? applyConversationSidebarTaskActivity(located, 'a', target.taskId, { phase: 'prompt', stopping: false }, taskActivityAt)
+      : update === 'terminal'
+        ? applyConversationSidebarTerminalResultUpdate(located, { projectId: 'a', taskId: target.taskId, unreadTerminalResult: null, taskActivityAt })
+        : applyConversationTaskSnapshot(located, { ...target, lastActivityAt: taskActivityAt });
+    const left = clearConversationLocatedTask(active, tasks[0]);
+    expect(left.tasksByWorkspace.a.some((task) => task.taskUuid === target.taskUuid)).toBe(true);
+    expect(left.tasksByWorkspace.a[0].taskUuid).toBe(target.taskUuid);
+    expect(left.locatedTask).toBeNull();
+    expect(left.tasksByWorkspace.a).toHaveLength(CONVERSATION_SIDEBAR_TASK_WINDOW);
+  });
+
+  it.each([undefined, '2025-01-01T00:00:00Z', '2026-01-01T00:00:00Z'])('keeps temporary placement without newer activity (%s)', (activityAt) => {
+    const target = { projectId: 'a', taskId: 'old', taskUuid: 'uuid-old', title: 'Old', autoTitle: false,
+      runMode: 'direct' as const, pinned: false, runs: [], lastActivityAt: '2026-01-01T00:00:00Z' };
+    const located = locateConversationSidebarTask({ ...createEmptyConversationSidebar(),
+      workspaces: [{ projectId: 'a', name: 'A', workspacePath: 'D:/A' }],
+    }, target);
+    const next = applyConversationSidebarTaskActivity(located, 'a', 'old', { phase: 'prompt', stopping: false }, activityAt);
+    expect(next.locatedTask).toEqual(located.locatedTask);
+    expect(clearConversationLocatedTask(next).tasksByWorkspace.a).toEqual([]);
+  });
+
+  it('keeps a located old row outside the regular 120-row paging window', () => {
+    const tasks = Array.from({ length: 120 }, (_, index) => ({
+      projectId: 'a', taskId: `task-${200 - index}`, taskUuid: `uuid-${index}`, title: 'Recent',
+      autoTitle: false, runMode: 'direct' as const, runs: [], runHistoryStatus: 'not-loaded' as const, pinned: false,
+    }));
+    const target = { ...tasks[0], taskId: 'task-001', taskUuid: 'uuid-old', title: 'Old' };
+    const sidebar = {
+      ...createEmptyConversationSidebar(),
+      workspaces: [{ projectId: 'a', name: 'A', workspacePath: 'D:/A' }],
+      tasksByWorkspace: { a: [...tasks, target] },
+      locatedTask: { projectId: 'a', taskId: target.taskId, taskUuid: target.taskUuid },
+    };
+    const next = applyConversationTaskPage(sidebar, { projectId: 'a', tasks: tasks.slice(0, 24), nextCursor: 'cursor', errors: [] }, false);
+    expect(next.tasksByWorkspace.a.some((task) => task.taskUuid === target.taskUuid)).toBe(true);
+    expect(next.tasksByWorkspace.a).toHaveLength(121);
+    expect(next.workspaceTaskPages.a.nextCursor).toBeNull();
+    expect(clearConversationLocatedTask(next).tasksByWorkspace.a).toHaveLength(120);
+    expect(clearConversationLocatedTask(next, target)).toBe(next);
+    expect(clearConversationLocatedTask(next, tasks[0]).tasksByWorkspace.a).toHaveLength(120);
+    const updated = applyConversationTaskSnapshot(next, { ...target, title: 'Renamed target' });
+    expect(updated.tasksByWorkspace.a.find((task) => task.taskId === target.taskId)?.title).toBe('Renamed target');
+    const withNewTask = applyConversationTaskSnapshot(updated, { ...tasks[0], taskId: 'task-999', taskUuid: 'uuid-new' });
+    expect(withNewTask.tasksByWorkspace.a).toHaveLength(121);
+    expect(withNewTask.tasksByWorkspace.a.some((task) => task.taskUuid === target.taskUuid)).toBe(true);
+    const secondTarget = { ...target, taskId: 'task-002', taskUuid: 'uuid-second' };
+    const replaced = locateConversationSidebarTask(updated, secondTarget);
+    expect(replaced.tasksByWorkspace.a).toHaveLength(121);
+    expect(replaced.tasksByWorkspace.a.some((task) => task.taskId === target.taskId)).toBe(false);
+    const normalPage = applyConversationTaskPage(replaced, { projectId: 'a', tasks: [secondTarget], nextCursor: 'next', errors: [] }, false);
+    expect(normalPage.locatedTask).toBeNull();
+    expect(normalPage.tasksByWorkspace.a.filter((task) => task.taskId === secondTarget.taskId)).toHaveLength(1);
+    expect(clearConversationLocatedTask(normalPage)).toBe(normalPage);
+  });
   it('distinguishes not-loaded from ready and publishes workspace identity first', () => {
     const initial = createEmptyConversationSidebar();
     expect(initial.loadStatus).toBe('not-loaded');

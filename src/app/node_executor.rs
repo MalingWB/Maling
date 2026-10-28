@@ -1670,7 +1670,7 @@ mod tests {
                 },
             }],
             role: None,
-            workspace_files: vec![crate::provider::PromptWorkspaceFileRef {
+            workspace_files: vec![crate::provider::PromptWorkspaceFileRef::Workspace {
                 project_id: app.paths.project_id.clone(),
                 relative_path: "src/lib.rs".to_string(),
             }],

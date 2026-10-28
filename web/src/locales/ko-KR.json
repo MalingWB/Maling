@@ -633,6 +633,8 @@
       "switchToTreeView": "폴더 트리 보기로 전환",
       "copyAbsolutePath": "절대 경로 복사",
       "copyRelativePath": "상대 경로 복사",
+      "relativeToRunDirectory": "실행 디렉터리 기준",
+      "relativeToAttachmentDirectory": "첨부 디렉터리 기준", "relativeToSourceWorkspace": "원본 작업 디렉터리 기준",
       "openWorkspaceFile": "워크스페이스 파일 열기",
       "referenceToConversation": "대화에 참조",
       "removeWorkspaceReference": "파일 참조 제거",

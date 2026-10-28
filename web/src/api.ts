@@ -1,4 +1,6 @@
 import { getRuntimeApi } from './api/client';
+export function resolveRightWorkspaceFileTarget(source: import('./types').PromptWorkspaceFileRef) { return getRuntimeApi().resolveRightWorkspaceFileTarget(source); }
+export function revealRightWorkspaceFile(source: import('./types').PromptWorkspaceFileRef) { return getRuntimeApi().revealRightWorkspaceFile(source); }
 import { AGENT_MODEL_CONFIG_UPDATED_EVENT } from './lib/agent-diagnostic-update';
 import type { RuntimeApi } from './api/client';
 import type { CreateWorkspaceEntryInput, FeishuScanMode, ResolvedColorScheme, WorkspaceRootRef } from './types';
@@ -743,6 +745,10 @@ export function getConversationSidebarBootstrap() {
 
 export function getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number) {
   return getRuntimeApi().getConversationTaskPage(projectId, cursor, limit);
+}
+
+export function getConversationTaskSummary(projectId: string, taskId: string, taskUuid?: string | null) {
+  return getRuntimeApi().getConversationTaskSummary(projectId, taskId, taskUuid);
 }
 
 export function getConversationPinnedTaskPage(cursor?: string | null, limit?: number) {

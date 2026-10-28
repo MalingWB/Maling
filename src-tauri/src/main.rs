@@ -12,6 +12,7 @@ mod builtin_mcp;
 mod channel;
 mod commands;
 mod commands_conversation;
+mod commands_file_references;
 mod conversation_attention;
 mod conversation_workspace;
 mod desktop_lifecycle;
@@ -89,18 +90,18 @@ use commands_conversation::{
     delete_conversation_task, delete_scheduled_execution_history, delete_scheduled_task,
     get_conversation_execution_plan, get_conversation_pinned_task_page, get_conversation_run,
     get_conversation_run_mode, get_conversation_run_summary_page,
-    get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_workspaces,
-    get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
-    list_scheduled_execution_history, list_scheduled_tasks, materialize_conversation_attachments,
-    pin_conversation, preflight_conversation_execution_plan_save,
-    recover_conversation_execution_plan_operation, remove_conversation_workspace,
-    reorder_pinned_conversations, rerun_conversation_task, run_scheduled_task_now,
-    save_conversation_execution_plan, save_conversation_preference, save_conversation_run_mode,
-    save_desktop_ui_mode, save_last_conversation_workspace, save_scheduled_runtime_settings,
-    search_conversation_tasks, set_conversation_resident, set_scheduled_task_enabled,
-    show_conversation_attachment, show_conversation_message_attachment, stat_attachment_files,
-    sync_conversation_workspace, unpin_conversation, update_scheduled_task, update_task_metadata,
-    validate_conversation_create,
+    get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_task_summary,
+    get_conversation_workspaces, get_scheduled_runtime_settings, get_scheduled_task,
+    get_scheduled_task_diagnostics, list_scheduled_execution_history, list_scheduled_tasks,
+    materialize_conversation_attachments, pin_conversation,
+    preflight_conversation_execution_plan_save, recover_conversation_execution_plan_operation,
+    remove_conversation_workspace, reorder_pinned_conversations, rerun_conversation_task,
+    run_scheduled_task_now, save_conversation_execution_plan, save_conversation_preference,
+    save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
+    save_scheduled_runtime_settings, search_conversation_tasks, set_conversation_resident,
+    set_scheduled_task_enabled, show_conversation_attachment, show_conversation_message_attachment,
+    stat_attachment_files, sync_conversation_workspace, unpin_conversation, update_scheduled_task,
+    update_task_metadata, validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
@@ -423,6 +424,8 @@ fn run() -> anyhow::Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands_file_references::resolve_right_workspace_file_target,
+            commands_file_references::reveal_right_workspace_file,
             memory::read_project_memory,
             memory::write_project_memory,
             get_app_bootstrap,
@@ -604,6 +607,7 @@ fn run() -> anyhow::Result<()> {
             save_desktop_ui_mode,
             get_conversation_sidebar_bootstrap,
             get_conversation_task_page,
+            get_conversation_task_summary,
             get_conversation_pinned_task_page,
             get_conversation_run_summary_page,
             list_scheduled_tasks,
