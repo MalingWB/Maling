@@ -4,9 +4,10 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import '@/i18n';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import type { FileBrowserWorkspaceResource } from '@/components/workspace/right-workspace-context';
+import type { FileBrowserWorkspaceResource, FileWorkspaceResource } from '@/components/workspace/right-workspace-context';
+import { createUserPromptSubmission } from '@/lib/composer-context';
 
-const mocks = vi.hoisted(() => ({ openResource: vi.fn() }));
+const mocks = vi.hoisted(() => ({ openResource: vi.fn(), reference: vi.fn() }));
 vi.mock('@/api', async (original) => ({
   ...await original<typeof import('@/api')>(),
   readFileResource: vi.fn(),
@@ -17,6 +18,11 @@ vi.mock('@/components/workspace/right-workspace-context', async (original) => ({
   ...await original<typeof import('@/components/workspace/right-workspace-context')>(),
   useRightWorkspace: () => ({ openResource: mocks.openResource }),
   useRightWorkspaceCommands: () => ({ scopeKey: 'scope', openResource: mocks.openResource }),
+}));
+vi.mock('@/components/workspace/workspace-file-reference-bridge', async (original) => ({
+  ...await original<typeof import('@/components/workspace/workspace-file-reference-bridge')>(),
+  useWorkspaceFileReferenceCommands: () => ({ available: true, addWorkspaceFileRef: mocks.reference }),
+  useComposerQuoteCommand: () => null,
 }));
 vi.mock('@/components/workspace/use-workspace-responsive-state', () => ({
   useWorkspaceResponsiveState: () => ({ ref: () => {}, responsiveState: { split: true, widthAtTransition: 900 }, currentWidth: () => 900 }),
@@ -71,5 +77,33 @@ it('renders the fixed source file beside the unavailable receiving directory wit
     const browse = [...container.querySelectorAll('button')].find((button) => button.textContent?.includes('浏览主工作区'))!;
     await act(async () => browse.click());
     expect(mocks.openResource).toHaveBeenCalledWith(expect.objectContaining({ browseMain: true, selectedFile }));
+  } finally { await act(async () => root.unmount()); }
+});
+
+const fixedSources: NonNullable<FileWorkspaceResource['source']>[] = [
+  selectedFile.source,
+  { kind: 'turn-file', locator: { projectId: 'p', taskId: 'task-source', taskUuid: 'uuid-source',
+    runId: 'run', roundId: 'round', nodeId: 'node', attemptId: 'attempt', branchId: 'main',
+    outerNodeId: 'outer-node', outerAttemptId: 'outer-attempt' }, changeSetId: 'set', changeId: 'change' },
+];
+
+it.each(fixedSources)('preserves the $kind source when referencing the preview header and submitting', async (source) => {
+  vi.mocked(readFileResource).mockResolvedValue({
+    kind: 'text', locator: selectedFile.locator, name: 'a.ts', content: 'original source',
+    editable: true, language: 'typescript', revision: { contentHash: 'source', byteLength: 15, modifiedAtNs: '1' },
+    externalAccessGrant: null,
+  });
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<TooltipProvider><FileWorkspacePanel
+      resource={{ ...resource, selectedFile: { ...selectedFile, source } }} layout={layout}
+    /></TooltipProvider>));
+    const referenceButton = container.querySelector<HTMLButtonElement>('[data-file-reference-to-conversation]');
+    expect(referenceButton).not.toBeNull();
+    await act(async () => referenceButton!.click());
+    expect(mocks.reference).toHaveBeenCalledWith(expect.objectContaining({ source }), { isDocked: false });
+    const reference = mocks.reference.mock.calls[0][0];
+    expect(createUserPromptSubmission('', [], null, [reference]).workspaceFiles).toEqual([source]);
   } finally { await act(async () => root.unmount()); }
 });

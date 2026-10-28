@@ -738,7 +738,7 @@ impl TurnFileStore {
         attachment_id: &str,
     ) -> Result<Utf8PathBuf> {
         let recorded_relative =
-            self.recorded_attachment_relative_path(change_set, attachment_id)?;
+            self.attachment_relative_path_from_change_set(change_set, attachment_id)?;
         let relative = Utf8Path::new(&recorded_relative);
         let root = self.attempt_dir.join("attachments");
         let candidate = root.join(relative);

@@ -60,6 +60,7 @@
 - 权威来源是 `turn-attachment` Tab 的完整 attempt locator、branch、changeSetId 和 attachmentId；名称与展示路径只作为 UI 投影。
 - 菜单与执行解析只读取 finalized change set metadata，按 attachmentId 找到 manifest 记录的相对路径，再限制在来源 attempt 的 `attachments/` 根内 canonicalize。该读取不迁移旧 schema、不重建 journal、不读取 CAS。
 - 相对路径以附件目录为基准；缺失、目录、路径穿越、附件根 symlink 或 symlink escape 时保留可复制的记录路径并禁用揭示 / 引用，不回退 attempt 其他文件或项目根。
+- 附件预览必须与 metadata 入口共用附件根 symlink / Windows junction 校验，不能仅在菜单解析时拒绝根链接。正文解析在共享校验后继续检查目标 canonical path 位于附件根内，覆盖子目录链接越界。
 
 ### 3.4 Git 变更文件
 
@@ -102,6 +103,7 @@ type ComposerFileRef = {
 - `workspace` 保留现有“按接收会话工作目录解析”的语义；新来源显式指向原 Tab 对应的资源。Git 来源保留本地根与路径，不把比较 OID 写成文件版本引用。
 - 新来源复用现有 canonical locator/change identity/workspacePath，没有新增 aggregate、持久根 ID、revision 或授权 token。新增来源分支只解决现有 `projectId + relativePath` 无法表达的两个不变量：运行目录归属和固定来源工作位置。
 - chip 的展示路径和一次解析结果属于 UI 投影，不作为提交读取依据。提交只携带 `source`；按来源身份先去重，执行时再按解析后的 canonical path 去重。
+- 固定来源文件从消息 chip 打开后，预览标题栏再次引用沿用 `FileWorkspaceResource.source`，使用现有来源 identity 生成 chip ID；不得降级为按接收会话解析的 workspace 引用。普通目录文件仍使用原有 workspace 语义，不扩大任意外部文件的引用权限。
 - 普通工作空间引用的生产者与消费者统一使用联合类型，不保留另一套旧元素解析 fallback。开发阶段不为旧草稿或旧持久格式增加兼容分支；实施时明确受影响的开发数据重建范围。
 
 ### 4.2 轻量元数据解析
@@ -257,3 +259,12 @@ revealRightWorkspaceFile(source: PromptFileRef): Promise<void>;
 - 菜单、卡片到 Tab 集成、附件 viewer 和文件引用四个测试文件串行联跑，共 22 项通过。新集成测试首次单跑通过；与生产构建并发联跑时曾触发默认 5 秒测试超时，同一用例随后串行通过，该超时未被作为产品缺陷证据。Rust 附件来源定向测试因已有编译占用而等待 artifact lock，已取消；本轮未改后端，不宣称新增 Rust 验证通过。
 - 已关闭本轮内置浏览器页面，恢复 viewport，停止本轮 1432 端口 Vite 并删除临时验证入口；保留原有验证页及其他会话进程。
 - 过度设计与性能复核：本轮只增加入口集成回归及验收文档，无运行时代码、依赖、状态、缓存或数据加载变更，因而不增加生产运行成本。既有规则已要求真实用户入口、DOM 与接口回归，无需另增协作规则。
+
+### 10.6 附件根边界与标题栏再次引用修复（2026-10-28）
+
+- 修复前通过 `TurnFileStore` 公共接口复现：真实 finalized 附件根替换为 Windows junction 后，metadata 返回 `turn-files.attachment-access-denied`，预览却成功返回外部文件路径。预览改为调用已有共享根校验后，同一测试通过；另一项回归确认附件子目录链接仍不能越界，正常附件在替换前仍可读取。`cargo test --test turn_attachment_trust_boundary --jobs 2` 共 2 项通过，`cargo test --lib acp::turn_files::tests --jobs 2` 的现有 32 项也全部通过。
+- 修复前 Git / turn-file 的接口映射和真实文件面板 DOM 测试均失败，实际提交来源被改为 workspace。标题栏透传已有 `resource.source` 后，同一测试转绿；完整嵌套 locator、Git 工作位置、普通 workspace 引用及任意外部 locator 拒绝行为都有回归覆盖。文件面板、引用映射、菜单、工作流附件入口、bridge、Composer、草稿与只读 Composer 共 8 个测试文件、54 项通过。
+- `npm run web:build` 的 TypeScript 与 Vite 生产构建通过；仍有既有的大 chunk 和动态 / 静态混合导入提示。
+- 内置浏览器导航超时，且无已连接 Chrome，按项目工具顺序改用独立 agent-browser 会话。夹具使用真实 `openWorkspaceFileReference`、文件面板、CodeMirror、Composer bridge 与引用 chip，仅替换文件 API；接收工作树设为 released。正常宽度下 Git 再引用保留来源 worktree；390×760 窄窗口下 turn-file 再引用保留完整 locator，长路径截断且按钮可见、无页面横向溢出；切换目录后拉宽到 1200×760，来源正文、引用 chip 和已收回目录状态均保留。本次未重新打包或验证真实 EXE，也未向远端 Agent 发送消息。
+- 过度设计与性能复核：复用已有根校验、来源类型、identity 和 UI 组件，没有新增持久字段、状态、缓存或依赖。预览仅增加一次根目录 metadata 检查，引用继续只传轻量来源；没有新增全量扫描、正文读取或订阅范围。现有 `state-lifecycle-and-data-integrity.md` 已覆盖完整作用域和软链接边界，无需新增经验规则。
+- 已关闭本轮独立浏览器会话与内置浏览器测试页，停止 1420 端口 Vite，删除临时验证入口与截图；保留用户原有验证页和无关工作区改动。

@@ -12,8 +12,10 @@ import {
   conversationAssetWorkspaceResourceKey,
   type RightWorkspaceResource,
   type FileBrowserWorkspaceResource,
+  type FileWorkspaceResource,
 } from '@/components/workspace/right-workspace-context';
 import { fileContentStore } from '@/components/workspace/files/file-content-store';
+import { fileReferenceIdentity } from './file-reference-source';
 
 export function composerWorkspaceFileRefFromEntry(
   projectId: string,
@@ -31,14 +33,17 @@ export function composerWorkspaceFileRefFromEntry(
   };
 }
 
-/** A reference to an open workspace file; files outside the workspace cannot be referenced. */
-export function composerWorkspaceFileRefFromLocator(locator: WorkspaceFileLocatorVm): ComposerWorkspaceFileRef | null {
+/** Preserve an open file's fixed source when adding it to another conversation. */
+export function composerWorkspaceFileRefFromLocator(
+  locator: WorkspaceFileLocatorVm,
+  source?: FileWorkspaceResource['source'],
+): ComposerWorkspaceFileRef | null {
   if (locator.scope !== 'workspace' || !locator.relativePath) return null;
   const relativePath = locator.relativePath.replaceAll('\\', '/');
   const name = relativePath.split('/').at(-1) || relativePath;
   return {
-    id: `${locator.projectId}:${relativePath}`,
-    source: { kind: 'workspace', projectId: locator.projectId, relativePath },
+    id: source ? fileReferenceIdentity(source) : `${locator.projectId}:${relativePath}`,
+    source: source ?? { kind: 'workspace', projectId: locator.projectId, relativePath },
     projectId: locator.projectId,
     relativePath,
     name,

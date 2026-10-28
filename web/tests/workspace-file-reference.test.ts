@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveRightWorkspaceFileTarget, resolveWorkspaceFileLink } from '@/api';
 import { createInitialRightWorkspaceState, fileWorkspaceResourceKey, projectWorkspaceTabRoots, rightWorkspaceReducer, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import type { PromptWorkspaceFileRef } from '@/types';
-import { openWorkspaceFileReference } from '@/lib/workspace-file-reference';
+import { composerWorkspaceFileRefFromLocator, openWorkspaceFileReference } from '@/lib/workspace-file-reference';
+import { createUserPromptSubmission } from '@/lib/composer-context';
 
 vi.mock('@/api', () => ({
   resolveWorkspaceFileLink: vi.fn(),
@@ -16,12 +17,28 @@ describe('workspace file reference opening', () => {
     vi.mocked(resolveRightWorkspaceFileTarget).mockReset();
   });
 
-  const fixedSources: PromptWorkspaceFileRef[] = [
+  const fixedSources: Extract<PromptWorkspaceFileRef, { kind: 'git-file' | 'turn-file' }>[] = [
     { kind: 'git-file', projectId: 'project-1', workspacePath: 'D:/source', relativePath: 'src/a.ts' },
     { kind: 'turn-file', locator: { projectId: 'project-1', taskId: 'task-source', taskUuid: 'uuid-source',
       runId: 'run-1', roundId: 'round-1', nodeId: 'node-1', attemptId: 'attempt-1', branchId: 'main' },
       changeSetId: 'set-1', changeId: 'change-1' },
   ];
+  it.each(fixedSources)('keeps the $kind source through preview-reference conversion and submission', (source) => {
+    const locator = { projectId: 'project-1', canonicalPath: 'D:/source/src/a.ts', relativePath: 'src/a.ts', scope: 'workspace' as const };
+    const ref = composerWorkspaceFileRefFromLocator(locator, source)!;
+    expect(createUserPromptSubmission('', [], null, [ref]).workspaceFiles).toEqual([source]);
+    const workspaceRef = composerWorkspaceFileRefFromLocator(locator)!;
+    expect(ref.id).not.toBe(workspaceRef.id);
+  });
+
+  it('preserves ordinary workspace references and rejects external locators without a fixed source', () => {
+    const locator = { projectId: 'project-1', canonicalPath: 'D:/workspace/src/a.ts', relativePath: 'src\\a.ts', scope: 'workspace' as const };
+    const ref = composerWorkspaceFileRefFromLocator(locator)!;
+    expect(createUserPromptSubmission('', [], null, [ref]).workspaceFiles).toEqual([
+      { kind: 'workspace', projectId: 'project-1', relativePath: 'src/a.ts' },
+    ]);
+    expect(composerWorkspaceFileRefFromLocator({ ...locator, scope: 'external' })).toBeNull();
+  });
   it.each(fixedSources)('opens a $kind from its own root when the receiving worktree is unavailable', async (source) => {
     const locator = { projectId: 'project-1', canonicalPath: 'D:/source/src/a.ts', relativePath: 'src/a.ts', scope: 'workspace' as const };
     vi.mocked(resolveRightWorkspaceFileTarget).mockResolvedValue({ source, projectId: 'project-1', name: 'a.ts',

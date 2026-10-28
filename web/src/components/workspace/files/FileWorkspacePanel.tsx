@@ -316,7 +316,7 @@ export function FileContent({ resource }: { resource: FileWorkspaceResource }) {
     && resource.locator.canonicalPath.toLowerCase().endsWith('.svg');
   const referenceCommands = useWorkspaceFileReferenceCommands();
   const referencePresentation = useWorkspaceFileReferencePresentation();
-  const workspaceReference = referenceCommands?.available ? composerWorkspaceFileRefFromLocator(resource.locator) : null;
+  const workspaceReference = referenceCommands?.available ? composerWorkspaceFileRefFromLocator(resource.locator, resource.source) : null;
 
   return (
     <article className="flex h-full min-h-0 flex-col bg-background" aria-label={resource.title}>
