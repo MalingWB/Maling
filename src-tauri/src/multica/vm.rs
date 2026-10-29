@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 use gold_band::config::{DesktopLanguage, RemoteCompletedTask, RemoteWorkspaceRef};
 use gold_band::prompts::{
     RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES, RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
-    RUNTIME_REMOTE_TASK_CONTEXT, RUNTIME_REMOTE_TASK_PARENT_OUTPUT, prompt_by_language, render,
+    RUNTIME_REMOTE_TASK_CONTEXT, RUNTIME_REMOTE_TASK_DPMS_GATE, RUNTIME_REMOTE_TASK_PARENT_OUTPUT,
+    prompt_by_language, render,
 };
 use gold_band::provider::PromptHiddenSection;
 use serde::Serialize;
@@ -294,6 +295,7 @@ pub(crate) fn remote_task_hidden_section(
 ) -> Option<PromptHiddenSection> {
     let content = [
         completion_protocol_block(task, language, run_mode),
+        dpms_gate_block(task, language),
         attachment_failures_block(attachment_failures, language),
     ]
     .into_iter()
@@ -304,6 +306,25 @@ pub(crate) fn remote_task_hidden_section(
         title: REMOTE_TASK_HIDDEN_SECTION_TITLE.to_string(),
         content,
     })
+}
+
+/// DPMS 创建门块（`src/prompts/{zh-CN,en}/runtime/remote_task_dpms_gate.md`，M5-cl）。
+///
+/// 注入条件：issue 关联（`issue_id` 非空白）且 claim 载荷 `dpms_required == Some(true)`。
+/// **模式无关**（direct/workflow/auto 统一为任务级事实注入——三种形态都无法按载荷跳转工作流
+/// 节点，门只承载事实与写记忆契约，节点/角色行为由各自定义承载）。`dpms_required` 缺键/false
+/// （含旧 server 灰度契约「缺键 = false」）→ None，全程无 DPMS 创建语义。模板无变量（指令
+/// 恒定文案），空上下文渲染即原文；留在隐式侧的原因与完成输出协议块相同——落在用户可编辑
+/// 预填里会被误删而静默断链，且属 runtime 决定的稳定执行上下文。溯源字段值仍在预填侧
+/// （[`dpms_context_block`]，用户可见可核对），「同一上下文只下发一次」不破坏。
+fn dpms_gate_block(task: &RemoteTask, language: DesktopLanguage) -> Option<String> {
+    blank_to_none(task.issue_id.as_deref())?;
+    if task.dpms_required != Some(true) {
+        return None;
+    }
+    let template = prompt_by_language(language, RUNTIME_REMOTE_TASK_DPMS_GATE);
+    let rendered = render(template, serde_json::json!({})).expect("remote task dpms gate renders");
+    Some(rendered.trim().to_string())
 }
 
 /// 单个需求附件的下载软失败记录（M5-bu）：staging 阶段逐文件收集，渲染进隐式区段清单。
@@ -410,6 +431,8 @@ fn dpms_context_block(task: &RemoteTask, language: DesktopLanguage) -> Option<St
         test_user: blank_to_none(task.test_user.as_deref()),
         business_story_id: task.business_story_id,
         origin_url: blank_to_none(task.origin_url.as_deref()),
+        dpms_product_id: task.dpms_product_id,
+        system_story_id: task.system_story_id,
     };
     if context.is_empty() {
         return None;
@@ -432,6 +455,8 @@ struct RemoteTaskContextTemplateContext {
     test_user: Option<String>,
     business_story_id: Option<i64>,
     origin_url: Option<String>,
+    dpms_product_id: Option<i64>,
+    system_story_id: Option<i64>,
 }
 
 impl RemoteTaskContextTemplateContext {
@@ -441,6 +466,8 @@ impl RemoteTaskContextTemplateContext {
             && self.test_user.is_none()
             && self.business_story_id.is_none()
             && self.origin_url.is_none()
+            && self.dpms_product_id.is_none()
+            && self.system_story_id.is_none()
     }
 }
 
@@ -554,6 +581,9 @@ mod tests {
             parent_output: None,
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
         assert_eq!(vm.id, "t-1");
@@ -597,6 +627,9 @@ mod tests {
             parent_output: None,
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
         assert_eq!(vm.kind.as_deref(), Some("test"));
@@ -665,6 +698,9 @@ mod tests {
             parent_output: None,
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.expect("requirement prefilled");
@@ -701,6 +737,9 @@ mod tests {
             parent_output: None,
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         assert_eq!(
             RemoteTaskVm::from_detail(&issue, "ws-1", DesktopLanguage::ZhCn)
@@ -735,6 +774,9 @@ mod tests {
             parent_output: None,
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         let vm_body = RemoteTaskVm::from_detail(&issue_body, "ws-1", DesktopLanguage::ZhCn);
         // 无 DPMS 字段 → 名称行 + 空行 + 正文（issue_description 优先级不变；协议块走隐式注入）。
@@ -808,6 +850,9 @@ mod tests {
             parent_output: None,
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.expect("requirement prefilled");
@@ -871,6 +916,9 @@ mod tests {
             parent_output: None,
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         assert_eq!(
             RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn).requirement,
@@ -933,6 +981,9 @@ mod tests {
             parent_output: None,
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
             .expect("hidden section assembled");
@@ -980,6 +1031,9 @@ mod tests {
             parent_output: None,
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         for mode in ["workflow", "auto"] {
             assert!(
@@ -1001,6 +1055,155 @@ mod tests {
         let direct = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
             .expect("direct protocol section");
         assert!(direct.content.contains("completion-output"));
+    }
+
+    // ===== M5-cl：DPMS 创建门块（模式无关）+ 溯源块新行 =====
+
+    #[test]
+    fn remote_task_hidden_section_injects_dpms_gate_only_when_required() {
+        // 门块注入条件：issue 关联 + dpms_required == Some(true)（claim 快照）。模式无关——
+        // workflow / auto 无任务级协议块，但门是任务级事实，三种形态同样注入。
+        let task = RemoteTask {
+            id: "t-dpms".into(),
+            issue_id: Some("iss-dpms".into()),
+            status: "queued".into(),
+            auth_token: None,
+            prior_session_id: None,
+            parent_task_id: None,
+            title: None,
+            quick_create_prompt: None,
+            chat_message: None,
+            trigger_comment_content: None,
+            autopilot_description: None,
+            handoff_note: None,
+            issue_description: None,
+            last_activity_at: None,
+            issue_kind: Some("dev".into()),
+            is_ready: None,
+            release_plan_id: None,
+            dev_user: None,
+            test_user: None,
+            business_story_id: None,
+            origin_url: None,
+            parent_output: None,
+            issue_attachments: Vec::new(),
+            attribution: None,
+            dpms_required: Some(true),
+            system_story_id: None,
+            dpms_product_id: None,
+        };
+        // direct：协议块 + 门块同区段（门块承载写记忆契约，不与溯源预填重复）。
+        let direct = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
+            .expect("direct section with dpms gate");
+        assert!(direct.content.contains("completion-output"));
+        assert!(direct.content.contains("本任务包含 DPMS 系统需求创建环节"));
+        assert!(direct.content.contains("`storyId`"));
+        // workflow / auto：无协议块但门块仍在（此前该形态无区段，现在有门即有区段）。
+        for mode in ["workflow", "auto"] {
+            let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], mode)
+                .unwrap_or_else(|| panic!("{mode} section must exist with dpms gate"));
+            assert!(!section.content.contains("completion-output"));
+            assert!(section.content.contains("本任务包含 DPMS 系统需求创建环节"));
+        }
+        // 英文同构。
+        let section_en = remote_task_hidden_section(&task, DesktopLanguage::En, &[], "workflow")
+            .expect("en section with dpms gate");
+        assert!(section_en.content.contains("DPMS system story creation"));
+
+        // dpms_required 缺键（旧 server 灰度「缺键 = false」）/ 显式 false（回写后 rerun 载荷）
+        // → 无门块；direct 区段退回纯协议块，workflow + 无失败 → 无区段（既有行为不变）。
+        let mut not_required = task.clone();
+        not_required.dpms_required = None;
+        let direct_legacy =
+            remote_task_hidden_section(&not_required, DesktopLanguage::ZhCn, &[], "direct")
+                .expect("protocol-only section");
+        assert!(direct_legacy.content.contains("completion-output"));
+        assert!(!direct_legacy.content.contains("DPMS 系统需求创建"));
+        assert!(
+            remote_task_hidden_section(&not_required, DesktopLanguage::ZhCn, &[], "workflow")
+                .is_none(),
+            "workflow + dpms_required 缺键 + 无失败 → 无区段"
+        );
+        not_required.dpms_required = Some(false);
+        assert!(
+            remote_task_hidden_section(&not_required, DesktopLanguage::ZhCn, &[], "workflow")
+                .is_none(),
+            "dpms_required 显式 false 同缺键语义"
+        );
+
+        // issue 关联缺失（chat / autopilot 等非 issue 任务）→ 即便 dpms_required=true 也无门块。
+        let mut non_issue = task;
+        non_issue.issue_id = None;
+        assert!(
+            remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &[], "workflow").is_none(),
+            "非 issue 任务无 DPMS 门语义"
+        );
+    }
+
+    #[test]
+    fn from_detail_dpms_block_renders_product_and_system_story_lines() {
+        // M5-cl 溯源块新行：dpms_product_id（产品必答推荐值）/ system_story_id（rerun 已链接）
+        // 进 composer 预填（用户可见可核对），与既有五行同一块、按模板行序渲染。
+        let task = RemoteTask {
+            id: "t-prov".into(),
+            issue_id: Some("iss-prov".into()),
+            status: "queued".into(),
+            auth_token: None,
+            prior_session_id: None,
+            parent_task_id: None,
+            title: Some("Fix login".into()),
+            quick_create_prompt: None,
+            chat_message: None,
+            trigger_comment_content: None,
+            autopilot_description: None,
+            handoff_note: None,
+            issue_description: Some("Steps...".into()),
+            last_activity_at: None,
+            issue_kind: Some("dev".into()),
+            is_ready: None,
+            release_plan_id: Some(538181),
+            dev_user: None,
+            test_user: None,
+            business_story_id: None,
+            origin_url: None,
+            parent_output: None,
+            issue_attachments: Vec::new(),
+            attribution: None,
+            dpms_required: Some(false),
+            system_story_id: Some(889001),
+            dpms_product_id: Some(100943),
+        };
+        let requirement = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn)
+            .requirement
+            .expect("requirement prefilled");
+        assert!(requirement.contains("- 发布计划 ID: 538181"));
+        assert!(requirement.contains("- 产品 ID（任务指定）: 100943"));
+        assert!(requirement.contains("- 已创建 DPMS 需求 ID: 889001"));
+        // 行序：产品 / 已创建需求行在既有五行之后、正文之前。
+        let product = requirement.find("产品 ID").unwrap();
+        let story = requirement.find("已创建 DPMS 需求 ID").unwrap();
+        let plan = requirement.find("发布计划 ID").unwrap();
+        assert!(plan < product && product < story);
+        assert!(requirement.ends_with("Steps..."));
+
+        // 英文同构。
+        let requirement_en = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::En)
+            .requirement
+            .expect("requirement prefilled");
+        assert!(requirement_en.contains("- Product ID (task-specified): 100943"));
+        assert!(requirement_en.contains("- Created DPMS story ID: 889001"));
+
+        // 两键缺省 → 新行不渲染（旧载荷行为不变，版本解耦）。
+        let legacy = RemoteTask {
+            system_story_id: None,
+            dpms_product_id: None,
+            ..task
+        };
+        let requirement_legacy = RemoteTaskVm::from_detail(&legacy, "ws-1", DesktopLanguage::ZhCn)
+            .requirement
+            .expect("requirement prefilled");
+        assert!(!requirement_legacy.contains("产品 ID"));
+        assert!(!requirement_legacy.contains("已创建 DPMS 需求 ID"));
     }
 
     // ===== 上游交付说明预填 + 完成输出协议区段（issue 完成输出传递特性）=====
@@ -1034,6 +1237,9 @@ mod tests {
             parent_output: Some("部署地址: https://t.example.com\n测试要点: 回归登录链路".into()),
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.as_deref().expect("requirement prefilled");
@@ -1102,6 +1308,9 @@ mod tests {
             parent_output: None,
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         assert_eq!(vm.requirement.as_deref(), Some("Fix login\n\nSteps..."));
@@ -1149,6 +1358,9 @@ mod tests {
             parent_output: None,
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         assert_eq!(vm.requirement, None);
@@ -1219,6 +1431,9 @@ mod tests {
             parent_output: None,
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         let failures = vec![
             AttachmentFailure {
@@ -1307,6 +1522,9 @@ mod tests {
             parent_output: None,
             issue_attachments: Vec::new(),
             attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
         };
         assert_eq!(RemoteTaskVm::from_pending(&task, "ws-1").title, "t-7");
 
@@ -1468,6 +1686,8 @@ mod tests {
             started_at: "2026-08-07T03:00:00Z".into(),
             issue_kind: Some("test".into()),
             run_mode: "direct".into(),
+            dpms_required: false,
+            claim_system_story_id: None,
         };
         let vm = RemoteTaskVm::from_active_run("remote-9", &run, "proj-1");
         assert_eq!(vm.id, "remote-9");

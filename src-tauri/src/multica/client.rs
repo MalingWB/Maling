@@ -230,6 +230,23 @@ pub struct RemoteTask {
     /// DPMS 需求链接（故事页 URL）。可缺省语义同 [`Self::release_plan_id`]。
     #[serde(default)]
     pub origin_url: Option<String>,
+    /// DPMS 创建分支门（M5-cl，multica 2026-10 回传对接新增）：`true` = 本任务需要创建 DPMS 系统
+    /// 需求并在终态回写。服务端非 omitempty bool；**缺键 = false 是双方认可的灰度契约**——旧 server
+    /// / 非 issue 任务 → None，码灵全程跳过 DPMS 语义（不注入创建门块、终态不回写）。
+    ///
+    /// 消费点：hidden section 的 DPMS 创建门块（vm.rs）与终态回写触发条件（bridge.rs，经
+    /// [`crate::multica::state::ActiveRemoteRun`] 的 claim 快照）。
+    #[serde(default)]
+    pub dpms_required: Option<bool>,
+    /// claim 时已链接的 DPMS story id（M5-cl，`omitempty *int64`）：非空 = 该 issue 已有 DPMS 需求
+    /// （rerun 场景）。码灵消费点：claim 后种进任务记忆 `storyId`（核实复用，不重复创建）+ 终态
+    /// 回写条件排除（已链接不再回写）。缺键 → None。
+    #[serde(default)]
+    pub system_story_id: Option<i64>,
+    /// 溯源 story 行的产品 ID（M5-cl，`omitempty *int64`）：DPMS 创建「产品」必答字段的任务指定
+    /// 推荐值（非 story_sync 转换的 issue 不带）。渲染进预填溯源块，只预填不分支。缺键 → None。
+    #[serde(default)]
+    pub dpms_product_id: Option<i64>,
     /// 直接父 issue 的完成输出（multica `AgentTaskResponse.ParentOutput`，JSON `parent_output`，
     /// issue 完成输出传递特性）。
     ///
@@ -463,6 +480,15 @@ pub struct IssueDetail {
 #[derive(Debug, Serialize)]
 struct UpdateIssueCompletionOutputRequest {
     completion_output: String,
+}
+
+/// DPMS 需求回写请求（M5-cl：`POST /api/daemon/issues/{id}/dpms-story` body）。
+///
+/// 码灵作为中介持 PAT 回写（角色只写任务记忆，不发 HTTP）。服务端 claim-once 幂等：同 id 重放
+/// 200；异 id 409（issue 已链接不同 story，服务端同事务把 `dpms_required` 两半置 false）。
+#[derive(Debug, Serialize)]
+struct ReportDpmsStoryRequest {
+    dpms_story_id: i64,
 }
 
 // ===== skill 同步 wire 类型（设计 `.claude/design/multica_skill/` §3-§5）=====
@@ -1506,6 +1532,39 @@ impl MulticaClient {
         .await
     }
 
+    /// `POST /api/daemon/issues/{issue_id}/dpms-story` —— DPMS 需求回写（M5-cl）。
+    ///
+    /// 任务终态（complete/fail 两路）时，若 claim 快照命中回写条件（`dpms_required=true` 且
+    /// `system_story_id` 空）且任务记忆 `storyId` 可解析为正整数，把 DPMS 创建结果回写 issue。
+    /// 鉴权与其余 `/api/daemon/*` 相同（PAT bearer + `X-Workspace-ID`，服务端按 issue 所属 ws 做
+    /// `requireDaemonWorkspaceAccess` 范围校验）。响应体不消费（只关心 HTTP 状态）。
+    ///
+    /// 状态语义：200 = 落库（同 id 重放幂等）；**409 = 已链接不同 story**——本端点专属语义，
+    /// 映射为 [`MulticaError::IssueLinkConflict`]（不重试：服务端已把 `dpms_required` 置 false，
+    /// 调用方记日志即止）；400/404 = 参数/越权错误，同样不重试。走一般网络重试（仅 NetworkFailed）。
+    pub async fn report_issue_dpms_story(
+        &self,
+        workspace_id: &str,
+        issue_id: &str,
+        dpms_story_id: i64,
+    ) -> Result<(), MulticaError> {
+        let path = format!("/api/daemon/issues/{issue_id}/dpms-story");
+        let body = ReportDpmsStoryRequest { dpms_story_id };
+        self.with_network_retry("report_issue_dpms_story", || async {
+            // body 丢弃：只关心 HTTP 状态。409 在本端点是「已链接异 id」而非 claim 冲突——
+            // 译为 IssueLinkConflict，避免调用方误读（ClaimConflict 语义为任务领取冲突）。
+            let _resp = self
+                .json_send(Method::POST, &path, Some(workspace_id), &body, None)
+                .await
+                .map_err(|e| match e {
+                    MulticaError::ClaimConflict => MulticaError::IssueLinkConflict,
+                    other => other,
+                })?;
+            Ok(())
+        })
+        .await
+    }
+
     /// `GET /api/issues/{id}` —— issue 详情（[`IssueDetail`] 最小投影，M5-cf 拉取链路）。
     ///
     /// 用途：① 解析自身 issue 的 `parent_issue_id`（父寻址，绑定时未随 claim 响应下发）；
@@ -2099,13 +2158,81 @@ mod tests {
     #[test]
     fn remote_task_missing_dpms_fields_parse_as_none() {
         // 旧 server / 非 issue 任务（chat / autopilot / quick-create）：五键全缺省 → 全 None，
-        // 不报错、不回退默认值（会话起始输入不拼溯源块）。
+        // 不报错、不回退默认值（会话起始输入不拼溯源块）。M5-cl 三键（dpms_required /
+        // system_story_id / dpms_product_id）同契约：缺键 = None（dpms_required 灰度语义
+        //「缺键 = false」，门条件统一按 == Some(true) 判定）。
         let legacy: RemoteTask = serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
         assert!(legacy.release_plan_id.is_none());
         assert!(legacy.dev_user.is_none());
         assert!(legacy.test_user.is_none());
         assert!(legacy.business_story_id.is_none());
         assert!(legacy.origin_url.is_none());
+        assert!(legacy.dpms_required.is_none());
+        assert!(legacy.system_story_id.is_none());
+        assert!(legacy.dpms_product_id.is_none());
+    }
+
+    // ===== M5-cl：DPMS 分支门 / 回写 wire 契约 =====
+
+    #[test]
+    fn remote_task_parses_dpms_gate_fields() {
+        // wire 契约：dpms_required（非 omitempty bool，true/false 都上线）/ system_story_id /
+        // dpms_product_id（均 omitempty）。显式 false 也要可解析（回写成功后的 rerun 载荷）。
+        let task: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-1","status":"queued","dpms_required":true,"system_story_id":889001,"dpms_product_id":100943}"#,
+        )
+        .unwrap();
+        assert_eq!(task.dpms_required, Some(true));
+        assert_eq!(task.system_story_id, Some(889001));
+        assert_eq!(task.dpms_product_id, Some(100943));
+        let rerun: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-2","status":"queued","dpms_required":false,"system_story_id":889001}"#,
+        )
+        .unwrap();
+        assert_eq!(rerun.dpms_required, Some(false));
+        assert_eq!(rerun.system_story_id, Some(889001));
+    }
+
+    #[test]
+    fn report_dpms_story_request_serializes_only_story_id() {
+        // body 恰为 {"dpms_story_id": <正整数>}——服务端按 int64 正整数校验，多余键不发送。
+        let body = serde_json::to_value(ReportDpmsStoryRequest { dpms_story_id: 889001 })
+            .unwrap();
+        assert_eq!(body, serde_json::json!({"dpms_story_id": 889001}));
+    }
+
+    #[tokio::test]
+    async fn report_issue_dpms_story_posts_to_daemon_issue_endpoint() {
+        // 验收：POST /api/daemon/issues/{id}/dpms-story，PAT bearer + X-Workspace-ID 路由，
+        // body 只带 dpms_story_id；200 即成功（响应体不消费）。
+        let (base, handle) = mock_http_responses(vec![(200, r#"{"issue_id":"iss-1","dpms_story_id":889001,"story_id":889001}"#)]);
+        let client = test_client(base);
+        client
+            .report_issue_dpms_story("ws-1", "iss-1", 889001)
+            .await
+            .unwrap();
+        let requests = handle.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert!(request.starts_with("POST /api/daemon/issues/iss-1/dpms-story HTTP/1.1"));
+        assert!(request.contains("authorization: Bearer pat-test"));
+        assert!(request.contains("x-workspace-id: ws-1"));
+        assert!(request.contains(r#""dpms_story_id":889001"#));
+    }
+
+    #[tokio::test]
+    async fn report_issue_dpms_story_maps_409_without_retry() {
+        // 验收：409（已链接异 id）→ IssueLinkConflict（非 ClaimConflict），确定错误码不重试
+        // ——mock 只准备一个响应，若重试会 panic（收不到第二个请求）。
+        let (base, handle) =
+            mock_http_responses(vec![(409, r#"{"error":"issue already linked to a different DPMS story"}"#)]);
+        let client = test_client(base);
+        let error = client
+            .report_issue_dpms_story("ws-1", "iss-1", 777001)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, MulticaError::IssueLinkConflict));
+        assert_eq!(handle.join().unwrap().len(), 1);
     }
 
     // ===== 父任务完成输出 parent_output（issue 完成输出传递特性，仅 issue 任务 + 父有输出时携带）=====

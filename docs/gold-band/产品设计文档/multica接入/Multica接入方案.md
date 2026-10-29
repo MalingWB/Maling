@@ -434,6 +434,7 @@ multica.session-resume-failed   // 保留在码表但 M4-d 起不 emit（resume 
 
 - **issue 类型标记 / 类型过滤 / 未就绪提醒（M5-ba §12.40 → M5-bb §12.42 改提醒不阻断）**：适配 multica 的 story dev/test 拆分。任务卡片在状态徽标左侧增加**类型徽标**（仅 dev/test/bug 渲染，`general` 与未知值不渲染——对齐 multica 自有 views 的 `hideGeneral` 惯例，新类型不猜文案）；页脚工具条增加**类型过滤**下拉（全部/开发/测试，纯客户端过滤已加载列表，bug/general 归「全部」，过滤态是瞬时 UI 状态、不持久化）。**未就绪的 test 任务**（父 dev issue 未 done）：仅「未就绪」标记 + 原因 Tooltip 提醒（「对应开发任务尚未完成，建议等待」），**不置灰、不阻断执行**——经实测评审的产品决策（开发设计 §12.42），`is_ready` 只作展示信号：看板徽标由前端谓词 `isTaskNotReady`（与后端无门控耦合）驱动，claim 路径无拦截。
 - **移出列表（M5-bm §12.52 → M5-bo §12.54 按行数据源分派）**：任务卡片（四列全状态，含待办与已完成）带「移出列表」按钮（Trash2）。**语义按行数据源分派（M5-bo 修正）**：**终态行**（completed/failed）的唯一数据源是本地 `remote_completed_tasks` 历史（服务端不回传终态）——移出即**真删除本地历史条目**（`remove_remote_completed_task` 命令，幂等），刷新不再「复活」，Tooltip「移出并删除本地完成记录，刷新不再显示」；删除的是列表回看索引，**不删本地会话本体**。**pending/running 行**每次刷新从服务端/内存重建——纯本页内存态视图过滤即全部语义，不调删除接口，Tooltip「仅从码灵侧列表移除，刷新后恢复」，服务端侧删除后自然消失（服务端是 active 行的唯一事实源）。均不弹确认框（ui-interaction §1 的删除确认针对破坏性删除；hint 如实说明各行语义）。
+- **multica 平台快捷跳转（M5-ck）**：底部工具条右侧组（账号标识与手动刷新之间）增加 `ExternalLink` ghost 图标按钮，点击经系统浏览器打开 multica 平台 Web（地址 = settings VM 的 `multicaAppUrl`，渠道编译期默认或运行期地址覆盖产生；桌面端走 tauri opener 插件）。门控继承 footer 的 `source === 'multica' && connected`——非 multica 来源、未连接不出现；`multicaAppUrl` 未配置（null）时不渲染。Tooltip 与 aria-label 同文案 `remote.taskManagement.openPlatform`「打开 {{source}} 平台」，来源名经注册表名片插值，不散写品牌名。跳转目标为平台根地址，不做 workspace/issue 深链（multica Web 路由结构无本仓可验证真源）。
 
 
 **PAT 串号防护**：换机器/换账号重连时强制重新走浏览器登录 + mint PAT、不复用前任 PAT。
@@ -551,6 +552,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 
 - **story dev/test 拆分（§12.42）**：claim 响应同带 `issue_kind` / `is_ready`，但码灵 claim 路径**不消费就绪字段做门控**（未就绪 test 任务照常领取执行）；claim 后本地建 run 失败时的回滚路径不变（`release_after_run_start_failure`，覆盖 workspace 解析 / 模型校验 / 本地建 run / start_task 失败）。
 - **issue 完成输出传递（M5-bj / M5-bk）**：claim / pending / detail 响应另带可选 `parent_output`（直接父 issue 完成时留下的交付说明，服务端 claim 时派生读取父行、omitempty）。码灵侧 serde-optional：旧 server / 无父 / 非 issue 任务缺失 → 不渲染「上游交付说明」块，行为与现状一致；消费为**纯执行上下文**（M5-bk 起随首条 prompt 的隐式隐藏区段下发；**三次调整（2026-09-21）后与 DPMS 溯源块同在 composer 预填可见侧**，仅完成输出协议块留在隐式区段，见 §3.2.4「任务执行」行）。~~无门控语义~~ **（M5-bp 起语义升级：对 issue 关联的 direct 任务，该协议块转为完成门控——agent 输出块才 complete + issue done，见 C6 / 开发设计 §12.55）**。
+- **DPMS 需求创建回传（M5-cl）**：claim / pending / detail 响应另带 `dpms_required`（**非 omitempty bool，缺键 = false 灰度契约**——旧 server/非 issue 任务无 DPMS 语义）、`system_story_id`（`*int64` omitempty，issue 已链接的 DPMS 需求 id）、`dpms_product_id`（`*int64` omitempty，溯源 story 行的产品 id）。码灵消费：`dpms_required == true` 且 issue 关联 → 首条 prompt 隐式区段注入「DPMS 创建门块」（`remote_task_dpms_gate.md`，**模式无关**——direct/workflow/auto 三种执行形态都无法按载荷跳转工作流节点，门只承载事实与写记忆契约，创建行为由 DPMS 角色定义承载）；`system_story_id` 非空 → claim 后播种任务记忆 `storyId`（角色/CICD 节点核实复用，不重复创建；与 `dpms_required` 独立——回写成功后的 rerun 载荷 `dpms_required=false` 但仍播种）；两 id 进溯源预填块新增两行（产品 ID / 已创建需求 ID，用户可见推荐值）。终态回写见 D4。
 
 > claim 之后**没有退回/释放接口**，唯一出路是执行到 complete 或 fail。因此列表展示用只读的 B1，确认要做了再用 B2 领取。
 
@@ -634,6 +636,11 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - `GET /api/issues/{id}` ｜ user PAT ｜ 需 `X-Workspace-ID` 头
 - 响应关键字段：`status`、`parent_issue_id`（**恒下发**，无父为 null——内网确认 2026-10-24 ④）、`completion_output`（`*string` + omitempty，NULL 键省略——内网确认 ①）。
 - 码灵消费（`MulticaUpstreamResolver`，开发设计 §12.74）：① 拉取自身 issue 详情解析 `parent_issue_id` 完成父寻址；② 有限退避轮询父详情（15s 起、×1.5、间隔上限 60s、总预算 15 分钟）至 `completion_output` 非空即命中——父字段非空即下发、不看父状态（内网确认 ③），阶段性快照因此可得。单键 PUT `completion_output` 无状态门槛（内网确认 ②）由中段上送通道与既有 D2 补写通道复用（仅 ≤16,000 rune 上限；字段级 merge：缺省保留/携带覆盖/显式清空）。
+
+**D4. DPMS 需求回写** ★ M5-cl ｜ **multica 回传对接新增接口（daemon API，PAT）**
+- `POST /api/daemon/issues/{issue_id}/dpms-story` ｜ PAT ｜ 需 `X-Workspace-ID` 头 ｜ 请求 `{ "dpms_story_id": <正整数> }`
+- 鉴权：`requireDaemonWorkspaceAccess`（workspace 域 daemon 通道）。语义：把 agent 执行中创建的 DPMS 系统需求 id 回链到 issue。**200 = 幂等成功**（同 id 重放亦 200；响应体 `{issue_id, dpms_story_id, story_id?}` 码灵不消费）；**409 = issue 已链接不同 story**——服务端同事务把 `dpms_required` 两半置 false（`dpms_story_missing` 对账告警熄灭），码灵映射为 `multica.issue-link-conflict` 后**不再发送、不重试**（下次 claim 载荷条件自然失效，行为等价「永不再发」）；400/404 业务错误同样不重试。网络瞬时错由 client 内一般重试兜底。
+- 码灵消费（开发设计 §12.83）：**中介回写**（职责铁律同 D2/D3——agent 会话只写任务记忆 `storyId`，HTTP 由码灵以自身 PAT 执行）。触发 = complete 与 failed（含手动取消）两类终态**各至多一次**：claim 快照 `dpms_required=true && system_story_id 为空 && issue_id 非空`，且任务记忆 `storyId` 可解析为正整数；角色未创建/未写记忆/值不可解析 → 静默跳过（服务端 `dpms_story_missing` 对账告警兜底「任务已终态但从未回写」的运营缺口，multica web 看板渲染，码灵不消费）。
 
 #### E. 辅助查询（本地记录丢失时兜底）
 
@@ -1320,6 +1327,11 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **需求（PR 评审确认的 3×P1 + 2×P2）**：① resolver 按 task 反查在飞 run 可能先于 `register_active_run` 执行（run 启动在创建事务内、注册紧随其后但非原子——节点启动是微秒级），旧实现立即报错失败节点；② 阶段性快照 PUT 与终态 `/complete` 是两个并发 spawn 的 HTTP，早节点 stalled PUT 可晚于终态写入落地，服务端后写胜 → 过期交付内容永久驻留（run 已终态无自愈）；③ 提示词侧产出门禁（M5-cg）只约束模型被要求产出，协议块是自由文本——Prohibited 节点复述/引用上游交付时照带上送，可覆写 issue 交付；④ 决策卡片只靠即时事件，重进会话后待决卡片消失（槽在后端仍在）；⑤ 选「继续等待」后前端把卡片收起，但后端槽保留（60s 回落 + 迟到 manual/skip 可写入），用户失去再次介入入口。
   - **实现**：① **注册竞态宽限**：`resolve()` 反查 miss 时不再立即失败，`MAPPING_GRACE`（5s，50ms tick）内轮询等待注册到达（fresh/resume 两路径注册都无条件紧跟 run 创建，迟到是唯一形态，超时才是真异常）；② **写序队列**：`CompletionOutputJob { Snapshot, CompleteRun }` 在**事件回调内同步入队**（纯 channel send，事件序 = 入队序）+ 单消费者顺序执行（全局 FIFO，状态规则 §6「锁不覆盖网络调用」的合规形态）；Snapshot 入队侧带 workflow+issue 预过滤（auto/direct 成功节点不产生死 job，执行侧会籍门禁仍权威）；Success 终态入队与快照同序，Failure/Killed 不写 completion_output 保持旁路 spawn；迟到补发/turn 完成不入队（与队列无并发交叠/仅极端 stalled 窗口且下次补发自愈）；`begin_completion` 升级 `begin_completion_for_run`（单锁内「映射仍在本 run 名下 + 认领」原子完成，消除队列延迟后他方 finalize 释放认领导致的二次 complete 窗口）；③ **上传侧指定门禁**：resolver trait 签名加 `node_id`，装配时 Final/Staged 节点记入 `designated_output_nodes`（与模型所见同源，杜绝 M5-cg 三跳反查错位复发），快照上送前查会籍——非指定节点（含 frozen 旧 run 无记录）fail-closed 拒绝（常态多数节点 Prohibited，跳过日志 debug 级），随 run 终态同生命周期清理；④ **卡片水合**：新命令 `list_upstream_pull_pendings(taskId)`（槽行：node/parent/retried/title），卡片挂载时水合合并，settled-key 集合防护「settled 先于水合响应到达」的在途竞态，失败静默（事件流仍是主数据源）；⑤ **等待态**：`decide_upstream_pull` 的 Retry 置槽 `retried` 标记（槽不消费），前端 Retry 转等待态而非收起（跳过/手动入口保留、manual 返回回等待态），水合 `retried=true` 直接恢复等待态；settled 事件收口不变。
   - **验证**：desktop `multica::` 232/232（新增：写序 FIFO 回归「慢快照不重排 /complete」、`begin_completion_for_run` 含映射清除后拒绝、指定集生命周期（记录/幂等/终态清理/默认 false）、水合行含 parent+retried、宽限等待 2 例「迟到注册命中/超时返回 None」）；lib `upstream`/`node_executor`/`orchestrator` 全绿；前端卡片测试 10/10（新增：水合恢复 + retried 等待态、settled-水合竞态不复活、水合失败静默、Retry 转等待态不收起、等待态 manual 收口、manual 返回回等待态）；`waitingNote` locale 7 语言同步；tsc 零错。内网真实工作流复测待打包验证。
+
+- [x] **M5-cl**（2026-10-29）DPMS 需求回传对接——分支门、记忆播种与终态回写（Rust + 提示词，开发设计 §12.83 改动八十一）：
+  - **需求（multica 回传对接已完成）**：`dpms_required` 任务在码灵执行中创建 DPMS 系统需求后，需求 id 回链到 issue（端点 D4）；agent 不直调 multica（职责铁律），码灵中介回写。用户确认远程任务三种执行形态（direct/workflow/auto）都可能承载该环节。
+  - **实现**：① wire 三键（`dpms_required` 缺键=false 灰度 / `system_story_id` / `dpms_product_id`）serde-optional，门条件 `== Some(true)`；② 分支门 = 任务级隐式区段块 `remote_task_dpms_gate.md`（zh/en，**模式无关**——三种形态都无法按载荷跳节点，门只承载事实与写记忆契约，创建行为由 DPMS 角色定义承载）；③ 溯源预填新增产品 ID / 已创建需求 ID 两行（推荐值可见）；④ fresh claim 播种任务记忆 `storyId`（与 dpms_required 独立，rerun 回写成功后仍播种；续跑不播种）；⑤ 终态回写挂 complete 三处 + fail + 手动取消（各至多一次），claim 快照三条件与记忆正整数解析双守卫，409 → `IssueLinkConflict` 不重试（服务端翻转 dpms_required，行为等价「永不再发」），失败仅 warn（`dpms_story_missing` 服务端告警兜底）。实现期自检修正：记忆读取须按 `run.local_project_id` 反查工作区 App（home App locator 校验拒绝，初版回写静默永不触发）。
+  - **验证**：desktop `multica::` 240/240（client 三键解析/请求 body/200·409 socket 集成单请求不重试、vm 门块三模式与溯源新行、bridge 触发条件穷举与快照取值边界）；lib `prompts::` 19/19（门模板与溯源新行双语契约锁定）。内网真实 dpms_required 任务全链路（创建→记忆→回写→rerun 播种）待打包联调验收。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

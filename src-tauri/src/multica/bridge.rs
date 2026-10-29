@@ -36,6 +36,7 @@ use std::sync::{Arc, OnceLock};
 use gold_band::app::{AcpTurnOutcome, App, RuntimeLifecycleEvent};
 use gold_band::config::{RemoteCompletedTask, RemoteTaskConversation, StateConfig};
 use gold_band::domain::{PauseReason, RunOutcome};
+use gold_band::memory::MemoryService;
 use gold_band::runtime::WorkerRefState;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tracing::{debug, info, warn};
@@ -43,7 +44,7 @@ use tracing::{debug, info, warn};
 use crate::multica::client::{MULTICA_ISSUE_DONE_STATUS, MulticaClient};
 use crate::multica::config::{get_pat, multica_base_url, multica_settings};
 use crate::multica::handoff;
-use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
+use crate::multica::state::{ActiveRemoteRun, DPMS_STORY_MEMORY_KEY, SharedMulticaState};
 use crate::remote::{REMOTE_SOURCE_SETTINGS_UPDATED_EVENT, REMOTE_TASKS_UPDATED_EVENT};
 use crate::state::{DesktopContext, DesktopState};
 
@@ -544,6 +545,7 @@ async fn execute_complete_run(
                 Some(block.as_str()),
                 session_id.as_deref(),
                 work_dir.as_deref(),
+                dpms_story_to_report(&context, &run),
             )
             .await;
         }
@@ -565,6 +567,7 @@ async fn execute_complete_run(
                 completion_output.as_deref(),
                 session_id.as_deref(),
                 work_dir.as_deref(),
+                dpms_story_to_report(&context, &run),
             )
             .await;
         }
@@ -598,6 +601,11 @@ async fn handle_run_failed(
     if let Err(e) = client.fail_task(&remote_task_id, &error, &reason).await {
         warn!(task = %remote_task_id, %e, "multica fail_task failed");
     }
+    // M5-cl：失败路径同样回写 DPMS story——角色可能已在失败前创建需求并写入记忆，链接事实
+    // 照样要落（端点无任务状态前置校验）；fail_task 失败不影响（回写幂等，rerun 载荷收敛）。
+    if let Some(story_id) = dpms_story_to_report(&context, &run) {
+        report_dpms_story(&client, &remote_task_id, &run, story_id).await;
+    }
     finalize_terminal(&app, &remote_task_id, &run, PendingUpdate::AddOnFailure);
     emit_remote_tasks_updated(&app);
 }
@@ -611,6 +619,10 @@ async fn handle_run_failed(
 /// **不流转 issue**（server 未收到 complete，issue 不得变 done）；issue done 失败仅 warn——
 /// 任务终态已上报，issue 状态推进不阻断完成（issue 保持原状，server 扫描器/用户兜底）；
 /// issue 关联缺失（issue_id 为空，如非 issue 来源任务）则跳过流转。
+///
+/// M5-cl：`dpms_story_id` = 终态前从任务记忆提取的 DPMS story id（[`dpms_story_to_report`]，
+/// 调用方在认领完成路径后、进入本函数前取值）。issue done 之后回写——同为「终态后尽力而为」
+/// 步骤，失败仅 warn 不影响任务终态（服务端 `dpms_story_missing` 对账告警兜底）。
 async fn complete_with_issue_done(
     client: &MulticaClient,
     remote_task_id: &str,
@@ -619,6 +631,7 @@ async fn complete_with_issue_done(
     completion_output: Option<&str>,
     session_id: Option<&str>,
     work_dir: Option<&str>,
+    dpms_story_id: Option<i64>,
 ) {
     if let Err(e) = client
         .complete_task(
@@ -643,6 +656,133 @@ async fn complete_with_issue_done(
             issue = %issue,
             %e,
             "multica update_issue_status(done) failed (task already completed; ignored)"
+        );
+    }
+    if let Some(story_id) = dpms_story_id {
+        report_dpms_story(client, remote_task_id, run, story_id).await;
+    }
+}
+
+// ── M5-cl：DPMS 需求回写（complete/fail 终态两路各一次）────────────────────────
+//
+// 分工铁律：角色会话只写任务记忆（`storyId` 等），HTTP 回写由 daemon 侧（码灵中介，自身 PAT）
+// 执行。触发条件取 claim 快照（领取即定版）：dpms_required=true 且当时未链接 system_story_id。
+
+/// 回写触发判定（纯函数）：claim 快照 `dpms_required` 且当时未链接（`claim_system_story_id`
+/// 为 None）且 issue 关联。缺键/false（旧 server 灰度）/ 非 issue 任务 → 不触发，全程无 DPMS 语义。
+fn should_report_dpms_story(run: &ActiveRemoteRun) -> bool {
+    run.dpms_required
+        && run.claim_system_story_id.is_none()
+        && run
+            .issue_id
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+}
+
+/// 任务记忆快照中可回写的 DPMS story id（纯函数）：键 [`DPMS_STORY_MEMORY_KEY`] 的值解析为
+/// 正整数才回传——非数字/非正（角色未真正写入或写坏）一律 None，不做启发式修复。
+fn dpms_story_id_from_snapshot(snapshot: &gold_band::memory::Snapshot) -> Option<i64> {
+    let record = snapshot
+        .task
+        .iter()
+        .find(|record| record.entry.key == DPMS_STORY_MEMORY_KEY)?;
+    record
+        .entry
+        .value
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+}
+
+/// 终态回写的取值：触发条件命中时读任务记忆提取 story id。读失败/键缺失/不可解析 → None
+/// （warn 可观测；None = 不回写——角色未创建或未写记忆时静默跳过，服务端
+/// `dpms_story_missing` 对账告警兜底「任务已终态但从未回写」的运营缺口）。
+///
+/// 记忆属**工作区项目**：调用方（bridge 终态收尾 / 手动取消）只持 home context，此处按
+/// run 快照 `local_project_id` → home StateConfig 反查工作区路径 → 构造绑定该目录的 App
+/// （home App 的 `paths.project_id` ≠ 任务项目，直接用会被 `MemoryService` locator 校验
+/// 拒绝——与 seeding/teardown 同一解析路径，单一事实源）。
+pub(crate) fn dpms_story_to_report(context: &DesktopContext, run: &ActiveRemoteRun) -> Option<i64> {
+    if !should_report_dpms_story(run) {
+        return None;
+    }
+    let workspace_path = context
+        .app()
+        .load_state()
+        .ok()
+        .and_then(|home_state| {
+            crate::conversation_workspace::workspace_entry_for_project(
+                &home_state,
+                &run.local_project_id,
+            )
+        })
+        .map(|(workspace_path, _)| workspace_path)
+        .or_else(|| {
+            warn!(
+                task = %run.local_task_id,
+                project = %run.local_project_id,
+                "multica dpms story report: workspace not found for local project"
+            );
+            None
+        })?;
+    let workspace_app = crate::conversation_workspace::app_for_workspace(&context, &workspace_path)
+        .map_err(|error| {
+            warn!(
+                task = %run.local_task_id,
+                %error,
+                "multica dpms story report: workspace app init failed"
+            );
+            error
+        })
+        .ok()?;
+    let story_id = MemoryService::new(
+        workspace_app.paths.clone(),
+        &run.local_project_id,
+        Some(run.local_task_id.clone()),
+    )
+    .and_then(|service| service.read())
+    .map_err(|error| {
+        warn!(
+            task = %run.local_task_id,
+            %error,
+            "multica dpms story report: task memory read failed"
+        );
+        error
+    })
+    .ok()
+    .and_then(|snapshot| dpms_story_id_from_snapshot(&snapshot));
+    if story_id.is_none() {
+        // 触发条件命中但无可回写值（角色未写记忆/值不可解析）：可观测，便于区分「没建」与「回写失败」。
+        debug!(
+            task = %run.local_task_id,
+            "multica dpms story report: no reportable storyId in task memory"
+        );
+    }
+    story_id
+}
+
+/// 回写执行（complete/fail 两路共用）：issue 关联守卫 + 单次 POST。失败仅 warn——任务终态已
+/// 上报，回写不阻断、不重试（网络瞬时错由 client 内一般重试兜底；409 = 已链接异 id，服务端
+/// 已把 dpms_required 置 false，下次 claim 载荷条件自然失效，行为等价「永不再发」）。
+pub(crate) async fn report_dpms_story(
+    client: &MulticaClient,
+    remote_task_id: &str,
+    run: &ActiveRemoteRun,
+    story_id: i64,
+) {
+    let Some(issue) = run.issue_id.as_deref().filter(|s| !s.trim().is_empty()) else {
+        return;
+    };
+    if let Err(e) = client
+        .report_issue_dpms_story(&run.workspace_id, issue, story_id)
+        .await
+    {
+        warn!(
+            task = %remote_task_id,
+            issue = %issue,
+            %e,
+            "multica report_issue_dpms_story failed (terminal already reported; ignored)"
         );
     }
 }
@@ -702,6 +842,7 @@ async fn handle_turn_completion_gate(
         Some(block.as_str()),
         session_id.as_deref(),
         work_dir.as_deref(),
+        dpms_story_to_report(&context, &run),
     )
     .await;
     finalize_terminal(&app, &remote_task_id, &run, PendingUpdate::ClearOnSuccess);
@@ -1265,6 +1406,7 @@ fn current_session(app: App, remote_task_id: &str) -> (Option<String>, Option<St
 mod tests {
     use super::*;
     use gold_band::domain::SessionMode;
+    use gold_band::memory::{Entry, Record, Snapshot};
     use serde_json::json;
 
     fn worker_ref(session_id: Option<&str>, cwd: Option<&str>) -> WorkerRefState {
@@ -1501,7 +1643,86 @@ mod tests {
             started_at: "2026-09-10T00:00:00Z".into(),
             issue_kind: issue_kind.map(str::to_string),
             run_mode: "direct".into(),
+            dpms_required: false,
+            claim_system_story_id: None,
         }
+    }
+
+    // ===== M5-cl：DPMS 需求回写触发条件与取值 =====
+
+    #[test]
+    fn should_report_dpms_story_requires_all_three_claim_conditions() {
+        // 触发 = claim 快照 dpms_required && 当时未链接 system_story_id && issue 关联。
+        // 三条件穷举：任一不满足 → 不回写。
+        let mut run = active_run(None, None);
+        run.dpms_required = true;
+        assert!(should_report_dpms_story(&run), "全条件命中 → 回写");
+
+        // 缺键/false 灰度（旧 server / 回写成功后的 rerun 载荷 dpms_required=false）。
+        run.dpms_required = false;
+        assert!(!should_report_dpms_story(&run));
+
+        // claim 时已链接（rerun 播种路径）→ 终态不再回写（防重复链接/409）。
+        run.dpms_required = true;
+        run.claim_system_story_id = Some(889001);
+        assert!(!should_report_dpms_story(&run));
+
+        // issue 关联缺失 / 纯空白（chat / autopilot 等非 issue 任务）→ 无回写语义。
+        run.claim_system_story_id = None;
+        run.issue_id = None;
+        assert!(!should_report_dpms_story(&run));
+        run.issue_id = Some("   ".into());
+        assert!(!should_report_dpms_story(&run));
+    }
+
+    #[test]
+    fn dpms_story_id_from_snapshot_parses_only_positive_integers() {
+        // 键 storyId 的值解析为正整数才回传；非数字 / 非正 / 键缺失 → None（不做启发式修复，
+        // 服务端 dpms_story_missing 对账告警兜底）。
+        let snapshot = |records: Vec<Record>| Snapshot {
+            project_id: "proj-1".into(),
+            task_id: Some("local-task-1".into()),
+            workspace_path: camino::Utf8PathBuf::new(),
+            task_path: Some(camino::Utf8PathBuf::new()),
+            workspace: Vec::new(),
+            task: records,
+            effective: Vec::new(),
+            limits: json!({}),
+        };
+        let record = |key: &str, value: &str| Record {
+            entry: Entry {
+                key: key.into(),
+                value: value.into(),
+                desc: String::new(),
+            },
+            revision: "r1".into(),
+        };
+
+        assert_eq!(
+            dpms_story_id_from_snapshot(&snapshot(vec![record("storyId", "889001")])),
+            Some(889001)
+        );
+        // 值允许两端空白（角色写入形态宽松）；其余键不干扰。
+        assert_eq!(
+            dpms_story_id_from_snapshot(&snapshot(vec![
+                record("storyName", "登录修复"),
+                record("storyId", " 777001 ")
+            ])),
+            Some(777001)
+        );
+        // 非数字 / 零 / 负数 → None。
+        for bad in ["abc", "88.5", "0", "-5", ""] {
+            assert_eq!(
+                dpms_story_id_from_snapshot(&snapshot(vec![record("storyId", bad)])),
+                None,
+                "值 {bad:?} 必须判不可回写"
+            );
+        }
+        // 键缺失（角色未写记忆）→ None。
+        assert_eq!(
+            dpms_story_id_from_snapshot(&snapshot(vec![record("storyName", "登录修复")])),
+            None
+        );
     }
 
     #[test]

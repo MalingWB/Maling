@@ -105,7 +105,18 @@ pub struct ActiveRemoteRun {
     /// 仅内存（重启后 active_runs 丢失由 recover-orphans → auto-retry → re-claim resume
     /// 既有链路兜底，resume 时重新快照）。
     pub run_mode: String,
+    /// DPMS 创建门快照（claim 响应 `dpms_required`，M5-cl）：终态回写触发条件之一
+    /// （bridge `should_report_dpms_story`）。缺键/false（含旧 server 灰度）→ false。
+    pub dpms_required: bool,
+    /// claim 时已链接的 DPMS story id（`system_story_id`，M5-cl）：Some = 已链接（rerun 场景，
+    /// claim 后已种进任务记忆），终态不再回写；None = 未链接。
+    pub claim_system_story_id: Option<i64>,
 }
+
+/// 任务记忆中 DPMS story 身份的键名（M5-cl 回传对接）。角色创建成功后写入（`storyId`，与
+/// CICD 角色/DPMS 角色定义的共享参数记忆契约一致）；claim 播种与终态回写读同一键——单一
+/// 事实源，键名集中定义避免两处字符串漂移。
+pub const DPMS_STORY_MEMORY_KEY: &str = "storyId";
 
 /// 门控命中的 run 模式字面量（`ConversationCreateInputVm.run_mode` 的 "direct" 值，
 /// 见 `view_models_conversation.rs` / `scheduled_content_snapshot` 的模式映射）。
@@ -440,6 +451,8 @@ mod tests {
             started_at: "2026-08-05T00:00:00".into(),
             issue_kind: Some("dev".into()),
             run_mode: "direct".into(),
+            dpms_required: false,
+            claim_system_story_id: None,
         }
     }
 

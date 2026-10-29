@@ -111,6 +111,8 @@ pub const RUNTIME_REMOTE_TASK_PARENT_OUTPUT: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_parent_output.md");
 pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_completion_protocol.md");
+pub const RUNTIME_REMOTE_TASK_DPMS_GATE: LocalizedText =
+    localized_prompt_zh_en!("runtime/remote_task_dpms_gate.md");
 pub const RUNTIME_REMOTE_TASK_NODE_PROTOCOL: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_node_protocol.md");
 pub const RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES: LocalizedText =
@@ -198,6 +200,8 @@ pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_ZH_CN: &str =
     RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL.zh_cn;
 pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN: &str =
     RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL.en;
+pub const RUNTIME_REMOTE_TASK_DPMS_GATE_ZH_CN: &str = RUNTIME_REMOTE_TASK_DPMS_GATE.zh_cn;
+pub const RUNTIME_REMOTE_TASK_DPMS_GATE_EN: &str = RUNTIME_REMOTE_TASK_DPMS_GATE.en;
 pub const RUNTIME_REMOTE_TASK_NODE_PROTOCOL_ZH_CN: &str = RUNTIME_REMOTE_TASK_NODE_PROTOCOL.zh_cn;
 pub const RUNTIME_REMOTE_TASK_NODE_PROTOCOL_EN: &str = RUNTIME_REMOTE_TASK_NODE_PROTOCOL.en;
 pub const RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES_ZH_CN: &str =
@@ -283,6 +287,10 @@ pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
     (
         "runtime/remote_task_completion_protocol.md",
         RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
+    ),
+    (
+        "runtime/remote_task_dpms_gate.md",
+        RUNTIME_REMOTE_TASK_DPMS_GATE,
     ),
     (
         "runtime/remote_task_node_protocol.md",
@@ -490,23 +498,30 @@ mod tests {
     fn remote_task_context_templates_render_all_and_partial_fields() {
         // 远程任务 DPMS 溯源块（multica 预填 composer / 会话起始输入）：全字段与部分字段
         // （其余 null，对应 wire 缺省键）都需完整渲染，且中文标签锁定（发布计划 ID / 业务需求 ID / 需求链接）。
+        // M5-cl 起新增产品 ID / 已创建 DPMS 需求 ID 两行（推荐值预填）。
         let full = json!({
             "release_plan_id": 538181,
             "dev_user": "alice,bob",
             "test_user": "carol",
             "business_story_id": 674290,
-            "origin_url": "https://dpms.example.com/story/674290"
+            "origin_url": "https://dpms.example.com/story/674290",
+            "dpms_product_id": 100943,
+            "system_story_id": 889001
         });
         let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN, full.clone());
         assert!(zh.contains("- 发布计划 ID: 538181"));
         assert!(zh.contains("- 开发负责人: alice,bob"));
         assert!(zh.contains("- 业务需求 ID: 674290"));
         assert!(zh.contains("- 需求链接: https://dpms.example.com/story/674290"));
+        assert!(zh.contains("- 产品 ID（任务指定）: 100943"));
+        assert!(zh.contains("- 已创建 DPMS 需求 ID: 889001"));
 
         let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_EN, full);
         assert!(en.contains("- Release plan ID: 538181"));
         assert!(en.contains("- Business story ID: 674290"));
         assert!(en.contains("- Requirement link: https://dpms.example.com/story/674290"));
+        assert!(en.contains("- Product ID (task-specified): 100943"));
+        assert!(en.contains("- Created DPMS story ID: 889001"));
 
         // 部分字段（其余 null）：仅渲染存在的行，缺席字段不出行、无空行残留。
         let partial = json!({
@@ -514,14 +529,39 @@ mod tests {
             "dev_user": null,
             "test_user": null,
             "business_story_id": null,
-            "origin_url": null
+            "origin_url": null,
+            "dpms_product_id": null,
+            "system_story_id": null
         });
         let zh_partial = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN, partial.clone());
         assert!(zh_partial.contains("- 发布计划 ID: 538181"));
         assert!(!zh_partial.contains("开发负责人"));
+        assert!(!zh_partial.contains("产品 ID"));
+        assert!(!zh_partial.contains("已创建 DPMS 需求 ID"));
         assert!(!zh_partial.contains("\n\n"));
         let en_partial = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_EN, partial);
         assert!(!en_partial.contains("Dev owner"));
+        assert!(!en_partial.contains("Product ID"));
+    }
+
+    #[test]
+    fn remote_task_dpms_gate_templates_render_creation_contract() {
+        // DPMS 创建门块（M5-cl）：恒定文案无变量（空上下文渲染即原文）；锁定关键语义——
+        // 写任务记忆契约（`storyId` 等任务范围）、已有 storyId 先核实复用不重复创建、
+        // 溯源值是推荐值仍需用户确认、回写由 runtime 承担（不调工作项平台接口，职责铁律）。
+        let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_DPMS_GATE_ZH_CN, json!({}));
+        assert!(zh.contains("DPMS 系统需求创建环节"));
+        assert!(zh.contains("`storyId`"));
+        assert!(zh.contains("不重复创建"));
+        assert!(zh.contains("推荐值"));
+        assert!(zh.contains("不要调用工作项平台接口"));
+
+        let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_DPMS_GATE_EN, json!({}));
+        assert!(en.contains("DPMS system story creation"));
+        assert!(en.contains("`storyId`"));
+        assert!(en.contains("reuse it instead of creating again"));
+        assert!(en.contains("prefilled recommendations"));
+        assert!(en.contains("do not call work-item platform APIs"));
     }
 
     #[test]

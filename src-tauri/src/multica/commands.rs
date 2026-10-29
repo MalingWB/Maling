@@ -630,6 +630,56 @@ async fn fail_after_run_start_failure(client: &MulticaClient, task_id: &str) {
 /// 码灵作为中介用自身 PAT 补这条流转，把卡片移到「进行中」列。最佳努力：失败仅 `warn!`，不让 run 失败
 /// （start_task 已成功，issue 列推进是看板一致性，由 server 失败路径 in_progress→todo 兜底）。
 /// issue 关联缺失（非 issue 来源任务）则跳过。与 `bridge.rs` done 路径同构。
+/// M5-cl：DPMS story 记忆播种——claim 载荷 `system_story_id` 非空（issue 已链接 DPMS 需求，
+/// rerun / 同步来源场景）时，把它种进新本地任务的记忆 [`DPMS_STORY_MEMORY_KEY`]，供角色核实
+/// 复用（不重复创建）与 CICD 等后续节点直接读取。与 `dpms_required` 无关：回写成功后的 rerun
+/// `dpms_required` 已是 false，播种仍要发生。
+///
+/// upsert 语义（读-改-写经 MemoryService 文件锁串行）：同值已存在 → no-op；异值/新建 → 带正确
+/// revision 写入。任何失败仅记日志——播种缺失时角色按证据链回落询问用户，不阻断任务启动。
+fn seed_dpms_story_memory(app: &App, project_id: &str, task_id: &str, story_id: i64) {
+    use gold_band::memory::{Entry, MemoryService, Scope, WriteCommand};
+
+    use crate::multica::state::DPMS_STORY_MEMORY_KEY;
+
+    let service = match MemoryService::new(app.paths.clone(), project_id, Some(task_id.to_string()))
+    {
+        Ok(service) => service,
+        Err(error) => {
+            warn!(%error, task = %task_id, "multica dpms story memory seed: service init failed");
+            return;
+        }
+    };
+    let snapshot = match service.read() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            warn!(%error, task = %task_id, "multica dpms story memory seed: read failed");
+            return;
+        }
+    };
+    let value = story_id.to_string();
+    let current = snapshot
+        .task
+        .iter()
+        .find(|record| record.entry.key == DPMS_STORY_MEMORY_KEY);
+    if current.is_some_and(|record| record.entry.value == value) {
+        return; // 已是同值（本地任务重建的重复播种）：no-op，不动 revision。
+    }
+    let command = WriteCommand {
+        scope: Scope::Task,
+        key: DPMS_STORY_MEMORY_KEY.to_string(),
+        expected_revision: current.map(|record| record.revision.clone()),
+        entry: Some(Entry {
+            key: DPMS_STORY_MEMORY_KEY.to_string(),
+            value,
+            desc: "已创建的 DPMS 系统需求（claim 载荷播种）".to_string(),
+        }),
+    };
+    if let Err(error) = service.write(command) {
+        warn!(%error, task = %task_id, "multica dpms story memory seed: write failed");
+    }
+}
+
 async fn mark_issue_in_progress(
     client: &MulticaClient,
     workspace_id: &str,
@@ -881,6 +931,10 @@ pub async fn start_remote_conversation_run(
                             // 本次请求选定（M5-bt 修复：原样快照 input.run_mode 会与实际执行
                             // 模式不一致——direct 门控误判完成/永不完成）。
                             run_mode: resume_run_mode.clone(),
+                            // M5-cl：DPMS 回写条件快照（claim 响即定版）。续跑不播种——被续
+                            // 本地任务的记忆随其首次 claim 已播种/由角色写入。
+                            dpms_required: task.dpms_required == Some(true),
+                            claim_system_story_id: task.system_story_id,
                         },
                     );
                 }
@@ -1008,7 +1062,7 @@ pub async fn start_remote_conversation_run(
                     &remote,
                     ActiveRemoteRun {
                         workspace_id: ws_id,
-                        local_project_id: local_project,
+                        local_project_id: local_project.clone(),
                         local_task_id: run.task_id.clone(),
                         local_run_id: run.run_id.clone(),
                         issue_id: issue,
@@ -1017,9 +1071,16 @@ pub async fn start_remote_conversation_run(
                         issue_kind: task.issue_kind.clone(),
                         // M5-bp：run 模式快照（bridge 完成/issue 门控的事实源）。
                         run_mode: input.run_mode.clone(),
+                        // M5-cl：DPMS 回写条件快照（claim 响应即定版）+ 记忆播种（已链接
+                        // system_story_id → storyId，核实复用不重复创建）。
+                        dpms_required: task.dpms_required == Some(true),
+                        claim_system_story_id: task.system_story_id,
                     },
                 );
                 // 建成 run + 登记 active_run（claim-at-send 无 lease 需释放）。
+            }
+            if let Some(story_id) = task.system_story_id {
+                seed_dpms_story_memory(&app, &local_project, &run.task_id, story_id);
             }
             // 落断点续跑索引（home-repo StateConfig）：新 run 的 local ids + work_dir；session_id 待 bridge 回填。
             // RMW 经 with_state 原子化：与 bridge NodeCompleted/终态收尾并发 save 互不覆盖（lost-update）。
@@ -1175,6 +1236,11 @@ pub async fn cancel_remote_task(
                     task_id = %task_id,
                     "multica cancel: best-effort fail_task failed (task may already be terminal); proceeding with local teardown"
                 );
+            }
+            // M5-cl：取消也是 failed 终态——角色可能在取消前已创建 DPMS 需求并写入记忆，链接事实
+            // 照样要落。teardown 前取值（本地收尾后 active_runs 即清，条件快照随 run 消失）。
+            if let Some(story_id) = crate::multica::bridge::dpms_story_to_report(&context, &run) {
+                crate::multica::bridge::report_dpms_story(&client, &task_id, &run, story_id).await;
             }
         }
     }

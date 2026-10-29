@@ -47,6 +47,11 @@ pub enum MulticaError {
     /// 前端通常已随 settled 事件关闭弹窗，此错误用于兜底（如弹窗与收口竞态的迟到提交）。
     #[error("multica upstream pull decision has no pending slot")]
     UpstreamPullNotPending,
+    /// DPMS 需求回写冲突（M5-cl）：issue 已链接不同 DPMS story（`POST /api/daemon/issues/{id}/dpms-story`
+    /// HTTP 409）。服务端该路径已把 `dpms_required` 两半置 false（告警熄灭），调用方记日志后不再发送、
+    /// 不重试。仅回写通道内部使用，不进前端错误码消费。
+    #[error("multica issue already linked to a different DPMS story")]
+    IssueLinkConflict,
 }
 
 impl MulticaError {
@@ -66,6 +71,7 @@ impl MulticaError {
             Self::AttachmentStageFailed(_) => "multica.attachment-stage-failed",
             Self::SessionResumeFailed => "multica.session-resume-failed",
             Self::UpstreamPullNotPending => "multica.upstream-pull-not-pending",
+            Self::IssueLinkConflict => "multica.issue-link-conflict",
         }
     }
 

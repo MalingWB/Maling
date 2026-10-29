@@ -2966,6 +2966,36 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证结果**：desktop `multica::` 232/232（新增 5：`completion_output_queue_executes_jobs_in_fifo_order`——慢快照（120ms 挂起）不重排后入队 /complete，固化评审 #2 根因；`begin_completion_for_run_claims_only_on_live_mapping`——含身份不匹配拒绝与映射清除后拒绝；`designated_output_nodes_lifecycle_scoped`——记录幂等/默认 false/终态清理/run 隔离；`upstream_pull_pending_rows_carry_parent_and_retried`——水合行字段与 run 前缀过滤；宽限等待 2 例——120ms 迟到注册命中、宽限耗尽返回 None 且不早退）；lib `upstream` 16 + `node_executor` 18 + `orchestrator` 145 全绿（trait 签名变更消费方）；前端 `multica-upstream-pull-card` 10/10（新增水合恢复 + retried 等待态、settled-水合竞态不复活、水合失败静默、Retry 转等待态不收起且 settled 收口、等待态 manual 提交收口、manual 返回回等待态）；`waitingNote` 7 语言同步；`tsc -p web/tsconfig.build.json` 零错。resolve/快照/认领的 HTTP 端到端依赖内网 server，按 bug-fix-verification §3 以纯函数与注入化执行器契约锁定，实机链路待内网打包复测。
 
+### 12.82 改动八十：需求管理页 multica 平台快捷跳转按钮（M5-ck，2026-10-28）
+
+**背景**：用户反馈在需求管理页无法直接进入 multica 平台（查看/创建工作空间、issue 详情需手动开浏览器敲地址），要求放一个快捷跳转按钮；仅来源为 multica 时展示（当前唯一来源即 multica，门控语义为未来多来源保留）。
+
+**方案**：底部工具条右侧组（账号标识与手动刷新按钮之间）增加 `ExternalLink` ghost icon 按钮（Tooltip + aria-label 同文案，i18n `remote.taskManagement.openPlatform`「打开 {{source}} 平台」，`sourceLabel` 经来源注册表名片插值，不散写品牌名）；点击调既有 `openExternalUrl(settingsVm.multicaAppUrl)`——平台 Web 前端地址（后端登录流程同源字段）本页 `fetchSettings` 已加载，零新增请求；桌面端走 tauri opener 插件（与 Git 下载/GitHub PR 视图同源基础设施），浏览器态 window.open。门控两层：随 footer 既有 `source === 'multica' && connected`（非 multica 来源/未连接不渲染）+ `multicaAppUrl` 非空才渲染。跳转目标为平台根地址，不做 workspace/issue 深链（multica Web 路由结构无本仓可验证真源，不猜路径硬编码）。
+
+**方案自评审**：过度设计——无（零新增状态/请求/组件文件，复用 settings VM、openExternalUrl 与 footer 既有门控，不新增 source 特判）。性能——无（纯静态按钮，数据已在手，无新增渲染路径与数据加载）。
+
+**验证结果**：`remote-task-management-page` 28/28（新增 2：已连接点击按钮调 `openExternalUrl(appUrl)`、`multicaAppUrl` 为 null 不渲染）+ i18n 契约 4 套件 41 例全绿（7 语言 `openPlatform` 同步、占位符一致）；`tsc -p web/tsconfig.build.json` 零错。浏览器实测（vite dev + 临时 mock connected 态，验证后已还原）：footer 右侧组正确渲染按钮与 aria-label「打开 Multica 平台」；本机 agent-browser/CDP 输入派发不可靠（合成与原生点击均不生成 click 事件，仅 pointerdown 到达），点击→打开链路以组件测试固化，桌面端 opener 路径为既有已验证基础设施。
+
+### 12.83 改动八十一：DPMS 需求回传对接——分支门、记忆播种与终态回写（M5-cl，2026-10-29）
+
+**背景**：multica 回传对接（multica 侧已完成开发，对接文档 `.claude/design/dpms_cli/`）。`dpms_required` 任务在码灵执行中由 DPMS 角色创建系统需求后，需求 id 需回链到 multica issue。职责铁律不变：agent 会话只写任务记忆（`storyId` 等），HTTP 由 daemon 侧（码灵中介，自身 PAT）执行。链路三段：**分支门**（提示词侧事实注入）→ **记忆播种**（rerun 复用）→ **终态回写**（HTTP）。
+
+**wire 契约**（claim / pending / detail 三面同构）：`dpms_required`（**非 omitempty bool，缺键 = false 灰度契约**）、`system_story_id`（`*int64` omitempty，issue 已链接的 DPMS story id）、`dpms_product_id`（`*int64` omitempty，溯源 story 行产品）。`RemoteTask` 三键 serde-optional，门条件一律 `== Some(true)`（与 `is_ready` 先例同构）。
+
+**方案**：
+
+- **① 分支门 = 任务级隐式区段块**（`src/prompts/{zh-CN,en}/runtime/remote_task_dpms_gate.md`，恒定文案无变量）：issue 关联且 `dpms_required == Some(true)` 时随首条 prompt 隐式区段注入（`dpms_gate_block`，位于完成协议块之后、附件失败清单之前）。**模式无关**——direct/workflow/auto 三种执行形态都无法按载荷跳转工作流节点（direct 无图、workflow 是用户选定的静态图、auto 动态生长），按载荷做 DSL 条件执行属过度设计；门只承载事实（本任务含创建环节）与写记忆契约（`storyId`/`storyName`/`dpms.storyUrl` 任务范围、已有 `storyId` 先核实复用、溯源值是推荐值仍需用户确认、不调工作项平台接口），创建行为本身由 DPMS 角色定义承载。留在隐式侧的原因与完成输出协议块相同（用户可编辑文本误删即静默断链）。workflow/auto 无任务级协议块，门块独立成立区段。
+- **② 溯源预填新增两行**：`dpms_product_id` / `system_story_id` 进 `remote_task_context.md`（产品 ID（任务指定）/ 已创建 DPMS 需求 ID），用户可见推荐值；两键缺省不渲染（旧载荷行为不变）。
+- **③ 记忆播种**（`seed_dpms_story_memory`）：fresh claim 时 `system_story_id` 非空 → 经 `MemoryService` upsert 任务记忆 `storyId`（键名常量 `DPMS_STORY_MEMORY_KEY`，与角色/CICD 记忆契约同源；读-改-写带 revision，同值 no-op）。与 `dpms_required` **独立**——回写成功后的 rerun 载荷 `dpms_required=false` 但仍播种（角色核实复用、CICD 节点读取）。续跑不播种（被续任务记忆随首次 claim 已在）。任何失败仅 warn 不阻断启动（缺失时角色按证据链回落询问用户）。
+- **④ 终态回写**：`ActiveRemoteRun` 快照 `dpms_required: bool` + `claim_system_story_id: Option<i64>`（claim 时定版，续 `run_mode`/`issue_kind` 快照先例）。触发判定 `should_report_dpms_story`（纯函数）= 三条件与；取值 `dpms_story_to_report` = 守卫命中后读任务记忆 `storyId` 解析正整数（非数字/零/负 → None 不回写，服务端 `dpms_story_missing` 对账告警兜底）；执行 `report_dpms_story` = 单次 `POST /api/daemon/issues/{id}/dpms-story`（body `{"dpms_story_id":N}`，PAT + X-Workspace-ID）。挂点：complete 三处（direct 门控命中 / workflow·auto passthrough / turn 收尾门控，经 `complete_with_issue_done` 尾参）+ `handle_run_failed`（fail 路径——角色可能在失败前已创建）+ `cancel_remote_task`（手动取消同 failed 终态；teardown 前取值，本地收尾后 active_runs 即清）。失败仅 warn 不重试（网络瞬时错由 client 内一般重试兜底）；**409 → `IssueLinkConflict` 确定错误码不重试**——服务端同事务把 `dpms_required` 置 false，下次 claim 载荷条件自然失效，行为等价「永不再发」（不持久化 stop 标记）。
+- **⑤ 修正记录（实现期自检）**：初版 `dpms_story_to_report` 直接用调用方 home context 的 App 读记忆——home App 的 `paths.project_id` ≠ 任务项目，`MemoryService` locator 校验拒绝、回写**静默永不触发**。改为函数内按 `run.local_project_id` → home StateConfig 反查工作区路径 → `app_for_workspace` 构造绑定该目录的 App（与播种/teardown 同一解析路径，单一事实源）。
+
+**方案自评审**：过度设计——无新增持久状态（claim 快照沿 `ActiveRemoteRun` 内存生命周期；409「永不再发」用服务端翻转 + 行为条件替代持久 stop 标记；不建 per-issue 去重表——「各至多一次」由调用点结构性保证：complete 认领单飞（M5-cj `begin_completion_for_run`）、fail/cancel 是一次性路径）；门块为恒定文案模板，无新渲染机制。性能——回写取值全部在 `should_report` 守卫之后（非 DPMS 任务零成本）；DPMS 任务终态边界各一次小文件读（home state.json + 工作区 memory.json）+ 单次 POST，无轮询无缓存。
+
+**验证结果**：desktop `multica::` 240 passed / 0 failed（基线 232 + 新增 8：client 三键解析（显式 true/false rerun 载荷、缺键全 None 灰度契约）+ 回写请求 body 恰 `{"dpms_story_id":N}` + socket 集成 200 路径/头/断言与 409→`IssueLinkConflict` 单请求不重试 + vm 门块（三模式注入、缺键/false/非 issue 不注入、en 同构）与溯源新行（中英行序、缺省不渲染）+ bridge 触发条件穷举（false/已链接/无 issue 不触发）与快照取值（正整数/空白容忍/非数字/零/负/键缺失 → None））；lib `prompts::` 19 passed / 0 failed（溯源两新键中英渲染与缺省不渲染、门模板创建契约锁定）。
+
+**联调注意**（multica 侧交接）：multica 测试需 `DATABASE_URL`（开发库 `postgres://multica:multica@172.21.18.88:5432/multica`）否则静默跳过；既有失败基线 TestListIssues 3 个 + TestDaemon|TestStory|TestClaim 约 40 个（与本改动无关，排查时 stash 对比 HEAD）。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

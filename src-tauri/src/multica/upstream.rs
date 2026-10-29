@@ -558,6 +558,8 @@ mod tests {
                         started_at: "2026-10-27T00:00:00".into(),
                         issue_kind: None,
                         run_mode: "workflow".into(),
+                        dpms_required: false,
+                        claim_system_story_id: None,
                     },
                 );
         });
