@@ -2978,6 +2978,9 @@ export interface ConversationPromptQueueVm {
   revision: number;
   items: ConversationQueuedPromptVm[];
   maxItems: number;
+  dispatchMode: 'auto' | 'manual';
+  autoDispatchSuspended: boolean;
+  suspensionReason?: 'stopped' | 'failed' | null;
 }
 
 export interface ConversationAttemptLifecycleVm {
@@ -3178,6 +3181,33 @@ export interface ConversationQueuedPromptDraftVm {
   attachmentPaths: string[];
   role?: UserPromptRole | null;
   workspaceFiles?: PromptWorkspaceFileRef[];
+}
+
+/** One saved composer draft; drafts belong to the conversation task and are never auto-sent. */
+export interface ConversationComposerDraftVm {
+  id: string;
+  contentPreview: string;
+  attachmentCount: number;
+  quoteCount: number;
+  workspaceFileCount: number;
+  roleName?: string | null;
+  createdAt: string;
+}
+
+/** Newest first; `revision` advances on every mutation for last-writer-wins convergence. */
+export interface ConversationComposerDraftBoxVm {
+  revision: number;
+  maxItems: number;
+  items: ConversationComposerDraftVm[];
+}
+
+export interface ConversationComposerDraftReadVm {
+  draft: ConversationQueuedPromptDraftVm;
+  drafts: ConversationComposerDraftBoxVm;
+}
+
+export interface PromptQueueSettingsVm {
+  confirmInterrupt: boolean;
 }
 
 export interface ConversationRunWorktreeVm {
