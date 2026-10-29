@@ -64,6 +64,8 @@ function withWallpaperBootstrapAssetUrls(bootstrap: AppBootstrapVm): AppBootstra
 }
 
 export const desktopApi: RuntimeApi = {
+  resolveRightWorkspaceFileTarget: (source) => invokeCommand('resolve_right_workspace_file_target', { source }),
+  revealRightWorkspaceFile: (source) => invokeCommand('reveal_right_workspace_file', { source }),
   reportSourceControlLoad: (report) => invokeCommand("record_source_control_load", { report }),
   reportSourceControlWatch: (report) => invokeCommand("record_source_control_watch", { report }),
   readProjectMemory: (projectId) => invokeCommand('read_project_memory', { projectId }),
@@ -658,6 +660,9 @@ export const desktopApi: RuntimeApi = {
   },
   getConversationTaskPage(projectId, cursor, limit) {
     return invokeCommand<ConversationTaskPageVm>('get_conversation_task_page', { projectId, cursor, limit });
+  },
+  getConversationTaskSummary(projectId, taskId, taskUuid) {
+    return invokeCommand<ConversationTaskRowVm>('get_conversation_task_summary', { projectId, taskId, taskUuid });
   },
   getConversationPinnedTaskPage(cursor, limit) {
     return invokeCommand<ConversationPinnedTaskPageVm>('get_conversation_pinned_task_page', { cursor, limit });

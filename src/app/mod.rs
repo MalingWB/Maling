@@ -3416,11 +3416,18 @@ impl App {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        crate::provider::prompt_workspace_roots(
+        let mut roots = crate::provider::prompt_workspace_roots(
             &self.paths.project_id,
             session_root.as_std_path(),
             &registered,
-        )
+        );
+        if let Some(root) = roots
+            .iter_mut()
+            .find(|root| root.project_id == self.paths.project_id)
+        {
+            root.paths = Some(self.paths.clone());
+        }
+        roots
     }
 
     pub fn attempt_session_workspace_dir(

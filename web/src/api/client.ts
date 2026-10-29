@@ -401,6 +401,8 @@ export interface BrowserBookmarkVm {
 }
 
 export interface RuntimeApi {
+  resolveRightWorkspaceFileTarget(source: import('../types').PromptWorkspaceFileRef): Promise<import('../types').RightWorkspaceFileTargetVm>;
+  revealRightWorkspaceFile(source: import('../types').PromptWorkspaceFileRef): Promise<void>;
   reportSourceControlLoad(report: import("@/lib/source-control-load-diagnostics").SourceControlLoadReport): Promise<void>;
   reportSourceControlWatch(report: import("@/lib/source-control-watch-diagnostics").SourceControlWatchReport): Promise<void>;
   readProjectMemory(projectId: string): Promise<import('@/lib/memory').MemorySnapshot>;
@@ -608,6 +610,7 @@ export interface RuntimeApi {
   revokeRemoteImageHost(host: string): Promise<RemoteImageTrustVm>;
   getConversationSidebarBootstrap(): Promise<ConversationSidebarBootstrapVm>;
   getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number): Promise<ConversationTaskPageVm>;
+  getConversationTaskSummary(projectId: string, taskId: string, taskUuid?: string | null): Promise<ConversationTaskRowVm>;
   getConversationPinnedTaskPage(cursor?: string | null, limit?: number): Promise<ConversationPinnedTaskPageVm>;
   getConversationRunSummaryPage(projectId: string, taskId: string, cursor?: string | null, limit?: number): Promise<ConversationRunSummaryPageVm>;
   acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string): Promise<import('../types').ConversationTerminalResultAcknowledgementVm>;

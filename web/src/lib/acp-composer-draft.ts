@@ -7,7 +7,9 @@ import {
 import { composerTextFromPromptRole } from './slash-command';
 import type { ComposerQuote, ComposerWorkspaceFileRef } from './composer-context';
 import type { AttachmentFileRef } from '@/api/client';
-import type { ConversationQueuedPromptDraftVm } from '@/types';
+import type { ConversationQueuedPromptDraftVm, RightWorkspaceFileTargetVm } from '@/types';
+import i18n from '@/i18n';
+import { fileReferenceIdentity, fileReferenceLabel, fileReferenceProjectId } from './file-reference-source';
 
 export interface AcpComposerDraft {
   content: string;
@@ -19,19 +21,26 @@ export interface AcpComposerDraft {
 export function queuedPromptToAcpComposerDraft(
   item: ConversationQueuedPromptDraftVm,
   fileRefs: readonly AttachmentFileRef[] = [],
+  targets: readonly RightWorkspaceFileTargetVm[] = [],
 ): AcpComposerDraft {
+  const metadata = new Map(targets.map(target => [fileReferenceIdentity(target.source), target]));
   return {
     content: composerTextFromPromptRole(item.role, item.content),
     attachments: attachmentItemsFromPaths(item.attachmentPaths, fileRefs),
     quotes: item.quotes.map(({ id, text, source }) => ({ id, text, source })),
-    workspaceFiles: (item.workspaceFiles ?? []).map((file) => ({
-      id: `${file.projectId}:${file.relativePath}`,
-      projectId: file.projectId,
-      relativePath: file.relativePath.replaceAll('\\', '/'),
-      name: file.relativePath.split(/[\\/]/).at(-1) ?? file.relativePath,
-      byteLength: null,
-      mimeType: 'application/octet-stream',
-    })),
+    workspaceFiles: (item.workspaceFiles ?? []).map((source) => {
+      const id = fileReferenceIdentity(source);
+      const target = metadata.get(id);
+      const label = fileReferenceLabel(source);
+      return {
+        id, source, projectId: fileReferenceProjectId(source),
+        relativePath: target?.relativePath ?? label,
+        name: target?.name || label.split(/[\\/]/).at(-1) || i18n.t('workspace.filesPanel.file'),
+        byteLength: target?.byteLength ?? null,
+        mimeType: target?.mimeType ?? 'application/octet-stream',
+        ...(target?.absolutePath ? { canonicalPath: target.absolutePath } : {}),
+      };
+    }),
   };
 }
 

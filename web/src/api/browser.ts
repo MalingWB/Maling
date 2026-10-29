@@ -928,7 +928,7 @@ const browserQueuedPromptDrafts = [
     content: '把关键设计决策同步到产品文档。',
     quotes: [],
     attachmentPaths: [],
-    workspaceFiles: [{ projectId: 'default', relativePath: 'docs/design.md' }],
+    workspaceFiles: [{ kind: 'workspace' as const, projectId: 'default', relativePath: 'docs/design.md' }],
     createdAt: '2026-08-07T08:00:02Z',
   },
   {
@@ -1267,6 +1267,8 @@ function browserExecutionPlan(projectId: string, taskId: string, taskUuid: strin
 }
 
 export const browserApi: RuntimeApi = {
+  resolveRightWorkspaceFileTarget: async () => { throw { code: 'conversation.workspace-file-project-unavailable', params: {} }; },
+  revealRightWorkspaceFile: async () => { throw { code: 'conversation.workspace-file-project-unavailable', params: {} }; },
   reportSourceControlLoad: async () => {},
   reportSourceControlWatch: async () => {},
   readProjectMemory: readBrowserMemory,
@@ -2846,6 +2848,13 @@ export const browserApi: RuntimeApi = {
       nextCursor: start + limit < tasks.length ? page.at(-1)?.taskId ?? null : null,
       errors: [],
     });
+  },
+  getConversationTaskSummary(projectId, taskId, taskUuid) {
+    const task = browserConversationTasks.get(taskId);
+    if (!task || task.projectId !== projectId || (taskUuid && task.taskUuid !== taskUuid)) {
+      return Promise.reject({ code: 'task.not-found', params: { taskId } });
+    }
+    return Promise.resolve({ ...task, runs: [], runHistoryStatus: 'not-loaded', runsNextCursor: null });
   },
   getConversationPinnedTaskPage(cursor, limit = 24) {
     const tasks = [...browserConversationTasks.values()].filter((task) => task.pinned);

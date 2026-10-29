@@ -102,6 +102,14 @@
 - Agent 的 `workspace_dir` 使用该 run worktree；adapter 的 `adapter_workspace_dir` 继续指向原项目工作空间，以保持配置和能力发现边界。AI-DYNAMIC 的 main workspace 使用外层 run 的实际工作目录，因此可以在会话 worktree 内继续按现有 fanout 机制创建子 worktree。
 - 创建工作树沿用 AI-DYNAMIC 已有的 Git helper、结构化错误、创建清理和停止 UI。创建边界失败必须返回 `workspace.worktree-create-failed` 等稳定 `RuntimeErrorInfo`，后台启动统一持久化与当前 pause timestamp 对齐的 `run_paused.controlFailure.runtimeError`；会话页按错误码显示本地化恢复文案，原始 Git diagnostic 只用于日志与诊断，不得只落入旁路文本文件或通用系统通知。Git 命令本身不强制中断；若用户在创建期间停止，外层 run 先持久化 Paused，创建完成后重新读取 durable run，禁止启动 Agent，并保留已创建工作树供检查。重跑 worktree 会话时从当时新的 `HEAD` 创建新的 run worktree，不复用旧 run 目录。
 
+### 会话产物查看
+
+- 点击会话中的产物，直接在当前会话作用域的右侧工作区打开只读 Tab；同一产物已打开时激活已有 Tab，不重复创建。
+- 产物资源沿用完整来源 locator 与名称作为身份。不同节点、attempt 或动态节点的同名产物可分别查看；已打开产物的来源固定，切换会话执行分支时仍读取原资源。
+- 复用现有 `conversation-asset`、工作区 Tab 管理、`showArtifact` 与产物查看器。先激活目标 Tab，再在 Tab 内加载并展示内容或失败状态；旧请求不得覆盖新资源，仅激活 Tab 请求正文。
+- 2026-10-27 确认本次需求为直接查看产物；运行目录树定位、目录根范围调整与新增系统文件管理器入口均不属于本次交付范围。
+- 2026-10-27 实施复用现有产物 Tab，组件与资源管理测试覆盖来源 locator、同资源再次激活、不同 attempt 同名资源隔离及旧响应失效；真实 EXE 产物文件路径尚未执行端到端验证。
+
 ### 附件上传
 
 新建会话支持用户附带文件作为 task 初始输入：
@@ -169,6 +177,10 @@
    - `Ctrl+F`（macOS 同时支持 `Cmd+F`）打开同一个会话搜索弹窗并聚焦输入；已打开时再次触发只聚焦并选中关键词，保留查询和结果，`Esc` 关闭。
    - 编辑器已经处理的快捷键保留文件内搜索语义；输入法组合、额外的 `Alt/Shift` 修饰键不触发会话搜索。其他 Dialog / Sheet、菜单或选择器浮层活动时不再叠加搜索弹窗。
    - 快捷键仅增加搜索入口，查询仍由搜索弹窗按需发起，沿用 300ms 防抖和最多 20 条结果。
+   - 选择搜索结果后关闭弹窗，通过现有统一会话导航直接打开对应会话，同时在左侧栏展开所属工作区、选中对应会话行，并将其滚动到可见位置；已可见时不移动。会话打开不等待侧栏数据加载，定位止于会话行，不附带展开或定位运行记录。
+   - 搜索定位以所属工作区下的会话行为目标，不受置顶副本影响。目标尚未加载时只补齐该会话的轻量行数据，不逐页加载全部历史；不更新最近活跃工作区或会话活动排序，保留其他工作区展开状态。
+   - 每次搜索选择只触发一次侧栏定位，同一结果再次选择可重新定位；后台刷新、重命名和身份补全不重复滚动。连续选择以最新意图为准；用户中途切换、主动滚动或手动收起目标工作区后，迟到数据不得抢回位置。
+   - 2026-10-27 实施验收：相关前端测试与生产构建通过；实际 App 的浏览器 API 夹具验证跨工作区、120 行窗口外目标和重复选择，目标正确选中并可见，新增摘要请求 1 次、Run 历史请求 0 次；侧栏收放不重放已消费定位。真实 EXE 与真实会话数据尚未执行端到端验证。
 3. 功能入口：Agent 管理、上下文管理、运行模式管理、定时任务
 4. 置顶区：用户置顶的会话，支持折叠/展开；与工作空间列表共用会话滚动区，整体使用对称上下分隔线包裹。展开后“置顶”标题 sticky 吸附在滚动区顶部，吸附范围受置顶容器约束，首个 workspace 标题到达时自然接替
 5. 工作空间区：多 workspace 并列，每个下含 task 列表；与置顶区连续滚动，标题 sticky 吸附；hover 显示 +（新建对话）和删除按钮
@@ -189,6 +201,8 @@
 - 会话侧栏启动分为四层接口：`get_conversation_sidebar_bootstrap` 只返回工作空间 identity、置顶 locator、最近工作空间和偏好；当前或用户展开的工作空间再通过 `get_conversation_task_page` 读取首批 Task 摘要；置顶区通过独立 `get_conversation_pinned_task_page` 读取有界摘要；只有 Workflow/AUTO Task 被展开时，才通过 `get_conversation_run_summary_page` 读取 Run 历史。基础身份、首批可见数据和逐项历史不得重新合并成一个原子接口。
 - 置顶 Task 摘要必须独立完成会话导航：点击 Task 使用当前摘要携带的 `projectId + taskUuid/taskId + latestRun.runId`，点击 Run 使用对应 `runId`，统一提交完整 `ConversationPage` locator；不得先从 workspace Task 页反查，也不得要求对应 workspace 已展开或加载。置顶区与 workspace 区的交互 scope 继续独立，导航 locator 只改变 canonical 页面，不合并两处列表的展开或高亮状态。
 - Task 页默认 24 项，使用 `updatedAt + taskId` 稳定 cursor；Run 页默认 20 项，继续使用递减 `runId` cursor。前端已合并 Task 最多保留 120 项、单 Task 已合并 Run 最多保留 100 项。继续加载只能追加去重后的下一页，不得形成无界 DOM、缓存或历史数组。
+- 搜索定位的目标不在普通 Task 分页窗口时，最多额外呈现一个当前定位会话的轻量行投影，沿用现有稳定身份与活动时间排序，不改变普通页 cursor；普通页包含目标后去重合一，离开当前会话或删除目标时清理，同一会话内导航保留，不积累历史定位行。当权威 `lastActivityAt` 前进使目标进入普通排序窗口时，目标立即转普通行并清理临时定位引用，普通行仍最多 120 条；重命名或未前进的活动状态不改变临时归属。该投影不加载运行历史列表，也不阻塞会话内容打开。
+- 额外目标仍由既有会话行集合统一管理，普通分页、活动事件、终态事件和任务快照都保持普通行最多 120 + 额外目标最多 1 的上限；其中活动时间前进是目标转普通行的唯一触发事实。目标已加载时不另读摘要，未加载时只按完整身份定点补读一行；重命名和状态变化复用普通行更新入口。
 - 每个层级必须独立表达 `not-loaded / loading / ready / ready-empty / error`。加载状态只存 `not-loaded / loading / ready / error`；`ready-empty` 在渲染时由 `ready`、当前集合为空且无后续 cursor 派生，不单独持久为状态，确保新建、删除、事件推送等任一写入集合的入口都能即时反映空态。尚未请求不得显示“暂无会话/暂无运行”，已有可用数据的后台刷新不得清空内容或把侧栏降回全局 loading；错误只影响对应 workspace、置顶区或 Run 历史，并在原位置提供重试。
 - App 级 `bootstrap` 是混合袋。语言、浏览器、外观等 preference 补丁和 updater 状态只更新对应偏好投影，不得重新触发会话侧栏 bootstrap，也不得重订会话事件订阅。侧栏身份加载只在会话壳首次就绪或用户显式重试时发生。
 - 同一资源同时只允许一个请求；所有异步提交都按资源 generation 校验。删除 Task、移除 workspace、置顶关系变化或 bootstrap 重置必须在发起 mutation 时作废相关 generation，迟到页不得把已删除实体或旧 pin 投影写回。Task 合并按 `projectId + taskUuid` 去重，只有历史缺少 UUID 时才退回 `taskId`；Run 合并在 Task identity 内按 `runId` 去重。

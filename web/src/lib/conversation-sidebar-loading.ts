@@ -6,11 +6,51 @@ import type {
   ConversationTaskPageVm,
   ConversationTaskRowVm,
 } from '@/types';
+import { parseTimestamp } from '@/lib/datetime';
 
 export const CONVERSATION_TASK_PAGE_SIZE = 24;
 export const CONVERSATION_RUN_PAGE_SIZE = 20;
 export const CONVERSATION_SIDEBAR_TASK_WINDOW = 120;
 export const CONVERSATION_SIDEBAR_RUN_WINDOW = 100;
+
+function orderTaskRows(tasks: ConversationTaskRowVm[]) {
+  return tasks.sort((left, right) =>
+    (parseTimestamp(right.lastActivityAt)?.getTime() ?? 0) - (parseTimestamp(left.lastActivityAt)?.getTime() ?? 0)
+    || right.taskId.localeCompare(left.taskId));
+}
+
+export function clearConversationLocatedTask(
+  sidebar: ConversationSidebarVm,
+  destination?: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
+): ConversationSidebarVm {
+  const target = sidebar.locatedTask;
+  if (!target) return sidebar;
+  if (destination && destination.projectId === target.projectId && destination.taskId === target.taskId
+    && (!destination.taskUuid || !target.taskUuid || destination.taskUuid === target.taskUuid)) return sidebar;
+  return {
+    ...sidebar,
+    locatedTask: null,
+    tasksByWorkspace: {
+      ...sidebar.tasksByWorkspace,
+      [target.projectId]: (sidebar.tasksByWorkspace[target.projectId] ?? []).filter((task) => !sameTask(task, target)),
+    },
+  };
+}
+
+export function locateConversationSidebarTask(sidebar: ConversationSidebarVm, task: ConversationTaskRowVm): ConversationSidebarVm {
+  if (!sidebar.workspaces.some((workspace) => workspace.projectId === task.projectId)) return sidebar;
+  const current = sidebar.tasksByWorkspace[task.projectId] ?? [];
+  if (current.some((candidate) => sameTask(candidate, task))) return sidebar;
+  const cleared = clearConversationLocatedTask(sidebar);
+  return {
+    ...cleared,
+    locatedTask: { projectId: task.projectId, taskId: task.taskId, taskUuid: task.taskUuid },
+    tasksByWorkspace: {
+      ...cleared.tasksByWorkspace,
+      [task.projectId]: orderTaskRows([...(cleared.tasksByWorkspace[task.projectId] ?? []), normalizeTask(task)]),
+    },
+  };
+}
 
 function taskKey(task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>) {
   return JSON.stringify([task.projectId, task.taskUuid ?? task.taskId]);
@@ -21,6 +61,26 @@ function sameTask(
   right: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
 ) {
   return taskKey(left) === taskKey(right);
+}
+
+/** New canonical activity makes a search-only row part of the ordinary window. */
+export function promoteConversationLocatedTask(
+  sidebar: ConversationSidebarVm,
+  task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
+): ConversationSidebarVm {
+  if (!sidebar.locatedTask || !sameTask(sidebar.locatedTask, task)) return sidebar;
+  const tasks = sidebar.tasksByWorkspace[task.projectId] ?? [];
+  return {
+    ...sidebar,
+    locatedTask: null,
+    tasksByWorkspace: {
+      ...sidebar.tasksByWorkspace,
+      [task.projectId]: [
+        ...tasks.filter((candidate) => sameTask(candidate, task)),
+        ...tasks.filter((candidate) => !sameTask(candidate, task)),
+      ].slice(0, CONVERSATION_SIDEBAR_TASK_WINDOW),
+    },
+  };
 }
 
 function mergeTasks(
@@ -107,6 +167,7 @@ export function applyConversationSidebarBootstrap(
   const next: ConversationSidebarVm = {
     ...sidebar,
     loadStatus: 'ready',
+    locatedTask: sidebar.locatedTask && projectIds.has(sidebar.locatedTask.projectId) ? sidebar.locatedTask : null,
     workspaces: bootstrap.workspaces,
     pinRefs: bootstrap.pinRefs,
     pinnedTasks: sidebar.pinnedTasks.filter((task) => projectIds.has(task.projectId)),
@@ -160,10 +221,16 @@ export function applyConversationTaskPage(
   if (!sidebar.workspaces.some((workspace) => workspace.projectId === page.projectId)) return sidebar;
   const incoming = page.tasks.map(normalizeTask);
   const current = sidebar.tasksByWorkspace[page.projectId] ?? [];
-  const tasks = append ? mergeTasks(current, incoming) : mergeTasks(incoming, current);
+  const target = sidebar.locatedTask?.projectId === page.projectId ? sidebar.locatedTask : null;
+  const extraRow = target ? incoming.find((task) => sameTask(task, target)) ?? current.find((task) => sameTask(task, target)) : null;
+  const ordinary = target ? current.filter((task) => !sameTask(task, target)) : current;
+  const tasks = append ? mergeTasks(ordinary, incoming) : mergeTasks(incoming, ordinary);
+  const targetInPage = target && tasks.some((task) => sameTask(task, target));
+  const visibleTasks = extraRow && !targetInPage ? orderTaskRows([...tasks, extraRow]) : tasks;
   const next: ConversationSidebarVm = {
     ...sidebar,
-    tasksByWorkspace: { ...sidebar.tasksByWorkspace, [page.projectId]: tasks },
+    locatedTask: targetInPage ? null : sidebar.locatedTask,
+    tasksByWorkspace: { ...sidebar.tasksByWorkspace, [page.projectId]: visibleTasks },
     workspaceTaskPages: {
       ...sidebar.workspaceTaskPages,
       [page.projectId]: {
@@ -268,6 +335,7 @@ export function removeConversationSidebarTask(
 ) {
   return {
     ...sidebar,
+    locatedTask: sidebar.locatedTask?.projectId === projectId && sidebar.locatedTask.taskId === taskId ? null : sidebar.locatedTask,
     pinnedTasks: sidebar.pinnedTasks.filter((task) => task.projectId !== projectId || task.taskId !== taskId),
     tasksByWorkspace: {
       ...sidebar.tasksByWorkspace,

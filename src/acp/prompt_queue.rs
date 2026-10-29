@@ -834,7 +834,7 @@ mod tests {
     fn queue_preserves_workspace_file_references_until_dispatch() {
         let temp = tempfile::TempDir::new().unwrap();
         let dir = attempt_dir(&temp);
-        let reference = crate::provider::PromptWorkspaceFileRef {
+        let reference = crate::provider::PromptWorkspaceFileRef::Workspace {
             project_id: "project-001".to_string(),
             relative_path: "src/WorkspaceFileTree.tsx".to_string(),
         };
@@ -883,7 +883,7 @@ mod tests {
                     },
                 }],
                 role: Some(role.clone()),
-                workspace_files: vec![crate::provider::PromptWorkspaceFileRef {
+                workspace_files: vec![crate::provider::PromptWorkspaceFileRef::Workspace {
                     project_id: "project-001".to_string(),
                     relative_path: "src/WorkspaceFileTree.tsx".to_string(),
                 }],
@@ -898,6 +898,43 @@ mod tests {
         assert_eq!(input.quotes, queued.quotes);
         assert_eq!(input.role.as_ref(), Some(&role));
         assert_eq!(input.workspace_files, queued.workspace_files);
+    }
+
+    #[test]
+    fn queue_persists_restores_and_dispatches_fixed_file_sources_without_rebasing() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let locator = serde_json::json!({"projectId":"p", "taskId":"t", "taskUuid":"uuid", "runId":"r",
+            "roundId":"round", "nodeId":"n", "attemptId":"a", "branchId":"root"});
+        let sources: Vec<crate::provider::PromptWorkspaceFileRef> = serde_json::from_value(serde_json::json!([
+            {"kind":"artifact", "locator":locator, "name":"review.json"},
+            {"kind":"turn-file", "locator":locator, "changeSetId":"set", "changeId":"change"},
+            {"kind":"git-file", "projectId":"p", "workspacePath":"D:/old-worktree", "relativePath":"src/a.ts"}
+        ])).unwrap();
+        let input = ConversationPromptInput {
+            display_text: String::new(),
+            quotes: vec![],
+            role: None,
+            workspace_files: sources.clone(),
+        };
+        let queued = enqueue_prompt(&dir, input.clone(), vec![]).unwrap();
+        assert_eq!(
+            load_prompt_queue(&dir).unwrap().items[0].workspace_files,
+            sources
+        );
+        let restored = take_queued_prompt(&dir, &queued.id).unwrap().0;
+        assert_eq!(
+            restored.to_conversation_prompt_input().workspace_files,
+            sources
+        );
+        let queued = enqueue_prompt(&dir, input, vec![]).unwrap();
+        assert_eq!(
+            claim_queued_prompt(&dir, &queued.id)
+                .unwrap()
+                .to_conversation_prompt_input()
+                .workspace_files,
+            sources
+        );
     }
 
     #[test]

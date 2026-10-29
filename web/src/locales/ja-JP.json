@@ -633,6 +633,8 @@
       "switchToTreeView": "フォルダーツリーに切り替える",
       "copyAbsolutePath": "絶対パスをコピーする",
       "copyRelativePath": "相対パスをコピーする",
+      "relativeToRunDirectory": "実行ディレクトリからの相対パス",
+      "relativeToAttachmentDirectory": "添付ディレクトリからの相対パス", "relativeToSourceWorkspace": "参照元の作業ディレクトリからの相対パス",
       "openWorkspaceFile": "ワークスペースファイルを開く",
       "referenceToConversation": "会話で参照",
       "removeWorkspaceReference": "ファイル参照を削除",

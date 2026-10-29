@@ -277,6 +277,7 @@ import {
   reorderConversationQueuedPrompts,
   restoreConversationQueuedPrompt,
   statAttachmentFiles,
+  resolveRightWorkspaceFileTarget,
   submitConversationPrompt,
   useConversationQueuedPrompt,
   setAcpSessionModel,
@@ -6161,9 +6162,15 @@ export function ACPChatDialog(
         return;
       }
       requestAnimationFrame(() => composerTextareaRef.current?.focus());
-      if (result.draft.attachmentPaths.length > 0) {
-        void statAttachmentFiles(result.draft.attachmentPaths).then((fileRefs) => {
-          const enrichedDraft = queuedPromptToAcpComposerDraft(result.draft, fileRefs);
+      const sources = (result.draft.workspaceFiles ?? []).filter(source => source.kind !== 'workspace');
+      if (result.draft.attachmentPaths.length > 0 || sources.length > 0) {
+        // At most ten file contexts. Enrich once so attachment and file metadata cannot overwrite each other.
+        void Promise.all([
+          result.draft.attachmentPaths.length > 0
+            ? statAttachmentFiles(result.draft.attachmentPaths).catch(() => []) : Promise.resolve([]),
+          Promise.all(sources.map(source => resolveRightWorkspaceFileTarget(source).catch(() => null))),
+        ]).then(([fileRefs, targets]) => {
+          const enrichedDraft = queuedPromptToAcpComposerDraft(result.draft, fileRefs, targets.filter(target => target !== null));
           if (!composerDraft.replaceIfUnchanged(restoredDraft, enrichedDraft)) {
             revokeAttachmentPreviewUrls(enrichedDraft.attachments);
           }
@@ -12663,6 +12670,7 @@ export function optimisticUserEvent(
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(workspaceFiles.length > 0 ? {
         workspaceFiles: workspaceFiles.map((file) => ({
+          source: file.source,
           projectId: file.projectId,
           relativePath: file.relativePath,
           ...(file.canonicalPath ? { canonicalPath: file.canonicalPath } : {}),

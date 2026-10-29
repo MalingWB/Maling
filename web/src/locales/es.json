@@ -633,6 +633,8 @@
       "switchToTreeView": "Cambiar a árbol de carpetas",
       "copyAbsolutePath": "Copiar ruta absoluta",
       "copyRelativePath": "Copiar ruta relativa",
+      "relativeToRunDirectory": "Relativa al directorio de ejecución",
+      "relativeToAttachmentDirectory": "Relativa al directorio de adjuntos", "relativeToSourceWorkspace": "Relativa al directorio de trabajo de origen",
       "openWorkspaceFile": "Abrir archivo del espacio de trabajo",
       "referenceToConversation": "Referenciar en la conversación",
       "removeWorkspaceReference": "Eliminar referencia al archivo",
