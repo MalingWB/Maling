@@ -1133,6 +1133,7 @@
       "runtime-offline": "运行时未就绪，请稍后重试。",
       "session-resume-failed": "会话恢复失败，将以全新任务重跑。",
       "task-not-found": "找不到该 Multica 任务。",
+      "upstream-pull-not-pending": "该拉取已结束，无需再选择。",
       "workspace-already-bound": "该工作空间已绑定。",
       "workspace-not-found": "找不到该工作空间绑定。"
     },
@@ -2965,6 +2966,8 @@
         "removeTask": "移出列表",
         "removeTaskHint": "仅从码灵侧列表移除，刷新后恢复",
         "removeTaskTerminalHint": "移出并删除本地完成记录，刷新不再显示",
+        "rerunTask": "重新执行",
+        "rerunBadge": "重新执行",
         "addWorkspace": "添加工作空间",
         "noWorkspacesBound": "尚未绑定工作空间",
         "status": {
@@ -3203,12 +3206,28 @@
         "notReady": "未就绪",
         "notReadyHint": "对应开发任务尚未完成，建议等待其完成后再执行"
       },
+      "issueStatus": {
+        "todo": "待办",
+        "backlog": "待办池"
+      },
       "column": {
         "empty": "暂无任务"
       },
       "account": {
         "connected": "已连接"
       }
+    },
+    "upstreamPull": {
+      "title": "上游交付说明待拉取",
+      "description": "「{{task}}」的 {{node}} 节点尚未拉取到上游工作项 {{issue}} 的交付说明。",
+      "fallbackNote": "60 秒内未选择将自动继续轮询拉取。",
+      "retry": "继续等待拉取",
+      "manual": "手动提供信息",
+      "skip": "跳过拉取",
+      "manualLabel": "交付说明",
+      "manualPlaceholder": "构建产物、部署环境等关键信息……",
+      "manualSubmit": "使用此信息继续",
+      "waitingNote": "已继续等待上游交付说明更新，期间可随时手动提供或跳过。"
     },
     "connection": {
       "title": "连接地址设置",

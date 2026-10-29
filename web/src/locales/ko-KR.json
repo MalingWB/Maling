@@ -1130,6 +1130,7 @@
       "runtime-offline": "런타임이 아직 준비되지 않았습니다. 잠시 후 다시 시도하세요.",
       "session-resume-failed": "세션 재개에 실패했습니다. 새 작업으로 다시 실행됩니다.",
       "task-not-found": "이 Multica 작업을 찾을 수 없습니다.",
+      "upstream-pull-not-pending": "이 가져오기는 이미 종료되었습니다. 선택이 필요하지 않습니다.",
       "workspace-already-bound": "이 워크스페이스는 이미 바인딩되어 있습니다.",
       "workspace-not-found": "이 워크스페이스 바인딩을 찾을 수 없습니다."
     },
@@ -2981,7 +2982,9 @@
         "emptyTitle": "{{source}}에 연결되지 않음",
         "removeTask": "목록에서 제거",
         "removeTaskHint": "이 쪽 목록에서만 제거되며, 새로 고치면 다시 나타납니다",
-        "removeTaskTerminalHint": "로컬 완료 기록을 함께 삭제하며, 새로 고쳐도 다시 나타나지 않습니다"
+        "removeTaskTerminalHint": "로컬 완료 기록을 함께 삭제하며, 새로 고쳐도 다시 나타나지 않습니다",
+        "rerunTask": "다시 실행",
+        "rerunBadge": "다시 실행"
       },
       "keepResident": "세션 상시 유지",
       "releaseResident": "상시 유지 해제",
@@ -3223,7 +3226,23 @@
       "readiness": {
         "notReady": "준비되지 않음",
         "notReadyHint": "해당 개발 작업이 아직 완료되지 않았습니다. 완료될 때까지 기다려 보세요"
+      },
+      "issueStatus": {
+        "todo": "할 일",
+        "backlog": "백로그"
       }
+    },
+    "upstreamPull": {
+      "title": "업스트림 산출물 설명 미수신",
+      "description": "\"{{task}}\"의 {{node}} 노드가 업스트림 작업 항목 {{issue}}의 산출물 설명을 아직 가져오지 못했습니다.",
+      "fallbackNote": "60초 내에 선택하지 않으면 자동으로 폴링을 재개합니다.",
+      "retry": "계속 대기",
+      "manual": "직접 입력",
+      "skip": "가져오기 건너뛰기",
+      "manualLabel": "산출물 설명",
+      "manualPlaceholder": "빌드 산출물, 배포 환경 등 핵심 정보…",
+      "manualSubmit": "이 내용으로 계속",
+      "waitingNote": "업스트림 산출물 메모 업데이트를 계속 기다리는 중입니다. 대기 중 언제든 수동 입력하거나 건너뛸 수 있습니다."
     }
   }
 }

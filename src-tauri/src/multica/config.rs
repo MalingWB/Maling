@@ -357,6 +357,8 @@ mod tests {
                 status: "completed".into(),
                 title: "T1".into(),
                 completed_at: "2026-08-11T00:00:00".into(),
+                issue_status_category: None,
+                issue_status_name: None,
             }],
             ..StateConfig::default()
         }
@@ -396,6 +398,9 @@ mod tests {
             status: "completed".into(),
             title: "T1".into(),
             completed_at: "2026-09-10T00:00:00Z".into(),
+            // 状态对账改造：issue 状态字段可缺省（对账首填前 None），roundtrip 不丢。
+            issue_status_category: Some("done".into()),
+            issue_status_name: None,
         };
         let json = serde_json::to_string(&task).unwrap();
         // camelCase 键名（与 StateConfig 其余索引一致）。
@@ -410,6 +415,9 @@ mod tests {
         )
         .unwrap();
         assert!(legacy.kind.is_none());
+        // 旧条目同样缺 issue 状态键 → 缺省 None（未对账，前端不渲染 issue 状态/重新执行入口）。
+        assert!(legacy.issue_status_category.is_none());
+        assert!(legacy.issue_status_name.is_none());
     }
 
     #[test]

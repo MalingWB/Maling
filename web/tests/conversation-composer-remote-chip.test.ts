@@ -3,8 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { shouldBackspaceClearRemoteBinding, type RemoteBindingBackspaceInput } from '../src/lib/conversation-composer-remote-chip';
 
-const composerSource = readFileSync(
-  fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)),
+const adornmentSource = readFileSync(
+  fileURLToPath(new URL('../src/components/conversation/ComposerLeadingAdornment.tsx', import.meta.url)),
   'utf8',
 );
 
@@ -77,8 +77,8 @@ describe('shouldBackspaceClearRemoteBinding', () => {
  * primary #2d2d2d 与 composer 背景 #1b1b1b 几乎重合，chip 文字/背景/边框全部不可辨认）。
  */
 describe('remote binding chip theme contrast', () => {
-  // chip 渲染段：从 remoteBinding 分支起、到 textarea 之前的 JSX（均为单行断言，CRLF 安全）。
-  const chipSegment = composerSource.split('remoteBinding ? (')[1]?.split('<PromptInputTextarea')[0] ?? '';
+  // chip 渲染段：从 remoteBinding 分支起到槽容器收尾的 JSX（均为单行断言，CRLF 安全）。
+  const chipSegment = adornmentSource.split('remoteBinding ? (')[1] ?? '';
 
   it('tints the chip from the guaranteed-contrast accent/accent-foreground pair', () => {
     expect(chipSegment).toContain('border-accent-foreground/15 bg-accent');

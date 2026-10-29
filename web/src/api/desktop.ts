@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteImageTrustVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaUpstreamPullEventVm, MulticaUpstreamPullPendingVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteImageTrustVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT } from './client';
 import {
@@ -10,6 +10,8 @@ import {
   GIT_STATE_CHANGED_EVENT,
   GITHUB_OPERATION_UPDATED_EVENT,
   INTERVENTION_NAVIGATE_EVENT,
+  MULTICA_UPSTREAM_PULL_PENDING_EVENT,
+  MULTICA_UPSTREAM_PULL_SETTLED_EVENT,
   PERSONAL_ANALYTICS_UPDATED_EVENT,
   REMOTE_SOURCE_SETTINGS_UPDATED_EVENT,
   REMOTE_TASKS_UPDATED_EVENT,
@@ -251,6 +253,21 @@ export const desktopApi: RuntimeApi = {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen(REMOTE_TASKS_UPDATED_EVENT, () => listener());
     return () => unlisten();
+  },
+  async subscribeUpstreamPullEvents(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlistenPending: UnlistenFn = await listen<MulticaUpstreamPullEventVm>(MULTICA_UPSTREAM_PULL_PENDING_EVENT, (event) => listener(event.payload));
+    const unlistenSettled: UnlistenFn = await listen<MulticaUpstreamPullEventVm>(MULTICA_UPSTREAM_PULL_SETTLED_EVENT, (event) => listener(event.payload));
+    return () => {
+      unlistenPending();
+      unlistenSettled();
+    };
+  },
+  decideUpstreamPull(taskId, nodeId, decision, manualText) {
+    return invokeCommand<void>('decide_upstream_pull', { taskId, nodeId, decision, manualText: manualText ?? null });
+  },
+  listUpstreamPullPendings(taskId: string) {
+    return invokeCommand<MulticaUpstreamPullPendingVm[]>('list_upstream_pull_pendings', { taskId });
   },
   async subscribeRemoteSourceSettingsUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
@@ -597,6 +614,12 @@ export const desktopApi: RuntimeApi = {
   },
   removeRemoteCompletedTask(remoteTaskId: string) {
     return invokeCommand<void>('remove_remote_completed_task', { remoteTaskId });
+  },
+  reconcileRemoteTaskStatuses() {
+    return invokeCommand<number>('reconcile_remote_task_statuses');
+  },
+  rerunRemoteTask(taskId: string) {
+    return invokeCommand<string>('rerun_remote_task', { taskId });
   },
   listServerMulticaWorkspaces() {
     return invokeCommand<MulticaServerWorkspaceVm[]>('list_server_multica_workspaces');

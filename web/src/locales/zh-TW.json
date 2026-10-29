@@ -1130,6 +1130,7 @@
       "runtime-offline": "執行時未就緒，請稍後重試。",
       "session-resume-failed": "工作階段還原失敗，將以全新任務重跑。",
       "task-not-found": "找不到該 Multica 任務。",
+      "upstream-pull-not-pending": "該拉取已結束，無需再選擇。",
       "workspace-already-bound": "該工作區已綁定。",
       "workspace-not-found": "找不到該工作區綁定。"
     },
@@ -2981,7 +2982,9 @@
         "emptyTitle": "尚未連接{{source}}",
         "removeTask": "移出清單",
         "removeTaskHint": "僅從本側清單移除，重新整理後會恢復",
-        "removeTaskTerminalHint": "移出並刪除本機完成記錄，重新整理後不再顯示"
+        "removeTaskTerminalHint": "移出並刪除本機完成記錄，重新整理後不再顯示",
+        "rerunTask": "重新執行",
+        "rerunBadge": "重新執行"
       },
       "keepResident": "常駐工作階段",
       "releaseResident": "解除常駐",
@@ -3223,7 +3226,23 @@
       "readiness": {
         "notReady": "未就緒",
         "notReadyHint": "對應開發任務尚未完成，建議等待其完成後再執行"
+      },
+      "issueStatus": {
+        "todo": "待辦",
+        "backlog": "待辦池"
       }
+    },
+    "upstreamPull": {
+      "title": "上游交付說明待拉取",
+      "description": "「{{task}}」的 {{node}} 節點尚未拉取到上游工作項 {{issue}} 的交付說明。",
+      "fallbackNote": "60 秒內未選擇將自動繼續輪詢拉取。",
+      "retry": "繼續等待拉取",
+      "manual": "手動提供資訊",
+      "skip": "跳過拉取",
+      "manualLabel": "交付說明",
+      "manualPlaceholder": "構建產物、部署環境等關鍵資訊……",
+      "manualSubmit": "使用此資訊繼續",
+      "waitingNote": "已繼續等待上游交付說明更新，期間可隨時手動提供或跳過。"
     }
   }
 }

@@ -107,10 +107,11 @@ use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
 use gold_band::storage::{GoldBandPaths, configure_storage_paths};
 use multica::commands::{
-    add_multica_workspace, cancel_remote_task, get_remote_task_requirement, get_remote_tasks,
-    list_remote_skills, list_server_multica_workspaces, pull_remote_skills,
+    add_multica_workspace, cancel_remote_task, decide_upstream_pull, get_remote_task_requirement,
+    get_remote_tasks, list_remote_skills, list_server_multica_workspaces,
+    list_upstream_pull_pendings, pull_remote_skills, reconcile_remote_task_statuses,
     recover_remote_work_dir_sessions, remove_multica_workspace, remove_remote_completed_task,
-    set_active_multica_workspace, start_remote_conversation_run,
+    rerun_remote_task, set_active_multica_workspace, start_remote_conversation_run,
 };
 // Heartbeat signals are projected by the RuntimeLifecycleBus metrics subscriber.
 use image_actions::{copy_image_to_clipboard, save_image_as};
@@ -270,6 +271,15 @@ fn run() -> anyhow::Result<()> {
             state.install_scheduled_service(std::sync::Arc::new(
                 scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
             ))?;
+            // M5-cf：上游交付解析器（`$upstream.completion-output`）——AppHandle 就绪即可装入，
+            // 须在下方 `state.app()` 组装之前，否则首个 App 不带解析器。
+            state.install_upstream_output_resolver(std::sync::Arc::new(
+                multica::upstream::MulticaUpstreamResolver::new(app.handle().clone()),
+            ))?;
+            // M5-cg：完成输出协议区段解析器（按节点身份渲染协议变体）——同上，先装后组装。
+            state.install_completion_protocol_section_resolver(std::sync::Arc::new(
+                multica::upstream::MulticaCompletionProtocolResolver::new(app.handle().clone()),
+            ))?;
             if let Ok(runtime_app) = state.app() {
                 let im_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -279,6 +289,9 @@ fn run() -> anyhow::Result<()> {
                         warn!(error = %error, "IM runtime failed to initialize");
                     }
                 });
+                // M5-cj：completion_output 写序队列必须先于 lifecycle 订阅器装配（订阅器
+                // 事件回调会入队快照/终态作业，队列句柄缺失 = 作业被丢）。
+                multica::bridge::init_completion_output_queue(app.handle().clone());
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
                 // home repo 自愈（单一 repo、有界）：远程来源 work_dir 定点自愈移入下方 spawn_blocking
                 // 恢复管线（P2），不再阻塞窗口启动关键路径。
@@ -585,7 +598,11 @@ fn run() -> anyhow::Result<()> {
             get_remote_task_requirement,
             start_remote_conversation_run,
             cancel_remote_task,
+            decide_upstream_pull,
+            list_upstream_pull_pendings,
             remove_remote_completed_task,
+            reconcile_remote_task_statuses,
+            rerun_remote_task,
             list_server_multica_workspaces,
             list_remote_skills,
             pull_remote_skills,

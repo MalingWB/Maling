@@ -16,6 +16,7 @@ vi.mock('lucide-react', () => ({
   Ban: () => null,
   Loader2: () => null,
   Play: () => null,
+  RotateCcw: () => null,
   Trash2: () => null,
 }));
 
@@ -47,6 +48,10 @@ import {
   bucketTasksByStatus,
   visibleIssueKind,
   isTaskNotReady,
+  canRerunRemoteTask,
+  showsIssueStatusChip,
+  RERUN_ELIGIBLE_ISSUE_CATEGORIES,
+  ISSUE_STATUS_CHIP_CATEGORIES,
   BOARD_COLUMNS,
   REMOTE_STATUS_TONE,
   REMOTE_ISSUE_KIND_TONE,
@@ -68,6 +73,9 @@ function task(overrides: Partial<RemoteTaskVm> = {}): RemoteTaskVm {
     kind: null,
     readiness: null,
     attachments: [],
+    issueStatusCategory: null,
+    issueStatusName: null,
+    rerunOfTaskId: null,
     ...overrides,
   };
 }
@@ -160,11 +168,54 @@ describe('remote issue kind badge and not-ready predicate', () => {
   });
 });
 
+// 重新执行判定（multica 任务重试改造）：终态 + 对账回填的 issue 状态分类闭集。
+describe('canRerunRemoteTask (rerun eligibility)', () => {
+  it('allows rerun only for terminal tasks whose reconciled issue category is todo/backlog/done', () => {
+    for (const category of RERUN_ELIGIBLE_ISSUE_CATEGORIES) {
+      expect(canRerunRemoteTask({ status: 'completed', issueStatusCategory: category })).toBe(true);
+      expect(canRerunRemoteTask({ status: 'failed', issueStatusCategory: category })).toBe(true);
+    }
+  });
+
+  it('rejects in_progress (issue 正被他端执行，multica 按 issue+agent 串行派发)', () => {
+    expect(canRerunRemoteTask({ status: 'completed', issueStatusCategory: 'in_progress' })).toBe(false);
+    expect(canRerunRemoteTask({ status: 'failed', issueStatusCategory: 'in_progress' })).toBe(false);
+  });
+
+  it('rejects null category (未对账 / 旧 server batch-status 404 降级) and non-terminal tasks', () => {
+    // 未对账（null）→ 不可：不猜 issue 状态。
+    expect(canRerunRemoteTask({ status: 'completed', issueStatusCategory: null })).toBe(false);
+    expect(canRerunRemoteTask({ status: 'failed', issueStatusCategory: null })).toBe(false);
+    // active 行（queued/running）不论 issue 状态都不给重跑入口。
+    expect(canRerunRemoteTask({ status: 'queued', issueStatusCategory: 'todo' })).toBe(false);
+    expect(canRerunRemoteTask({ status: 'running', issueStatusCategory: 'todo' })).toBe(false);
+  });
+});
+
+// issue 状态标记谓词：终态 + todo/backlog（回退待办场景）；done/canceled/未对账不渲染。
+describe('showsIssueStatusChip (issue 状态标记)', () => {
+  it('shows the chip only for terminal tasks with a todo/backlog issue category', () => {
+    expect(ISSUE_STATUS_CHIP_CATEGORIES).toEqual(['todo', 'backlog']);
+    expect(showsIssueStatusChip({ status: 'completed', issueStatusCategory: 'todo' })).toBe(true);
+    expect(showsIssueStatusChip({ status: 'failed', issueStatusCategory: 'backlog' })).toBe(true);
+  });
+
+  it('hides the chip for done (与任务终态一致，无提示价值), in_progress, canceled, null and active tasks', () => {
+    expect(showsIssueStatusChip({ status: 'completed', issueStatusCategory: 'done' })).toBe(false);
+    expect(showsIssueStatusChip({ status: 'completed', issueStatusCategory: 'in_progress' })).toBe(false);
+    expect(showsIssueStatusChip({ status: 'completed', issueStatusCategory: 'canceled' })).toBe(false);
+    expect(showsIssueStatusChip({ status: 'completed', issueStatusCategory: null })).toBe(false);
+    expect(showsIssueStatusChip({ status: 'queued', issueStatusCategory: 'todo' })).toBe(false);
+    expect(showsIssueStatusChip({ status: 'running', issueStatusCategory: 'backlog' })).toBe(false);
+  });
+});
+
 async function renderBoard(props: {
   tasks: RemoteTaskVm[];
   busyTaskId?: string | null;
   onPrepare?: (t: RemoteTaskVm) => void;
   onCancel?: (t: RemoteTaskVm) => void;
+  onRerun?: (t: RemoteTaskVm) => void;
   onRemove?: (t: RemoteTaskVm) => void;
   onSelectRun?: (p: string, t: string, r: string) => void;
 }) {
@@ -173,6 +224,7 @@ async function renderBoard(props: {
   const root = createRoot(container);
   const onPrepare = props.onPrepare ?? vi.fn();
   const onCancel = props.onCancel ?? vi.fn();
+  const onRerun = props.onRerun ?? vi.fn();
   const onRemove = props.onRemove ?? vi.fn();
   const onSelectRun = props.onSelectRun ?? vi.fn();
   await act(async () => {
@@ -182,12 +234,13 @@ async function renderBoard(props: {
         busyTaskId={props.busyTaskId ?? null}
         onPrepare={onPrepare}
         onCancel={onCancel}
+        onRerun={onRerun}
         onRemove={onRemove}
         onSelectRun={onSelectRun}
       />,
     );
   });
-  return { container, onPrepare, onCancel, onRemove, onSelectRun };
+  return { container, onPrepare, onCancel, onRerun, onRemove, onSelectRun };
 }
 
 describe('RemoteTaskBoard render', () => {
@@ -375,5 +428,93 @@ describe('RemoteTaskBoard render', () => {
       'button[aria-label="conversation.sidebar.remoteTasks.removeTask"]',
     ) as HTMLButtonElement;
     expect(removeBtn.disabled).toBe(true);
+  });
+
+  // 重新执行入口（multica 任务重试改造）：终态 + 对账回填的 issue 分类允许时渲染并转发 onRerun。
+  it('renders a rerun button for a terminal task with an eligible issue category and forwards onRerun', async () => {
+    const onRerun = vi.fn();
+    const { container } = await renderBoard({
+      tasks: [task({ id: 'c', status: 'completed', title: 'Done', issueStatusCategory: 'todo' })],
+      onRerun,
+    });
+    const rerunBtn = container.querySelector(
+      'button[aria-label="conversation.sidebar.remoteTasks.rerunTask"]',
+    ) as HTMLButtonElement;
+    expect(rerunBtn).toBeTruthy();
+    expect(rerunBtn.disabled).toBe(false);
+    await act(async () => { rerunBtn.click(); });
+    expect(onRerun).toHaveBeenCalledTimes(1);
+    expect((onRerun.mock.calls[0] as [RemoteTaskVm])[0].id).toBe('c');
+  });
+
+  it('renders no rerun button when the issue category is un-reconciled or ineligible', async () => {
+    const { container } = await renderBoard({
+      tasks: [
+        // 未对账（旧 server / 对账前）：不猜 issue 状态 → 无入口。
+        task({ id: 'a', status: 'completed', title: 'Unreconciled' }),
+        // in_progress：issue 正被他端执行（multica 按 issue+agent 串行）→ 无入口。
+        task({ id: 'b', status: 'failed', title: 'InProgressElsewhere', issueStatusCategory: 'in_progress' }),
+        // active 行（queued/running）不论 issue 状态 → 无入口。
+        task({ id: 'd', status: 'queued', title: 'Queued', issueStatusCategory: 'todo' }),
+      ],
+    });
+    expect(container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.rerunTask"]')).toBeNull();
+  });
+
+  it('disables the rerun button while the card is busy', async () => {
+    const { container } = await renderBoard({
+      tasks: [task({ id: 'c', status: 'failed', title: 'Boom', issueStatusCategory: 'done' })],
+      busyTaskId: 'c',
+    });
+    const rerunBtn = container.querySelector(
+      'button[aria-label="conversation.sidebar.remoteTasks.rerunTask"]',
+    ) as HTMLButtonElement;
+    expect(rerunBtn).toBeTruthy();
+    expect(rerunBtn.disabled).toBe(true);
+  });
+
+  // rerun 产生的新任务（queued + rerunOfTaskId）渲染「重新执行」徽标（multica 归组语义的看板投影）。
+  it('renders the rerun badge on a queued task carrying rerun lineage, not on plain queued tasks', async () => {
+    const { container } = await renderBoard({
+      tasks: [
+        task({ id: 'n', status: 'queued', title: 'NewRun', rerunOfTaskId: 'src-1' }),
+        task({ id: 'p', status: 'queued', title: 'PlainQueued' }),
+      ],
+    });
+    expect(container.textContent).toContain('conversation.sidebar.remoteTasks.rerunBadge');
+    // 仅 rerun 血缘行渲染徽标：两行都在板，但徽标 key 只出现一次（普通 queued 行不渲染）。
+    expect(container.textContent?.match(/conversation\.sidebar\.remoteTasks\.rerunBadge/g)?.length).toBe(1);
+  });
+
+  // issue 状态标记（对账回填）：todo/backlog 分类文案；自定义状态名优先于分类文案。
+  it('renders the issue-status chip with the category label for a todo task', async () => {
+    const { container } = await renderBoard({
+      tasks: [task({ id: 'c', status: 'completed', title: 'Done', issueStatusCategory: 'backlog' })],
+    });
+    expect(container.textContent).toContain('remote.taskManagement.issueStatus.backlog');
+  });
+
+  it('prefers the reconciled custom issue status name over the category label', async () => {
+    const { container } = await renderBoard({
+      tasks: [
+        task({
+          id: 'c', status: 'failed', title: 'Boom',
+          issueStatusCategory: 'todo', issueStatusName: '  待验证  ',
+        }),
+      ],
+    });
+    expect(container.textContent).toContain('待验证');
+    expect(container.textContent).not.toContain('remote.taskManagement.issueStatus.todo');
+  });
+
+  it('renders no issue-status chip for done / un-reconciled terminal tasks', async () => {
+    const { container } = await renderBoard({
+      tasks: [
+        task({ id: 'a', status: 'completed', title: 'DoneIssue', issueStatusCategory: 'done' }),
+        task({ id: 'b', status: 'completed', title: 'Unreconciled' }),
+      ],
+    });
+    expect(container.textContent).not.toContain('remote.taskManagement.issueStatus.todo');
+    expect(container.textContent).not.toContain('remote.taskManagement.issueStatus.backlog');
   });
 });

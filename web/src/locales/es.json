@@ -1130,6 +1130,7 @@
       "runtime-offline": "Runtime no está listo. Vuelva a intentarlo en breve.",
       "session-resume-failed": "La reanudación de la sesión falló. Se iniciará una ejecución nueva.",
       "task-not-found": "No se pudo encontrar esta tarea de Multica.",
+      "upstream-pull-not-pending": "Esta obtención ya finalizó; no se necesita elegir.",
       "workspace-already-bound": "Este espacio de trabajo ya está vinculado.",
       "workspace-not-found": "No se pudo encontrar este vínculo de espacio de trabajo."
     },
@@ -2981,7 +2982,9 @@
         "emptyTitle": "No conectado a {{source}}",
         "removeTask": "Quitar de la lista",
         "removeTaskHint": "Solo se quita de la lista de este lado; al actualizar vuelve a aparecer",
-        "removeTaskTerminalHint": "Elimina el registro local de finalización; no volverá a aparecer al actualizar"
+        "removeTaskTerminalHint": "Elimina el registro local de finalización; no volverá a aparecer al actualizar",
+        "rerunTask": "Reejecutar",
+        "rerunBadge": "Reejecutar"
       },
       "keepResident": "Mantener la sesión activa",
       "releaseResident": "Permitir el cierre de la sesión",
@@ -3223,7 +3226,23 @@
       "readiness": {
         "notReady": "No listo",
         "notReadyHint": "La tarea de desarrollo correspondiente aún no está terminada; considere esperarla"
+      },
+      "issueStatus": {
+        "todo": "Pendiente",
+        "backlog": "Backlog"
       }
+    },
+    "upstreamPull": {
+      "title": "Entrega del upstream aún no obtenida",
+      "description": "El nodo {{node}} de «{{task}}» aún no ha obtenido la entrega del elemento de trabajo upstream {{issue}}.",
+      "fallbackNote": "Si no se elige en 60 segundos, el sondeo continúa automáticamente.",
+      "retry": "Seguir esperando",
+      "manual": "Proporcionar manualmente",
+      "skip": "Omitir obtención",
+      "manualLabel": "Entrega",
+      "manualPlaceholder": "Información clave como artefactos construidos y entornos de despliegue…",
+      "manualSubmit": "Continuar con esto",
+      "waitingNote": "Seguimos esperando la actualización de la nota de entrega del upstream. Puede proporcionarla manualmente o omitirla en cualquier momento."
     }
   }
 }

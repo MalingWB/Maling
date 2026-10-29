@@ -4,6 +4,7 @@
 //! - [`client`]: reqwest HTTP client + 指数退避重试 + 全部 multica API 调用
 //! - [`config`]: 配置 VM + pat/daemon_id getter + `multica_settings` 聚合 + base_url 容错
 //! - [`error`]:  `MulticaError` → `CommandErrorVm` 映射（code 前缀 `multica.*`）
+//! - [`markdown_source`]: 需求正文 markdown 转义解码（tiptap 序列化源码 → 纯文本，M5-bx）
 //!
 //! 后续里程碑追加：
 //! - `loop_`（M2）：启动全量 register / 常驻 15s 心跳（连接后即持续）/ recover-orphans / 取消检测
@@ -24,7 +25,9 @@ pub mod error;
 pub mod handoff;
 pub mod local_skills;
 pub mod loop_;
+pub mod markdown_source;
 pub mod state;
+pub mod upstream;
 pub mod vm;
 
 pub use client::MulticaClient;

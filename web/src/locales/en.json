@@ -1133,6 +1133,7 @@
       "runtime-offline": "Runtime is not ready. Please try again shortly.",
       "session-resume-failed": "Session resume failed. It will rerun as a new task.",
       "task-not-found": "This multica task could not be found.",
+      "upstream-pull-not-pending": "This pull has already finished; no choice is needed.",
       "workspace-already-bound": "This workspace is already bound.",
       "workspace-not-found": "This workspace binding could not be found."
     },
@@ -2965,6 +2966,8 @@
         "removeTask": "Remove from list",
         "removeTaskHint": "Removed on this side only; refresh restores it",
         "removeTaskTerminalHint": "Removes the local completion record; it will not reappear on refresh",
+        "rerunTask": "Re-run",
+        "rerunBadge": "Re-run",
         "addWorkspace": "Add Workspace",
         "noWorkspacesBound": "No workspaces bound",
         "status": {
@@ -3203,12 +3206,28 @@
         "notReady": "Not ready",
         "notReadyHint": "The matching dev task is not done yet; consider waiting for it"
       },
+      "issueStatus": {
+        "todo": "To do",
+        "backlog": "Backlog"
+      },
       "column": {
         "empty": "No tasks"
       },
       "account": {
         "connected": "Connected"
       }
+    },
+    "upstreamPull": {
+      "title": "Upstream deliverable not pulled yet",
+      "description": "Node {{node}} of \"{{task}}\" has not pulled the deliverable handoff from upstream work item {{issue}}.",
+      "fallbackNote": "If no choice is made within 60 seconds, polling resumes automatically.",
+      "retry": "Keep waiting",
+      "manual": "Provide manually",
+      "skip": "Skip pull",
+      "manualLabel": "Deliverable handoff",
+      "manualPlaceholder": "Key facts such as built artifacts and deployed environments…",
+      "manualSubmit": "Continue with this",
+      "waitingNote": "Still waiting for the upstream completion note to update. You can provide it manually or skip at any time."
     },
     "connection": {
       "title": "Connection address settings",

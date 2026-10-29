@@ -22,6 +22,58 @@ pub struct MulticaRuntimeState {
     /// 跑完整完成路径（重复 complete HTTP + 冗余日志/通知）。认领保证完成路径单飞：先到者
     /// 进入，后到者整体退出；认领随 finalize 终结（成功/失败皆走 finalize，见 bridge）。
     pub completing: HashSet<String>,
+    /// 对账进行中标记（状态对账改造，单飞）：batch-status 对账由页面 mount / 30s 周期 /
+    /// 手动刷新三处触发，慢响应期间可能再次触发——重复对账虽幂等（值 diff 后写），但重复
+    /// 扇出 batch 请求无意义。全局单飞（对账无任务粒度，与 `completing` 的按 id 认领不同）。
+    pub reconcile_in_flight: bool,
+    /// issue → 最近一次即时上送的 `completion_output` 值（M5-cf 工作流阶段性上传的发送侧
+    /// 去重投影：值未变即跳过 PUT，逐 turn 触发下不重发）。
+    ///
+    /// 权威值在服务端 `issue.completion_output`（后写胜）；本地仅内存缓存，进程重启丢失
+    /// 无害（最坏同值重发一次，PUT 幂等）。任务终态时随 [`MulticaRuntimeState::drop_active_run`]
+    /// 同生命周期清理（见 bridge `finalize_terminal`）。
+    pub issue_output_pushed: HashMap<String, String>,
+    /// 等待用户决策的上游拉取槽（M5-ch 决策点）：键 `"{local_run_id}/{node_id}"`。
+    ///
+    /// 拉取解析器首拉空值时注册（发 pending 事件给前端），命令侧写入决策并 notify；resolve
+    /// 结束（任意路径）或 run 终态时移除。与 `issue_output_pushed` 同为 run 级内存态。
+    pub upstream_pull_decisions: HashMap<String, UpstreamPullPending>,
+    /// run → 获准产出 completion-output 的节点集（M5-cj 上传侧门禁的事实源）。
+    ///
+    /// 装配侧协议解析器按节点身份判定时顺手记入（与模型所见同源同刻，零存储反查）；
+    /// 上传端（阶段性快照）按成员资格放行。run 终态时随 [`MulticaRuntimeState::drop_active_run`]
+    /// 同生命周期清理。旧版冻结段任务（M5-cg 前旧 run 重放）不经过解析器 → 集合为空 →
+    /// 快照上送一律拒绝（开发阶段破坏式更新，不做兼容放行）。
+    pub designated_output_nodes: HashMap<String, HashSet<String>>,
+}
+
+/// 上游拉取的等待决策（M5-ch）：父 `completion_output` 首拉为空时交还控制权。
+#[derive(Debug, Clone)]
+pub enum UpstreamPullDecision {
+    /// 继续等待（恢复轮询，占用同一总预算）。
+    Retry,
+    /// 跳过拉取，用户手动提供交付说明文本（已 trim 非空）。
+    Manual(String),
+    /// 跳过拉取，直接继续执行。
+    Skip,
+}
+
+/// 单个等待决策的拉取槽：notify 唤醒等待方，decision 为已到达的决策（None = 无人决策）。
+///
+/// `parent_issue_id` 供水合查询 reconstruct 事件载荷（M5-cj 重进会话恢复卡片）；
+/// `retried` = 用户已选过「继续等待」（M5-cj：槽不消费，卡片转等待态、manual/skip 仍可迟到）。
+pub struct UpstreamPullPending {
+    pub notify: Arc<tokio::sync::Notify>,
+    pub decision: Option<UpstreamPullDecision>,
+    pub parent_issue_id: String,
+    pub retried: bool,
+}
+
+/// 水合查询行（M5-cj `list_upstream_pull_pendings`）：reconstruct pending 事件载荷所需字段。
+pub struct UpstreamPullPendingRow {
+    pub node_id: String,
+    pub parent_issue_id: String,
+    pub retried: bool,
 }
 
 /// 单个在飞 remote task 的本地映射。
@@ -58,6 +110,9 @@ pub struct ActiveRemoteRun {
 /// 门控命中的 run 模式字面量（`ConversationCreateInputVm.run_mode` 的 "direct" 值，
 /// 见 `view_models_conversation.rs` / `scheduled_content_snapshot` 的模式映射）。
 pub const REMOTE_RUN_MODE_DIRECT: &str = "direct";
+
+/// 工作流 run 模式字面量（同上，M5-cf 阶段性上传的作用域判定）。
+pub const REMOTE_RUN_MODE_WORKFLOW: &str = "workflow";
 
 /// 共享句柄：loop 创建（managed），bridge（M4）取同一份。
 pub type SharedMulticaState = Arc<Mutex<MulticaRuntimeState>>;
@@ -168,8 +223,25 @@ impl MulticaRuntimeState {
     }
 
     /// 移除 remote task 映射（终态/取消后调用），返回被移除项供副作用使用。
+    ///
+    /// 同生命周期清理该 issue 的即时上送去重缓存（`issue_output_pushed`）：任务终态后该键
+    /// 不再有消费方，遗留只会让 rerun 后的首个相同块被误判「已发送」而跳过（跳过无害——
+    /// 完成路径仍会携带，但清理更诚实）。
     pub fn drop_active_run(&mut self, remote_task_id: &str) -> Option<ActiveRemoteRun> {
-        self.active_runs.remove(remote_task_id)
+        let dropped = self.active_runs.remove(remote_task_id);
+        if let Some(run) = &dropped {
+            if let Some(issue) = run.issue_id.as_deref().filter(|s| !s.trim().is_empty()) {
+                self.issue_output_pushed.remove(issue);
+            }
+            // M5-ch：run 终态时同生命周期清掉该 run 的拉取决策槽（键前缀 "{local_run_id}/"），
+            // 防止 resolver 被中断后槽泄漏（后续同 run id 重跑不得继承旧槽）；M5-cj：产出
+            // 资格集同生命周期清理（重跑不得继承旧资格）。
+            let prefix = format!("{}/", run.local_run_id);
+            self.upstream_pull_decisions
+                .retain(|key, _| !key.starts_with(&prefix));
+            self.designated_output_nodes.remove(&run.local_run_id);
+        }
+        dropped
     }
 
     /// 按 (local_task_id, local_run_id) 反查在飞 remote task（bridge 事件归属键）。
@@ -191,11 +263,46 @@ impl MulticaRuntimeState {
         self.active_runs.get(remote_task_id).cloned()
     }
 
+    /// 按本地 task display id 反查在飞映射（M5-cf 拉取解析器用）。
+    ///
+    /// 一个本地任务同一时刻至多一个在飞 remote run（claim 单飞）；run 维度未知（引擎回调
+    /// 只携带 task/node）故按任务级扫描。返回 `(remote_task_id, run 克隆)`。
+    pub fn find_active_run_by_task(
+        &self,
+        local_task_id: &str,
+    ) -> Option<(String, ActiveRemoteRun)> {
+        self.active_runs
+            .iter()
+            .find(|(_, r)| r.local_task_id == local_task_id)
+            .map(|(rid, r)| (rid.clone(), r.clone()))
+    }
+
     /// 原子认领完成路径（M5-bp 双事件竞态守卫）。
     ///
     /// 返回 false = 已有进行中的完成（另一事件先到认领），调用方须整体退出（complete/
     /// finalize/通知全部由认领方负责）。按 remote_task_id 粒度，不同任务互不阻塞。
-    pub fn begin_completion(&mut self, remote_task_id: &str) -> bool {
+    /// 原子「映射复验 + 认领」完成路径（M5-bp 双事件竞态守卫 + M5-cj 加强）。
+    ///
+    /// M5-cj 背景：写序队列把 run 收尾完成路径（`CompletionOutputJob::CompleteRun`）延迟到
+    /// 消费者执行，与 turn 收尾门控（旁路 spawn）的到达顺序不再同步。认领随 finalize 释放
+    /// （`end_completion`）——他方可在本方「复验映射 → 认领」两步之间完成并释放认领，单独
+    /// 认领成功不再等价于「无人完成过」，会二次 complete 已终态任务。故复验与认领必须在
+    /// **同一次加锁**内完成：映射（仍在本 run 名下，按 remote 键 + 双 local 身份匹配，防同
+    /// remote 键被新 run 重注册后误放行）与认领任一不满足 → false，调用方整体退出
+    /// （终态/历史/刷新均由认领方负责）。按 remote_task_id 粒度，不同任务互不阻塞。
+    pub fn begin_completion_for_run(
+        &mut self,
+        remote_task_id: &str,
+        local_task_id: &str,
+        local_run_id: &str,
+    ) -> bool {
+        let mapping_alive = self
+            .active_runs
+            .get(remote_task_id)
+            .is_some_and(|r| r.local_task_id == local_task_id && r.local_run_id == local_run_id);
+        if !mapping_alive {
+            return false;
+        }
         self.completing.insert(remote_task_id.to_string())
     }
 
@@ -204,6 +311,118 @@ impl MulticaRuntimeState {
     pub fn end_completion(&mut self, remote_task_id: &str) {
         self.completing.remove(remote_task_id);
     }
+
+    /// 原子认领对账（状态对账改造）：返回 false = 已有对账在飞，调用方整体退出
+    /// （结果与广播由在飞方负责）。全局粒度——对账操作无 per-task 语义。
+    pub fn begin_reconcile(&mut self) -> bool {
+        if self.reconcile_in_flight {
+            false
+        } else {
+            self.reconcile_in_flight = true;
+            true
+        }
+    }
+
+    /// 终结对账认领（命令收尾统一调用，成功/失败皆然；幂等）。
+    pub fn end_reconcile(&mut self) {
+        self.reconcile_in_flight = false;
+    }
+
+    /// 注册上游拉取决策槽（M5-ch）：首拉空值时由拉取解析器调用，返回 notify 句柄供
+    /// select 等待。`parent_issue_id` 随槽保存，供水合查询 reconstruct 载荷（M5-cj）。
+    /// 同键已存在时覆盖（同 run 同节点并发 resolve 不存在——claim 单飞；
+    /// 覆盖仅作异常残留防御）。
+    pub fn register_upstream_pull(
+        &mut self,
+        local_run_id: &str,
+        node_id: &str,
+        parent_issue_id: &str,
+    ) -> Arc<tokio::sync::Notify> {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        self.upstream_pull_decisions.insert(
+            upstream_pull_key(local_run_id, node_id),
+            UpstreamPullPending {
+                notify: notify.clone(),
+                decision: None,
+                parent_issue_id: parent_issue_id.to_string(),
+                retried: false,
+            },
+        );
+        notify
+    }
+
+    /// 写入决策并返回该槽的 notify 句柄（锁外 notify_one 唤醒等待方）；无槽 = 决策迟到
+    /// （resolve 已结束或 run 已终态），返回 None 由命令侧报结构化错误。
+    /// Retry 同时置 `retried`（槽不消费——M5-cj 等待态水合与迟到 manual/skip 的依据）。
+    pub fn decide_upstream_pull(
+        &mut self,
+        local_run_id: &str,
+        node_id: &str,
+        decision: UpstreamPullDecision,
+    ) -> Option<Arc<tokio::sync::Notify>> {
+        let slot = self
+            .upstream_pull_decisions
+            .get_mut(&upstream_pull_key(local_run_id, node_id))?;
+        if matches!(decision, UpstreamPullDecision::Retry) {
+            slot.retried = true;
+        }
+        slot.decision = Some(decision);
+        Some(slot.notify.clone())
+    }
+
+    /// 列出某 run 当前待决（含等待态）的拉取槽（M5-cj 水合查询）：重进会话后恢复决策
+    /// 卡片的数据源。槽序不定，调用方按需排序。
+    pub fn list_upstream_pull_pendings(&self, local_run_id: &str) -> Vec<UpstreamPullPendingRow> {
+        let prefix = format!("{local_run_id}/");
+        self.upstream_pull_decisions
+            .iter()
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .map(|(key, slot)| UpstreamPullPendingRow {
+                node_id: key[prefix.len()..].to_string(),
+                parent_issue_id: slot.parent_issue_id.clone(),
+                retried: slot.retried,
+            })
+            .collect()
+    }
+
+    /// 记录节点获准产出 completion-output（M5-cj 上传侧门禁事实源）：装配侧协议解析器
+    /// 在判定为 Final/Staged 时调用。幂等。
+    pub fn record_designated_output_node(&mut self, local_run_id: &str, node_id: &str) {
+        self.designated_output_nodes
+            .entry(local_run_id.to_string())
+            .or_default()
+            .insert(node_id.to_string());
+    }
+
+    /// 节点是否获准产出（M5-cj）：未记录 = 未获准（默认拒绝，含旧版冻结段任务）。
+    pub fn is_designated_output_node(&self, local_run_id: &str, node_id: &str) -> bool {
+        self.designated_output_nodes
+            .get(local_run_id)
+            .is_some_and(|nodes| nodes.contains(node_id))
+    }
+
+    /// 取走已到达的决策（None = 尚无人决策）。槽保留——轮询期间迟到的 manual/skip 仍可写入。
+    pub fn take_upstream_pull_decision(
+        &mut self,
+        local_run_id: &str,
+        node_id: &str,
+    ) -> Option<UpstreamPullDecision> {
+        self.upstream_pull_decisions
+            .get_mut(&upstream_pull_key(local_run_id, node_id))?
+            .decision
+            .take()
+    }
+
+    /// resolve 结束（任意路径）时移除槽：后续决策命令按无槽报错（前端 settled 事件已收口 UI）。
+    pub fn drop_upstream_pull(&mut self, local_run_id: &str, node_id: &str) {
+        self.upstream_pull_decisions
+            .remove(&upstream_pull_key(local_run_id, node_id));
+    }
+}
+
+/// 拉取决策槽键：run + node 唯一定位（一个 run 的多个拉取节点可并行等待）。
+fn upstream_pull_key(local_run_id: &str, node_id: &str) -> String {
+    format!("{local_run_id}/{node_id}")
 }
 
 #[cfg(test)]
@@ -331,23 +550,245 @@ mod tests {
         assert!(state.active_runs.is_empty());
     }
 
+    #[test]
+    fn drop_active_run_clears_issue_push_cache_same_lifecycle() {
+        // M5-cf：终态清 issue_output_pushed——rerun 后首个相同块不被误判「已发送」跳过。
+        let mut state = MulticaRuntimeState::default();
+        state.register_active_run("remote-9", sample_run("9"));
+        state
+            .issue_output_pushed
+            .insert("issue-9".into(), "阶段快照 v1".into());
+        state.drop_active_run("remote-9");
+        assert!(!state.issue_output_pushed.contains_key("issue-9"));
+        // 无 issue 关联的 run（非 issue 来源）drop 时无键可清，不 panic。
+        let mut bare = sample_run("8");
+        bare.issue_id = None;
+        let mut state2 = MulticaRuntimeState::default();
+        state2.register_active_run("remote-8", bare);
+        state2.drop_active_run("remote-8");
+        assert!(state2.issue_output_pushed.is_empty());
+    }
+
+    // ---- M5-ch：上游拉取决策槽（首拉空值 → 用户三选一）----
+
+    /// 有界轮询 notify：50ms 内被唤醒 → true（无 reactor 的同步测试用，借临时 runtime）。
+    fn notify_wakes_within(notify: &Arc<tokio::sync::Notify>) -> bool {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime")
+            .block_on(async {
+                tokio::time::timeout(std::time::Duration::from_millis(50), notify.notified())
+                    .await
+                    .is_ok()
+            })
+    }
+
+    #[test]
+    fn upstream_pull_slot_roundtrip_manual_decision() {
+        // 注册 → 写决策（取回 notify 供锁外唤醒）→ 取走决策（槽保留）→ resolve 收口移除槽。
+        let mut state = MulticaRuntimeState::default();
+        let notify = state.register_upstream_pull("run-9", "node-1", "issue-9");
+        assert!(!notify_wakes_within(&notify), "新槽不得自带唤醒");
+
+        let woken = state
+            .decide_upstream_pull(
+                "run-9",
+                "node-1",
+                UpstreamPullDecision::Manual("手动交付说明".into()),
+            )
+            .expect("已注册槽应命中");
+        woken.notify_one();
+        assert!(
+            notify_wakes_within(&notify),
+            "decide 返回的 notify 应唤醒等待方"
+        );
+
+        // 取走决策：槽保留（轮询期间迟到的决策仍可写入），再取为 None。
+        assert!(matches!(
+            state.take_upstream_pull_decision("run-9", "node-1"),
+            Some(UpstreamPullDecision::Manual(ref text)) if text == "手动交付说明"
+        ));
+        assert!(
+            state
+                .take_upstream_pull_decision("run-9", "node-1")
+                .is_none()
+        );
+        // 迟到决策可再写入（槽仍在）：resolve 未收口前决策通道畅通。
+        assert!(
+            state
+                .decide_upstream_pull("run-9", "node-1", UpstreamPullDecision::Skip)
+                .is_some()
+        );
+        assert!(matches!(
+            state.take_upstream_pull_decision("run-9", "node-1"),
+            Some(UpstreamPullDecision::Skip)
+        ));
+
+        state.drop_upstream_pull("run-9", "node-1");
+        // 槽移除后：决策无落点（命令侧按 UpstreamPullNotPending 报错）。
+        assert!(
+            state
+                .decide_upstream_pull("run-9", "node-1", UpstreamPullDecision::Retry)
+                .is_none()
+        );
+        assert!(
+            state
+                .take_upstream_pull_decision("run-9", "node-1")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn upstream_pull_slot_keys_scoped_by_run_and_node() {
+        // 键 = run/node：同 run 不同节点互不串台；不同 run 同名节点也不串台。
+        let mut state = MulticaRuntimeState::default();
+        state.register_upstream_pull("run-9", "node-1", "issue-9");
+        state.register_upstream_pull("run-9", "node-2", "issue-9");
+        state.register_upstream_pull("run-other", "node-1", "issue-9");
+        assert_eq!(state.upstream_pull_decisions.len(), 3);
+
+        assert!(
+            state
+                .decide_upstream_pull("run-9", "node-2", UpstreamPullDecision::Skip)
+                .is_some()
+        );
+        // 只影响 node-2；node-1 与另一 run 的 node-1 均未决策。
+        assert!(
+            state
+                .take_upstream_pull_decision("run-9", "node-1")
+                .is_none()
+        );
+        assert!(
+            state
+                .take_upstream_pull_decision("run-other", "node-1")
+                .is_none()
+        );
+        assert!(matches!(
+            state.take_upstream_pull_decision("run-9", "node-2"),
+            Some(UpstreamPullDecision::Skip)
+        ));
+    }
+
+    #[test]
+    fn drop_active_run_clears_upstream_pull_slots_same_lifecycle() {
+        // run 终态 → 前缀清理该 run 全部拉取槽（resolver 被中断后不泄漏；rerun 不继承旧槽）。
+        let mut state = MulticaRuntimeState::default();
+        state.register_active_run("remote-9", sample_run("9"));
+        state.register_upstream_pull("run-9", "node-1", "issue-9");
+        state.register_upstream_pull("run-9", "node-2", "issue-9");
+        // 其他 run 的槽必须保留（前缀匹配只清自己的）。
+        state.register_upstream_pull("run-other", "node-1", "issue-9");
+        // 恶意前缀防护：run id "run-9" 不得清掉 "run-9x" 的槽（键含 "/" 分隔）。
+        state.register_upstream_pull("run-9x", "node-1", "issue-9");
+
+        state.drop_active_run("remote-9");
+
+        assert!(!state.upstream_pull_decisions.contains_key("run-9/node-1"));
+        assert!(!state.upstream_pull_decisions.contains_key("run-9/node-2"));
+        assert!(
+            state
+                .upstream_pull_decisions
+                .contains_key("run-other/node-1")
+        );
+        assert!(state.upstream_pull_decisions.contains_key("run-9x/node-1"));
+    }
+
+    #[test]
+    fn upstream_pull_pending_rows_carry_parent_and_retried() {
+        // M5-cj 水合：list 行含 parent_issue_id（卡片 reconstruct 载荷）与 retried（重进会话
+        // 时恢复等待态而非选择态）；槽按 run 前缀过滤，跨 run 不串台。
+        let mut state = MulticaRuntimeState::default();
+        state.register_upstream_pull("run-9", "node-1", "issue-parent");
+        state.register_upstream_pull("run-9", "node-2", "issue-parent");
+        state.register_upstream_pull("run-other", "node-1", "issue-other");
+
+        let mut rows = state.list_upstream_pull_pendings("run-9");
+        rows.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].node_id, "node-1");
+        assert_eq!(rows[0].parent_issue_id, "issue-parent");
+        assert!(!rows[0].retried, "未决策过的槽 retried=false");
+
+        // Retry 置 retried（槽不消费——等待态期间迟到 manual/skip 仍可写入）。
+        assert!(
+            state
+                .decide_upstream_pull("run-9", "node-1", UpstreamPullDecision::Retry)
+                .is_some()
+        );
+        let mut rows = state.list_upstream_pull_pendings("run-9");
+        rows.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        assert!(rows[0].retried, "Retry 后水合行 retried=true");
+        assert!(!rows[1].retried);
+
+        // run 维度过滤：另一 run 的槽不出现。
+        assert_eq!(state.list_upstream_pull_pendings("run-other").len(), 1);
+        assert_eq!(state.list_upstream_pull_pendings("run-9x").len(), 0);
+    }
+
+    #[test]
+    fn designated_output_nodes_lifecycle_scoped() {
+        // M5-cj 上送侧会籍：装配时记录、run 终态随 drop_active_run 前缀清理（rerun 不继承
+        // 指定集）；默认无记录 = 非指定（fail-closed，frozen 旧 run 一律拒绝快照）。
+        let mut state = MulticaRuntimeState::default();
+        assert!(!state.is_designated_output_node("run-9", "node-sink"));
+
+        state.record_designated_output_node("run-9", "node-sink");
+        state.record_designated_output_node("run-9", "node-sink"); // 幂等
+        state.record_designated_output_node("run-9", "node-staged");
+        assert!(state.is_designated_output_node("run-9", "node-sink"));
+        assert!(state.is_designated_output_node("run-9", "node-staged"));
+        assert!(!state.is_designated_output_node("run-9", "node-other"));
+        // 同名节点在别的 run 名下无记录（run 维度隔离）。
+        assert!(!state.is_designated_output_node("run-other", "node-sink"));
+
+        state.register_active_run("remote-9", sample_run("9"));
+        state.drop_active_run("remote-9");
+        assert!(
+            !state.is_designated_output_node("run-9", "node-sink"),
+            "run 终态后指定集随生命周期清理"
+        );
+    }
+
     // ---- M5-bp：完成路径认领（RunCompleted / AcpTurnFinished 双事件竞态单飞）----
 
     #[test]
-    fn begin_completion_claims_exclusively_and_end_releases() {
+    fn begin_completion_for_run_claims_only_on_live_mapping() {
         let mut state = MulticaRuntimeState::default();
+        state.register_active_run("remote-1", sample_run("1"));
         // 首个认领成功（先到事件进入完成路径）。
-        assert!(state.begin_completion("remote-1"));
+        assert!(state.begin_completion_for_run("remote-1", "task-1", "run-1"));
         // 并发第二事件认领失败 → 整体退出，完成路径单飞。
-        assert!(!state.begin_completion("remote-1"));
+        assert!(!state.begin_completion_for_run("remote-1", "task-1", "run-1"));
         // 不同任务互不阻塞（认领按 remote_task_id 粒度）。
-        assert!(state.begin_completion("remote-2"));
+        state.register_active_run("remote-2", sample_run("2"));
+        assert!(state.begin_completion_for_run("remote-2", "task-2", "run-2"));
+        // 身份不匹配不放行：同 remote 键但 local 身份对不上（防误放行二次 complete）。
+        assert!(!state.begin_completion_for_run("remote-1", "task-1", "run-other"));
         // finalize 终结认领（成功/失败皆然）：之后同任务可再认领（重试/新事件）。
         state.end_completion("remote-1");
-        assert!(state.begin_completion("remote-1"));
+        assert!(state.begin_completion_for_run("remote-1", "task-1", "run-1"));
         // 幂等：重复 end 无副作用。
         state.end_completion("remote-1");
         state.end_completion("remote-x");
+        // M5-cj：映射已清（他方已 finalize）→ 复验失败，不再放行认领（防二次 complete）。
+        state.drop_active_run("remote-1");
+        assert!(!state.begin_completion_for_run("remote-1", "task-1", "run-1"));
+    }
+
+    // ---- 状态对账改造：对账单飞（mount / 30s 周期 / 手动刷新并发触发）----
+
+    #[test]
+    fn begin_reconcile_claims_exclusively_and_end_releases() {
+        let mut state = MulticaRuntimeState::default();
+        // 首个触发认领成功；在飞期间后续触发整体退出（全局单飞，无任务粒度）。
+        assert!(state.begin_reconcile());
+        assert!(!state.begin_reconcile());
+        // 收尾释放后可再认领；重复 end 幂等。
+        state.end_reconcile();
+        assert!(state.begin_reconcile());
+        state.end_reconcile();
+        state.end_reconcile();
     }
 
     #[test]

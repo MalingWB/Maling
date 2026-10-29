@@ -1,6 +1,8 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 
-const LEADING_ADORNMENT_GAP = '0.25rem';
+/// leading adornment 机制的统一间距：既用于正文首行缩进的让位余量（槽宽 + gap），
+/// 也用于槽内并排标签（slash 标签 + 远程绑定 chip）的相互间距——单一来源，改节奏两处同步。
+export const LEADING_ADORNMENT_GAP = '0.25rem';
 
 export function useLeadingAdornmentTextIndent(enabled: boolean) {
   const adornmentRef = useRef<HTMLSpanElement>(null);

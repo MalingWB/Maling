@@ -1130,6 +1130,7 @@
       "runtime-offline": "ランタイムの準備ができていません。しばらくしてからもう一度お試しください。",
       "session-resume-failed": "セッションの再開に失敗しました。新たな実行が開始されます。",
       "task-not-found": "この Multica タスクが見つかりませんでした。",
+      "upstream-pull-not-pending": "この取得はすでに終了しました。選択は不要です。",
       "workspace-already-bound": "このワークスペースはすでにバインドされています。",
       "workspace-not-found": "このワークスペース バインディングが見つかりませんでした。"
     },
@@ -2981,7 +2982,9 @@
         "emptyTitle": "{{source}}に接続されていません",
         "removeTask": "リストから削除",
         "removeTaskHint": "この側のリストから削除されるだけです。更新すると復元されます",
-        "removeTaskTerminalHint": "ローカルの完了記録を削除します。更新しても再表示されません"
+        "removeTaskTerminalHint": "ローカルの完了記録を削除します。更新しても再表示されません",
+        "rerunTask": "再実行",
+        "rerunBadge": "再実行"
       },
       "keepResident": "セッションを常駐",
       "releaseResident": "常駐を解除",
@@ -3223,7 +3226,23 @@
       "readiness": {
         "notReady": "準備未完了",
         "notReadyHint": "対応する開発タスクがまだ完了していません。完了を待ってからの実行をご検討ください"
+      },
+      "issueStatus": {
+        "todo": "未着手",
+        "backlog": "バックログ"
       }
+    },
+    "upstreamPull": {
+      "title": "上流の成果物説明を未取得",
+      "description": "「{{task}}」の {{node}} ノードは、上流ワークアイテム {{issue}} の成果物説明をまだ取得していません。",
+      "fallbackNote": "60 秒以内に選択しない場合、自動的にポーリングを再開します。",
+      "retry": "取得を待機",
+      "manual": "手動で入力",
+      "skip": "取得をスキップ",
+      "manualLabel": "成果物説明",
+      "manualPlaceholder": "ビルド成果物やデプロイ環境などの重要情報…",
+      "manualSubmit": "この内容で続行",
+      "waitingNote": "上流の成果物メモの更新を待機しています。待機中はいつでも手動で入力またはスキップできます。"
     }
   }
 }

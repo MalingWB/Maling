@@ -16,6 +16,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::multica::client::RemoteTask;
+use crate::multica::markdown_source::markdown_source_to_plain_text;
 use crate::multica::state::ActiveRemoteRun;
 
 /// 远程任务行（camelCase，对齐 line 650 TS）。`auth_token` 永不入 VM（不回显执行凭证）。
@@ -58,6 +59,21 @@ pub struct RemoteTaskVm {
     /// 终态行无附件展示需求，不回填（侧栏轮询不为无人消费的元数据增加负载）。旧 server
     /// 不发 `issue_attachments` → 空数组，前端不渲染。
     pub attachments: Vec<RemoteTaskAttachmentVm>,
+    /// 终态行关联 issue 的状态分类（`todo`|`backlog`|`in_progress`|`done`|`canceled`，对账
+    /// `batch-status` 回填进本地历史，仅 `from_completed` 携带）。前端判据：∈ {todo,backlog,done}
+    /// 渲染「重新执行」入口（in_progress 意味着他端在执行——multica 按 issue+agent 串行）；
+    /// ∈ {todo,backlog} 渲染 issue 状态标记（任务终了但 issue 仍未开工，回退待办的场景）。
+    /// 未对账（None）/ 旧历史条目 → 前端不渲染入口与标记（行为与引入前一致）。
+    pub issue_status_category: Option<String>,
+    /// 自定义 issue 状态名（对账回填，仅 `from_completed` 携带）：展示优先于分类（更精确）。
+    pub issue_status_name: Option<String>,
+    /// rerun 血缘：本任务是 `POST /tasks/{tid}/rerun` 产生的新任务时，指回被重新执行的源
+    /// 任务 id（wire `attribution.rerun_of_task_id`，pending/claim 响应携带）。前端消费点：
+    /// 看板 queued 卡片渲染「重新执行」徽标；后端消费点：`get_remote_tasks` 据此做终态行
+    /// 退场过滤（移动语义——源终态行不与活跃后继同板，看板呈现「任务移回待办」的单行移动；
+    /// 源行持久删除由 rerun 命令 202 后执行，过滤兜底他端发起与删除失败残留）。普通任务 /
+    /// 旧 server → None。
+    pub rerun_of_task_id: Option<String>,
 }
 
 /// issue 需求附件元数据的展示投影（[`RemoteTaskVm::attachments`] 元素）：文件名（空/纯空白
@@ -94,12 +110,13 @@ impl RemoteTaskVm {
     }
 
     /// 任务详情行（claim-at-send 只读拉取 / claim 响应）。回填 `requirement`（正文仅任务详情端点才有：
-    /// pending 列表只给 thread_name）为 composer 预填 = **DPMS 溯源块（可选）+ 上游交付说明块（可选）+
-    /// 需求正文**（见 [`detail_prefill`]）。溯源块（发布计划 / 负责人 / 需求链接）与上游交付说明（父任务
-    /// 完成时留下的交付内容，子任务赖以执行）都是用户需在发送前核对的信息，与需求正文一起构成用户可见
-    /// 可编辑的起始输入；完成输出协议不进预填，由 [`remote_task_hidden_section`] 在发送时隐式注入首条
-    /// prompt。read 与 claim 共用此构造——二者响应同构、都带 requirement 来源字段；区别仅在调用时机
-    /// （read 不改 server 状态、任务仍 queued；claim 置 dispatched）。
+    /// pending 列表只给 thread_name）为 composer 预填 = **任务名称块（可选，首行即标题本身）+
+    /// DPMS 溯源块（可选）+ 上游交付说明块（可选）+ 需求正文**（见 [`detail_prefill`]）。溯源块
+    /// （发布计划 / 负责人 / 需求链接）与上游交付说明（父任务完成时留下的交付内容，子任务赖以执行）
+    /// 都是用户需在发送前核对的信息，与需求正文一起构成用户可见可编辑的起始输入；完成输出协议不进
+    /// 预填，由 [`remote_task_hidden_section`] 在发送时隐式注入首条 prompt。read 与 claim 共用此构造
+    /// ——二者响应同构、都带 requirement 来源字段；区别仅在调用时机（read 不改 server 状态、任务仍
+    /// queued；claim 置 dispatched）。
     pub fn from_detail(task: &RemoteTask, workspace_id: &str, language: DesktopLanguage) -> Self {
         let mut vm = Self::from_remote(task, workspace_id);
         vm.requirement = detail_prefill(task, language);
@@ -141,6 +158,12 @@ impl RemoteTaskVm {
             readiness: None,
             // 终态行无输入框展示场景，附件元数据不回填。
             attachments: Vec::new(),
+            // issue 状态取对账回填值（batch-status → RemoteCompletedTask）；
+            // 未对账 / 旧历史条目 None → 前端不渲染 issue 状态标记与「重新执行」入口。
+            issue_status_category: c.issue_status_category.clone(),
+            issue_status_name: c.issue_status_name.clone(),
+            // rerun 血缘不持久化在终态历史（徽标只在 queued 卡片渲染）→ 恒 None。
+            rerun_of_task_id: None,
         }
     }
 
@@ -170,6 +193,10 @@ impl RemoteTaskVm {
             readiness: None,
             // 执行中行无输入框展示场景，附件元数据不回填。
             attachments: Vec::new(),
+            // issue 状态是对账（终态行）语义，active 行恒 None；rerun 血缘不进本地快照 → None。
+            issue_status_category: None,
+            issue_status_name: None,
+            rerun_of_task_id: None,
         }
     }
 
@@ -197,6 +224,15 @@ impl RemoteTaskVm {
             readiness: task.is_ready,
             // pending 列表行不展示附件；仅 from_detail 覆盖（见字段注释）。
             attachments: Vec::new(),
+            // issue 状态是对账（终态行）语义，pending/detail 行恒 None；
+            // rerun 血缘透传 wire `attribution.rerun_of_task_id`（rerun 新任务进 pending
+            // 列表后自然携带 → 看板「重新执行」徽标；普通任务 None）。
+            issue_status_category: None,
+            issue_status_name: None,
+            rerun_of_task_id: task
+                .attribution
+                .as_ref()
+                .and_then(|a| a.rerun_of_task_id.clone()),
         }
     }
 }
@@ -205,15 +241,20 @@ impl RemoteTaskVm {
 /// 与「Gold Band runtime context」等既有区段标题同级）。
 pub(crate) const REMOTE_TASK_HIDDEN_SECTION_TITLE: &str = "Gold Band remote task context";
 
-/// composer 预填 = DPMS 溯源块（可选）+ 上游交付说明块（可选）+ 需求正文（来源优先级见
-/// [`RemoteTask::requirement_text`]），块间空行分隔。
+/// composer 预填 = **任务名称块（可选）** + DPMS 溯源块（可选）+ 上游交付说明块（可选）+
+/// 需求正文（来源优先级见 [`RemoteTask::requirement_text`]），块间空行分隔。
 ///
+/// 任务名称（`thread_name`）是预填首行——远程任务从 multica 列表点入，输入框自身不带标题展示，
+/// 名称行补齐任务身份上下文；标题由 [`title_block`] 解码（首行即标题本身，无标签前缀），缺省 /
+/// 纯空白 → 跳过名称块。
 /// 溯源字段全缺省 / 纯空白 → 跳过溯源块；`parent_output` 缺省 / 纯空白 → 跳过上游块（行为与引入
 /// 各块前一致，版本解耦）；正文缺失但任一块存在 → 只发块（不丢信息）。分层依据：DPMS 溯源是
 /// **用户需在发送前核对的目标环境信息**（发布计划 / 负责人 / 需求链接），上游交付说明是**子任务赖以
 /// 执行的父任务交付内容**（部署/验证地址、变更范围、测试要点），二者都归 user 侧可见预填。
+/// 正文不回退 title——名称块已保证标题在场，回退只会让无正文任务把标题重复一遍。
 fn detail_prefill(task: &RemoteTask, language: DesktopLanguage) -> Option<String> {
     let blocks = [
+        title_block(task),
         dpms_context_block(task, language),
         parent_output_block(task, language),
         task.requirement_text(),
@@ -228,7 +269,7 @@ fn detail_prefill(task: &RemoteTask, language: DesktopLanguage) -> Option<String
 
 /// 远程任务首条 prompt 的隐式上下文（M5-bk 引入，2026-09-21 二次修正收敛为两块、三次调整收敛为单块）：
 ///
-/// 1. 完成输出协议块（issue 关联任务才注入）——写侧协议指令收尾。
+/// 1. 完成输出协议块（**direct 模式**且 issue 关联的任务才注入，M5-cg 收敛）——写侧协议指令收尾。
 /// 2. 附件软失败清单块（M5-bu，issue 附件下载有失败才注入）——告知 agent 哪些需求附件未能落地，
 ///    需与用户确认替代来源（局部失败隔离：不阻断任务启动，但 agent 不得臆测缺失文件内容）。
 ///
@@ -238,14 +279,21 @@ fn detail_prefill(task: &RemoteTask, language: DesktopLanguage) -> Option<String
 /// issue done 时无输出可中继）。协议块属 runtime 决定的稳定执行上下文（AGENTS.md system/user prompt
 /// 划分标准），随发送时 claim 响应取值，以 `<hidden>` 区段附在首条 prompt 需求正文之后（对齐
 /// `scheduled_task_context` 隐式注入先例；发送前用户不再可见，会话内可点开审计）。
-/// 两块全缺省（非 issue 关联且无附件失败）→ None（无非隐式上下文，行为与引入区段前一致）。
+/// 两块全缺省（非 direct / 非 issue 关联且无附件失败）→ None（无非隐式上下文，行为与引入区段前一致）。
+///
+/// M5-cg 产出侧门禁：任务级冻结区段**只承载 direct 协议**——direct 的产出边界就是最终回复本身，
+/// 任务级一份即准；工作流 / auto 的产出资格按**节点身份**各不相同（sink / 标记节点 / 验收节点才
+/// 产出），冻结一份通用文本会让所有节点拿到同一套自我认定规则（M5-cf 内网回归根因）。编排形态的
+/// 协议在节点装配时按指定渲染（引擎 [`gold_band::app::upstream`] + 桌面
+/// `MulticaCompletionProtocolResolver`），冻结区段只留附件失败清单。
 pub(crate) fn remote_task_hidden_section(
     task: &RemoteTask,
     language: DesktopLanguage,
     attachment_failures: &[AttachmentFailure],
+    run_mode: &str,
 ) -> Option<PromptHiddenSection> {
     let content = [
-        completion_protocol_block(task, language),
+        completion_protocol_block(task, language, run_mode),
         attachment_failures_block(attachment_failures, language),
     ]
     .into_iter()
@@ -308,11 +356,21 @@ fn parent_output_block(task: &RemoteTask, language: DesktopLanguage) -> Option<S
 
 /// 完成输出协议块（`src/prompts/{zh-CN,en}/runtime/remote_task_completion_protocol.md`）。
 ///
-/// **注入条件：issue 关联任务**（`issue_id` 非空白）。非 issue 来源任务（chat / autopilot /
-/// quick-create）无 issue done 流转，指令无人消费 → 不注入。不看 `issue_kind`——是否真有下游
-/// 子任务无法从 claim 响应得知，顶层无子的输出无人消费、无害（multica 侧「一律带」亦成立）。
-fn completion_protocol_block(task: &RemoteTask, language: DesktopLanguage) -> Option<String> {
+/// **注入条件：direct 模式 + issue 关联任务**（`issue_id` 非空白、`run_mode` 为
+/// [`crate::multica::state::REMOTE_RUN_MODE_DIRECT`]）。M5-cg 起 direct 专属——编排形态
+/// （workflow / auto）的协议按节点身份在装配时注入（见 [`remote_task_hidden_section`] 文档），
+/// 冻结段不再承载。非 issue 来源任务（chat / autopilot / quick-create）无 issue done 流转，
+/// 指令无人消费 → 不注入。不看 `issue_kind`——是否真有下游子任务无法从 claim 响应得知，
+/// 顶层无子的输出无人消费、无害（multica 侧「一律带」亦成立）。
+fn completion_protocol_block(
+    task: &RemoteTask,
+    language: DesktopLanguage,
+    run_mode: &str,
+) -> Option<String> {
     blank_to_none(task.issue_id.as_deref())?;
+    if run_mode != crate::multica::state::REMOTE_RUN_MODE_DIRECT {
+        return None;
+    }
     let template = prompt_by_language(language, RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL);
     // 模板无变量（协议指令恒定文案），空上下文渲染即原文。
     let rendered =
@@ -324,6 +382,21 @@ fn completion_protocol_block(task: &RemoteTask, language: DesktopLanguage) -> Op
 #[derive(Serialize)]
 struct ParentOutputTemplateContext<'a> {
     parent_output: &'a str,
+}
+
+/// 任务名称块：解码后的标题本身即预填首行（M5-cc 起无「任务名称：/Task name: 」标签前缀，
+/// 标签随模板一并删除——无语言差异、无装饰文案的模板没有存在意义）。
+///
+/// `thread_name` 缺省 / 纯空白 → None（不渲染块，行为与引入前一致，版本解耦）。标题与正文
+/// 同过 [`markdown_source_to_plain_text`]——`thread_name` 同为 web 侧序列化产出，防 `\_`/
+/// HTML 残留直接透传到输入框首行。
+fn title_block(task: &RemoteTask) -> Option<String> {
+    let title = markdown_source_to_plain_text(&blank_to_none(task.title.as_deref())?);
+    let title = title.trim();
+    if title.is_empty() {
+        return None;
+    }
+    Some(title.to_string())
 }
 
 /// DPMS 溯源块（`src/prompts/{zh-CN,en}/runtime/remote_task_context.md` 按语言渲染）。
@@ -423,6 +496,20 @@ pub struct MulticaPullReportVm {
     pub results: Vec<MulticaPullItemResultVm>,
 }
 
+/// 待决上游拉取槽（M5-cj 卡片水合）：重进会话后恢复「拉取决策卡片/等待态」的数据源。
+/// `task_id` 为本地任务 display id（前端对话归属键）、`task_title` 取自 run 快照；`retried`
+/// 标识「继续等待」已选过一轮（前端水合时直接进入等待态而非选择态）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticaUpstreamPullPendingVm {
+    pub task_id: String,
+    pub run_id: String,
+    pub node_id: String,
+    pub parent_issue_id: String,
+    pub task_title: Option<String>,
+    pub retried: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +553,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
         assert_eq!(vm.id, "t-1");
@@ -508,6 +596,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
         assert_eq!(vm.kind.as_deref(), Some("test"));
@@ -575,16 +664,18 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.expect("requirement prefilled");
-        assert_eq!(requirement, "Full prompt body");
+        // M5-ca：预填以任务名称块开头（无 DPMS/上游块 → 名称行 + 空行 + 正文）。
+        assert_eq!(requirement, "Thread name\n\nFull prompt body");
         // 完成输出协议块不进预填（隐式注入，见 remote_task_hidden_section 测试；上游交付说明进预填）。
         assert!(!requirement.contains("completion-output"));
         // title 与 requirement 各司其职（title 仍是 thread_name，不混进正文）。
         assert_eq!(vm.title, "Thread name");
 
-        // issue 场景（无来源字段）→ requirement 回退 title（issue 预填标题）。
+        // issue 场景（无来源字段）→ 正文缺失；预填只剩任务名称块（标题不重复当正文，M5-ca）。
         let issue = RemoteTask {
             id: "t-2".into(),
             issue_id: None,
@@ -609,6 +700,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         assert_eq!(
             RemoteTaskVm::from_detail(&issue, "ws-1", DesktopLanguage::ZhCn)
@@ -642,12 +734,49 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm_body = RemoteTaskVm::from_detail(&issue_body, "ws-1", DesktopLanguage::ZhCn);
-        // 无 DPMS 字段 → 正文即预填全部内容（issue_description 优先级不变；协议块走隐式注入）。
-        assert_eq!(vm_body.requirement.as_deref(), Some("Steps to repro..."));
+        // 无 DPMS 字段 → 名称行 + 空行 + 正文（issue_description 优先级不变；协议块走隐式注入）。
+        assert_eq!(
+            vm_body.requirement.as_deref(),
+            Some("Login bug\n\nSteps to repro...")
+        );
         // title 仍是 thread_name，不混进正文。
         assert_eq!(vm_body.title, "Login bug");
+    }
+
+    #[test]
+    fn from_detail_prepends_task_title_block() {
+        // M5-ca：任务名称块是预填首块——输入框第一行即任务身份，先于 DPMS/上游/正文；首行即
+        // 标题本身（M5-cc 去标签，无语言分支）；标题过 markdown_source_to_plain_text
+        // （与正文同一解码边界，thread_name 同为 web 侧产出）。
+        let task: RemoteTask = serde_json::from_value(json!({
+            "id": "t-1",
+            "status": "queued",
+            "thread_name": "包名 my\\_app 修复",
+            "issue_description": "正文"
+        }))
+        .unwrap();
+        let requirement = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn)
+            .requirement
+            .expect("requirement prefilled");
+        assert!(requirement.starts_with("包名 my_app 修复\n\n正文"));
+
+        // 标题缺省 / 纯空白 → 跳过名称块（行为与引入前一致，版本解耦）。
+        let no_title: RemoteTask = serde_json::from_value(json!({
+            "id": "t-2",
+            "status": "queued",
+            "thread_name": "   ",
+            "issue_description": "正文"
+        }))
+        .unwrap();
+        assert_eq!(
+            RemoteTaskVm::from_detail(&no_title, "ws-1", DesktopLanguage::ZhCn)
+                .requirement
+                .as_deref(),
+            Some("正文")
+        );
     }
 
     #[test]
@@ -678,17 +807,19 @@ mod tests {
             origin_url: Some("https://dpms.example.com/story/674290".into()),
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.expect("requirement prefilled");
-        // 溯源块在前、正文在后（用户先核对目标环境，再读/改需求）。
-        assert!(requirement.starts_with("本任务来自 DPMS 关联的工作项"));
+        // 名称块在最前，溯源块次之、正文在后（用户先见任务身份，再核对目标环境，再读/改需求）。
+        assert!(requirement.starts_with("Fix login\n\n本任务来自 DPMS 关联的工作项"));
         assert!(requirement.contains("- 发布计划 ID: 538181"));
         assert!(requirement.contains("- 开发负责人: alice,bob"));
         assert!(requirement.contains("- 测试负责人: carol"));
         assert!(requirement.contains("- 业务需求 ID: 674290"));
         assert!(requirement.contains("- 需求链接: https://dpms.example.com/story/674290"));
         assert!(requirement.ends_with("Steps to repro..."));
+        assert!(requirement.find("Fix login").unwrap() < requirement.find("需求溯源信息").unwrap());
         assert!(
             requirement.find("需求溯源信息").unwrap()
                 < requirement.find("Steps to repro...").unwrap()
@@ -697,11 +828,13 @@ mod tests {
         // 预填不得包含隐式侧协议块（落在用户可编辑文本里 = 误删即静默断链）。
         assert!(!requirement.contains("completion-output"));
 
-        // 英文语言 → 同一数据渲染英文模板（模板双语同构）。
+        // 英文语言 → 同一数据渲染英文模板（名称块 + 溯源块双语同构）。
         let requirement_en = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::En)
             .requirement
             .expect("requirement prefilled");
-        assert!(requirement_en.starts_with("This task comes from a DPMS-linked work item"));
+        assert!(
+            requirement_en.starts_with("Fix login\n\nThis task comes from a DPMS-linked work item")
+        );
         assert!(requirement_en.contains("- Release plan ID: 538181"));
         assert!(
             requirement_en.contains("- Requirement link: https://dpms.example.com/story/674290")
@@ -737,10 +870,11 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         assert_eq!(
             RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn).requirement,
-            Some("Steps...".into())
+            Some("Login bug\n\nSteps...".into())
         );
 
         // 纯空白字符串字段视为缺失（逐字段空白过滤）：只剩一个非空白字段也渲染，空白字段不出行。
@@ -798,8 +932,9 @@ mod tests {
             origin_url: Some("https://dpms.example.com/story/674290".into()),
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
-        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[])
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
             .expect("hidden section assembled");
         assert_eq!(section.title, REMOTE_TASK_HIDDEN_SECTION_TITLE);
         let content = section.content;
@@ -809,10 +944,63 @@ mod tests {
         assert!(!content.contains("Steps to repro..."));
         assert!(content.contains("completion-output"));
         // 英文侧同构（溯源块同样不进区段）。
-        let section_en =
-            remote_task_hidden_section(&task, DesktopLanguage::En, &[]).expect("hidden section");
+        let section_en = remote_task_hidden_section(&task, DesktopLanguage::En, &[], "direct")
+            .expect("hidden section");
         assert!(!section_en.content.contains("DPMS"));
         assert!(section_en.content.contains("completion-output"));
+    }
+
+    #[test]
+    fn remote_task_hidden_section_freezes_protocol_only_for_direct_runs() {
+        // M5-cg 产出侧门禁：issue 关联任务在 direct 模式冻结完成输出协议；workflow / auto 的
+        // 协议按节点身份在装配时注入（MulticaCompletionProtocolResolver），冻结区段只承载
+        // 附件失败清单（无失败 → 无区段）——不再给所有节点同一份通用协议文本。
+        let task = RemoteTask {
+            id: "t-2".into(),
+            issue_id: Some("iss-2".into()),
+            status: "queued".into(),
+            auth_token: None,
+            prior_session_id: None,
+            parent_task_id: None,
+            title: Some("Fix login".into()),
+            quick_create_prompt: None,
+            chat_message: None,
+            trigger_comment_content: None,
+            autopilot_description: None,
+            handoff_note: None,
+            issue_description: Some("Steps to repro...".into()),
+            last_activity_at: None,
+            issue_kind: Some("dev".into()),
+            is_ready: Some(true),
+            release_plan_id: None,
+            dev_user: None,
+            test_user: None,
+            business_story_id: None,
+            origin_url: None,
+            parent_output: None,
+            issue_attachments: Vec::new(),
+            attribution: None,
+        };
+        for mode in ["workflow", "auto"] {
+            assert!(
+                remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], mode).is_none(),
+                "{mode} run must not freeze the completion protocol"
+            );
+        }
+        // 有附件失败 → 区段仍在（清单块），但不得混入协议正文。
+        let failures = vec![AttachmentFailure {
+            filename: "spec.pdf".into(),
+            reason: "HTTP 404".into(),
+        }];
+        let section =
+            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &failures, "workflow")
+                .expect("failures-only section");
+        assert!(!section.content.contains("completion-output"));
+        assert!(section.content.contains("spec.pdf"));
+        // direct 仍冻结协议正文（既有行为不变）。
+        let direct = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
+            .expect("direct protocol section");
+        assert!(direct.content.contains("completion-output"));
     }
 
     // ===== 上游交付说明预填 + 完成输出协议区段（issue 完成输出传递特性）=====
@@ -845,11 +1033,13 @@ mod tests {
             origin_url: None,
             parent_output: Some("部署地址: https://t.example.com\n测试要点: 回归登录链路".into()),
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         let requirement = vm.requirement.as_deref().expect("requirement prefilled");
-        // 预填三段锚点按出现位置严格递增：DPMS 溯源 → 上游交付说明 → 需求正文（正文收尾）。
+        // 预填四段锚点按出现位置严格递增：任务名称 → DPMS 溯源 → 上游交付说明 → 需求正文（正文收尾）。
         let anchors = [
+            requirement.find("Fix login").expect("task title block"),
             requirement.find("本任务来自 DPMS").expect("dpms block"),
             requirement
                 .find("上游（父工作项）")
@@ -865,8 +1055,8 @@ mod tests {
         assert!(requirement.contains("测试要点: 回归登录链路"));
 
         // 隐式区段只剩协议块：不含上游块、不含父输出文本。
-        let section =
-            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[]).expect("hidden section");
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
+            .expect("hidden section");
         assert!(!section.content.contains("上游"));
         assert!(!section.content.contains("部署地址: https://t.example.com"));
         assert!(section.content.contains("completion-output"));
@@ -877,8 +1067,8 @@ mod tests {
             .expect("requirement prefilled");
         assert!(requirement_en.contains("upstream (parent) work item"));
         assert!(requirement_en.ends_with("Steps to repro..."));
-        let section_en =
-            remote_task_hidden_section(&task, DesktopLanguage::En, &[]).expect("hidden section");
+        let section_en = remote_task_hidden_section(&task, DesktopLanguage::En, &[], "direct")
+            .expect("hidden section");
         assert!(!section_en.content.contains("upstream (parent)"));
         assert!(section_en.content.contains("completion-output"));
     }
@@ -911,11 +1101,12 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
-        assert_eq!(vm.requirement.as_deref(), Some("Steps..."));
-        let section =
-            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[]).expect("hidden section");
+        assert_eq!(vm.requirement.as_deref(), Some("Fix login\n\nSteps..."));
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
+            .expect("hidden section");
         assert!(section.content.contains("completion-output"));
 
         // 纯空白 parent_output 同样视为缺失（与 DPMS 字段的逐字段空白过滤惯例一致）。
@@ -925,7 +1116,7 @@ mod tests {
         };
         assert_eq!(
             RemoteTaskVm::from_detail(&blank, "ws-1", DesktopLanguage::ZhCn).requirement,
-            Some("Steps...".into())
+            Some("Fix login\n\nSteps...".into())
         );
     }
 
@@ -957,10 +1148,11 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let vm = RemoteTaskVm::from_detail(&task, "ws-1", DesktopLanguage::ZhCn);
         assert_eq!(vm.requirement, None);
-        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[])
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
             .expect("protocol-only section");
         assert!(section.content.starts_with("本工作项关联远程工作项"));
         assert!(section.content.contains("completion-output"));
@@ -977,7 +1169,7 @@ mod tests {
         assert!(prefill.contains("部署地址: https://t.example.com"));
         assert!(!prefill.contains("completion-output"));
         assert!(
-            remote_task_hidden_section(&with_parent_output, DesktopLanguage::ZhCn, &[])
+            remote_task_hidden_section(&with_parent_output, DesktopLanguage::ZhCn, &[], "direct")
                 .expect("protocol section")
                 .content
                 .starts_with("本工作项关联远程工作项")
@@ -992,7 +1184,9 @@ mod tests {
             RemoteTaskVm::from_detail(&non_issue, "ws-1", DesktopLanguage::ZhCn).requirement,
             None
         );
-        assert!(remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &[]).is_none());
+        assert!(
+            remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &[], "direct").is_none()
+        );
     }
 
     #[test]
@@ -1024,6 +1218,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         let failures = vec![
             AttachmentFailure {
@@ -1035,7 +1230,7 @@ mod tests {
                 reason: "timeout after 120s".into(),
             },
         ];
-        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &failures)
+        let section = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &failures, "direct")
             .expect("protocol + failures section");
         assert_eq!(section.title, REMOTE_TASK_HIDDEN_SECTION_TITLE);
         assert!(section.content.contains("completion-output"));
@@ -1055,8 +1250,9 @@ mod tests {
         assert!(protocol_at < failures_at);
 
         // 英文侧同构（双语模板都渲染清单）。
-        let section_en = remote_task_hidden_section(&task, DesktopLanguage::En, &failures)
-            .expect("english section");
+        let section_en =
+            remote_task_hidden_section(&task, DesktopLanguage::En, &failures, "direct")
+                .expect("english section");
         assert!(
             section_en
                 .content
@@ -1066,8 +1262,8 @@ mod tests {
 
         // 空失败 → 区段只剩协议块，不含清单文案（byte 级与引入前单块区段一致；协议模板自身
         // 提及「附件」一词，故用清单块独有短语断言缺席）。
-        let no_failures =
-            remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[]).expect("protocol only");
+        let no_failures = remote_task_hidden_section(&task, DesktopLanguage::ZhCn, &[], "direct")
+            .expect("protocol only");
         assert!(no_failures.content.contains("completion-output"));
         assert!(!no_failures.content.contains("未能下载到本地"));
 
@@ -1077,7 +1273,7 @@ mod tests {
             ..task
         };
         let failures_only =
-            remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &failures)
+            remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &failures, "direct")
                 .expect("failures-only section");
         assert!(!failures_only.content.contains("completion-output"));
         assert!(failures_only.content.contains("需求附件未能下载到本地"));
@@ -1110,6 +1306,7 @@ mod tests {
             origin_url: None,
             parent_output: None,
             issue_attachments: Vec::new(),
+            attribution: None,
         };
         assert_eq!(RemoteTaskVm::from_pending(&task, "ws-1").title, "t-7");
 
@@ -1138,6 +1335,9 @@ mod tests {
             kind: Some("test".into()),
             readiness: Some(true),
             attachments: Vec::new(),
+            issue_status_category: Some("todo".into()),
+            issue_status_name: Some("待产品评审".into()),
+            rerun_of_task_id: Some("t-old".into()),
         };
         let json = serde_json::to_value(&vm).unwrap();
         // 锁定 camelCase 键名（对齐 line 650 TS，前端按这些键取值）。
@@ -1151,6 +1351,10 @@ mod tests {
         // 中立词汇字段（web/src/types.ts 的 kind / readiness，翻译自 wire issueKind / isReady）。
         assert_eq!(json["kind"], "test");
         assert_eq!(json["readiness"], true);
+        // 状态对账 + rerun 血缘字段（状态对账改造）。
+        assert_eq!(json["issueStatusCategory"], "todo");
+        assert_eq!(json["issueStatusName"], "待产品评审");
+        assert_eq!(json["rerunOfTaskId"], "t-old");
         // 附件元数据（输入框可见性）：空数组序列化为 []，前端按长度判空不渲染。
         assert_eq!(json["attachments"], serde_json::json!([]));
         // active 行无本地 run 链接（终态行才填）。
@@ -1196,6 +1400,8 @@ mod tests {
             status: "completed".into(),
             title: "Done thing".into(),
             completed_at: "2026-08-06T01:23:45Z".into(),
+            issue_status_category: Some("todo".into()),
+            issue_status_name: None,
         };
         let vm = RemoteTaskVm::from_completed(&c, "proj-1");
         assert_eq!(vm.id, "rt-1");
@@ -1212,15 +1418,24 @@ mod tests {
         // story 拆分：终态行类型取本地快照（徽标不丢）；终态无就绪语义 → 恒 None。
         assert_eq!(vm.kind.as_deref(), Some("test"));
         assert!(vm.readiness.is_none());
+        // 状态对账：issue 状态字段取对账回填值；rerun 血缘终态行恒 None。
+        assert_eq!(vm.issue_status_category.as_deref(), Some("todo"));
+        assert!(vm.issue_status_name.is_none());
+        assert!(vm.rerun_of_task_id.is_none());
 
         // 旧历史条目（缺 kind）→ None，徽标不渲染（无迁移、无兼容层）。
         let legacy = RemoteCompletedTask {
             kind: None,
+            issue_status_category: None,
             ..c.clone()
         };
         let legacy_vm = RemoteTaskVm::from_completed(&legacy, "proj-1");
         assert!(legacy_vm.kind.is_none());
         assert!(legacy_vm.readiness.is_none());
+        assert!(
+            legacy_vm.issue_status_category.is_none(),
+            "未对账条目无 issue 状态"
+        );
 
         // title 空白 → 用 remote_task_id 兜底（不留空标签）。
         let blank = RemoteCompletedTask {

@@ -691,6 +691,14 @@ export function removeRemoteCompletedTask(remoteTaskId: string) {
   return getRuntimeApi().removeRemoteCompletedTask(remoteTaskId);
 }
 
+export function reconcileRemoteTaskStatuses() {
+  return getRuntimeApi().reconcileRemoteTaskStatuses();
+}
+
+export function rerunRemoteTask(taskId: string) {
+  return getRuntimeApi().rerunRemoteTask(taskId);
+}
+
 export function listServerMulticaWorkspaces() {
   return getRuntimeApi().listServerMulticaWorkspaces();
 }
@@ -981,6 +989,19 @@ export function subscribeRemoteTaskUpdates(listener: () => void) {
 
 export function subscribeRemoteSourceSettingsUpdates(listener: () => void) {
   return getRuntimeApi().subscribeRemoteSourceSettingsUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeUpstreamPullEvents(listener: Parameters<NonNullable<RuntimeApi['subscribeUpstreamPullEvents']>>[0]) {
+  return getRuntimeApi().subscribeUpstreamPullEvents?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function decideUpstreamPull(taskId: string, nodeId: string, decision: Parameters<RuntimeApi['decideUpstreamPull']>[2], manualText?: string | null) {
+  return getRuntimeApi().decideUpstreamPull(taskId, nodeId, decision, manualText);
+}
+
+export function listUpstreamPullPendings(taskId: string) {
+  // 可选方法兜底空列表（mock runtime api 未实现 = 无 multica 链路，与 browser stub 语义一致）。
+  return getRuntimeApi().listUpstreamPullPendings?.(taskId) ?? Promise.resolve([]);
 }
 
 export function workspaceFilePreviewUrl(token: string, staticFrame = false) {

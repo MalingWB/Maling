@@ -79,6 +79,9 @@ import type {
   RemoteSkillListItemVm,
   RemoteSkillPullReportVm,
   MulticaWorkspaceRefVm,
+  MulticaUpstreamPullEventVm,
+  MulticaUpstreamPullPendingVm,
+  UpstreamPullDecisionKind,
   RemoteConversationSidebarVm,
   RemoteTaskVm,
   WorkflowDsl,
@@ -588,6 +591,12 @@ export interface RuntimeApi {
   /// 移出终态行的「最近完成」本地历史条目（真删除，刷新不复活）；不存在时幂等成功。
   /// 仅终态行（completed/failed）有意义——pending/running 行不来自本地历史。
   removeRemoteCompletedTask(remoteTaskId: string): Promise<void>;
+  /// 终态任务 issue 状态对账（batch-status 分批 → diff 写回本地历史，有变更才广播刷新）。
+  /// 返回变更条数；0 = 无变化 / 未连接 / 单飞退出 / 本轮失败（静默降级，不抛错）。
+  reconcileRemoteTaskStatuses(): Promise<number>;
+  /// 重新执行终态任务：server 克隆新任务（新 id、queued、同 issue、attribution 指回源任务），
+  /// 成功返回新任务 id；源任务与 issue 状态不变，新任务经列表刷新自然进板（按 id 去重）。
+  rerunRemoteTask(taskId: string): Promise<string>;
   listServerMulticaWorkspaces(): Promise<MulticaServerWorkspaceVm[]>;
   pickLocalDirectory(): Promise<string | null>;
   addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string): Promise<MulticaSettingsVm>;
@@ -666,6 +675,15 @@ export interface RuntimeApi {
   subscribeWorkspaceFileChanges?(listener: (event: WorkspaceFileChangedEventVm) => void): Promise<() => void>;
   subscribeRemoteTaskUpdates?(listener: () => void): Promise<() => void>;
   subscribeRemoteSourceSettingsUpdates?(listener: () => void): Promise<() => void>;
+  /// multica 上游拉取决策点（M5-ch）：pending（outcome=null，弹决策）与 settled（收口，关弹窗）
+  /// 合流为同一事件流；仅桌面端实现。
+  subscribeUpstreamPullEvents?(listener: (event: MulticaUpstreamPullEventVm) => void): Promise<() => void>;
+  /// 提交拉取决策（三选一）；manual 必须带非空 manualText。决策迟到（拉取已收口）→ 结构化错误。
+  decideUpstreamPull(taskId: string, nodeId: string, decision: UpstreamPullDecisionKind, manualText?: string | null): Promise<void>;
+
+  /// 待决上游拉取槽列表（M5-cj 卡片水合）：重进会话后恢复决策卡片/等待态；无在飞 run → 空列表。
+  /// 可选（对齐 subscribeUpstreamPullEvents）：测试 mock runtime api 不实现时 wrapper 兜底空列表。
+  listUpstreamPullPendings?(taskId: string): Promise<MulticaUpstreamPullPendingVm[]>;
   workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
   openExternalUrl(url: string): Promise<void>;
   browserCreatePage(input: BrowserCreatePageInput): Promise<BrowserPageNativeVm>;

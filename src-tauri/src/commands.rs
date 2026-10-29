@@ -117,7 +117,6 @@ use crate::view_models::{
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, ConversationTaskActivityVm, conversation_attempt_lifecycle_vm,
     conversation_is_orchestrated, conversation_run_mode, conversation_session_successor,
-    conversation_task_activity_from_prompt,
 };
 use crate::wallpaper::{
     ImportDesktopWallpaperInput, RestoreThemeDesktopWallpaperInput,
@@ -11807,6 +11806,7 @@ fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, Co
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view_models_conversation::conversation_task_activity_from_prompt;
     use camino::Utf8PathBuf;
     use gold_band::app::{WorkflowTemplate, WorkflowTemplateStore};
     use gold_band::config::{ConversationWorkspaceEntry, ResolvedColorScheme, RuntimeConfig};

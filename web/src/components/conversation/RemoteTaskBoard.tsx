@@ -1,5 +1,5 @@
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
-import { Ban, Loader2, Play, Trash2 } from 'lucide-react';
+import { Ban, Loader2, Play, RotateCcw, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -12,15 +12,17 @@ import type { RemoteTaskVm } from '../../types';
 /**
  * 远程任务看板（presentational）。
  *
- * 数据/订阅/动作（connect/prepare/cancel/refresh/workspace 选择）由容器页
+ * 数据/订阅/动作（connect/prepare/cancel/rerun/refresh/workspace 选择）由容器页
  * `RemoteTaskManagementPage` 持有；本组件只接收「选定工作空间的扁平任务列表」，
  * 按 canonical status 分桶到 4 列（待办 / 进行中 / 已完成 / 失败），逐任务渲染卡片。
  *
- * 列与动作 1:1（pinned 不展示后，展示中的任务都不可重试 → 无 rerun）：
- * - queued   → 准备执行(prepare)：只读取需求正文 + 绑定 composer，任务仍 queued，发送时才 claim+start
+ * 列与动作：
+ * - queued   → 准备执行(prepare)：只读取需求正文 + 绑定 composer，任务仍 queued，发送时才 claim+start；
+ *   rerun 产生的新任务（rerunOfTaskId 非空）额外渲染「重新执行」徽标（multica 归组语义的看板投影）
  * - running  → 取消(cancel)
- * - completed/failed（带本地 run 链接）→ 点击回看会话(onSelectRun)
- * - 全状态   → 移出列表(remove)：纯本地视图过滤，刷新即恢复（服务端不动）
+ * - completed/failed（带本地 run 链接）→ 点击回看会话(onSelectRun)；对账后 issue 状态允许时
+ *   渲染「重新执行」(rerun，canRerunRemoteTask 判定) 与 issue 状态标记（回退待办场景）
+ * - 全状态   → 移出列表(remove)：终态行真删除本地历史，pending/running 行刷新即恢复（服务端不动）
  */
 
 /// 看板列定义：4 canonical status，与 `RemoteTaskVm.status` 1:1
@@ -68,6 +70,44 @@ export function isTaskNotReady(task: Pick<RemoteTaskVm, 'kind' | 'readiness'>): 
   return task.kind === 'test' && task.readiness !== true;
 }
 
+/// 可「重新执行」的 issue 状态分类闭集（multica 状态对账口径）：任务终态后 issue 处于
+/// todo / backlog / done 时允许由本端重新发起。in_progress 不在列——issue 正被他端执行，
+/// multica 按 (issue, agent) 串行派发，重跑会在服务端撞 pending 槽。导出供单测固化口径。
+export const RERUN_ELIGIBLE_ISSUE_CATEGORIES = ['todo', 'backlog', 'done'] as const;
+
+/// 终态行渲染 issue 状态标记的分类闭集：todo / backlog（任务已终、issue 仍未开工——回退待办
+/// 场景，标记提示用户 issue 现状，配合「重新执行」入口）。done 不渲染——issue 已完成与任务
+/// 终态一致，无提示价值；canceled 也不渲染（撤销语义无后续动作）。导出供单测固化。
+export const ISSUE_STATUS_CHIP_CATEGORIES = ['todo', 'backlog'] as const;
+
+/// 纯函数：终态任务当前是否可「重新执行」（multica 任务重试改造）。
+///
+/// 条件：本地终态（completed/failed——本地历史仅这两种终态）**且**对账回填的
+/// `issueStatusCategory` ∈ [`RERUN_ELIGIBLE_ISSUE_CATEGORIES`]。未对账（null，旧 server /
+/// 对账前）→ 不可（不猜 issue 状态）。导出供单测固化判定真值表。
+export function canRerunRemoteTask(
+  task: Pick<RemoteTaskVm, 'status' | 'issueStatusCategory'>,
+): boolean {
+  const terminal = task.status === 'completed' || task.status === 'failed';
+  return (
+    terminal &&
+    task.issueStatusCategory !== null &&
+    (RERUN_ELIGIBLE_ISSUE_CATEGORIES as readonly string[]).includes(task.issueStatusCategory)
+  );
+}
+
+/// 纯函数：终态行是否渲染 issue 状态标记（todo/backlog 回退待办场景，见
+/// [`ISSUE_STATUS_CHIP_CATEGORIES`]）。导出供单测固化。
+export function showsIssueStatusChip(
+  task: Pick<RemoteTaskVm, 'status' | 'issueStatusCategory'>,
+): boolean {
+  return (
+    (task.status === 'completed' || task.status === 'failed') &&
+    task.issueStatusCategory !== null &&
+    (ISSUE_STATUS_CHIP_CATEGORIES as readonly string[]).includes(task.issueStatusCategory)
+  );
+}
+
 /// 纯函数：把「选定工作空间的扁平任务列表」按 canonical status 分桶到 4 列。
 /// 未知 status（理论不会出现——normalize 已收敛）不入任何列，作为接口层兜底。
 /// 导出供单测固化分桶不变量（4 列正确 + 未知状态丢弃 + 空输入）。
@@ -94,13 +134,16 @@ export function bucketTasksByStatus(tasks: RemoteTaskVm[]): Record<BoardColumnSt
 interface RemoteTaskBoardProps {
   /// 选定工作空间的全部远程任务（active queued/running + 终态 completed/failed）。
   tasks: RemoteTaskVm[];
-  /// 当前正在执行异步动作的任务 id（prepare/cancel），对应卡片禁用 + spin。
+  /// 当前正在执行异步动作的任务 id（prepare/cancel/rerun），对应卡片禁用 + spin。
   busyTaskId: string | null;
   /// 准备执行 queued 任务（claim-at-send 的只读取）：容器负责拉需求正文 + 预填 composer + 跳会话准备页，
   /// **不领取任务**（仍 queued），发送时才 claim+start。
   onPrepare: (task: RemoteTaskVm) => void;
   /// 取消 running 任务。
   onCancel: (task: RemoteTaskVm) => void;
+  /// 重新执行终态任务（multica 任务重试改造）：容器负责调 rerun + re-fetch 列表
+  /// （新任务经 server pending 自然进板，按 id 去重）。
+  onRerun: (task: RemoteTaskVm) => void;
   /// 移出列表（全状态可用）：纯本地视图过滤，刷新即恢复——容器负责，服务端不动。
   onRemove: (task: RemoteTaskVm) => void;
   /// 终态行（带本地 run 链接）整块点击 → 直达本地 conversation-run。
@@ -112,6 +155,7 @@ export function RemoteTaskBoard({
   busyTaskId,
   onPrepare,
   onCancel,
+  onRerun,
   onRemove,
   onSelectRun,
 }: RemoteTaskBoardProps) {
@@ -144,6 +188,7 @@ export function RemoteTaskBoard({
                     busy={busyTaskId === task.id}
                     onPrepare={onPrepare}
                     onCancel={onCancel}
+                    onRerun={onRerun}
                     onRemove={onRemove}
                     onSelectRun={onSelectRun}
                     t={t}
@@ -169,6 +214,7 @@ function RemoteTaskCard({
   busy,
   onPrepare,
   onCancel,
+  onRerun,
   onRemove,
   onSelectRun,
   t,
@@ -177,6 +223,7 @@ function RemoteTaskCard({
   busy: boolean;
   onPrepare: (task: RemoteTaskVm) => void;
   onCancel: (task: RemoteTaskVm) => void;
+  onRerun: (task: RemoteTaskVm) => void;
   onRemove: (task: RemoteTaskVm) => void;
   onSelectRun: (projectId: string, taskId: string, runId: string) => void;
   t: TranslationFn;
@@ -191,9 +238,18 @@ function RemoteTaskCard({
   // 终态行（completed/failed）：唯一数据源是本地完成历史——「移出列表」语义与 active 行不同
   // （真删除 vs 视图过滤），hint 按此分派（见 onRemove 按钮）。
   const terminal = task.status === 'completed' || task.status === 'failed';
+  // 重新执行（multica 任务重试改造）：终态 + 对账回填的 issue 状态允许（todo/backlog/done）。
+  const canRerun = canRerunRemoteTask(task);
+  // rerun 产生的新任务（queued + rerunOfTaskId）：渲染「重新执行」徽标（multica 归组语义投影）。
+  const rerunBadge = queued && !!task.rerunOfTaskId;
   const statusTone = REMOTE_STATUS_TONE[task.status as BoardColumnStatus] ?? REMOTE_STATUS_TONE.queued;
   const issueKind = visibleIssueKind(task.kind);
   const notReadyHint = t('remote.taskManagement.readiness.notReadyHint');
+  // issue 状态标记文案：自定义状态名优先（对账回填，更精确），否则按分类闭集取 i18n。
+  const issueStatusLabel =
+    showsIssueStatusChip(task) && task.issueStatusCategory
+      ? task.issueStatusName?.trim() || t(`remote.taskManagement.issueStatus.${task.issueStatusCategory}`)
+      : null;
 
   // 终态行（completed/failed 且带本地 run 链接）：内容区整块可点 → 直达本地 conversation-run。
   // active 行（queued/running）无本地链接，不绑点击，走右侧 prepare/cancel。
@@ -233,6 +289,27 @@ function RemoteTaskCard({
             </TooltipTrigger>
             <TooltipContent side="top" className="text-xs">{notReadyHint}</TooltipContent>
           </Tooltip>
+        )}
+        {rerunBadge && (
+          /* 重新执行徽标（multica 任务重试改造）：本任务由「重新执行」产生（rerunOfTaskId 指回
+             源任务）——multica 看板「归组到源任务行」在码灵扁平 4 列的投影。色调取 running
+             （重新进入执行周期的活动信号）。 */
+          <Badge
+            variant="outline"
+            className={cn('h-4 shrink-0 px-1 text-[10px] leading-none', REMOTE_STATUS_TONE.running)}
+          >
+            {t('conversation.sidebar.remoteTasks.rerunBadge')}
+          </Badge>
+        )}
+        {issueStatusLabel && (
+          /* issue 状态标记（对账回填）：任务已终态但 issue 仍处 todo/backlog（回退待办场景）——
+             提示 issue 现状，与「重新执行」入口互补。自定义状态名优先于分类文案。 */
+          <Badge
+            variant="outline"
+            className={cn('h-4 shrink-0 px-1 text-[10px] leading-none', REMOTE_STATUS_TONE.queued)}
+          >
+            {issueStatusLabel}
+          </Badge>
         )}
         {task.lastActivityAt && (
           <span className="ml-auto shrink-0 truncate text-[10px] tabular-nums text-muted-foreground">
@@ -292,6 +369,25 @@ function RemoteTaskCard({
                 <TooltipContent side="top" className="text-xs">{t('conversation.sidebar.remoteTasks.cancelTask')}</TooltipContent>
               </Tooltip>
             )}
+            {canRerun && (
+              /* 重新执行（multica 任务重试改造）：终态 + issue 状态允许（todo/backlog/done）时出现。
+                 容器调 rerun 后 re-fetch——新任务自然进 pending 列（server 单一事实源，按 id 去重）。 */
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="size-7"
+                    disabled={readOnly || busy}
+                    onClick={() => onRerun(task)}
+                    aria-label={t('conversation.sidebar.remoteTasks.rerunTask')}
+                  >
+                    {busy ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCcw className="size-3.5" />}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">{t('conversation.sidebar.remoteTasks.rerunTask')}</TooltipContent>
+              </Tooltip>
+            )}
             {/* 移出列表（全状态可用），按行数据源分派：终态行真删除本地完成历史（刷新不复活），
                 pending/running 行纯视图过滤（刷新即恢复）——hint 如实说明差异；不弹确认框
                 （可逆操作无数据丢失，ui-interaction §1 删除确认针对破坏性删除）。 */}
@@ -310,7 +406,7 @@ function RemoteTaskCard({
               </TooltipTrigger>
               <TooltipContent side="top" className="text-xs">{t(terminal ? 'conversation.sidebar.remoteTasks.removeTaskTerminalHint' : 'conversation.sidebar.remoteTasks.removeTaskHint')}</TooltipContent>
             </Tooltip>
-            {(!canClaim && !canCancel) && busy && (
+            {(!canClaim && !canCancel && !canRerun) && busy && (
               <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
             )}
           </div>
