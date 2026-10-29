@@ -44,7 +44,7 @@
 
 - 会话 VM（`AcpSessionVm`、`ConversationSessionLeafVm`）只暴露一个三态 `workLocation`：`main`（项目根）、`worktree { path, branch }`、`unavailable { reason: released | unresolved, path? }`。`released` 表示 worktree 已被收回，`unresolved` 表示 dynamic 节点或其 workspace 无法解析；不可用状态不得折叠成 `main`，避免把项目根文件当作会话文件展示。
 - 右侧文件与源码管理 Tab 的 `root` 是当前会话工作位置在读取时的投影，不写回独立事实源。会话切到另一个根时，普通目录选中的文件若属于旧根则取消选中；由产物、会话变更或 Git 来源显式打开的文件保留自身来源根，读取、定位与 watcher 都按该来源根执行。根变为不可用时保留选中文件，恢复后仍可回到原文件。
-- 固定来源文件打开后，从文件预览标题栏再次“引用到对话”必须沿用资源已有的 `source`：Git 文件保留原工作位置，会话文件保留完整 locator 与 change identity。不得从展示用的相对路径重新生成普通 workspace 来源；普通目录文件继续按接收会话工作目录解析。
+- 固定来源文件打开后，从文件预览标题栏再次“引用到对话”必须沿用资源已有的 `source`：Git 文件保留原工作位置，会话文件保留完整 locator 与 change identity。受控交付附件即使解析为 `scope=external`、没有 workspace 相对路径，也保留引用按钮及完整 manifest 来源；从消息引用或交付附件卡片打开时遵守同一契约。展示文件名取自已解析路径，不能代替来源身份。不得从展示用的相对路径重新生成普通 workspace 来源；没有固定来源的外部文件仍不提供引用，普通目录文件继续按接收会话工作目录解析。
 - 根不可用时，文件与源码管理 Tab 分别展示“会话工作树已收回 / 不可用”、原路径和“浏览主工作区”按钮；若当前选中的文件来自固定来源，文件详情仍按来源根显示，目录侧保持接收会话的不可用状态。按钮只作用于当前 Tab 的目录根（`browseMain`），会话重新可用后该选择失效；不自动回落项目根，也不丢弃固定来源文件。
 - 后端所有文件命令接收可选 `workspacePath`（`None` 为项目根）。非项目根必须是与项目共享 Git common dir 的 linked worktree 顶层目录，子目录、其他仓库和不存在的路径分别返回 `workspace-file.workspace-unavailable` / `workspace-file.workspace-outside-project`（参数 `workspacePath`）。Git 校验（两次 rev-parse）只在首次访问该根时执行，结果进入 32 项有界 LRU，按 project + 规范路径为键并在每次命中时复核目录存在与 `.git` 指针内容，worktree 被收回或替换后立即失效重验。
 - 文件 watcher、前端目录树、正文代际和 watch 引用计数都以 `projectId + workspacePath` 为身份。watch 事件携带工作位置身份（linked worktree 路径，项目根为 `None`），前端按身份精确路由，不用路径前缀猜测，因此嵌套在项目目录内的 dynamic worktree 不会被主根和 worktree 根重复刷新。被监听的根目录消失时发送 `invalidated`。停止文件监听与 Git 状态监听不做 Git 校验，已收回的 worktree 仍能释放监听。

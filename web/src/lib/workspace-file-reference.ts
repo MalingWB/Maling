@@ -38,8 +38,12 @@ export function composerWorkspaceFileRefFromLocator(
   locator: WorkspaceFileLocatorVm,
   source?: FileWorkspaceResource['source'],
 ): ComposerWorkspaceFileRef | null {
-  if (locator.scope !== 'workspace' || !locator.relativePath) return null;
-  const relativePath = locator.relativePath.replaceAll('\\', '/');
+  if (!source && (locator.scope !== 'workspace' || !locator.relativePath)) return null;
+  // Fixed sources carry the submission identity; external paths only supply a display name.
+  const relativePath = (locator.relativePath ?? (source?.kind === 'git-file'
+    ? source.relativePath
+    : locator.canonicalPath.replaceAll('\\', '/').split('/').at(-1)))?.replaceAll('\\', '/');
+  if (!relativePath) return null;
   const name = relativePath.split('/').at(-1) || relativePath;
   return {
     id: source ? fileReferenceIdentity(source) : `${locator.projectId}:${relativePath}`,

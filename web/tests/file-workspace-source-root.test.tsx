@@ -85,11 +85,18 @@ const fixedSources: NonNullable<FileWorkspaceResource['source']>[] = [
   { kind: 'turn-file', locator: { projectId: 'p', taskId: 'task-source', taskUuid: 'uuid-source',
     runId: 'run', roundId: 'round', nodeId: 'node', attemptId: 'attempt', branchId: 'main',
     outerNodeId: 'outer-node', outerAttemptId: 'outer-attempt' }, changeSetId: 'set', changeId: 'change' },
+  { kind: 'turn-attachment', locator: { projectId: 'p', taskId: 'task-source', taskUuid: 'uuid-source',
+    runId: 'run', roundId: 'round', nodeId: 'node', attemptId: 'attempt', branchId: 'main',
+    outerNodeId: 'outer-node', outerAttemptId: 'outer-attempt' }, changeSetId: 'set', attachmentId: 'attachment' },
 ];
 
 it.each(fixedSources)('preserves the $kind source when referencing the preview header and submitting', async (source) => {
+  const file: FileWorkspaceResource = source.kind === 'turn-attachment'
+    ? { ...selectedFile, source, title: 'report.md', locator: { projectId: 'p',
+      canonicalPath: 'D:/runtime/attempt/attachments/report.md', relativePath: null, scope: 'external' } }
+    : { ...selectedFile, source };
   vi.mocked(readFileResource).mockResolvedValue({
-    kind: 'text', locator: selectedFile.locator, name: 'a.ts', content: 'original source',
+    kind: 'text', locator: file.locator, name: file.title, content: 'original source',
     editable: true, language: 'typescript', revision: { contentHash: 'source', byteLength: 15, modifiedAtNs: '1' },
     externalAccessGrant: null,
   });
@@ -97,7 +104,7 @@ it.each(fixedSources)('preserves the $kind source when referencing the preview h
   const root = createRoot(container);
   try {
     await act(async () => root.render(<TooltipProvider><FileWorkspacePanel
-      resource={{ ...resource, selectedFile: { ...selectedFile, source } }} layout={layout}
+      resource={{ ...resource, selectedFile: file }} layout={layout}
     /></TooltipProvider>));
     const referenceButton = container.querySelector<HTMLButtonElement>('[data-file-reference-to-conversation]');
     expect(referenceButton).not.toBeNull();

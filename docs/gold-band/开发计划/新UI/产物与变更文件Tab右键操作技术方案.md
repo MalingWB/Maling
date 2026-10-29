@@ -103,7 +103,7 @@ type ComposerFileRef = {
 - `workspace` 保留现有“按接收会话工作目录解析”的语义；新来源显式指向原 Tab 对应的资源。Git 来源保留本地根与路径，不把比较 OID 写成文件版本引用。
 - 新来源复用现有 canonical locator/change identity/workspacePath，没有新增 aggregate、持久根 ID、revision 或授权 token。新增来源分支只解决现有 `projectId + relativePath` 无法表达的两个不变量：运行目录归属和固定来源工作位置。
 - chip 的展示路径和一次解析结果属于 UI 投影，不作为提交读取依据。提交只携带 `source`；按来源身份先去重，执行时再按解析后的 canonical path 去重。
-- 固定来源文件从消息 chip 打开后，预览标题栏再次引用沿用 `FileWorkspaceResource.source`，使用现有来源 identity 生成 chip ID；不得降级为按接收会话解析的 workspace 引用。普通目录文件仍使用原有 workspace 语义，不扩大任意外部文件的引用权限。
+- 固定来源文件从消息 chip 打开后，预览标题栏再次引用沿用 `FileWorkspaceResource.source`，使用现有来源 identity 生成 chip ID；不得降级为按接收会话解析的 workspace 引用。受控 `turn-attachment` 的 locator 可为 `external` 且没有 workspace 相对路径，此时以已解析路径的文件名补充展示信息，提交仍只使用原 manifest 来源；交付附件卡片打开预览时同样透传来源。普通目录文件仍使用原有 workspace 语义，不扩大没有固定来源的外部文件引用权限。
 - 普通工作空间引用的生产者与消费者统一使用联合类型，不保留另一套旧元素解析 fallback。开发阶段不为旧草稿或旧持久格式增加兼容分支；实施时明确受影响的开发数据重建范围。
 
 ### 4.2 轻量元数据解析
@@ -278,3 +278,12 @@ revealRightWorkspaceFile(source: PromptFileRef): Promise<void>;
 - `cargo fmt --all -- --check` 与 `git diff --check` 通过；全局检索确认旧 struct 构造和直接字段访问已清除。桌面测试仍有 2 项既有未使用方法警告。
 - 与 CI 相同的 `cargo clippy --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods` 通过，核心与桌面的所有目标均不再出现此次类型迁移导致的编译错误；输出仍包含既有未使用项警告。
 - 过度设计与性能复核：仅补齐现有测试调用点和文档，没有新增运行时抽象、依赖、状态、缓存、I/O 或渲染成本。复用既有接口测试，无需新增专用检查框架。
+
+### 10.8 受控交付附件预览再次引用（2026-10-29）
+
+- 根因属于固定来源设计的实现遗漏：从消息引用打开的交付附件持有有效 `source`，但转换函数按 `scope=workspace` 过滤了运行目录内的外部附件；交付附件卡片打开的预览资源也未透传已有 manifest 来源。
+- 修复前，两个路径分隔符的打开、再引用与提交接口用例均返回 `null`，真实文件面板 DOM 用例找不到引用按钮，附件卡片的预览映射用例缺失来源，共 4 项失败。转换函数改为依据已有固定来源保留附件引用，并从已解析路径取得展示文件名；附件面板补齐来源透传。没有固定来源的外部 locator 继续拒绝引用，提交仍携带完整 locator、changeSetId、attachmentId。
+- 同一组失败用例修复后转绿；文件引用、来源根、附件面板、附件卡片菜单、bridge、Composer 与消息引用共 7 个测试文件、37 项通过。`npm run web:build` 的 TypeScript 检查及 Vite 生产构建通过，仍有既有大 chunk 与动态/静态混合导入提示。
+- 内置浏览器使用真实消息引用 chip、打开 helper、文件预览、交付附件面板、Composer bridge 与上下文 chip，文件 API 使用隔离夹具。验证消息打开后再次引用、直接打开交付附件后引用、重复引用去重、完整嵌套来源提交，以及 390px 窄窗口长文件名与拉宽后状态保持；窄窗口文档宽度为 390px，无横向溢出。未重新打包 EXE，也未向远端 Agent 发送消息。
+- 过度设计与性能复核：只补齐既有来源的转换和透传，沿用现有 identity、去重、共享上限与后端校验；没有新增依赖、持久字段、状态、缓存、请求、正文读取或订阅，转换成本仍与单个路径长度成正比。现有来源完整性和 Bug 验证规则已覆盖本次根因，无需新增经验规则。
+- 验证页面与 viewport 已关闭/恢复，本次 1434 端口 Vite 和临时入口已清理；保留用户原有验证文件、无关工作区改动和验收截图。

@@ -5,6 +5,7 @@ import { createInitialRightWorkspaceState, fileWorkspaceResourceKey, projectWork
 import type { PromptWorkspaceFileRef } from '@/types';
 import { composerWorkspaceFileRefFromLocator, openWorkspaceFileReference } from '@/lib/workspace-file-reference';
 import { createUserPromptSubmission } from '@/lib/composer-context';
+import { fileReferenceIdentity } from '@/lib/file-reference-source';
 
 vi.mock('@/api', () => ({
   resolveWorkspaceFileLink: vi.fn(),
@@ -38,6 +39,37 @@ describe('workspace file reference opening', () => {
       { kind: 'workspace', projectId: 'project-1', relativePath: 'src/a.ts' },
     ]);
     expect(composerWorkspaceFileRefFromLocator({ ...locator, scope: 'external' })).toBeNull();
+    expect(composerWorkspaceFileRefFromLocator({ ...locator, scope: 'external', relativePath: null })).toBeNull();
+  });
+
+  const attachmentSource: Extract<PromptWorkspaceFileRef, { kind: 'turn-attachment' }> = {
+    kind: 'turn-attachment',
+    locator: { projectId: 'project-1', taskId: 'task-source', taskUuid: 'uuid-source',
+      runId: 'run-1', roundId: 'round-1', nodeId: 'node-1', attemptId: 'attempt-1',
+      branchId: 'main', outerNodeId: 'outer-node', outerAttemptId: 'outer-attempt' },
+    changeSetId: 'set-1', attachmentId: 'attachment-1',
+  };
+
+  it.each([
+    'D:/runtime/attempt/attachments/reports/report.md',
+    'D:\\runtime\\attempt\\attachments\\reports\\report.md',
+  ])('preserves a controlled external attachment through opening, referencing and submission: %s', async (canonicalPath) => {
+    const locator = { projectId: 'project-1', canonicalPath, relativePath: null, scope: 'external' as const };
+    vi.mocked(resolveRightWorkspaceFileTarget).mockResolvedValue({
+      source: attachmentSource, projectId: 'project-1', name: 'report.md', absolutePath: canonicalPath,
+      relativePath: 'reports/report.md', relativeBase: 'attachment', workspacePath: null,
+      byteLength: 15, mimeType: 'text/markdown', availability: { kind: 'available' },
+    });
+    vi.mocked(resolveWorkspaceFileLink).mockResolvedValue({ locator, target: null, externalAccessGrant: null });
+    const open = vi.fn();
+    await openWorkspaceFileReference({ source: attachmentSource, projectId: 'project-1', relativePath: 'reports/report.md' }, 'scope', open, null);
+    const selectedFile = (open.mock.calls[0][0] as Extract<RightWorkspaceResource, { kind: 'file-browser' }>).selectedFile!;
+
+    const ref = composerWorkspaceFileRefFromLocator(selectedFile.locator, selectedFile.source);
+
+    expect(ref).toMatchObject({ id: fileReferenceIdentity(attachmentSource), source: attachmentSource,
+      projectId: 'project-1', name: 'report.md', relativePath: 'report.md', mimeType: 'text/markdown', canonicalPath });
+    expect(createUserPromptSubmission('', [], null, [ref!]).workspaceFiles).toEqual([attachmentSource]);
   });
   it.each(fixedSources)('opens a $kind from its own root when the receiving worktree is unavailable', async (source) => {
     const locator = { projectId: 'project-1', canonicalPath: 'D:/source/src/a.ts', relativePath: 'src/a.ts', scope: 'workspace' as const };
