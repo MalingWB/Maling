@@ -120,6 +120,10 @@ export function importProfilesFromFolder(folderPath: string, dynamicTemplate: bo
   return getRuntimeApi().importProfilesFromFolder(folderPath, dynamicTemplate);
 }
 
+export function importProfilesFromFiles(filePaths: string[], dynamicTemplate: boolean) {
+  return getRuntimeApi().importProfilesFromFiles(filePaths, dynamicTemplate);
+}
+
 export function updateProfile(id: string, input: Parameters<ReturnType<typeof getRuntimeApi>['updateProfile']>[1]) {
   return getRuntimeApi().updateProfile(id, input);
 }

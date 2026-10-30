@@ -996,7 +996,10 @@
         "folder-not-found": "找不到所选文件夹",
         "folder-not-directory": "所选路径不是文件夹",
         "folder-read-failed": "无法完整读取所选文件夹",
-        "no-markdown-files": "所选文件夹中没有 Markdown 文件"
+        "no-markdown-files": "所选文件夹中没有 Markdown 文件",
+        "file-not-found": "找不到所选文件",
+        "file-not-markdown": "所选文件不是 Markdown 文件",
+        "no-files": "未选择任何文件"
       }
     },
     "manual-check": {
@@ -1327,7 +1330,6 @@
     "builtInSectionDescription": "固定角色，支持打开草稿并另存为新的自定义角色。",
     "customSectionTitle": "自定义角色",
     "customSectionDescription": "你创建的用户级自定义角色会在这里分页展示。",
-    "customProfilesPageRange": "自定义角色 {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "内置角色不可直接保存，请另存为新角色。",
     "emptyContent": "暂无正文内容",
     "profileRequired": "名称和摘要不能为空。",
@@ -1460,10 +1462,12 @@
       }
     },
     "importProfile": "导入角色",
-    "importSettingsDescription": "选择文件夹批量导入角色 Markdown 文件，缺失的名称和摘要会自动兜底。",
+    "importSettingsDescription": "从文件夹批量导入，或直接选择角色 Markdown 文件导入，缺失的名称和摘要会自动兜底。",
     "importDynamicTemplateDescription": "开启后本次导入的所有角色按动态模板处理；正文不合法的会自动降级为静态。",
     "importPickFolder": "选择文件夹并导入",
     "importPickFolderTitle": "选择包含角色 Markdown 文件的文件夹",
+    "importPickFiles": "选择文件并导入",
+    "importPickFilesTitle": "选择角色 Markdown 文件",
     "importResultTitle": "导入结果",
     "importResultSummary": "共扫描 {{total}} 个文件，成功 {{success}} 个，失败 {{failed}} 个。",
     "importResultImported": "已导入",

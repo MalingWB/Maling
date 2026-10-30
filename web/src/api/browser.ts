@@ -1983,6 +1983,9 @@ export const browserApi: RuntimeApi = {
   importProfilesFromFolder(_folderPath: string, _dynamicTemplate: boolean) {
     return Promise.resolve({ totalScanned: 0, imported: [], failed: [], truncated: false });
   },
+  importProfilesFromFiles(_filePaths: string[], _dynamicTemplate: boolean) {
+    return Promise.resolve({ totalScanned: 0, imported: [], failed: [], truncated: false });
+  },
   updateProfile(id: string, input: ProfileInput) {
     const existing = browserPreviewState.getProfiles().profiles.find((profile) => profile.id === id);
     if (!existing) return browserCommandError('app.unexpected');

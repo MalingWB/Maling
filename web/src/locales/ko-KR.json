@@ -996,7 +996,10 @@
         "folder-not-found": "선택한 폴더를 찾을 수 없습니다",
         "folder-not-directory": "선택한 경로가 폴더가 아닙니다",
         "folder-read-failed": "선택한 폴더를 완전히 읽을 수 없습니다",
-        "no-markdown-files": "선택한 폴더에 Markdown 파일이 없습니다"
+        "no-markdown-files": "선택한 폴더에 Markdown 파일이 없습니다",
+        "file-not-found": "선택한 파일을 찾을 수 없습니다",
+        "file-not-markdown": "선택한 파일이 Markdown 파일이 아닙니다",
+        "no-files": "파일이 선택되지 않았습니다"
       }
     },
     "manual-check": {
@@ -1327,7 +1330,6 @@
     "builtInSectionDescription": "초안으로 열어 새 사용자 정의 역할로 저장할 수 있는 고정 역할입니다.",
     "customSectionTitle": "사용자 정의 역할",
     "customSectionDescription": "사용자 역할이 여기에 페이지로 표시됩니다.",
-    "customProfilesPageRange": "사용자 정의 역할 {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "내장 역할은 직접 저장할 수 없습니다. 새 역할로 저장하세요.",
     "emptyContent": "역할 내용 없음",
     "profileRequired": "이름과 요약은 필수입니다.",
@@ -1460,10 +1462,12 @@
       }
     },
     "importProfile": "역할 가져오기",
-    "importSettingsDescription": "폴더에서 역할 Markdown 파일을 일괄 가져옵니다. 이름과 요약이 없으면 자동으로 채웁니다.",
+    "importSettingsDescription": "폴더에서 일괄 가져오거나 역할 Markdown 파일을 직접 선택하여 가져옵니다. 이름과 요약이 없으면 자동으로 채웁니다.",
     "importDynamicTemplateDescription": "활성화하면 가져온 모든 역할을 동적 템플릿으로 처리합니다. 본문이 유효하지 않으면 정적으로 다운그레이드됩니다.",
     "importPickFolder": "폴더 선택 후 가져오기",
     "importPickFolderTitle": "역할 Markdown 파일이 있는 폴더 선택",
+    "importPickFiles": "파일 선택 후 가져오기",
+    "importPickFilesTitle": "역할 Markdown 파일 선택",
     "importResultTitle": "가져오기 결과",
     "importResultSummary": "파일 {{total}}개 스캔, 성공 {{success}}, 실패 {{failed}}.",
     "importResultImported": "가져옴",

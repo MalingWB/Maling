@@ -1613,6 +1613,11 @@ export interface ImportProfilesInput {
   dynamicTemplate: boolean;
 }
 
+export interface ImportProfileFilesInput {
+  filePaths: string[];
+  dynamicTemplate: boolean;
+}
+
 export type ImportRecordStatus =
   | 'imported'
   | 'imported-with-fallbacks'
