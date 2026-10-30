@@ -3187,6 +3187,7 @@
       "account": {
         "connected": "已連線"
       },
+      "openPlatform": "開啟 {{source}} 平台",
       "column": {
         "empty": "沒有任務"
       },

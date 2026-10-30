@@ -3203,7 +3203,8 @@
       },
       "account": {
         "connected": "已连接"
-      }
+      },
+      "openPlatform": "打开 {{source}} 平台"
     },
     "upstreamPull": {
       "title": "上游交付说明待拉取",

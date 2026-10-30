@@ -3187,6 +3187,7 @@
       "account": {
         "connected": "Conectado"
       },
+      "openPlatform": "Abrir la plataforma de {{source}}",
       "column": {
         "empty": "Sin tareas"
       },

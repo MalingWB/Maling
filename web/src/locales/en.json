@@ -3203,7 +3203,8 @@
       },
       "account": {
         "connected": "Connected"
-      }
+      },
+      "openPlatform": "Open {{source}} platform"
     },
     "upstreamPull": {
       "title": "Upstream deliverable not pulled yet",

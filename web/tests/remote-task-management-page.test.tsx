@@ -16,6 +16,7 @@ vi.mock('@/i18n', () => ({ displayAppError: () => 'mock-error' }));
 
 vi.mock('lucide-react', () => ({
   ChevronDown: () => null,
+  ExternalLink: () => null,
   Folders: () => null,
   Globe: () => null,
   ListFilter: () => null,
@@ -410,6 +411,35 @@ describe('RemoteTaskManagementPage (container)', () => {
     }));
     const { container: connectedContainer } = await renderPage();
     expect(connectedContainer.querySelector('button[aria-label="common.refresh"]')).not.toBeNull();
+  });
+
+  // 快捷跳转 multica 平台：footer（source==='multica' 门控）右侧组的 ExternalLink 按钮，
+  // 点击用 settings VM 的 multicaAppUrl（平台 Web 前端地址）调 openExternalUrl。
+  it('opens the multica platform (app_url) from the toolbar button when connected', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {},
+    }));
+    const { container } = await renderPage();
+
+    const openBtn = container.querySelector('button[aria-label="remote.taskManagement.openPlatform"]') as HTMLButtonElement;
+    expect(openBtn).toBeTruthy();
+    await act(async () => { openBtn.click(); });
+
+    expect(mocks.openExternalUrl).toHaveBeenCalledWith('https://app.example');
+  });
+
+  it('hides the platform button when app_url is not configured', async () => {
+    getMulticaSettings.mockResolvedValue(baseSettings({ multicaAppUrl: null }));
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {},
+    }));
+    const { container } = await renderPage();
+
+    expect(container.querySelector('button[aria-label="remote.taskManagement.openPlatform"]')).toBeNull();
   });
 
   it('prepares a queued task (read-only) — fetches requirement, prefills composer draft, then navigates to conversation-home', async () => {

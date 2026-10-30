@@ -1,7 +1,7 @@
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Folders, Globe, ListFilter, Loader2, Plus, RotateCw, Settings, Trash2, User, Wifi, WifiOff } from 'lucide-react';
+import { ChevronDown, ExternalLink, Folders, Globe, ListFilter, Loader2, Plus, RotateCw, Settings, Trash2, User, Wifi, WifiOff } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -37,6 +37,7 @@ import {
   getMulticaSettings,
   getRemoteTaskRequirement,
   getRemoteTasks,
+  openExternalUrl,
   reconcileRemoteTaskStatuses,
   removeMulticaWorkspace,
   removeRemoteCompletedTask,
@@ -544,6 +545,27 @@ export function RemoteTaskManagementPage({
                 <User className="size-3.5 shrink-0" />
                 <span className="truncate">{accountLabel}</span>
               </span>
+
+              {/* 快捷跳转 multica 平台（app_url = 平台 Web 前端地址，settings VM 已加载）：
+                  footer 已受 source === 'multica' 门控；地址未配置（null）时不渲染。 */}
+              {settingsVm?.multicaAppUrl && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-7"
+                      aria-label={t('remote.taskManagement.openPlatform', { source: sourceLabel })}
+                      onClick={() => void openExternalUrl(settingsVm.multicaAppUrl!)}
+                    >
+                      <ExternalLink className="size-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="text-xs">
+                    {t('remote.taskManagement.openPlatform', { source: sourceLabel })}
+                  </TooltipContent>
+                </Tooltip>
+              )}
 
               {/* 手动刷新 */}
               <Tooltip>

@@ -3187,6 +3187,7 @@
       "account": {
         "connected": "接続済み"
       },
+      "openPlatform": "{{source}} プラットフォームを開く",
       "column": {
         "empty": "タスクがありません"
       },

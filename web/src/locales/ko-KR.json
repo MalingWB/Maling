@@ -3187,6 +3187,7 @@
       "account": {
         "connected": "연결됨"
       },
+      "openPlatform": "{{source}} 플랫폼 열기",
       "column": {
         "empty": "작업 없음"
       },
