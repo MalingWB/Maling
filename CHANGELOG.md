@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.21.0](https://github.com/MalingWB/Maling/compare/v0.20.0...v0.21.0) (2026-10-30)
+
+
+### Features
+
+* add composer drafts and harden remote approval lifecycle ([dec8496](https://github.com/MalingWB/Maling/commit/dec8496fcd2736399190694ad0b8466984dbe7b7))
+* **conversation:** add file tab actions and search navigation ([b5752df](https://github.com/MalingWB/Maling/commit/b5752dfa8e3caeaeafb256297bcc80fdca041fbb))
+* **conversation:** add file tab actions and search navigation ([8ddeb76](https://github.com/MalingWB/Maling/commit/8ddeb76b8b4e29fcb86ec0c2d600dd956b352b1d))
+* **conversation:** add saved drafts and queue controls ([3ecdc33](https://github.com/MalingWB/Maling/commit/3ecdc3337766fe264e3672957eb7726783fe2aa1))
+* **im:** port upstream approval lifecycle improvements ([d99eede](https://github.com/MalingWB/Maling/commit/d99eedea6b79f4ad70c310a85c91f3c16091a8b8))
+* improve Feishu onboarding and chat scrolling ([2861fec](https://github.com/MalingWB/Maling/commit/2861fecc5f851ded3991940a9dd8383bf0eff516))
+* **im:** support Feishu app selection and stabilize chat sessions ([eaaf9fb](https://github.com/MalingWB/Maling/commit/eaaf9fb2a5c638b09913deab0f83a700ae71022b))
+* **profiles:** add built-in WeAPM role and file import ([198296a](https://github.com/MalingWB/Maling/commit/198296af103063fc4f7a4f984c7921fc677f12f1))
+* **profiles:** add built-in WeAPM role for wb channel ([311a931](https://github.com/MalingWB/Maling/commit/311a931c2a61feb2ab8faf509fbebb7db869e59f))
+* **profiles:** support file import and simplify custom role list ([b03ff83](https://github.com/MalingWB/Maling/commit/b03ff83226a359367d4ece87f1b19c45768d0347))
+* **settings:** organize IM integrations into collapsible cards ([38454cd](https://github.com/MalingWB/Maling/commit/38454cdb779eed869a222e59fa557f50a9ab55d2))
+
+
+### Bug Fixes
+
+* **acp:** avoid false session errors during Direct startup ([2aa94c3](https://github.com/MalingWB/Maling/commit/2aa94c380759b46dd5ea26e82e5fb177c75f9cbf))
+* **acp:** keep Direct sessions pending during startup ([a1544ac](https://github.com/MalingWB/Maling/commit/a1544acedcf0f9a6c4d45906304875c4d8a9e9e2))
+* **acp:** surface unmaterialized session failures ([c41feab](https://github.com/MalingWB/Maling/commit/c41feab4f73e03f7f15e4ed3ffdd20b52681b5f9))
+* **build:** externalize WB service base URL ([251dbed](https://github.com/MalingWB/Maling/commit/251dbedf45723d9c785fd4cad6ee6b090c393b02))
+* **build:** externalize WB service base URL ([45242c5](https://github.com/MalingWB/Maling/commit/45242c5f291a7339a73c810f9ead66b54812135e))
+* **ci:** pass WB base URL to release preflight ([42fc949](https://github.com/MalingWB/Maling/commit/42fc94929bdad1c8c47284eab1b53d68d0f612bf))
+* **composer:** preserve long draft scroll position ([6cf0172](https://github.com/MalingWB/Maling/commit/6cf0172c7cac1b619fd952945eb22474dcccd57a))
+* **conversation:** preserve background sidebar refreshes ([de98118](https://github.com/MalingWB/Maling/commit/de98118bb73fa2b39667f69b0e345cdd242d9aee))
+* **files:** preserve controlled attachment preview references ([0b95bfa](https://github.com/MalingWB/Maling/commit/0b95bfa719759d0831ae9e45e850473ff91c5ef9))
+* **files:** preserve sources and reject linked attachment roots ([4bbdfb1](https://github.com/MalingWB/Maling/commit/4bbdfb1b8c8cbec990b6ed8707522b06f7ea96dd))
+* **profiles:** restrict file import picker to md ([ccd2607](https://github.com/MalingWB/Maling/commit/ccd26077b585c64abc0b609d7f6b3a8e18d4cb20))
+* **release:** honor channel download URLs in updater manifests ([fb6c8da](https://github.com/MalingWB/Maling/commit/fb6c8da37889f31230c8b65ea7968d91361d4f2c))
+* **release:** honor channel download URLs in updater manifests ([de9ea3d](https://github.com/MalingWB/Maling/commit/de9ea3dd4c26a50ab10bc715eb4db11bcfb9b010))
+* **tests:** complete file reference type migration ([299c1fd](https://github.com/MalingWB/Maling/commit/299c1fd5b02782da38de70e682b710801ba9875a))
+
 ## [0.20.0](https://github.com/MalingWB/Maling/compare/v0.19.1...v0.20.0) (2026-10-19)
 
 
