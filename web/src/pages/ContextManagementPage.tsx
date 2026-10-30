@@ -481,7 +481,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
       const { open } = await import('@tauri-apps/plugin-dialog');
       const selected = await open({
         multiple: true,
-        filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
+        filters: [{ name: 'Markdown', extensions: ['md'] }],
         title: t('contextManagement.importPickFilesTitle'),
       });
       if (!selected) {

@@ -2011,6 +2011,7 @@ profile body
         fs::write(import_dir.join("a.MD"), "a").unwrap();
         fs::write(import_dir.join("b.md"), "b").unwrap();
         fs::write(import_dir.join("ignored.txt"), "ignored").unwrap();
+        fs::write(import_dir.join("ignored.markdown"), "ignored").unwrap();
         let import_dir = Utf8PathBuf::from_path_buf(import_dir).unwrap();
 
         let (files, truncated) = collect_md_files(&import_dir, 2).unwrap();
@@ -2129,7 +2130,7 @@ profile body
     fn import_profiles_from_files_imports_markdown_files() {
         let (_tmp, paths, import_dir) = setup_import_dir();
         let file_a = import_dir.join("role-a.md");
-        let file_b = import_dir.join("role-b.md");
+        let file_b = import_dir.join("role-b.MD");
         fs::write(
             &file_a,
             "---\nname: 文件角色A\nsummary: 摘要A\n---\n正文A\n",
@@ -2181,19 +2182,21 @@ profile body
 
     #[test]
     fn import_profiles_from_files_rejects_non_markdown() {
-        let (_tmp, paths, import_dir) = setup_import_dir();
-        let txt = import_dir.join("role.txt");
-        fs::write(&txt, "not markdown").unwrap();
-        let error = import_profiles_from_files(
-            &paths,
-            ImportProfileFilesInput {
-                file_paths: vec![txt.to_string_lossy().to_string()],
-                dynamic_template: false,
-            },
-        )
-        .unwrap_err();
-        let command_error = error.downcast_ref::<ProfileCommandError>().unwrap();
-        assert_eq!(command_error.code(), "profile.import.file-not-markdown");
+        for extension in ["txt", "markdown", "MARKDOWN"] {
+            let (_tmp, paths, import_dir) = setup_import_dir();
+            let file = import_dir.join(format!("role.{extension}"));
+            fs::write(&file, "# Role\n\nRole instructions.\n").unwrap();
+            let error = import_profiles_from_files(
+                &paths,
+                ImportProfileFilesInput {
+                    file_paths: vec![file.to_string_lossy().to_string()],
+                    dynamic_template: false,
+                },
+            )
+            .unwrap_err();
+            let command_error = error.downcast_ref::<ProfileCommandError>().unwrap();
+            assert_eq!(command_error.code(), "profile.import.file-not-markdown");
+        }
     }
 
     #[test]
