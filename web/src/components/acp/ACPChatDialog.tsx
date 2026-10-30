@@ -2525,8 +2525,6 @@ export function ACPChatDialog(
     : restoredSession;
   const projectionLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const runtimeActiveFromContext = !runtimeStopAccepted && (runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus));
-  const runtimeActiveFromContextRef = useRef(runtimeActiveFromContext);
-  runtimeActiveFromContextRef.current = runtimeActiveFromContext;
   const cancelledDirectAttemptShell = shouldCreateCancelledDirectAttemptShell({
     isOrchestrated: runtimeComposerContext?.isOrchestrated ?? true,
     lifecycle: projectionLifecycle,
@@ -2541,6 +2539,9 @@ export function ACPChatDialog(
       || projectionLifecycle?.composer.mode === 'stopping'
     ),
   );
+  // Direct startup belongs to ACP and does not activate the Workflow Runtime.
+  const initializationActiveRef = useRef(initializationLifecycleActive || runtimeActiveFromContext);
+  initializationActiveRef.current = initializationLifecycleActive || runtimeActiveFromContext;
   const liveSessionShell = useMemo(
     () =>
       shouldCreateLiveAcpSessionShell({
@@ -4601,7 +4602,7 @@ export function ACPChatDialog(
           }
           if (
             shouldKeepAcpInitialSessionLoadingAfterRetryExhausted({
-              runtimeActive: runtimeActiveFromContextRef.current,
+              initializationActive: initializationActiveRef.current,
               hasLoadError: lastLoadError != null,
             })
           ) {
