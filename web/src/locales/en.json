@@ -998,7 +998,10 @@
         "folder-not-found": "Selected folder could not be found",
         "folder-not-directory": "Selected path is not a folder",
         "folder-read-failed": "Selected folder could not be read completely",
-        "no-markdown-files": "No Markdown files found in the selected folder"
+        "no-markdown-files": "No Markdown files found in the selected folder",
+        "file-not-found": "Selected file could not be found",
+        "file-not-markdown": "Selected file is not a Markdown file",
+        "no-files": "No files selected"
       }
     },
     "manual-check": {
@@ -1336,7 +1339,6 @@
     "builtInSectionDescription": "Fixed roles that can be opened as drafts and saved as new custom roles.",
     "customSectionTitle": "Custom Roles",
     "customSectionDescription": "Custom roles you created are listed here.",
-    "customProfilesPageRange": "Custom roles {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "Built-in roles cannot be saved directly. Save them as a new role instead.",
     "emptyContent": "No role content yet",
     "profileRequired": "Name and summary are required.",
@@ -1469,10 +1471,12 @@
       }
     },
     "importProfile": "Import Roles",
-    "importSettingsDescription": "Batch import role Markdown files from a folder. Missing names and summaries are filled automatically.",
+    "importSettingsDescription": "Batch import from a folder or select role Markdown files directly. Missing names and summaries are filled automatically.",
     "importDynamicTemplateDescription": "When enabled, all imported roles are treated as dynamic templates; invalid bodies are downgraded to static.",
     "importPickFolder": "Choose folder and import",
     "importPickFolderTitle": "Choose a folder containing role Markdown files",
+    "importPickFiles": "Choose files and import",
+    "importPickFilesTitle": "Choose role Markdown files",
     "importResultTitle": "Import Results",
     "importResultSummary": "Scanned {{total}} files: {{success}} succeeded, {{failed}} failed.",
     "importResultImported": "Imported",

@@ -139,8 +139,8 @@ impl Drop for OwnedTaskDirectory {
 }
 use self::profiles::{
     DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
-    ensure_default_user_profiles, import_profiles_from_folder, list_profiles, show_profile,
-    update_profile,
+    ensure_default_user_profiles, import_profiles_from_files, import_profiles_from_folder,
+    list_profiles, show_profile, update_profile,
 };
 
 const ATTEMPT_RUNTIME_STATE_LOCK_SHARDS: usize = 64;
@@ -173,8 +173,8 @@ pub(crate) fn attempt_runtime_state_lock(
 const STATE_CONFIG_LOCK_SHARDS: usize = 32;
 static STATE_CONFIG_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 pub use self::profiles::{
-    ImportProfilesInput, ImportProfilesResult, ProfileCommandError, ProfileEntry, ProfileInput,
-    ProfileList, ProfileScope,
+    ImportProfileFilesInput, ImportProfilesInput, ImportProfilesResult, ProfileCommandError,
+    ProfileEntry, ProfileInput, ProfileList, ProfileScope,
 };
 
 fn tail_text(text: &str, limit: usize) -> String {
@@ -3784,6 +3784,13 @@ impl App {
         input: ImportProfilesInput,
     ) -> Result<ImportProfilesResult> {
         import_profiles_from_folder(&self.paths, input)
+    }
+
+    pub fn import_profiles_from_files(
+        &self,
+        input: ImportProfileFilesInput,
+    ) -> Result<ImportProfilesResult> {
+        import_profiles_from_files(&self.paths, input)
     }
 
     pub fn update_profile(&self, id: &str, input: ProfileInput) -> Result<ProfileEntry> {

@@ -998,7 +998,10 @@
         "folder-not-found": "No se encontró la carpeta seleccionada",
         "folder-not-directory": "La ruta seleccionada no es una carpeta",
         "folder-read-failed": "No se pudo leer por completo la carpeta seleccionada",
-        "no-markdown-files": "No se encontraron archivos Markdown en la carpeta seleccionada"
+        "no-markdown-files": "No se encontraron archivos Markdown en la carpeta seleccionada",
+        "file-not-found": "No se encontró el archivo seleccionado",
+        "file-not-markdown": "El archivo seleccionado no es un archivo Markdown",
+        "no-files": "No se seleccionó ningún archivo"
       }
     },
     "manual-check": {
@@ -1336,7 +1339,6 @@
     "builtInSectionDescription": "Roles fijos que pueden abrirse como borradores y guardarse como roles personalizados nuevos.",
     "customSectionTitle": "Roles personalizados",
     "customSectionDescription": "Tus roles de usuario se muestran aquí con paginación.",
-    "customProfilesPageRange": "Roles personalizados {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "Los roles integrados no pueden guardarse directamente. Guárdalos como un rol nuevo.",
     "emptyContent": "Aún no hay contenido del rol",
     "profileRequired": "El nombre y el resumen son obligatorios.",
@@ -1469,10 +1471,12 @@
       }
     },
     "importProfile": "Importar roles",
-    "importSettingsDescription": "Importa en lote archivos Markdown de roles desde una carpeta. Los nombres y resúmenes faltantes se completan automáticamente.",
+    "importSettingsDescription": "Importa en lote desde una carpeta o selecciona archivos Markdown de roles directamente. Los nombres y resúmenes faltantes se completan automáticamente.",
     "importDynamicTemplateDescription": "Cuando está habilitado, todos los roles importados se tratan como plantillas dinámicas; los cuerpos no válidos se degradan a estáticos.",
     "importPickFolder": "Elegir carpeta e importar",
     "importPickFolderTitle": "Elige una carpeta que contenga archivos Markdown de roles",
+    "importPickFiles": "Elegir archivos e importar",
+    "importPickFilesTitle": "Elige archivos Markdown de roles",
     "importResultTitle": "Resultados de importación",
     "importResultSummary": "Escaneados {{total}} archivo(s), correctos {{success}}, fallidos {{failed}}.",
     "importResultImported": "Importados",

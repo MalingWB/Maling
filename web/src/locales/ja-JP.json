@@ -998,7 +998,10 @@
         "folder-not-found": "選択したフォルダーが見つかりませんでした",
         "folder-not-directory": "選択したパスはフォルダーではありません",
         "folder-read-failed": "選択したフォルダーを完全に読み取ることができませんでした",
-        "no-markdown-files": "選択したフォルダーに Markdown ファイルが見つかりません"
+        "no-markdown-files": "選択したフォルダーに Markdown ファイルが見つかりません",
+        "file-not-found": "選択したファイルが見つかりませんでした",
+        "file-not-markdown": "選択したファイルは Markdown ファイルではありません",
+        "no-files": "ファイルが選択されていません"
       }
     },
     "manual-check": {
@@ -1336,7 +1339,6 @@
     "builtInSectionDescription": "ドラフトとして開いたり、新しいカスタム ロールとして保存したりできるロールを修正しました。",
     "customSectionTitle": "カスタムロール",
     "customSectionDescription": "ユーザーの役割はここでページ分けされます。",
-    "customProfilesPageRange": "カスタムロール {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "組み込みの役割を直接保存することはできません。代わりに、新しいロールとして保存してください。",
     "emptyContent": "役割内容はまだありません",
     "profileRequired": "名前と概要は必須です。",
@@ -1469,10 +1471,12 @@
       }
     },
     "importProfile": "役割のインポート",
-    "importSettingsDescription": "ロール Markdown ファイルをフォルダーからバッチインポートします。不足している名前と概要は自動的に入力されます。",
+    "importSettingsDescription": "フォルダーからバッチインポートするか、ロール Markdown ファイルを直接選択してインポートします。不足している名前と概要は自動的に入力されます。",
     "importDynamicTemplateDescription": "有効にすると、インポートされたすべての役割が動的テンプレートとして扱われます。無効なボディは静的ボディにダウングレードされます。",
     "importPickFolder": "フォルダーを選択してインポートする",
     "importPickFolderTitle": "ロールの Markdown ファイルがあるフォルダーを選択",
+    "importPickFiles": "ファイルを選択してインポートする",
+    "importPickFilesTitle": "ロールの Markdown ファイルを選択",
     "importResultTitle": "インポート結果",
     "importResultSummary": "{{total}} ファイルをスキャンし、{{success}} に成功し、{{failed}} に失敗しました。",
     "importResultImported": "インポート済み",

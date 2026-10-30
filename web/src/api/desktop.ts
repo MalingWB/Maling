@@ -333,6 +333,9 @@ export const desktopApi: RuntimeApi = {
   importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean) {
     return invokeCommand<ImportProfilesResult>('import_profiles_from_folder', { input: { folderPath, dynamicTemplate } });
   },
+  importProfilesFromFiles(filePaths: string[], dynamicTemplate: boolean) {
+    return invokeCommand<ImportProfilesResult>('import_profiles_from_files', { input: { filePaths, dynamicTemplate } });
+  },
   updateProfile(id: string, input: ProfileInput) {
     return invokeCommand('update_profile', { id, input });
   },

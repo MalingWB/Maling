@@ -998,7 +998,10 @@
         "folder-not-found": "A pasta selecionada não foi encontrada",
         "folder-not-directory": "O caminho selecionado não é uma pasta",
         "folder-read-failed": "A pasta selecionada não pôde ser lida completamente",
-        "no-markdown-files": "Nenhum arquivo Markdown encontrado na pasta selecionada"
+        "no-markdown-files": "Nenhum arquivo Markdown encontrado na pasta selecionada",
+        "file-not-found": "O arquivo selecionado não foi encontrado",
+        "file-not-markdown": "O arquivo selecionado não é um arquivo Markdown",
+        "no-files": "Nenhum arquivo selecionado"
       }
     },
     "manual-check": {
@@ -1336,7 +1339,6 @@
     "builtInSectionDescription": "Papéis fixos que podem ser abertos como rascunhos e salvos como novos papéis personalizados.",
     "customSectionTitle": "Papéis personalizados",
     "customSectionDescription": "Seus papéis de usuário são paginados aqui.",
-    "customProfilesPageRange": "Papéis personalizados {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "Papéis integrados não podem ser salvos diretamente. Salve-os como um novo papel.",
     "emptyContent": "Nenhum conteúdo de papel ainda",
     "profileRequired": "Nome e resumo são obrigatórios.",
@@ -1469,10 +1471,12 @@
       }
     },
     "importProfile": "Importar papéis",
-    "importSettingsDescription": "Importação em lote de arquivos Markdown de papéis de uma pasta. Nomes e resumos ausentes são preenchidos automaticamente.",
+    "importSettingsDescription": "Importe em lote de uma pasta ou selecione arquivos Markdown de papéis diretamente. Nomes e resumos ausentes são preenchidos automaticamente.",
     "importDynamicTemplateDescription": "Quando habilitado, todos os papéis importados são tratados como templates dinâmicos; corpos inválidos são rebaixados para estáticos.",
     "importPickFolder": "Escolher pasta e importar",
     "importPickFolderTitle": "Escolha uma pasta contendo arquivos Markdown de papéis",
+    "importPickFiles": "Escolher arquivos e importar",
+    "importPickFilesTitle": "Escolha arquivos Markdown de papéis",
     "importResultTitle": "Resultados da importação",
     "importResultSummary": "Varridos {{total}} arquivo(s), {{success}} com sucesso, {{failed}} falharam.",
     "importResultImported": "Importado",

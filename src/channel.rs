@@ -19,6 +19,7 @@ pub enum ProfileChannelCapability {
     RequirementIdentity,
     DevTestAutoCommit,
     Cicd,
+    Weapm,
 }
 
 /// 返回指定发布渠道是否启用某项内置 Profile 能力。
@@ -29,7 +30,8 @@ pub const fn profile_channel_capability_enabled(
     match capability {
         ProfileChannelCapability::RequirementIdentity
         | ProfileChannelCapability::DevTestAutoCommit
-        | ProfileChannelCapability::Cicd => matches!(channel.as_bytes(), b"wb"),
+        | ProfileChannelCapability::Cicd
+        | ProfileChannelCapability::Weapm => matches!(channel.as_bytes(), b"wb"),
     }
 }
 
@@ -43,6 +45,7 @@ mod tests {
             ProfileChannelCapability::RequirementIdentity,
             ProfileChannelCapability::DevTestAutoCommit,
             ProfileChannelCapability::Cicd,
+            ProfileChannelCapability::Weapm,
         ] {
             assert!(profile_channel_capability_enabled(WB_CHANNEL, capability));
             assert!(!profile_channel_capability_enabled("default", capability));

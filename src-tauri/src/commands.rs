@@ -27,9 +27,9 @@ use gold_band::app::intervention::{
 use gold_band::app::{
     AcpPromptLifecycleEvent, AcpTurnBatchProgress, AcpTurnOutcome, App, AutoTemplate,
     AutoTemplateStore, CreateTaskInput, DirectTurnLifecycleEvent, DirectTurnLifecycleTransition,
-    ImportProfilesInput, ImportProfilesResult, MetricsInterventionSourceEvent, ProfileCommandError,
-    ProfileEntry, ProfileInput, ProfileList, RuntimeInterventionKind, RuntimeLifecycleEvent,
-    WorkflowTemplateStore,
+    ImportProfileFilesInput, ImportProfilesInput, ImportProfilesResult,
+    MetricsInterventionSourceEvent, ProfileCommandError, ProfileEntry, ProfileInput, ProfileList,
+    RuntimeInterventionKind, RuntimeLifecycleEvent, WorkflowTemplateStore,
 };
 use gold_band::domain::{
     NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode, TurnControlMode,
@@ -3372,6 +3372,21 @@ pub async fn import_profiles_from_folder(
         context
             .app()
             .import_profiles_from_folder(input)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn import_profiles_from_files(
+    state: State<'_, DesktopState>,
+    input: ImportProfileFilesInput,
+) -> CommandResult<ImportProfilesResult> {
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        context
+            .app()
+            .import_profiles_from_files(input)
             .map_err(command_error)
     })
     .await

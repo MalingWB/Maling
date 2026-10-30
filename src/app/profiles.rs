@@ -20,7 +20,7 @@ use crate::frontmatter::{
 use crate::prompts::{
     LocalizedText, PROFILE_ACCEPT, PROFILE_CICD, PROFILE_CLEAN, PROFILE_DEV, PROFILE_DEV_TEST,
     PROFILE_GRILLME, PROFILE_INTERVIEW, PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT,
-    PROFILE_OVERLAY_REQUIREMENT_IDENTITY, PROFILE_PLAN, PROFILE_REVIEW, PROFILE_TEST,
+    PROFILE_OVERLAY_REQUIREMENT_IDENTITY, PROFILE_PLAN, PROFILE_REVIEW, PROFILE_TEST, PROFILE_WEAPM,
     profile_template_validation_contexts, prompt_by_language, render,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
@@ -72,6 +72,14 @@ pub struct ProfileList {
 #[serde(rename_all = "camelCase")]
 pub struct ImportProfilesInput {
     pub folder_path: String,
+    #[serde(default)]
+    pub dynamic_template: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportProfileFilesInput {
+    pub file_paths: Vec<String>,
     #[serde(default)]
     pub dynamic_template: bool,
 }
@@ -221,6 +229,12 @@ pub enum ProfileCommandError {
     ImportFolderReadFailed,
     #[error("profile.import.no-markdown-files")]
     ImportNoMarkdownFiles,
+    #[error("profile.import.file-not-found")]
+    ImportFileNotFound,
+    #[error("profile.import.file-not-markdown")]
+    ImportFileNotMarkdown,
+    #[error("profile.import.no-files")]
+    ImportNoFiles,
 }
 
 impl ProfileCommandError {
@@ -234,6 +248,9 @@ impl ProfileCommandError {
             Self::ImportFolderNotDirectory => "profile.import.folder-not-directory",
             Self::ImportFolderReadFailed => "profile.import.folder-read-failed",
             Self::ImportNoMarkdownFiles => "profile.import.no-markdown-files",
+            Self::ImportFileNotFound => "profile.import.file-not-found",
+            Self::ImportFileNotMarkdown => "profile.import.file-not-markdown",
+            Self::ImportNoFiles => "profile.import.no-files",
         }
     }
 
@@ -244,7 +261,10 @@ impl ProfileCommandError {
             | Self::ImportFolderNotFound
             | Self::ImportFolderNotDirectory
             | Self::ImportFolderReadFailed
-            | Self::ImportNoMarkdownFiles => json!({}),
+            | Self::ImportNoMarkdownFiles
+            | Self::ImportFileNotFound
+            | Self::ImportFileNotMarkdown
+            | Self::ImportNoFiles => json!({}),
             Self::DeleteConfirmationRequired {
                 template_count,
                 task_count,
@@ -404,6 +424,17 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
         summary: LocalizedProfileText::zh_en(
             "CI/CD 角色，使用 WeTest 完成构建，并与用户交互确认按构建或包名部署。",
             "CI/CD role for WeTest builds and interactive deployment from a build or by package name.",
+        ),
+        dynamic_template: false,
+    },
+    DefaultProfileSeed {
+        key: "weapm",
+        required_capability: Some(ProfileChannelCapability::Weapm),
+        id: "pf-builtin-weapm",
+        name: LocalizedProfileText::zh_en("WeAPM", "WeAPM"),
+        summary: LocalizedProfileText::zh_en(
+            "WeAPM 角色，使用 weapm CLI 查询调用链 Trace 与日志 Log，定位慢调用、错误与超时。",
+            "WeAPM role for querying traces and logs with the weapm CLI to locate slow calls, errors, and timeouts.",
         ),
         dynamic_template: false,
     },
@@ -597,6 +628,56 @@ pub(crate) fn import_profiles_from_folder(
         imported,
         failed,
         truncated,
+    })
+}
+
+pub(crate) fn import_profiles_from_files(
+    paths: &GoldBandPaths,
+    input: ImportProfileFilesInput,
+) -> Result<ImportProfilesResult> {
+    if input.file_paths.is_empty() {
+        return Err(ProfileCommandError::ImportNoFiles.into());
+    }
+
+    let mut files = Vec::with_capacity(input.file_paths.len());
+    for raw in &input.file_paths {
+        let path = Utf8PathBuf::from(raw.as_str());
+        if !path.exists() {
+            return Err(ProfileCommandError::ImportFileNotFound.into());
+        }
+        if !path.is_file() {
+            return Err(ProfileCommandError::ImportFileNotMarkdown.into());
+        }
+        if !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        {
+            return Err(ProfileCommandError::ImportFileNotMarkdown.into());
+        }
+        files.push(path);
+    }
+
+    let existing = list_profiles(paths, DesktopLanguage::ZhCn)?;
+    let mut used_names = existing
+        .profiles
+        .iter()
+        .map(|profile| profile.name.clone())
+        .collect::<BTreeSet<String>>();
+
+    let mut imported = Vec::new();
+    let mut failed = Vec::new();
+    for path in &files {
+        match import_one_profile(paths, path, input.dynamic_template, &mut used_names) {
+            Ok(record) => imported.push(record),
+            Err(record) => failed.push(record),
+        }
+    }
+
+    Ok(ImportProfilesResult {
+        total_scanned: files.len(),
+        imported,
+        failed,
+        truncated: false,
     })
 }
 
@@ -946,6 +1027,7 @@ fn built_in_profile_content(key: &str, language: DesktopLanguage) -> String {
         "review" => prompt_by_language(language, PROFILE_REVIEW),
         "test" => prompt_by_language(language, PROFILE_TEST),
         "cicd" => prompt_by_language(language, PROFILE_CICD),
+        "weapm" => prompt_by_language(language, PROFILE_WEAPM),
         "accept" => prompt_by_language(language, PROFILE_ACCEPT),
         "cleanup" => prompt_by_language(language, PROFILE_CLEAN),
         "interview" => prompt_by_language(language, PROFILE_INTERVIEW),
@@ -1529,9 +1611,13 @@ profile body
     fn channel_profile_catalog_preserves_shared_roles_and_restricts_cicd() {
         for channel in ["default", "wb", "enterprise", ""] {
             let profiles = default_profile_seeds_for_channel(channel).collect::<Vec<_>>();
-            assert_eq!(profiles.len(), if channel == "wb" { 10 } else { 9 });
+            assert_eq!(profiles.len(), if channel == "wb" { 11 } else { 9 });
             assert_eq!(
                 profiles.iter().any(|seed| seed.id == "pf-builtin-cicd"),
+                channel == "wb"
+            );
+            assert_eq!(
+                profiles.iter().any(|seed| seed.id == "pf-builtin-weapm"),
                 channel == "wb"
             );
             for seed in DEFAULT_PROFILE_SEEDS
@@ -1925,6 +2011,7 @@ profile body
         fs::write(import_dir.join("a.MD"), "a").unwrap();
         fs::write(import_dir.join("b.md"), "b").unwrap();
         fs::write(import_dir.join("ignored.txt"), "ignored").unwrap();
+        fs::write(import_dir.join("ignored.markdown"), "ignored").unwrap();
         let import_dir = Utf8PathBuf::from_path_buf(import_dir).unwrap();
 
         let (files, truncated) = collect_md_files(&import_dir, 2).unwrap();
@@ -2037,6 +2124,94 @@ profile body
         .unwrap_err();
         let command_error = error.downcast_ref::<ProfileCommandError>().unwrap();
         assert_eq!(command_error.code(), "profile.import.folder-not-found");
+    }
+
+    #[test]
+    fn import_profiles_from_files_imports_markdown_files() {
+        let (_tmp, paths, import_dir) = setup_import_dir();
+        let file_a = import_dir.join("role-a.md");
+        let file_b = import_dir.join("role-b.MD");
+        fs::write(
+            &file_a,
+            "---\nname: 文件角色A\nsummary: 摘要A\n---\n正文A\n",
+        )
+        .unwrap();
+        fs::write(
+            &file_b,
+            "---\nname: 文件角色B\nsummary: 摘要B\n---\n正文B\n",
+        )
+        .unwrap();
+        let result = import_profiles_from_files(
+            &paths,
+            ImportProfileFilesInput {
+                file_paths: vec![
+                    file_a.to_string_lossy().to_string(),
+                    file_b.to_string_lossy().to_string(),
+                ],
+                dynamic_template: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(result.total_scanned, 2);
+        assert_eq!(result.imported.len(), 2);
+        assert!(result.failed.is_empty());
+        assert!(!result.truncated);
+        let names = result
+            .imported
+            .iter()
+            .map(|record| record.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"文件角色A"));
+        assert!(names.contains(&"文件角色B"));
+    }
+
+    #[test]
+    fn import_profiles_from_files_rejects_missing_file() {
+        let (_tmp, paths, _import_dir) = setup_import_dir();
+        let error = import_profiles_from_files(
+            &paths,
+            ImportProfileFilesInput {
+                file_paths: vec!["/no/such/role.md".to_string()],
+                dynamic_template: false,
+            },
+        )
+        .unwrap_err();
+        let command_error = error.downcast_ref::<ProfileCommandError>().unwrap();
+        assert_eq!(command_error.code(), "profile.import.file-not-found");
+    }
+
+    #[test]
+    fn import_profiles_from_files_rejects_non_markdown() {
+        for extension in ["txt", "markdown", "MARKDOWN"] {
+            let (_tmp, paths, import_dir) = setup_import_dir();
+            let file = import_dir.join(format!("role.{extension}"));
+            fs::write(&file, "# Role\n\nRole instructions.\n").unwrap();
+            let error = import_profiles_from_files(
+                &paths,
+                ImportProfileFilesInput {
+                    file_paths: vec![file.to_string_lossy().to_string()],
+                    dynamic_template: false,
+                },
+            )
+            .unwrap_err();
+            let command_error = error.downcast_ref::<ProfileCommandError>().unwrap();
+            assert_eq!(command_error.code(), "profile.import.file-not-markdown");
+        }
+    }
+
+    #[test]
+    fn import_profiles_from_files_rejects_empty_list() {
+        let (_tmp, paths, _import_dir) = setup_import_dir();
+        let error = import_profiles_from_files(
+            &paths,
+            ImportProfileFilesInput {
+                file_paths: Vec::new(),
+                dynamic_template: false,
+            },
+        )
+        .unwrap_err();
+        let command_error = error.downcast_ref::<ProfileCommandError>().unwrap();
+        assert_eq!(command_error.code(), "profile.import.no-files");
     }
 
     #[test]
