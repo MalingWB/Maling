@@ -36,3 +36,6 @@ Thumbs.db
 *.tmp
 *.bak
 *.swp
+
+# Local agent session memory
+.workbuddy/
