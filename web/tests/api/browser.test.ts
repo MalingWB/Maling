@@ -5,6 +5,36 @@ import type { AcpSessionUpdatedEventVm } from '../../src/api/client';
 import { browserApi } from '../../src/api/browser';
 
 describe('browserApi', () => {
+  it('isolates saved composer drafts by project as well as task', async () => {
+    const saved = await browserApi.saveConversationComposerDraft('draft-project-a', 'shared-task', { displayText: 'private draft', quotes: [] });
+    const other = await browserApi.listConversationComposerDrafts('draft-project-b', 'shared-task');
+    expect(saved.items).toHaveLength(1);
+    expect(other.items).toHaveLength(0);
+  });
+
+  it('reads the complete saved draft without consuming or changing its revision', async () => {
+    const input = { displayText: 'saved payload', quotes: [], workspaceFiles: [{ kind: 'workspace' as const, projectId: 'draft-read-project', relativePath: 'docs/design.md' }] };
+    const saved = await browserApi.saveConversationComposerDraft('draft-read-project', 'read-task', input, ['C:/notes.txt']);
+    const id = saved.items[0].id;
+    const read = await browserApi.getConversationComposerDraft('draft-read-project', 'read-task', id);
+    expect(read.draft).toEqual({ content: input.displayText, quotes: [], workspaceFiles: input.workspaceFiles, attachmentPaths: ['C:/notes.txt'] });
+    expect(read.drafts).toEqual(saved);
+    expect(await browserApi.listConversationComposerDrafts('draft-read-project', 'read-task')).toEqual(saved);
+    await expect(browserApi.getConversationComposerDraft('another-project', 'read-task', id)).rejects.toMatchObject({ code: 'conversation.composer-draft-not-found' });
+    const deleted = await browserApi.deleteConversationComposerDraft('draft-read-project', 'read-task', id);
+    expect(deleted.items).toHaveLength(0);
+    expect(deleted.revision).toBe(saved.revision + 1);
+  });
+
+  it('bounds list previews while returning the complete Unicode payload on demand', async () => {
+    const content = '长草稿😀'.repeat(1000);
+    const saved = await browserApi.saveConversationComposerDraft('preview-project', 'preview-task', { displayText: content, quotes: [] });
+    expect(saved.items[0]).not.toHaveProperty('content');
+    expect(Array.from(saved.items[0].contentPreview)).toHaveLength(280);
+    const read = await browserApi.getConversationComposerDraft('preview-project', 'preview-task', saved.items[0].id);
+    expect(read.draft.content).toBe(content);
+  });
+
   it('keeps paused Workflow errors independent from manual ACP follow-up lifecycle', async () => {
     vi.resetModules();
     vi.useFakeTimers();

@@ -2223,7 +2223,8 @@ export interface ImBindingSummaryVm {
   destinationId: string;
   conversationId: string;
   authorizedActorId: string;
-  displayName: string;
+  /** Platform name of the bound account; null shows a neutral label. */
+  displayName: string | null;
 }
 
 export interface ImObservedBindingVm {
@@ -2231,6 +2232,7 @@ export interface ImObservedBindingVm {
   conversationId: string;
   actorId: string;
   isPrivate: boolean;
+  displayName: string | null;
 }
 
 export type ImMessageUpdateMode = 'none' | 'callbackOnly' | 'anytime';
@@ -2978,6 +2980,9 @@ export interface ConversationPromptQueueVm {
   revision: number;
   items: ConversationQueuedPromptVm[];
   maxItems: number;
+  dispatchMode: 'auto' | 'manual';
+  autoDispatchSuspended: boolean;
+  suspensionReason?: 'stopped' | 'failed' | null;
 }
 
 export interface ConversationAttemptLifecycleVm {
@@ -3178,6 +3183,33 @@ export interface ConversationQueuedPromptDraftVm {
   attachmentPaths: string[];
   role?: UserPromptRole | null;
   workspaceFiles?: PromptWorkspaceFileRef[];
+}
+
+/** One saved composer draft; drafts belong to the conversation task and are never auto-sent. */
+export interface ConversationComposerDraftVm {
+  id: string;
+  contentPreview: string;
+  attachmentCount: number;
+  quoteCount: number;
+  workspaceFileCount: number;
+  roleName?: string | null;
+  createdAt: string;
+}
+
+/** Newest first; `revision` advances on every mutation for last-writer-wins convergence. */
+export interface ConversationComposerDraftBoxVm {
+  revision: number;
+  maxItems: number;
+  items: ConversationComposerDraftVm[];
+}
+
+export interface ConversationComposerDraftReadVm {
+  draft: ConversationQueuedPromptDraftVm;
+  drafts: ConversationComposerDraftBoxVm;
+}
+
+export interface PromptQueueSettingsVm {
+  confirmInterrupt: boolean;
 }
 
 export interface ConversationRunWorktreeVm {

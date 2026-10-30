@@ -15,7 +15,7 @@
 ### 1.1 P2 修正历史（2026-10-15）
 
 - 企微 `multiple_interaction.select_list` 官方最多 3 项；真实四题请求返回 42047。能力声明、投影和 browser mock 统一改为 3，四题及以上在出站前整单跳过。仅修正此前错误的四/五题能力边界测试，企微 wire 黄金断言不变。
-- `ImResolutionOutcome::ElicitationSubmitted { content }` 承载 Accepted 的 schema-shaped 答案，删除单独瞬态 submission；runtime 的即时回包与 durable resolution 共用结果。`AlreadyApplied` 读取已存赢家结果，无结果时飞书仅回 toast，禁止后到答案覆盖。
+- `ImResolutionOutcome::ElicitationSubmitted { content }` 承载 Accepted 的 schema-shaped 答案，删除单独瞬态 submission；runtime 的即时回包与 durable resolution 共用结果。`AlreadyApplied` 读取已存赢家结果；无结果时按 canonical settlement 决定：取消当场投影取消终态，答案在途回“已处理”并禁用原卡，请求仍待处理按“操作已过期”禁用原卡；禁止后到答案覆盖。
 - 飞书终态使用官方 Card JSON 2.0 的 `initial_index`（单选，1-based）、`selected_values`（多选）、`default_value`（输入框）与 `disabled`；回调、PATCH 和降级另发复用源 delivery 与同一渲染函数。`ImConnector::send` 同 `update_message` 接收可选源 delivery，上层仍按能力处理。
 - payload v3 / schema v5 在一个 IMMEDIATE 事务内转换旧 JSON、写版本号。旧已提交但无答案的结果转为 `ResultUnavailable`；源 delivery、绑定、display_ref、tombstone 和入站幂等审计保留。迁移失败回滚，新代码不保留旧格式读取分支。
 - 回归覆盖 3/4 题投影边界、四类答案禁用回显、序列化后回调/PATCH 一致、降级另发保留源上下文、迁移保留 tombstone/绑定及回滚、赢家结果不被后到提交覆盖。该轮 P2 修正已由用户验收；未测极限和 P1 历史项仍见飞书技术方案 §3.6、§17。
@@ -379,7 +379,7 @@ CREATE TABLE im_channel_cleanup_operations (
 
 ### 7.2.1 IM schema 版本
 
-当前 IM_PAYLOAD_VERSION=3、IM_SCHEMA_VERSION=5（与 settings schema 无关）。ensure_schema 在同一个 IMMEDIATE 事务执行迁移及版本写入，连接启用 PRAGMA foreign_keys=ON。v3→v4 删除旧 v1 Intervention 与旧 desktop-resolved 记录，并由 FK 级联删除绑定，保留入站幂等表；v4→v5 原位转换旧 v2 JSON，无法恢复答案的 elicitationSubmitted 改为 ResultUnavailable，保留 source/terminal/tombstone identity、rowid/display_ref、绑定与审计。测试固定第二条迁移语句失败时整体回滚。新版本不兼容旧 JSON 解码，旧客户端打开新 schema 返回 IM_SCHEMA_TOO_NEW。
+当前 IM_PAYLOAD_VERSION=3、IM_SCHEMA_VERSION=6（与 settings schema 无关）。ensure_schema 在同一个 IMMEDIATE 事务执行迁移及版本写入，连接启用 PRAGMA foreign_keys=ON。v3→v4 删除旧 v1 Intervention 与旧 desktop-resolved 记录，并由 FK 级联删除绑定，保留入站幂等表；v4→v5 原位转换旧 v2 JSON，无法恢复答案的 elicitationSubmitted 改为 ResultUnavailable，保留 source/terminal/tombstone identity、rowid/display_ref、绑定与审计。测试固定第二条迁移语句失败时整体回滚。v5→v6 原位把已有 resolution 的 `elicitationCancelled` 结果标签改为 `cancelled`，保留记录身份、绑定、答案与审计；标签更新和版本写入共用事务，失败回滚并在下次打开时重试。新版本不兼容旧 JSON 解码，旧客户端打开新 schema 返回 IM_SCHEMA_TOO_NEW。
 
 ### 7.3 原子顺序
 
@@ -581,7 +581,7 @@ im-projection-diagnostic
 - 配置表单复用 shadcn/ui `Dialog`/`Sheet`、`Input`、`Switch`、`Button`、`Alert`，选择器复用项目现有 shadcn Select。
 - 企业微信只显示扫码接入/重新授权，二维码 URL 与倒计时只存在于 Dialog 局部状态；关闭 Dialog、重新生成或应用退出都会取消后端活动会话。
 - 企业微信 Bot ID/Secret 手工入口删除；授权成功后后端直接把 Secret 写入 OS credential store，Tauri response 和前端状态永不包含 Secret。
-- 飞书扫码前先展示三项权限，用户确认后才 begin；提示一个机器人只连接一台设备。飞书“重新绑定”要求原扫码账号发消息，更换授权账号走重新授权；不展示微信占位入口。
+- 飞书扫码前先展示四项权限（含读取姓名，用于显示接收账号），用户确认后才 begin；提示一个机器人只连接一台设备。飞书“重新绑定”要求原扫码账号发消息，更换授权账号走重新授权；不展示微信占位入口。
 - 状态包括：未接入、等待绑定、连接中、正在重连、可用、已暂停、需要重新授权、连接被占用。
 - 不提供测试连接和独立断开入口；总开关即时启停，冲突恢复使用带 expected generation 的一次真实重连。
 - 七语言 UI 与错误码映射同步加入 web/src/locales/{zh-CN,zh-TW,en,ja-JP,ko-KR,pt-BR,es}.json。
@@ -1024,3 +1024,25 @@ P3/P4 复核：复用 outcome、outbox、索引、长生命周期 ActionLocks �
 - 日志保留在本地 `target/pr2-im-green.log`、`pr2-domain-tests.log`、`pr2-web-tests.log`、`pr2-web-build.log`、`pr2-clippy.log`，窄窗口截图为 `target/pr2-feishu-narrow.png`。测试浏览器和 1438 端口预览服务已关闭。
 
 验收时再次确认性能与过度设计结论保持上述边界，无新增 I/O、依赖、持久业务状态或无界容器。现有 `state-lifecycle-and-data-integrity.md` 与 `bug-fix-verification.md` 已覆盖资源生命周期、权威结果投影及红绿测试约束，本轮不重复新增经验规则。
+
+
+## 2026-10-30 #151 增量迁移验收
+
+- 范围：canonical settlement、运行结束后的 IM 校准、已结束源卡重试保护、共享已接受答案投影、迟到拒绝提示、七语言卡片与绑定姓名。保留本仓库已实现的飞书应用选择、渠道名称、设置页和 #150 对话草稿/队列能力。
+- 持久化适配：本仓库已有 schema v5 和 `elicitationCancelled` 数据，增加 v6 一次事务迁移及失败回滚测试；不通过删除终态或反序列化 fallback 迁就旧格式。
+- 修复前证据：已结束源卡回到 Pending；企微终态标题缺少 SQLite 自定义答案；迟到拒绝只有建连的 3 个 HTTP 请求；前端把 user-1 当姓名；旧取消结果仍为 elicitationCancelled。使用相同接口回归验证修复后结果。
+- 自动化验收覆盖 IM repository/connector、ACP permission/elicitation、intervention settlement、desktop runtime、绑定姓名投影、设置交互、语言契约和前端生产构建；实际通过范围以本轮验收记录为准。
+- 真实账号的飞书/企业微信取消同步、迟到拒绝、姓名权限和七语言卡片仍需平台验收，Lark 国际版未新增验证结论。
+
+校准查询使用 `idx_im_outbox_open_interventions` 局部索引按 `expires_at_ms` 范围读取，避免按 state 遍历已过期历史；索引与 v6 schema 同事务建立。接口回归固定只取当前未结算源卡、批次上限、过期排除与查询计划。
+
+
+### 2026-10-30 本轮自动化与页面验收结果
+
+- 核心库全量 `cargo test -p gold-band --lib`：1880 通过、7 忽略、0 失败；其中 IM 217 项、intervention 30 项、permission 和 elicitation 各 14 项。
+- 桌面端全量：984 通过、4 忽略、0 失败；WB 构建配置集成测试另 2 项通过。
+- 前端设置、语言等相关 46 项通过；全量 3289 通过、8 跳过、4 失败。3 项滚动断言在两份测试独立复跑时全部通过（47 项）；剩余 composer-context-alignment 文本缩进断言的测试和实现与迁移基线完全相同，按既有基线失败记录。
+- TypeScript、前端生产构建与 Rust 格式检查通过；Clippy 门禁 `cargo clippy --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods` 通过，保留已有 unused/dead-code 警告。
+- 使用真实设置组件及受控浏览器投影数据，验证姓名、无姓名中性标签、姓名查询失败时保留已知值、340 字符长姓名、正常/窄窗口/重新拉宽、姓名权限说明与重新授权模式。浏览器会话和前端服务已清理。
+- 查询计划夹具为 5 万条过期源记录和 10 条有效记录：从 state 索引遍历改为有效期范围读取，独立 SQLite 查询中位时间约 8.5 ms→0.036 ms；不是桌面端端到端响应时间结论。没有新增依赖、表或业务状态机。
+- 真实飞书/企业微信账号与 Lark 国际版未验收。应用崩溃遗留的 canonical pending 请求仍遵循现有 pending/TTL 语义；旧客户端不能打开 v6 数据库，降级需恢复升级前备份。

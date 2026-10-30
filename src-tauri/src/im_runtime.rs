@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use gold_band::app::intervention::InterventionLocator;
+use gold_band::app::intervention::{
+    InterventionCommandService, InterventionLocator, InterventionSettlement,
+};
 use gold_band::app::{App, RuntimeLifecycleEvent};
 use gold_band::im::{
     FeishuConnector, FeishuRegistrationTarget, FeishuScanAuthClient, FeishuScanAuthError,
@@ -16,11 +18,12 @@ use gold_band::im::{
     ImInboundActionService, ImInboundEnvelope, ImInboundHandling, ImInboundOutcome,
     ImIntegrationSettings, ImLifecycleProjectionJob, ImLifecycleProjectionQueueItem,
     ImLifecycleProjector, ImLocale, ImMaintenanceWorker, ImMessageUpdateMode, ImNavigationLocator,
-    ImNotificationKind, ImObservedBinding, ImProjectionCompletion, ImProjectionEnqueueOutcome,
-    ImProjectionResult, ImProjectionTarget, ImRepository, ImRepositoryError, ImResolutionDispatch,
-    ImResolutionOutcome, ImResolvedBy, ImWorkerSignal, InterventionResolutionNotification,
-    OsImCredentialStore, ResolvedImChannelConfig, WECOM_SCAN_SESSION_TTL, WeComConnector,
-    WeComScanAuthClient, WeComScanAuthError, WeComScanCredentials, drain_projection_queue,
+    ImNotificationKind, ImObservedBinding, ImOwnerProfile, ImProjectionCompletion,
+    ImProjectionEnqueueOutcome, ImProjectionResult, ImProjectionTarget, ImRepository,
+    ImRepositoryError, ImResolutionDispatch, ImResolutionOutcome, ImResolvedBy, ImWorkerSignal,
+    InterventionRef, InterventionResolutionNotification, OsImCredentialStore,
+    ResolvedImChannelConfig, WECOM_SCAN_SESSION_TTL, WeComConnector, WeComScanAuthClient,
+    WeComScanAuthError, WeComScanCredentials, drain_projection_queue,
     im_lifecycle_projection_channel, im_worker_channel, resolution_event_id,
     try_enqueue_projection,
 };
@@ -32,8 +35,8 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::commands::{
-    CommandErrorVm, CommandResult, execute_intervention_command, resolve_command_app_with_emitters,
-    resolve_command_app_with_workspace_label,
+    CommandErrorVm, CommandResult, execute_intervention_command, resolve_command_app,
+    resolve_command_app_with_emitters, resolve_command_app_with_workspace_label,
 };
 use crate::im_scan_session::{ScanSessionSlot, ScanSlotError};
 use crate::state::DesktopState;
@@ -46,6 +49,8 @@ const IM_PROJECTION_ALERT_COOLDOWN_MS: i64 = 30_000;
 const IM_PROJECTION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const IM_CHANNEL_CLEANUP_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 const IM_WORKER_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const IM_SETTLEMENT_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const IM_SETTLEMENT_SIGNAL_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -179,7 +184,23 @@ struct ActiveBindingPersistenceRetry {
 struct ProcessedInboundAction {
     delivery: Option<ImDelivery>,
     handling: std::result::Result<ImInboundHandling, ImErrorCode>,
-    settled_resolution: Option<InterventionResolutionNotification>,
+    settled_resolution: Option<SettledResult>,
+}
+
+/// The winner of a request that was already settled when the click arrived.
+#[derive(Debug, Clone)]
+struct SettledResult {
+    resolved_by: ImResolvedBy,
+    outcome: ImResolutionOutcome,
+}
+
+impl From<InterventionResolutionNotification> for SettledResult {
+    fn from(resolution: InterventionResolutionNotification) -> Self {
+        Self {
+            resolved_by: resolution.resolved_by,
+            outcome: resolution.outcome,
+        }
+    }
 }
 
 /// Resolution to broadcast after a channel's command was `Accepted`.
@@ -226,6 +247,9 @@ pub struct DesktopImRuntime {
     binding_persistence_retries: Mutex<HashMap<ImChannelKind, ActiveBindingPersistenceRetry>>,
     last_projection_alert_at_ms: AtomicI64,
     inbound_timing_sequence: AtomicU64,
+    /// Coalescing wake-up for the settlement reconciler (capacity 1).
+    settlement_signal: mpsc::Sender<()>,
+    settlement_receiver: Mutex<Option<mpsc::Receiver<()>>>,
     cancellation: CancellationToken,
 }
 
@@ -276,6 +300,7 @@ impl DesktopImRuntime {
             worker_senders.insert(channel, sender);
             worker_receivers.insert(channel, receiver);
         }
+        let (settlement_signal, settlement_receiver) = mpsc::channel(1);
         Ok(Arc::new(Self {
             repository,
             credential_store,
@@ -298,6 +323,8 @@ impl DesktopImRuntime {
             binding_persistence_retries: Mutex::new(HashMap::new()),
             last_projection_alert_at_ms: AtomicI64::new(i64::MIN),
             inbound_timing_sequence: AtomicU64::new(0),
+            settlement_signal,
+            settlement_receiver: Mutex::new(Some(settlement_receiver)),
             cancellation: CancellationToken::new(),
         }))
     }
@@ -401,6 +428,21 @@ impl DesktopImRuntime {
         }
         let maintenance = ImMaintenanceWorker::new(Arc::clone(&self.repository));
         tauri::async_runtime::spawn(maintenance.run(self.cancellation.child_token()));
+        let settlement_receiver = self
+            .settlement_receiver
+            .lock()
+            .expect("IM settlement receiver lock poisoned")
+            .take();
+        if let Some(receiver) = settlement_receiver {
+            let runtime = Arc::clone(&self);
+            let handle = app_handle.clone();
+            let cancellation = self.cancellation.child_token();
+            tauri::async_runtime::spawn(async move {
+                runtime
+                    .run_settlement_reconciler(handle, receiver, cancellation)
+                    .await;
+            });
+        }
         let cleanup_runtime = Arc::clone(&self);
         let cleanup_handle = app_handle.clone();
         let cleanup_cancellation = self.cancellation.child_token();
@@ -409,6 +451,71 @@ impl DesktopImRuntime {
                 .run_channel_cleanup_recovery(cleanup_handle, cleanup_cancellation)
                 .await;
         });
+    }
+
+    /// Finalizes cards of requests the runtime ended without an answer. A
+    /// lifecycle boundary wakes it (debounced so teardown finishes first); the
+    /// interval covers stop paths that emit no lifecycle event.
+    async fn run_settlement_reconciler(
+        self: Arc<Self>,
+        app_handle: AppHandle,
+        mut signals: mpsc::Receiver<()>,
+        cancellation: CancellationToken,
+    ) {
+        let mut interval = tokio::time::interval(IM_SETTLEMENT_RECONCILE_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = cancellation.cancelled() => break,
+                _ = interval.tick() => {}
+                signal = signals.recv() => {
+                    if signal.is_none() {
+                        break;
+                    }
+                    tokio::time::sleep(IM_SETTLEMENT_SIGNAL_DEBOUNCE).await;
+                }
+            }
+            self.reconcile_runtime_cancellations(&app_handle).await;
+        }
+    }
+
+    async fn reconcile_runtime_cancellations(self: &Arc<Self>, app_handle: &AppHandle) {
+        let Ok(Some(targets)) = actionable_projection_target_snapshot(&self.targets) else {
+            return;
+        };
+        let runtime = Arc::clone(self);
+        let handle = app_handle.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let sources = runtime.repository.open_intervention_sources(now_ms)?;
+            if sources.is_empty() {
+                return Ok(0);
+            }
+            let state = handle.state::<DesktopState>();
+            let mut apps = HashMap::new();
+            project_runtime_cancellations(
+                &runtime.repository,
+                &runtime.worker_senders,
+                &targets,
+                &sources,
+                None,
+                now_ms,
+                |reference| published_request_settlement(state.inner(), &mut apps, reference),
+            )
+        })
+        .await;
+        match result {
+            Ok(Ok(0)) => {}
+            Ok(Ok(projected)) => info!(projected, "IM runtime cancellations projected"),
+            Ok(Err(error)) => warn!(
+                error_code = error.code(),
+                "IM runtime cancellation projection failed"
+            ),
+            Err(_) => warn!(
+                error_code = "IM_RUNTIME_UNAVAILABLE",
+                "IM runtime cancellation task failed"
+            ),
+        }
     }
 
     async fn run_channel_cleanup_recovery(
@@ -593,6 +700,9 @@ impl DesktopImRuntime {
         let registered = app.lifecycle_bus.subscribe_named(
             "desktop.im-projection",
             Arc::new(move |event| {
+                if ends_pending_interventions(&event) {
+                    let _ = runtime.settlement_signal.try_send(());
+                }
                 let canonical_event_id = event_canonical_id(&event).to_string();
                 let Some(project_id) = event_project_id(&event) else {
                     return;
@@ -678,10 +788,10 @@ impl DesktopImRuntime {
             .map_err(|_| anyhow::anyhow!("IM_STORAGE_UNAVAILABLE"))??;
         let target_count = self.configure_projection_targets(&settings.im_integrations)?;
         tracing::info!(target_count, "IM projection targets configured");
-        let locale = match settings.desktop_language {
-            Some(gold_band::config::DesktopLanguage::ZhCn) => ImLocale::ZhCn,
-            _ => ImLocale::En,
-        };
+        // Same resolution as desktop bootstrap for an unset language.
+        let locale: ImLocale = settings
+            .desktop_language
+            .unwrap_or_else(gold_band::config::DesktopLanguage::from_system);
         for channel in ImChannelKind::ALL {
             if let Err(error) = self
                 .reconfigure_channel(app_handle, channel, &settings.im_integrations, locale)
@@ -1151,6 +1261,30 @@ impl DesktopImRuntime {
                         ));
                     }
                 }
+                ImConnectorEvent::Connected {
+                    generation,
+                    owner: Some(owner),
+                    ..
+                } => {
+                    let runtime = Arc::clone(&self);
+                    let handle = app_handle.clone();
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        runtime.persist_owner_display_name(&handle, channel, generation, &owner)
+                    })
+                    .await;
+                    if let Some(error) = match result {
+                        Ok(Ok(_)) => None,
+                        Ok(Err(error)) => Some(error.to_string()),
+                        Err(error) => Some(error.to_string()),
+                    } {
+                        warn!(
+                            channel = channel.as_str(),
+                            generation,
+                            error = %error,
+                            "persist IM owner display name failed"
+                        );
+                    }
+                }
                 _ => {}
             }
             emit_snapshot(&app_handle, self.connection_manager.snapshot(channel));
@@ -1308,23 +1442,13 @@ impl DesktopImRuntime {
         };
         timing.delivery_lookup_ms = InboundTiming::elapsed_ms(delivery_started);
         let handling = self.process_inbound_delivery(app_handle, &envelope, &delivery, &mut timing);
-        let settled_resolution = if handling
+        let (handling, settled_resolution) = if handling
             .as_ref()
             .is_ok_and(|handling| handling.result.outcome == ImInboundOutcome::AlreadyApplied)
         {
-            match stored_intervention_resolution(&self.repository, &delivery) {
-                Ok(resolution) => resolution,
-                Err(_) => {
-                    warn!(
-                        channel = envelope.channel.as_str(),
-                        error_code = ImErrorCode::StorageUnavailable.as_str(),
-                        "IM settled result lookup failed"
-                    );
-                    None
-                }
-            }
+            self.settled_inbound_result(app_handle, envelope.channel, &delivery, handling)
         } else {
-            None
+            (handling, None)
         };
         let error_code = handling.as_ref().err().copied();
         self.log_inbound_timing(&envelope, error_code, timing, total_started);
@@ -1332,6 +1456,72 @@ impl DesktopImRuntime {
             delivery: Some(delivery),
             handling,
             settled_resolution,
+        }
+    }
+
+    /// Result of a click on a request that was no longer open. A stored
+    /// resolution answers it directly; otherwise the canonical settlement
+    /// decides: a cancellation is projected now, an answer in flight renders as
+    /// handled, and a still-pending request means this card's snapshot is
+    /// stale and can never succeed, so it is reported as expired.
+    fn settled_inbound_result(
+        &self,
+        app_handle: &AppHandle,
+        channel: ImChannelKind,
+        delivery: &ImDelivery,
+        handling: std::result::Result<ImInboundHandling, ImErrorCode>,
+    ) -> (
+        std::result::Result<ImInboundHandling, ImErrorCode>,
+        Option<SettledResult>,
+    ) {
+        match stored_intervention_resolution(&self.repository, delivery) {
+            Ok(Some(resolution)) => return (handling, Some(resolution.into())),
+            Ok(None) => {}
+            Err(_) => {
+                warn!(
+                    channel = channel.as_str(),
+                    error_code = ImErrorCode::StorageUnavailable.as_str(),
+                    "IM settled result lookup failed"
+                );
+                return (handling, None);
+            }
+        }
+        let ImDeliveryPayload::Intervention { reference, .. } = &delivery.payload else {
+            return (handling, None);
+        };
+        let state = app_handle.state::<DesktopState>();
+        match published_request_settlement(state.inner(), &mut HashMap::new(), reference) {
+            Some(InterventionSettlement::Pending) => (Err(ImErrorCode::ActionExpired), None),
+            Some(InterventionSettlement::Cancelled) => {
+                let targets = self
+                    .targets
+                    .read()
+                    .map(|targets| targets.clone())
+                    .unwrap_or_default();
+                if let Err(error) = project_runtime_cancellations(
+                    &self.repository,
+                    &self.worker_senders,
+                    &targets,
+                    std::slice::from_ref(delivery),
+                    Some(&delivery.delivery_id),
+                    chrono::Utc::now().timestamp_millis(),
+                    |_| Some(InterventionSettlement::Cancelled),
+                ) {
+                    warn!(
+                        channel = channel.as_str(),
+                        error_code = error.code(),
+                        "IM runtime cancellation projection failed"
+                    );
+                }
+                // The callback replaces this card itself, even where the
+                // channel's own record was skipped as `CallbackOnly`.
+                let cancelled = SettledResult {
+                    resolved_by: ImResolvedBy::Runtime,
+                    outcome: ImResolutionOutcome::Cancelled,
+                };
+                (handling, Some(cancelled))
+            }
+            Some(InterventionSettlement::Answered) | None => (handling, None),
         }
     }
 
@@ -1475,6 +1665,58 @@ impl DesktopImRuntime {
         }
     }
 
+    /// Adopts the connect-time owner name for the current binding. Writes only
+    /// when it changed; a connection without a resolved name never gets here,
+    /// so a failed lookup never clears a known name.
+    fn persist_owner_display_name(
+        &self,
+        app_handle: &AppHandle,
+        channel: ImChannelKind,
+        generation: u64,
+        owner: &ImOwnerProfile,
+    ) -> Result<bool> {
+        let _write_guard = self
+            .settings_write_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("IM_STORAGE_UNAVAILABLE"))?;
+        if self
+            .connection_manager
+            .snapshot(channel)
+            .is_none_or(|snapshot| snapshot.generation != generation)
+        {
+            return Ok(false);
+        }
+        let state = app_handle.state::<DesktopState>();
+        let app = state.app()?;
+        let mut settings = app.load_settings()?;
+        let Some(channel_settings) = settings
+            .im_integrations
+            .channels
+            .iter_mut()
+            .find(|candidate| candidate.kind == channel)
+        else {
+            return Ok(false);
+        };
+        if !adopt_owner_display_name(channel_settings, owner) {
+            return Ok(false);
+        }
+        app.save_settings(&settings)?;
+        state.update_settings_config(&settings)?;
+        *self.targets.write().expect("IM target lock poisoned") =
+            projection_targets(&settings.im_integrations, &self.connectors);
+        if let Some(mut binding) = self
+            .connection_manager
+            .snapshot(channel)
+            .and_then(|snapshot| snapshot.binding)
+            .filter(|binding| binding.actor_id == owner.actor_id)
+        {
+            binding.display_name = Some(owner.display_name.clone());
+            self.connection_manager
+                .commit_binding(channel, generation, binding);
+        }
+        Ok(true)
+    }
+
     fn persist_binding(
         &self,
         app_handle: &AppHandle,
@@ -1504,20 +1746,7 @@ impl DesktopImRuntime {
         else {
             return Ok(());
         };
-        if let Some(existing) = &channel_settings.binding {
-            if existing.authorized_actor_id != binding.actor_id
-                || existing.conversation_id != binding.conversation_id
-                || existing.destination_id != binding.destination_id
-            {
-                anyhow::bail!("IM_BINDING_CONFLICT");
-            }
-        } else {
-            channel_settings.binding = Some(ImBindingSummary {
-                destination_id: binding.destination_id.clone(),
-                conversation_id: binding.conversation_id.clone(),
-                authorized_actor_id: binding.actor_id.clone(),
-                display_name: binding.actor_id.clone(),
-            });
+        if apply_observed_binding(channel_settings, binding)? {
             app.save_settings(&settings)?;
         }
         state.update_settings_config(&settings)?;
@@ -1525,6 +1754,54 @@ impl DesktopImRuntime {
             projection_targets(&settings.im_integrations, &self.connectors);
         Ok(())
     }
+}
+
+/// Applies an observed private binding to the channel settings. The binding is
+/// created once; afterwards only a newly resolved display name of the same
+/// account is adopted, so a failed name lookup never erases a known name.
+/// Returns whether the settings changed.
+fn apply_observed_binding(
+    channel_settings: &mut ImChannelSettings,
+    binding: &ImObservedBinding,
+) -> Result<bool> {
+    let Some(existing) = &mut channel_settings.binding else {
+        channel_settings.binding = Some(ImBindingSummary {
+            destination_id: binding.destination_id.clone(),
+            conversation_id: binding.conversation_id.clone(),
+            authorized_actor_id: binding.actor_id.clone(),
+            display_name: binding.display_name.clone(),
+        });
+        return Ok(true);
+    };
+    if existing.authorized_actor_id != binding.actor_id
+        || existing.conversation_id != binding.conversation_id
+        || existing.destination_id != binding.destination_id
+    {
+        anyhow::bail!("IM_BINDING_CONFLICT");
+    }
+    if binding.display_name.is_none() || existing.display_name == binding.display_name {
+        return Ok(false);
+    }
+    existing.display_name = binding.display_name.clone();
+    Ok(true)
+}
+
+/// Adopts the owner name resolved at connect for the existing binding of that
+/// same owner, e.g. replacing a legacy open_id. Returns whether it changed.
+fn adopt_owner_display_name(
+    channel_settings: &mut ImChannelSettings,
+    owner: &ImOwnerProfile,
+) -> bool {
+    let Some(binding) = &mut channel_settings.binding else {
+        return false;
+    };
+    if binding.authorized_actor_id != owner.actor_id
+        || binding.display_name.as_deref() == Some(owner.display_name.as_str())
+    {
+        return false;
+    }
+    binding.display_name = Some(owner.display_name.clone());
+    true
 }
 
 fn persist_binding_then_commit(
@@ -1553,8 +1830,9 @@ pub struct InterventionResolution<'a> {
 
 /// Writes one resolution record per eligible target (§9.2): targets that showed
 /// the card get a `Send` record, others a `TombstoneOnly` record that blocks a
-/// late source projection. A `CallbackOnly` channel that resolved the action
-/// already replaced its only card inside the callback and is skipped.
+/// late source projection. A `CallbackOnly` channel whose clicked card the
+/// callback already replaced gets a `TombstoneOnly` record too: it keeps the
+/// winner for later clicks and closes the source without a second card.
 fn project_intervention_resolution(
     repository: &ImRepository,
     worker_senders: &HashMap<ImChannelKind, mpsc::Sender<ImWorkerSignal>>,
@@ -1578,15 +1856,15 @@ fn project_intervention_resolution(
                 && source.destination.destination_id == destination.destination_id
                 && source.notification_kind == resolution.notification_kind
         });
-        if let Some(source) = source
-            && resolution.source_delivery_id == Some(source.delivery_id.as_str())
-            && target.capabilities.message_update == ImMessageUpdateMode::CallbackOnly
-        {
-            result.skipped += 1;
-            continue;
-        }
+        let replaced_in_callback = source.is_some_and(|source| {
+            resolution.source_delivery_id == Some(source.delivery_id.as_str())
+                && target.capabilities.message_update == ImMessageUpdateMode::CallbackOnly
+        });
         let (dispatch, display_ref) = match source {
-            Some(source) => (ImResolutionDispatch::Send, source.display_ref),
+            Some(source) if !replaced_in_callback => {
+                (ImResolutionDispatch::Send, source.display_ref)
+            }
+            Some(source) => (ImResolutionDispatch::TombstoneOnly, source.display_ref),
             None => (ImResolutionDispatch::TombstoneOnly, None),
         };
         let delivery =
@@ -1609,6 +1887,72 @@ fn project_intervention_resolution(
         }
     }
     Ok(result)
+}
+
+/// Projects `Cancelled` for each source whose request the runtime ended without
+/// an answer (§9.2). Every runtime stop path — run stop, session close, Direct
+/// background stop, abandoned runs — converges on the canonical settlement, so
+/// this is the single place that finalizes their cards. Answered requests are
+/// left to the surface whose command was `Accepted` (one winner per event);
+/// pending or unknown requests are untouched, which keeps passes idempotent.
+/// `clicked_delivery_id` marks a source whose card the current callback
+/// replaces, so a `CallbackOnly` channel is not sent a second card.
+fn project_runtime_cancellations(
+    repository: &ImRepository,
+    worker_senders: &HashMap<ImChannelKind, mpsc::Sender<ImWorkerSignal>>,
+    targets: &[ImProjectionTarget],
+    sources: &[ImDelivery],
+    clicked_delivery_id: Option<&str>,
+    now_ms: i64,
+    mut settle: impl FnMut(&InterventionRef) -> Option<InterventionSettlement>,
+) -> std::result::Result<usize, ImRepositoryError> {
+    let mut settled_events = std::collections::BTreeSet::new();
+    let mut projected = 0;
+    for source in sources {
+        let ImDeliveryPayload::Intervention { reference, .. } = &source.payload else {
+            continue;
+        };
+        if !settled_events.insert(source.canonical_event_id.as_str()) {
+            continue;
+        }
+        if settle(reference) != Some(InterventionSettlement::Cancelled) {
+            continue;
+        }
+        let result = project_intervention_resolution(
+            repository,
+            worker_senders,
+            targets,
+            &InterventionResolution {
+                source_event_id: &source.canonical_event_id,
+                notification_kind: source.notification_kind,
+                locator: &reference.locator,
+                resolved_by: ImResolvedBy::Runtime,
+                source_delivery_id: clicked_delivery_id
+                    .filter(|clicked| *clicked == source.delivery_id),
+                outcome: ImResolutionOutcome::Cancelled,
+            },
+            now_ms,
+        )?;
+        projected += result.inserted;
+    }
+    Ok(projected)
+}
+
+/// Canonical settlement of a published request, read in the request's own
+/// workspace. `apps` caches the workspace per project for one pass.
+fn published_request_settlement(
+    state: &DesktopState,
+    apps: &mut HashMap<String, Option<App>>,
+    reference: &InterventionRef,
+) -> Option<InterventionSettlement> {
+    let project_id = &reference.locator.project_id;
+    let app = apps
+        .entry(project_id.clone())
+        .or_insert_with(|| resolve_command_app(state, Some(project_id)).ok())
+        .as_ref()?;
+    InterventionCommandService::new(app)
+        .settlement(&reference.locator, &reference.request)
+        .ok()
 }
 
 fn resolution_delivery(
@@ -1855,6 +2199,16 @@ async fn ensure_im_runtime(
     Ok(runtime)
 }
 
+/// Runs an IM command's settings, SQLite or keyring work on the blocking pool
+/// so the async runtime never waits on file or database I/O.
+async fn run_blocking_command<T: Send + 'static>(
+    work: impl FnOnce() -> CommandResult<T> + Send + 'static,
+) -> CommandResult<T> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|_| im_error("IM_RUNTIME_UNAVAILABLE"))?
+}
+
 fn im_settings_require_runtime(settings: &ImIntegrationSettings) -> bool {
     settings
         .channels
@@ -1923,26 +2277,31 @@ pub fn cancel_wecom_scan_authorization(
 #[tauri::command]
 pub async fn start_feishu_scan_authorization(
     app_handle: AppHandle,
-    state: tauri::State<'_, DesktopState>,
+    _state: tauri::State<'_, DesktopState>,
     input: FeishuScanStartInput,
 ) -> CommandResult<ImScanAuthorizationVm> {
     let runtime = require_im_runtime(&app_handle).await?;
     let existing_app_id = match input.mode {
         FeishuScanMode::SelectOrCreate => None,
         FeishuScanMode::ReauthorizeCurrent => {
-            let settings = state
-                .app()
-                .and_then(|app| app.load_settings())
-                .map_err(im_command_error)?;
+            let handle = app_handle.clone();
             Some(
-                settings
-                    .im_integrations
-                    .channels
-                    .into_iter()
-                    .find(|channel| channel.kind == ImChannelKind::Feishu)
-                    .map(|channel| channel.public_identity)
-                    .filter(|app_id| !app_id.is_empty())
-                    .ok_or_else(|| feishu_scan_error(FeishuScanAuthError::ConfigInvalid))?,
+                run_blocking_command(move || {
+                    let settings = handle
+                        .state::<DesktopState>()
+                        .app()
+                        .and_then(|app| app.load_settings())
+                        .map_err(im_command_error)?;
+                    settings
+                        .im_integrations
+                        .channels
+                        .into_iter()
+                        .find(|channel| channel.kind == ImChannelKind::Feishu)
+                        .map(|channel| channel.public_identity)
+                        .filter(|app_id| !app_id.is_empty())
+                        .ok_or_else(|| feishu_scan_error(FeishuScanAuthError::ConfigInvalid))
+                })
+                .await?,
             )
         }
     };
@@ -1997,10 +2356,14 @@ pub async fn set_im_channel_enabled(
     state: tauri::State<'_, DesktopState>,
     input: SetImChannelEnabledInput,
 ) -> CommandResult<ImSettingsVm> {
-    let app = state.app().map_err(im_command_error)?;
+    let _ = state;
     let runtime = require_im_runtime(&app_handle).await?;
-    let (settings, changed) = {
-        let _write_guard = runtime
+    let writer = Arc::clone(&runtime);
+    let handle = app_handle.clone();
+    let (settings, changed) = run_blocking_command(move || {
+        let state = handle.state::<DesktopState>();
+        let app = state.app().map_err(im_command_error)?;
+        let _write_guard = writer
             .settings_write_lock
             .lock()
             .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?;
@@ -2012,8 +2375,9 @@ pub async fn set_im_channel_enabled(
                 .update_settings_config(&settings)
                 .map_err(im_command_error)?;
         }
-        (settings, changed)
-    };
+        Ok((settings, changed))
+    })
+    .await?;
     if changed {
         runtime
             .reconfigure(&app_handle)
@@ -2029,24 +2393,32 @@ pub async fn save_im_notification_preferences(
     state: tauri::State<'_, DesktopState>,
     input: SaveImNotificationPreferencesInput,
 ) -> CommandResult<ImSettingsVm> {
-    let app = state.app().map_err(im_command_error)?;
+    let _ = state;
     let runtime = require_im_runtime(&app_handle).await?;
-    let _write_guard = runtime
-        .settings_write_lock
-        .lock()
-        .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?;
-    let mut settings = app.load_settings().map_err(im_command_error)?;
-    if apply_notification_update(&mut settings.im_integrations, &input)? {
-        app.save_settings(&settings).map_err(im_command_error)?;
-        state
-            .update_settings_config(&settings)
-            .map_err(im_command_error)?;
-        *runtime
-            .targets
-            .write()
-            .map_err(|_| im_error("IM_RUNTIME_UNAVAILABLE"))? =
-            projection_targets(&settings.im_integrations, &runtime.connectors);
-    }
+    let writer = Arc::clone(&runtime);
+    let handle = app_handle.clone();
+    let settings = run_blocking_command(move || {
+        let state = handle.state::<DesktopState>();
+        let app = state.app().map_err(im_command_error)?;
+        let _write_guard = writer
+            .settings_write_lock
+            .lock()
+            .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?;
+        let mut settings = app.load_settings().map_err(im_command_error)?;
+        if apply_notification_update(&mut settings.im_integrations, &input)? {
+            app.save_settings(&settings).map_err(im_command_error)?;
+            state
+                .update_settings_config(&settings)
+                .map_err(im_command_error)?;
+            *writer
+                .targets
+                .write()
+                .map_err(|_| im_error("IM_RUNTIME_UNAVAILABLE"))? =
+                projection_targets(&settings.im_integrations, &writer.connectors);
+        }
+        Ok(settings)
+    })
+    .await?;
     Ok(settings_vm(&settings.im_integrations, Some(&runtime)))
 }
 
@@ -2056,10 +2428,14 @@ pub async fn reset_im_channel_binding(
     state: tauri::State<'_, DesktopState>,
     input: ImGenerationInput,
 ) -> CommandResult<ImSettingsVm> {
+    let _ = state;
     let runtime = require_im_runtime(&app_handle).await?;
-    let app = state.app().map_err(im_command_error)?;
-    let (settings, changed) = {
-        let _write_guard = runtime
+    let writer = Arc::clone(&runtime);
+    let handle = app_handle.clone();
+    let (settings, changed) = run_blocking_command(move || {
+        let state = handle.state::<DesktopState>();
+        let app = state.app().map_err(im_command_error)?;
+        let _write_guard = writer
             .settings_write_lock
             .lock()
             .map_err(|_| im_error("IM_STORAGE_UNAVAILABLE"))?;
@@ -2073,9 +2449,9 @@ pub async fn reset_im_channel_binding(
             .binding
             .is_some();
         if !has_binding {
-            return Ok(settings_vm(&settings.im_integrations, Some(&runtime)));
+            return Ok((settings, false));
         }
-        let current_generation = runtime
+        let current_generation = writer
             .connection_manager
             .snapshot(input.kind)
             .map(|snapshot| snapshot.generation)
@@ -2089,18 +2465,20 @@ pub async fn reset_im_channel_binding(
         state
             .update_settings_config(&settings)
             .map_err(im_command_error)?;
-        *runtime
+        *writer
             .targets
             .write()
             .map_err(|_| im_error("IM_RUNTIME_UNAVAILABLE"))? =
-            projection_targets(&settings.im_integrations, &runtime.connectors);
-        (settings, true)
-    };
-    debug_assert!(changed);
-    runtime
-        .reconfigure(&app_handle)
-        .await
-        .map_err(im_command_error)?;
+            projection_targets(&settings.im_integrations, &writer.connectors);
+        Ok((settings, true))
+    })
+    .await?;
+    if changed {
+        runtime
+            .reconfigure(&app_handle)
+            .await
+            .map_err(im_command_error)?;
+    }
     Ok(settings_vm(&settings.im_integrations, Some(&runtime)))
 }
 
@@ -2118,17 +2496,27 @@ pub async fn reconnect_im_channel(
     if current.generation != input.expected_generation {
         return Err(im_error("IM_STALE_GENERATION"));
     }
-    let app = state.app().map_err(im_command_error)?;
-    let settings = app.load_settings().map_err(im_command_error)?;
-    let channel = settings
-        .im_integrations
-        .channels
-        .iter()
-        .find(|channel| channel.kind == input.kind)
-        .ok_or_else(|| im_error("IM_CREDENTIAL_REQUIRED"))?;
-    if !channel.enabled || channel.credential_ref.is_none() {
-        return Err(im_error("IM_CREDENTIAL_REQUIRED"));
-    }
+    let _ = state;
+    let handle = app_handle.clone();
+    let kind = input.kind;
+    run_blocking_command(move || {
+        let app = handle
+            .state::<DesktopState>()
+            .app()
+            .map_err(im_command_error)?;
+        let settings = app.load_settings().map_err(im_command_error)?;
+        let channel = settings
+            .im_integrations
+            .channels
+            .iter()
+            .find(|channel| channel.kind == kind)
+            .ok_or_else(|| im_error("IM_CREDENTIAL_REQUIRED"))?;
+        if !channel.enabled || channel.credential_ref.is_none() {
+            return Err(im_error("IM_CREDENTIAL_REQUIRED"));
+        }
+        Ok(())
+    })
+    .await?;
     runtime
         .reconfigure(&app_handle)
         .await
@@ -2554,6 +2942,7 @@ fn observed_binding(binding: &ImBindingSummary) -> ImObservedBinding {
         conversation_id: binding.conversation_id.clone(),
         actor_id: binding.authorized_actor_id.clone(),
         is_private: true,
+        display_name: binding.display_name.clone(),
     }
 }
 
@@ -2594,6 +2983,17 @@ fn event_project_id(event: &RuntimeLifecycleEvent) -> Option<&str> {
         | RuntimeLifecycleEvent::AcpTurnFinished { project_id, .. } => Some(project_id),
         _ => None,
     }
+}
+
+/// Boundaries after which a runtime may have ended requests without an answer.
+fn ends_pending_interventions(event: &RuntimeLifecycleEvent) -> bool {
+    matches!(
+        event,
+        RuntimeLifecycleEvent::RunCompleted { .. }
+            | RuntimeLifecycleEvent::NodeCompleted { .. }
+            | RuntimeLifecycleEvent::AcpTurnFinished { .. }
+            | RuntimeLifecycleEvent::DirectTurnLifecycle(_)
+    )
 }
 
 fn event_canonical_id(event: &RuntimeLifecycleEvent) -> &str {
@@ -2803,7 +3203,7 @@ mod tests {
                     destination_id: "user-1".into(),
                     conversation_id: "private-chat".into(),
                     authorized_actor_id: "user-1".into(),
-                    display_name: "User".into(),
+                    display_name: Some("User".into()),
                 }),
                 notifications: Default::default(),
             }],
@@ -3013,6 +3413,84 @@ mod tests {
         }
     }
 
+    /// The binding is created once with the resolved name (or none); a later
+    /// observation of the same account only adopts a newly resolved name, and
+    /// never erases a known one or rebinds another account.
+    #[test]
+    fn observed_binding_creates_once_and_only_adopts_a_resolved_display_name() {
+        let observed = |display_name: Option<&str>| ImObservedBinding {
+            destination_id: "ou_owner".into(),
+            conversation_id: "oc_private".into(),
+            actor_id: "ou_owner".into(),
+            is_private: true,
+            display_name: display_name.map(str::to_owned),
+        };
+        let mut channel = disabled_channel(ImChannelKind::Feishu);
+
+        assert!(apply_observed_binding(&mut channel, &observed(None)).unwrap());
+        assert_eq!(channel.binding.as_ref().unwrap().display_name, None);
+        assert!(!apply_observed_binding(&mut channel, &observed(None)).unwrap());
+
+        assert!(apply_observed_binding(&mut channel, &observed(Some("Zhang San"))).unwrap());
+        assert_eq!(
+            channel.binding.as_ref().unwrap().display_name.as_deref(),
+            Some("Zhang San")
+        );
+        assert!(!apply_observed_binding(&mut channel, &observed(Some("Zhang San"))).unwrap());
+        assert!(!apply_observed_binding(&mut channel, &observed(None)).unwrap());
+        assert_eq!(
+            channel.binding.as_ref().unwrap().display_name.as_deref(),
+            Some("Zhang San")
+        );
+
+        let mut other = observed(Some("Li Si"));
+        other.actor_id = "ou_other".into();
+        assert!(apply_observed_binding(&mut channel, &other).is_err());
+        assert_eq!(
+            channel.binding.as_ref().unwrap().authorized_actor_id,
+            "ou_owner"
+        );
+    }
+
+    /// A binding persisted before names were resolved (display name = open_id)
+    /// adopts the connect-time name of the same owner without a new message.
+    #[test]
+    fn connect_time_owner_name_replaces_a_legacy_display_name_once() {
+        let owner = ImOwnerProfile {
+            actor_id: "ou_owner".into(),
+            display_name: "Zhang San".into(),
+        };
+        let mut channel = disabled_channel(ImChannelKind::Feishu);
+        assert!(
+            !adopt_owner_display_name(&mut channel, &owner),
+            "no binding yet"
+        );
+        assert!(channel.binding.is_none());
+
+        channel.binding = Some(ImBindingSummary {
+            destination_id: "ou_owner".into(),
+            conversation_id: "oc_private".into(),
+            authorized_actor_id: "ou_owner".into(),
+            display_name: Some("ou_owner".into()),
+        });
+        assert!(adopt_owner_display_name(&mut channel, &owner));
+        assert_eq!(
+            channel.binding.as_ref().unwrap().display_name.as_deref(),
+            Some("Zhang San")
+        );
+        assert!(!adopt_owner_display_name(&mut channel, &owner), "unchanged");
+
+        let stranger = ImOwnerProfile {
+            actor_id: "ou_other".into(),
+            display_name: "Li Si".into(),
+        };
+        assert!(!adopt_owner_display_name(&mut channel, &stranger));
+        assert_eq!(
+            channel.binding.as_ref().unwrap().display_name.as_deref(),
+            Some("Zhang San")
+        );
+    }
+
     #[test]
     fn scanned_credentials_require_fresh_binding_even_for_the_same_app() {
         for kind in ImChannelKind::ALL {
@@ -3023,7 +3501,7 @@ mod tests {
                 destination_id: "old-owner".into(),
                 conversation_id: "old-chat".into(),
                 authorized_actor_id: "old-owner".into(),
-                display_name: "Old owner".into(),
+                display_name: Some("Old owner".into()),
             });
             existing.notifications.manual_check = false;
             let installed = scanned_channel_settings(
@@ -3061,7 +3539,7 @@ mod tests {
                     destination_id: "user-1".into(),
                     conversation_id: "private-chat".into(),
                     authorized_actor_id: "user-1".into(),
-                    display_name: "User".into(),
+                    display_name: Some("User".into()),
                 }),
                 notifications: Default::default(),
             }],
@@ -3084,7 +3562,7 @@ mod tests {
             destination_id: "user-1".into(),
             conversation_id: "user-1".into(),
             authorized_actor_id: "user-1".into(),
-            display_name: "User".into(),
+            display_name: Some("User".into()),
         };
         let settings = |binding| ImIntegrationSettings {
             channels: vec![ImChannelSettings {
@@ -3196,7 +3674,7 @@ mod tests {
             destination_id: "user-1".into(),
             conversation_id: "chat-1".into(),
             authorized_actor_id: "user-1".into(),
-            display_name: "User".into(),
+            display_name: Some("User".into()),
         };
         let mut settings = ImIntegrationSettings {
             channels: vec![ImChannelSettings {
@@ -3280,6 +3758,7 @@ mod tests {
             conversation_id: "chat-1".into(),
             actor_id: "user-1".into(),
             is_private: true,
+            display_name: None,
         };
 
         let failed = persist_binding_then_commit(
@@ -3558,9 +4037,145 @@ mod tests {
             101,
         )
         .unwrap();
-        assert_eq!(result.skipped, 1);
-        assert_eq!(result.inserted, 0);
+        assert_eq!(result.inserted, 1, "the winner is kept as a tombstone");
+        assert!(receiver.try_recv().is_err(), "no second card is sent");
+        assert_eq!(
+            stored_intervention_resolution(&repository, &source)
+                .unwrap()
+                .map(|stored| stored.resolved_by),
+            Some(ImResolvedBy::Channel(ImChannelKind::WeCom))
+        );
+        assert!(
+            repository
+                .open_intervention_sources(102)
+                .unwrap()
+                .is_empty(),
+            "the replaced card is closed"
+        );
+    }
+
+    fn source_for_request(event_id: &str, request_id: &str) -> ImDelivery {
+        let mut source = vote_delivery();
+        source.canonical_event_id = event_id.into();
+        if let ImDeliveryPayload::Intervention { reference, .. } = &mut source.payload {
+            reference.request =
+                gold_band::app::intervention::InterventionRequestIdentity::Permission {
+                    request_id: request_id.into(),
+                };
+        }
+        source.refresh_id();
+        source
+    }
+
+    fn settle_by_request(reference: &InterventionRef) -> Option<InterventionSettlement> {
+        let gold_band::app::intervention::InterventionRequestIdentity::Permission { request_id } =
+            &reference.request
+        else {
+            return None;
+        };
+        match request_id.as_str() {
+            "cancelled" => Some(InterventionSettlement::Cancelled),
+            "answered" => Some(InterventionSettlement::Answered),
+            "pending" => Some(InterventionSettlement::Pending),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn runtime_cancellation_finalizes_only_cancelled_open_sources_once() {
+        let (_temp, repository) = resolution_repository();
+        let (sender, mut receiver) = mpsc::channel(8);
+        let worker_senders = HashMap::from([(ImChannelKind::WeCom, sender)]);
+        let cancelled = source_for_request("event-cancelled", "cancelled");
+        let answered = source_for_request("event-answered", "answered");
+        let pending = source_for_request("event-pending", "pending");
+        let unknown = source_for_request("event-unknown", "unknown");
+        for source in [&cancelled, &answered, &pending, &unknown] {
+            repository.enqueue(source, 100).unwrap();
+        }
+        let targets = [wecom_target(&cancelled.destination)];
+
+        let sources = repository.open_intervention_sources(200).unwrap();
+        assert_eq!(sources.len(), 4);
+        let projected = project_runtime_cancellations(
+            &repository,
+            &worker_senders,
+            &targets,
+            &sources,
+            None,
+            200,
+            settle_by_request,
+        )
+        .unwrap();
+
+        assert_eq!(projected, 1);
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            ImWorkerSignal::DeliveryAvailable
+        );
+        let ImDeliveryPayload::InterventionResolution { resolution, .. } =
+            resolution_record(&repository, &cancelled).payload
+        else {
+            panic!("expected resolution payload");
+        };
+        assert_eq!(resolution.resolved_by, ImResolvedBy::Runtime);
+        assert_eq!(resolution.outcome, ImResolutionOutcome::Cancelled);
+        for open in [&answered, &pending, &unknown] {
+            assert!(
+                stored_intervention_resolution(&repository, open)
+                    .unwrap()
+                    .is_none(),
+                "only the surface that won writes an answered result"
+            );
+        }
+
+        let remaining = repository.open_intervention_sources(300).unwrap();
+        assert_eq!(remaining.len(), 3, "a resolved source is no longer open");
+        let replay = project_runtime_cancellations(
+            &repository,
+            &worker_senders,
+            &targets,
+            &sources,
+            None,
+            300,
+            settle_by_request,
+        )
+        .unwrap();
+        assert_eq!(replay, 0, "a second pass is idempotent");
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn runtime_cancellation_for_a_clicked_callback_only_card_is_not_sent_twice() {
+        let (_temp, repository) = resolution_repository();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let worker_senders = HashMap::from([(ImChannelKind::WeCom, sender)]);
+        let source = source_for_request("event-cancelled", "cancelled");
+        repository.enqueue(&source, 100).unwrap();
+
+        let projected = project_runtime_cancellations(
+            &repository,
+            &worker_senders,
+            &[wecom_target(&source.destination)],
+            std::slice::from_ref(&source),
+            Some(&source.delivery_id),
+            200,
+            settle_by_request,
+        )
+        .unwrap();
+
+        assert_eq!(projected, 1, "the cancellation is kept as a tombstone");
+        assert!(
+            receiver.try_recv().is_err(),
+            "the callback replaces the clicked card itself"
+        );
+        assert!(
+            repository
+                .open_intervention_sources(300)
+                .unwrap()
+                .is_empty(),
+            "a later periodic pass cannot send a second card"
+        );
     }
 
     #[test]
@@ -3612,18 +4227,12 @@ mod tests {
             for (index, source) in sources.iter().enumerate() {
                 let callback_only_winner =
                     index == 0 && winner == ImResolvedBy::Channel(ImChannelKind::WeCom);
-                let stored = stored_intervention_resolution(&repository, source).unwrap();
-                assert_eq!(
-                    stored.is_none(),
-                    callback_only_winner,
-                    "{winner:?} -> {:?}",
-                    source.channel
-                );
+                let stored = stored_intervention_resolution(&repository, source)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("{winner:?} -> {:?}", source.channel));
                 assert_eq!(receivers[index].try_recv().is_ok(), !callback_only_winner);
-                if let Some(stored) = stored {
-                    assert_eq!(stored.resolved_by, winner);
-                    assert_eq!(stored.outcome, outcome);
-                }
+                assert_eq!(stored.resolved_by, winner);
+                assert_eq!(stored.outcome, outcome);
             }
             // Replaying the winner cannot send or mutate another terminal result.
             let replay =
@@ -3692,7 +4301,9 @@ mod tests {
             101,
         )
         .unwrap();
-        let settled_resolution = stored_intervention_resolution(&repository, &source).unwrap();
+        let settled_resolution = stored_intervention_resolution(&repository, &source)
+            .unwrap()
+            .map(Into::into);
         let losing = ProcessedInboundAction {
             delivery: Some(source),
             handling: Ok(ImInboundHandling {

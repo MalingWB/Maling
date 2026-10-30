@@ -273,6 +273,7 @@ mod tests {
                     bot_id: "old".into(),
                     display_name: "old".into(),
                 },
+                owner: None,
             },
             10,
         ));
@@ -284,6 +285,7 @@ mod tests {
                     bot_id: "new".into(),
                     display_name: "new".into(),
                 },
+                owner: None,
             },
             20,
         ));
@@ -341,6 +343,7 @@ mod tests {
                     conversation_id: "group-chat".into(),
                     actor_id: "actor".into(),
                     is_private: false,
+                    display_name: None,
                 },
             },
             0,
@@ -366,6 +369,7 @@ mod tests {
                 conversation_id: "chat-1".into(),
                 actor_id: "user-1".into(),
                 is_private: true,
+                display_name: None,
             }),
         );
         assert!(manager.apply_event(
@@ -377,6 +381,7 @@ mod tests {
                     conversation_id: "chat-2".into(),
                     actor_id: "user-2".into(),
                     is_private: true,
+                    display_name: None,
                 },
             },
             0,
@@ -395,6 +400,7 @@ mod tests {
             conversation_id: "chat-1".into(),
             actor_id: "user-1".into(),
             is_private: true,
+            display_name: None,
         };
 
         assert!(manager.prepare_binding(ImChannelKind::WeCom, start.generation, &binding));
@@ -428,6 +434,7 @@ mod tests {
             conversation_id: "chat-1".into(),
             actor_id: "user-1".into(),
             is_private: true,
+            display_name: None,
         };
         assert!(manager.prepare_binding(ImChannelKind::WeCom, first.generation, &binding));
         let second = manager.replace(ImChannelKind::WeCom, true, test_capabilities());
