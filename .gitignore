@@ -28,3 +28,11 @@ draft/*
 .omc
 .codex-*/
 coverage
+
+# Editor / OS / crash artifacts
+*.stackdump
+Thumbs.db
+.DS_Store
+*.tmp
+*.bak
+*.swp
