@@ -148,7 +148,7 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 
 `InterventionCommandService` 的 expected state 校验保持 first-writer-wins，但指纹输入必须与数据所有权一致：pending permission/elicitation 文件中的 `timelineIdentity` 只是展示索引回写，不改变用户待决策的问题、选项、expiry 或 canonical request。指纹序列化显式排除该字段；修改 params/request schema 或允许动作仍必须产生 `INTERVENTION_REVISION_CONFLICT`。
 
-企微 Permission 终态更新帧必须与已验证 POC 保持同形：`main_title.title` 使用“id=xxxx 已处理：<动作>”，`main_title.desc` 为 `Agent 请求执行命令`；同时保持 `vote_interaction`、原 `task_id`、原 `submit_button.key`、`checkbox.disable=true` 和最终选中项 `is_checked=true`。ManualCheck 终态标题同样使用“id=xxxx 已处理：<检查结果>”，并保持禁用 vote、原 task/submit key 和最终选中项，描述使用人工检查摘要。Elicitation 终态必须保持原 vote/multiple 卡：vote `mode=0/1` 均设置 `checkbox.disable=true`，提交项 `is_checked=true`；multiple 每个 `select_list[].disable=true` 并把 `selected_id` 指向最终选择。官方更新协议没有 `submit_button.disable` 字段，Gold Band 不得发送该无效字段；即使客户端仍允许点击提交按钮，重复的新 msgid 也必须在 Gold Band 按 `channel + canonical intervention event` 收敛为 `ALREADY_APPLIED`，不得再次执行 Runtime 或把卡片更新为失败。终态标题把 `display_ref` 放在最前，摘要可截断但编号不可丢失；AlreadyHandled/RevisionConflict 收敛为已处理，业务失败更新失败态但仍保持原结构。若平台拒绝更新 ACK，只记录是否存在 `cmd`、顶层/body 字段名、数字错误码层级和稳定错误码，不记录用户、凭据、文案或完整回调 JSON。
+企微 Permission 终态更新帧必须与已验证 POC 保持同形：`main_title.title` 使用“id=xxxx 已处理：<动作>”，`main_title.desc` 为 `Agent 请求执行命令`；同时保持 `vote_interaction`、原 `task_id`、原 `submit_button.key`、`checkbox.disable=true` 和最终选中项 `is_checked=true`。ManualCheck 终态标题同样使用“id=xxxx 已处理：<检查结果>”，并保持禁用 vote、原 task/submit key 和最终选中项，描述使用人工检查摘要。Elicitation 终态必须保持原 vote/multiple 卡：vote `mode=0/1` 均设置 `checkbox.disable=true`，提交项 `is_checked=true`；multiple 每个 `select_list[].disable=true` 并把 `selected_id` 指向最终选择。官方更新协议没有 `submit_button.disable` 字段，Gold Band 不得发送该无效字段；即使客户端仍允许点击提交按钮，重复的新 msgid 也必须在 Gold Band 按 `channel + canonical intervention event` 收敛为 `ALREADY_APPLIED`，不得再次执行 Runtime 或把卡片更新为失败。终态标题把 `display_ref` 放在最前，摘要可截断但编号不可丢失；已结算请求的 AlreadyHandled/RevisionConflict 收敛为已处理，请求仍待处理的 RevisionConflict（卡片快照已过期）收敛为已过期，业务失败更新失败态但仍保持原结构。若平台拒绝更新 ACK，只记录是否存在 `cmd`、顶层/body 字段名、数字错误码层级和稳定错误码，不记录用户、凭据、文案或完整回调 JSON。
 
 桌面 Runtime 在 blocking 边界返回通用 `ProcessedInboundAction { delivery, handling, settled_resolution }`。不在通用层保留企微专用类型；平台回包上下文由 connector 持有和解释。每个 InboundAction 独立任务处理，runtime 长期持有同一个 `ImInboundActionService` 和 ActionLocks，重复同一事件只执行一次。
 
@@ -162,14 +162,16 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 
 两渠道扫码会话均持续到配置提交完成，不能在平台授权成功时提前结束。凭据库写入期间仍可取消或替换会话；提交配置时以当前 session ID 为准，与取消/替换互斥。取消/替换先完成则拒绝旧提交并删除本次暂存凭据，保留已有配置、凭据和新会话；配置提交先完成则保留已提交结果，后续关闭不撤销配置。网络与凭据库操作不持有会话/设置锁。
 
-1. 在设置页点击扫码接入，先确认“发送消息、读取发给机器人的私聊消息、更新机器人卡片”三项权限，再发起扫码。取消或关闭会话使迟到结果失效。首次接入和已配置后的“更换飞书应用”都使用飞书原生选择页，可选择已有应用或新建应用。
+1. 在设置页点击扫码接入，先确认“发送消息、读取发给机器人的私聊消息、更新机器人卡片、读取你的姓名”四项权限，再发起扫码。取消或关闭会话使迟到结果失效。首次接入和已配置后的“更换飞书应用”都使用飞书原生选择页，可选择已有应用或新建应用。 扫码追加的两项通讯录权限用于读取姓名，属于可选权限，缺失不触发重新授权。
 2. 后端轮询授权，把 app_secret、扫码人 open_id、brand 写入 keyring；前端只收到 sessionId、qrUrl、expiresAtMs 和非敏感设置。新建应用的预填名称取自渠道产品名（`wb` 为 `MALING`，`default` 为 `Gold Band`）；选择或新建模式不发送 `createOnly`，重新授权当前应用才发送已有 app_id 作为 `clientID`。
 3. 授权后，扫码账号向机器人发送一条私聊消息完成绑定；持久 binding 与当前 generation snapshot 一致后才显示“可用”。其他账号不能抢占绑定。
-4. 支持启停、六类通知偏好、重新授权当前应用、更换飞书应用、真实重连和删除。更换飞书应用完成后替换当前应用并清除旧私聊绑定；重新授权只针对当前应用。重新绑定只清除私聊绑定，仍由扫码账号发消息绑定。缺权限引导重新授权，不无效重连。
-5. 页面显示 App ID、运行期机器人名称和单设备提醒。Secret、扫码 ticket、access_key 不进入前端或日志。
+4. 接收账号姓名：connector 每次 `connect` 在 bot 自检后用 tenant token 调用一次 `GET /open-apis/contact/v3/users/{open_id}?user_id_type=open_id` 读取扫码账号 `name`，随该连接上报的 `BindingObserved.display_name` 持久到 `ImBindingSummary.display_name`（`Option`）。不按消息查询；查询失败（缺权限、不在通讯录范围 41050、网络）只记 warn，绑定照常完成，设置页显示中性文案“已绑定一对一私聊”，不再展示 open_id。连接成功（`Connected.owner` 携带已解析的 owner open_id 与姓名）后，runtime 在阻塞线程池内对同一 owner 的已有绑定立即采纳该姓名（例如替换旧版写入的 open_id），仅在姓名变化时写设置并刷新快照，无需等待下一条消息；查询失败时 `owner` 为空，不会抹掉已知姓名。企微保持原样（userid 即展示名）。
+5. 支持启停、六类通知偏好、重新授权当前应用、更换飞书应用、真实重连和删除。更换飞书应用完成后替换当前应用并清除旧私聊绑定；重新授权只针对当前应用。重新绑定只清除私聊绑定，仍由扫码账号发消息绑定。缺权限引导重新授权，不无效重连。
+6. 页面显示 App ID、运行期机器人名称和单设备提醒。Secret、扫码 ticket、access_key 不进入前端或日志。
 
 - 飞书卡片初态与终态均按 `id → 节点 → 任务 → 工作空间 → 题目` 展示。提交成功后保留原表单结构，单选、多选、自定义回答和文本回填 Accepted 的答案，控件禁用，展示处理来源。
 - 终态投递先读取源 outbox 生命周期：源消息仍在 pending / sending（包括失败重试、租约恢复）时，终态留在现有 outbox 延期，不能把尚未取得消息 ID 当成永久不可更新。源发送结算并持久化绑定后更新原卡；源已过期、永久失败或结算后无绑定时，才允许另发只读终态。
+- 源消息发送失败重试与租约回收只在同一 SQL 语句内确认该目标尚无 `:resolved` 终态时才回到 pending；终态已存在时源 delivery 直接转为 expired，已结算的源卡片不得被重发。
 - 即时回调、后台 PATCH、超时后的补写和不可更新后的另发消息使用同一份结构化终态结果。不得让后续 PATCH 清空回调已显示的答案；迟到或失败的提交不得显示成赢家答案。
 - Runtime 仍是唯一业务事实源。终态 outbox 的 `ElicitationSubmitted { content }` 只保存已接受答案的投递快照（最大 8 KiB，随 outbox 7 天保留策略清理）；回包不再有独立瞬态 submission。答案不写日志，Debug 脱敏。旧终态没有保存答案时明确显示结果详情不可用。
 - payload v3 / IM schema v5 的一次性迁移保留源卡片、消息绑定、rowid/display_ref、终态及 tombstone；旧无答案终态转成 `ResultUnavailable`，不伪造空回答。新读取路径不兼容旧格式。处理来源仍仅由获得 Accepted 的一端写入。
@@ -185,10 +187,12 @@ ManualCheck 详情先读取当前 attempt ACP timeline 的最新可见 root `tex
 | 飞书 | 共享应用边界刷新 session | 另发同编号“已在飞书处理”文本 | 回调终态 + 相同结果的幂等 PATCH |
 
 - 终态投影只处理当前 eligible target（启用、有凭据/私聊绑定、具备投递/卡片能力且启用对应通知）。已有源 delivery 的目标写 Send/pending；没有源 delivery 的目标只写 TombstoneOnly/expired，拦截迟到源投影，不发送、不唤醒 worker、不计 active 配额。
-- 企微是来源时仅回调更新，不重复广播到自身；飞书来源仍写终态，确保超时和 generation 切换后可由 worker 补齐。
-- 回调最多等待 2.5 秒，超时只返回“处理中”toast，原输入不被清除。Accepted 后的持久终态继续 PATCH；校验失败保持可编辑。
+- 企微是来源时仅回调更新，不重复广播到自身：被点击的企微目标写 TombstoneOnly/expired 保存赢家结果并关闭源卡，不另发第二条；飞书来源仍写终态，确保超时和 generation 切换后可由 worker 补齐。
+- Runtime 停止路径（Run 停止/节点 teardown、ACP 会话关闭、Direct 后台停止、Runtime 已消失的遗留请求）不经过桌面命令，统一由 canonical settlement 收敛：领域 `InterventionCommandService::settlement` 依据响应文件 → 待处理文件 → timeline 已结算项判定 `Pending | Answered | Cancelled`（无信号文件但 timeline 仍待处理视为被遗弃的取消）。IM 侧 settlement reconciler 在 RunCompleted / NodeCompleted / AcpTurnFinished / DirectTurnLifecycle 后（1 秒去抖）及每 30 秒扫描未结算的开放源卡（pending/sending/sent、未过期、无 `:resolved`），只为 `Cancelled` 写 `resolved_by=Runtime` 的取消终态；`Answered` 留给 Accepted 的一端写入，保持单赢家规则，重复扫描靠终态唯一键幂等。
+- 点击已结算请求的卡片时：已有终态直接回填；canonical 为取消则当场投影取消终态并回填；答案仍在写入途中则回“已处理”并禁用原卡，等待后续 PATCH 补齐结果；请求仍待处理（卡片快照过期，永远无法成功）则按“操作已过期”禁用原卡。领域对已结算请求返回 `INTERVENTION_ALREADY_HANDLED`，不再误报 `INTERVENTION_REQUEST_NOT_FOUND`。
+- 回调最多等待 2.5 秒，超时只返回“处理中”toast，原输入不被清除。Accepted 后的持久终态继续 PATCH；被拒绝时卡片保持可编辑，原因另发一条只读消息“id=xxxx 提交未成功”到同一私聊（拒绝没有持久终态，不进 outbox，也不改卡片，避免迟到的可编辑卡覆盖已结算终态）。
 - 只有消息撤回、删除或超过更新期限的 `MessageUpdateUnavailable` 才另发源上下文完整的只读终态卡；限流/网络错误退避重试，鉴权/缺权限/卡片协议失败不另发掩盖错误。
-- 两端竞争只允许一个 Accepted。迟到提交从已有终态读取赢家答案；没有可读取的赢家结果时只回已处理 toast，不使用后到答案填卡。领域 Accepted 与 IM 写入间崩溃的恢复限制保留，不新增跨库事务。
+- 两端竞争只允许一个 Accepted。迟到提交从已有终态读取赢家答案；没有可读取的赢家结果时回“已处理”并禁用原卡，不使用后到答案填卡。领域 Accepted 与 IM 写入间崩溃的恢复限制保留，不新增跨库事务。
 
 ## 7. 领域与数据所有权
 
@@ -215,12 +219,14 @@ IM 数据库不得保存 `approved/failed/completed` 作为工作流事实。它
 - `ImChannelKind { WeCom, Feishu }`。
 - `ImChannelCapabilities { proactive_delivery, card_actions, private_chat, message_update, interaction }`；`message_update` 为 `None | CallbackOnly | Anytime`。
 - `ImInteractionCapabilities` 包含 permission_max_options、max_questions、单题/多题单选容量、multi_choice、free_text、custom_answer、decline。
-- `RemoteElicitationForm { questions: Vec<RemoteQuestion>, decline_allowed }`；RemoteQuestion 包含 selector_key、领域 ElicitationQuestion、constraints 与 custom_answer_key。文本、多选、“其他”以同一领域 content 构建函数提交 schema-shaped JSON。
+- `RemoteElicitationForm { questions: Vec<RemoteQuestion>, decline_allowed }`；RemoteQuestion 包含 selector_key、领域 ElicitationQuestion、constraints 与 custom_answer_key。文本、多选、“其他”以同一领域 content 构建函数提交 schema-shaped JSON；反向由 `remote_question_answer` 把已接受的 content 逐题解码为 `RemoteElicitationAnswer`（选项 id、“其他”文本或文本），飞书禁用控件回填、“提交内容”行与企微终态标题都只消费这一投影（`connectors::accepted_answers`），按发布副本解码失败的题按未回答展示。发布副本里的固定表单统一经 `InterventionAllowedAction::fixed_form` 查找。
 - `InterventionRef { locator, request, expected_state, allowed_actions, expires_at_ms }`；request 区分 Permission request_id、Elicitation elicitation_id、ManualCheck。locator 包含 project/task/run/round/node/attempt 与可选 outer locator。
 - `ImSubmittedAction` 为 PublishedAction、PermissionOption、ManualCheck、ElicitationForm、ElicitationDecline；平台类型不越过 connector。
 - `ImDeliveryPayload` 为带 version 的 Intervention、Information、InterventionResolution。只有 Intervention 可产生可执行入站；终态仅用于投递，不可再次提交。
 - `InterventionResolutionNotification` 保存 source_event_id、canonical_event_id、notification_kind、locator、display_ref、resolved_by、outcome。
-- `ImResolvedBy { Desktop, Channel(ImChannelKind) }`；`ImResolutionOutcome` 保存权限 option_id、已提交答案 content、拒绝回答、人工检查结果或显式 ResultUnavailable。
+- `ImResolvedBy { Desktop, Channel(ImChannelKind), Runtime }`，`Runtime` 只标记由 canonical settlement 观察到的取消；`ImResolutionOutcome` 保存权限 option_id、已提交答案 content、拒绝回答（ElicitationDeclined）、请求未获回答即结束的取消（Cancelled，适用权限、追问与人工检查）、人工检查结果或显式 ResultUnavailable。
+- 只有用户真实拒绝才是 Declined；领域 `ElicitationAction::Cancel` 与 settlement 的 `Cancelled` 映射为 Cancelled，只能由桌面/Runtime 的停止、超时与孤儿清理路径产生。`ImSubmittedAction` 没有取消变体，已发布的 allowed actions 也不包含取消，远程入站无法提交 Cancel。取消终态不归属任何处理端：飞书卡片标题和结果均显示“已取消”且不显示处理端，企微另发“id=xxxx 已取消”，不得显示为“拒绝”或“已在某端处理”。
+- Cancelled（wire `cancelled`）与 `ImResolvedBy::Runtime` 是 payload v3 内的追加 serde 变体，不升级 payload/schema 版本：旧数据不可能包含它们，已有变体的编码不变，无需迁移；按开发阶段策略不支持新库回退旧客户端。
 - `ImResolutionDispatch { Send, TombstoneOnly }` 分离持久化事实与发送副作用。终态事件 identity 为 `<source_event_id>:resolved`，delivery identity 为 channel + destination + notification_kind + canonical_event_id 的稳定哈希。
 - `ImConnectionState` 为 Disabled、Connecting、Reconnecting、Connected、AuthenticationRequired、Error；快照携带 generation、capabilities、identity、binding、last_error_code。
 
@@ -333,7 +339,7 @@ UI 不展示协议地址、心跳、轮询、数据库或 token 等实现细节�
 - 投递：IM_PROTOCOL_INVALID、IM_STORAGE_UNAVAILABLE、IM_QUEUE_CAPACITY_EXCEEDED、IM_MESSAGE_UPDATE_UNAVAILABLE。
 - 扫码：IM_SCAN_CANCELLED、IM_SCAN_EXPIRED、IM_SCAN_DENIED、IM_SCAN_NETWORK_UNAVAILABLE、IM_SCAN_SESSION_INVALID 等；完整值以 ImErrorCode 与扫码错误类型为准。
 
-设置页七语言 catalog 映射用户文案；平台出站 renderer 使用现有 ZhCn/En 消息资源。缺权限/凭据失效引导重新授权，网络故障引导重连；更新不可用是原消息生命周期问题，不与鉴权或协议错误混为一类。
+设置页七语言 catalog 映射用户文案。平台出站 renderer 与回调回包的卡片文案来自 `src/im/locales/{zh-CN,zh-TW,en,ja-JP,ko-KR,pt-BR,es}.json` 七语言 keyed 资源表，编译期嵌入；`ImLocale` 就是桌面语言 `DesktopLanguage`，未设置时与桌面启动一致取系统语言，飞书回调回包使用接收点击的会话语言，不再各自兜底为中文或英文。列表分隔符、“已处理”前缀、未知权限选项的“桌面处理”等也属于资源表；zh-CN 是语义来源，单测校验七语言 key、`{ref}`/`{source}` 占位符和 Agent、ACP、Run 等保留词一致。缺权限/凭据失效引导重新授权，网络故障引导重连；更新不可用是原消息生命周期问题，不与鉴权或协议错误混为一类。
 
 ## 12. 验收标准
 
@@ -348,7 +354,7 @@ UI 不展示协议地址、心跳、轮询、数据库或 token 等实现细节�
 
 - 企业微信、飞书可扫码接入、绑定授权私聊、接收三类干预和启用的信息通知；飞书支持 §5 的完整表单、只读答案回显与 §6.4 三端终态矩阵。
 - 自动化固定仅一个 Accepted、迟到提交不覆盖赢家、回调超时由 PATCH 补齐、重试/降级分类和 tombstone。真实账号测试与本地 mock 结果分别记录。
-- 飞书扫码必须在三项权限确认后才发起 begin；缺权限可重新授权；七语言文案、窄屏、主题和扫码取消通过前端验证。
+- 飞书扫码必须在四项权限确认后才发起 begin；缺权限可重新授权；七语言文案、窄屏、主题和扫码取消通过前端验证。
 - 微信 connector 和设置入口保持缺席，直到稳定主动推送真实 PoC 通过。
 - 客户端重启后恢复启用配置和未过期 outbox，但不复活旧连接状态或已处理动作。
 
@@ -510,7 +516,7 @@ Permission occurrence identity 的生成只对当前事件的两个短字符串�
 
 ## 17. 2026-10-18 上游取消追问语义对齐
 
-- canonical `ElicitationAction::Cancel` 投影为 `ImResolutionOutcome::ElicitationCancelled`，与用户主动拒绝的 `ElicitationDeclined` 区分；序列化往返必须保留这个区别。
+- canonical `ElicitationAction::Cancel` 投影为 `ImResolutionOutcome::Cancelled`，与用户主动拒绝的 `ElicitationDeclined` 区分；序列化往返必须保留这个区别。
 - 飞书终态卡片以中文“已取消”或英文“Cancelled”显示取消，保留原表单并禁用控件，不伪造提交答案。文案沿用 connector 的集中语言映射。
 - 不新增远程取消入口；渠道入站仍只接受发布时声明的 allowed actions。Runtime 的首个有效决策、幂等、连接 generation 与 durable delivery 继续作为权威事实源。
 - 本次仅补齐既有领域动作的结果投影，不增加持久表、状态机、请求、历史扫描、队列或缓存；渲染复杂度仍受当前表单规模限制。
@@ -524,3 +530,16 @@ Permission occurrence identity 的生成只对当前事件的两个短字符串�
 - 不新增应用清单接口、缓存、数据库字段或持久状态；应用选择完全由飞书平台承担，前端只保留单次扫码模式。
 
 方案复核：新增复杂度仅为命令层类型化模式和一条配置描述后缀，没有新增网络请求、全量扫描、状态订阅或无界并发。
+
+
+## 19. 2026-10-30 上游 #151 增量适配
+
+- 以当前 ACP 请求、Run/turn 生命周期与 `InterventionCommandService::settlement` 为权威，统一权限、追问和人工检查的待处理、已回答、已取消、已过期语义；停止、超时与清理不是用户拒绝。远程渠道不增加 Cancel 入口。
+- IM runtime 在 Run/node/turn 结束信号后合并触发校准，并每 30 秒兜底检查。单次最多读取 outbox 当前上限内的未过期、未结算源投递，按请求身份去重，只对 canonical Cancelled 写入 Runtime 来源的取消结果。CallbackOnly 源卡在回调中完成时只记终态，避免重复通知。
+- 已有终态的源投递在发送失败和租约回收后直接过期，不重新发送可操作卡片。飞书超过 2.5 秒回调窗口的 Rejected 结果，按该点击所属会话语言向原授权私聊发送原因，幂等键沿用 delivery 与 callback request ID；不覆盖已处理卡片。
+- 两个 connector 共用已接受答案投影，结果卡展示全部已发布问题、选项标签、自定义答案和自由文本。IM 文案集中在 `src/im/locales/` 七语言资源，与桌面语言一致，并检查 key、占位符和保留词。
+- 接收账号采用平台解析的姓名；连接成功即更新同一授权账号的已有绑定，查询失败不清空已知姓名。无姓名显示“已绑定一对一私聊”，不把飞书 open_id 当姓名。姓名权限是可选项，不影响连接和审批。设置页继续使用本仓库现有配置菜单、应用选择和渠道名称。
+- 本仓库已持久化旧取消结果，故 IM component schema 升至 6：在同一 IMMEDIATE 事务内将 v3 resolution 的 `elicitationCancelled` 标签原位改为 `cancelled`，保留 delivery ID、rowid/display_ref、源记录、绑定、终态、幂等审计与其他答案。失败回滚，重开可重试；旧客户端拒绝新版数据库。payload 仍为 v3，不引入运行时旧格式分支。
+- 过度设计与性能评审：复用连接 generation、请求身份、outbox、serde/Tokio/SQLite，不新增依赖、持久表、答案副本或业务状态机。文件和 SQLite 操作在 blocking pool 执行，网络请求不占用领域锁或数据库事务；姓名每次连接查询一次，语言资源每进程解析一次，校准不读取完整历史。
+
+校准查询使用 `idx_im_outbox_open_interventions` 局部索引按 `expires_at_ms` 范围读取，避免按 state 遍历已过期历史；索引与 v6 schema 同事务建立。接口回归固定只取当前未结算源卡、批次上限、过期排除与查询计划。

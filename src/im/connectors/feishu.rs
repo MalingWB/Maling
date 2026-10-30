@@ -21,19 +21,19 @@ use self::api::{
     FeishuBrand, FeishuClientConfig, FeishuHostTable, FeishuOpenApi, feishu_http_client,
 };
 use self::card::{
-    action_reply, decode_card_action, decode_error_reply, delivery_card_content, processing_reply,
-    resolution_payload_card_content,
+    action_reply, decode_card_action, decode_error_reply, delivery_card_content,
+    late_rejection_card_content, processing_reply, resolution_payload_card_content,
 };
 use self::ws::{
     Connection, EventReply, FeishuAckResult, InboundEvent, PendingActionResponses,
     reconnect_allowed, reconnect_delay,
 };
 use crate::im::{
-    ImActionResponse, ImActionResponseContext, ImActionTokenCodec, ImChannelCapabilities,
-    ImChannelKind, ImConnectionIdentity, ImConnector, ImConnectorEvent, ImCustomAnswerSupport,
-    ImDelivery, ImDeliveryBinding, ImDeliveryPayload, ImDeliveryReceipt, ImErrorCode,
-    ImFreeTextCapability, ImIntegrationError, ImInteractionCapabilities, ImLocale,
-    ImMessageUpdateMode, ImMultiChoiceCapability, ImObservedBinding, ImOptionLimit,
+    ImActionResponse, ImActionResponseContext, ImActionResponseState, ImActionTokenCodec,
+    ImChannelCapabilities, ImChannelKind, ImConnectionIdentity, ImConnector, ImConnectorEvent,
+    ImCustomAnswerSupport, ImDelivery, ImDeliveryBinding, ImDeliveryPayload, ImDeliveryReceipt,
+    ImErrorCode, ImFreeTextCapability, ImIntegrationError, ImInteractionCapabilities, ImLocale,
+    ImMessageUpdateMode, ImMultiChoiceCapability, ImObservedBinding, ImOptionLimit, ImOwnerProfile,
     ResolvedImChannelConfig,
 };
 
@@ -123,6 +123,8 @@ impl ActiveApi {
 struct FeishuResponseHandle {
     generation: u64,
     request_id: String,
+    /// The reply speaks the language of the session that received the click.
+    locale: ImLocale,
 }
 
 /// Immutable per-connection facts shared with event handler tasks.
@@ -131,6 +133,9 @@ struct SessionContext {
     generation: u64,
     app_id: Arc<str>,
     owner_open_id: Arc<str>,
+    /// Owner display name, resolved once per `connect`; unset when the
+    /// contact API is not granted or the lookup failed.
+    owner_display_name: Arc<std::sync::OnceLock<String>>,
     locale: ImLocale,
     events: mpsc::Sender<ImConnectorEvent>,
 }
@@ -275,6 +280,23 @@ impl FeishuConnector {
                 bot_id: api.app_id().to_owned(),
                 display_name: bot.app_name,
             });
+            // Optional profile scope: a failed lookup only leaves the binding
+            // without a name, it never fails the connection.
+            let name = tokio::select! {
+                _ = cancellation.cancelled() => return Ok(()),
+                name = api.user_display_name(&context.owner_open_id) => name,
+            };
+            match name {
+                Ok(name) => {
+                    let _ = context.owner_display_name.set(name);
+                }
+                Err(error) => tracing::warn!(
+                    generation = context.generation,
+                    error_code = error.code.as_str(),
+                    platform_code = ?error.platform_code,
+                    "Feishu owner display name unavailable"
+                ),
+            }
         }
         // Every attempt pulls a fresh endpoint: the URL embeds a one-time ticket.
         let endpoint = tokio::select! {
@@ -306,6 +328,13 @@ impl FeishuConnector {
             .send(ImConnectorEvent::Connected {
                 generation: context.generation,
                 identity: identity.clone().ok_or_else(network_unavailable)?,
+                owner: context
+                    .owner_display_name
+                    .get()
+                    .map(|display_name| ImOwnerProfile {
+                        actor_id: context.owner_open_id.to_string(),
+                        display_name: display_name.clone(),
+                    }),
             })
             .await
             .map_err(|_| ImIntegrationError::permanent(ImErrorCode::NetworkUnavailable))?;
@@ -380,6 +409,7 @@ async fn dispatch_card_action(
     let response_context = ImActionResponseContext::new(FeishuResponseHandle {
         generation: context.generation,
         request_id: request_id.clone(),
+        locale: context.locale,
     });
     if context
         .events
@@ -502,6 +532,7 @@ async fn observe_binding(event: Value, context: &SessionContext) -> FeishuAckRes
                 conversation_id: event.message.chat_id,
                 actor_id: sender,
                 is_private: event.message.chat_type == CHAT_TYPE_P2P,
+                display_name: context.owner_display_name.get().cloned(),
             },
         })
         .await;
@@ -583,6 +614,7 @@ impl ImConnector for FeishuConnector {
             generation,
             app_id: Arc::from(app_id),
             owner_open_id: Arc::from(owner_open_id),
+            owner_display_name: Arc::default(),
             locale: config.locale,
             events,
         };
@@ -669,14 +701,31 @@ impl ImConnector for FeishuConnector {
         let Some(handle) = context.downcast_ref::<FeishuResponseHandle>() else {
             return Err(ImIntegrationError::permanent(ImErrorCode::ProtocolInvalid));
         };
-        let locale = self
-            .active_api()
-            .map_or(ImLocale::ZhCn, |active| active.locale);
-        let response = action_reply(&action_response, locale, &self.token_codec);
-        // A missing slot means the platform deadline or connection generation
-        // expired first. The persisted domain result remains authoritative.
-        let _ = self.send_action_response(handle.generation, &handle.request_id, response);
-        Ok(())
+        let response = action_reply(&action_response, handle.locale, &self.token_codec);
+        if self.send_action_response(handle.generation, &handle.request_id, response) {
+            return Ok(());
+        }
+        // The platform deadline or connection generation expired first and the
+        // user saw "Processing". An accepted or settled result reaches the card
+        // through the outbox resolution PATCH; a rejection has no durable
+        // record, so its reason is sent to the chat instead.
+        let (ImActionResponseState::Rejected(code), Some(delivery)) =
+            (action_response.state, &action_response.delivery)
+        else {
+            return Ok(());
+        };
+        let active = self.active_api()?;
+        let content = late_rejection_card_content(delivery, code, handle.locale);
+        active
+            .request(active.api.create_message(
+                &delivery.destination.destination_id,
+                MSG_TYPE_INTERACTIVE,
+                &content,
+                // One message per rejected click, deduplicated across retries.
+                &format!("{}:rejected:{}", delivery.delivery_id, handle.request_id),
+            ))
+            .await
+            .map(|_| ())
     }
 
     async fn update_message(

@@ -371,7 +371,7 @@ const ImChannelEditor = memo(function ImChannelEditor({
                     {channel.binding ? (
                       <div className="min-w-0 space-y-1">
                         <dt className="text-muted-foreground">{t('settings.im.receiverAccount')}</dt>
-                        <dd className="truncate text-foreground">{channel.binding.displayName}</dd>
+                        <dd className="truncate text-foreground">{channel.binding.displayName ?? t('settings.im.privateBindingUnnamed')}</dd>
                       </div>
                     ) : null}
                     {channel.publicIdentity ? (
@@ -782,7 +782,7 @@ function ImScanDialog({
             <div className="w-full space-y-4" data-im-scan-consent>
               <p className="text-sm font-medium">{t('settings.im.channels.feishu.permissions.title')}</p>
               <ul className="list-disc space-y-2 pl-5 text-sm text-muted-foreground">
-                {(['send', 'receive', 'update'] as const).map((permission) => (
+                {(['send', 'receive', 'update', 'profile'] as const).map((permission) => (
                   <li key={permission}>{t(`settings.im.channels.feishu.permissions.${permission}`)}</li>
                 ))}
               </ul>

@@ -2605,6 +2605,7 @@
       "receiverAccount": "Recipient account",
       "robotName": "Bot name",
       "privateBinding": "Private chat: {{name}}",
+      "privateBindingUnnamed": "Private chat bound",
       "notificationKinds": "Notification types",
       "notificationGroups": {
         "needsAction": "Needs your action",
@@ -2652,6 +2653,7 @@
             "send": "Send you messages",
             "receive": "Read private messages you send to the bot",
             "update": "Update cards sent by the bot",
+            "profile": "Read your name to show the receiving account",
             "confirm": "Agree and generate QR code"
           },
           "resetBinding": {

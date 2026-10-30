@@ -2605,6 +2605,7 @@
       "receiverAccount": "受信アカウント",
       "robotName": "ボット名",
       "privateBinding": "プライベートチャット: {{name}}",
+      "privateBindingUnnamed": "1 対 1 のチャットにバインド済み",
       "notificationKinds": "通知の種類",
       "notificationGroups": {
         "needsAction": "対応が必要",
@@ -2652,6 +2653,7 @@
             "send": "あなたにメッセージを送信する",
             "receive": "あなたがボットに送る個別メッセージを読む",
             "update": "ボットが送信したカードを更新する",
+            "profile": "受信アカウントの表示のために名前を読み取る",
             "confirm": "同意して QR コードを生成"
           },
           "resetBinding": {

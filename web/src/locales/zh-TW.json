@@ -2605,6 +2605,7 @@
       "receiverAccount": "接收帳號",
       "robotName": "機器人名稱",
       "privateBinding": "一對一私聊：{{name}}",
+      "privateBindingUnnamed": "已綁定一對一私聊",
       "notificationKinds": "通知類型",
       "notificationGroups": {
         "needsAction": "需要你處理",
@@ -2652,6 +2653,7 @@
             "send": "傳送訊息給你",
             "receive": "讀取你傳給機器人的私訊",
             "update": "更新機器人傳送的卡片",
+            "profile": "讀取你的姓名，用於顯示接收帳號",
             "confirm": "同意並產生 QR Code"
           },
           "resetBinding": {
