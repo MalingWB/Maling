@@ -20,7 +20,7 @@ use crate::frontmatter::{
 use crate::prompts::{
     LocalizedText, PROFILE_ACCEPT, PROFILE_CICD, PROFILE_CLEAN, PROFILE_DEV, PROFILE_DEV_TEST,
     PROFILE_GRILLME, PROFILE_INTERVIEW, PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT,
-    PROFILE_OVERLAY_REQUIREMENT_IDENTITY, PROFILE_PLAN, PROFILE_REVIEW, PROFILE_TEST,
+    PROFILE_OVERLAY_REQUIREMENT_IDENTITY, PROFILE_PLAN, PROFILE_REVIEW, PROFILE_TEST, PROFILE_WEAPM,
     profile_template_validation_contexts, prompt_by_language, render,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
@@ -404,6 +404,17 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
         summary: LocalizedProfileText::zh_en(
             "CI/CD 角色，使用 WeTest 完成构建，并与用户交互确认按构建或包名部署。",
             "CI/CD role for WeTest builds and interactive deployment from a build or by package name.",
+        ),
+        dynamic_template: false,
+    },
+    DefaultProfileSeed {
+        key: "weapm",
+        required_capability: Some(ProfileChannelCapability::Weapm),
+        id: "pf-builtin-weapm",
+        name: LocalizedProfileText::zh_en("WeAPM", "WeAPM"),
+        summary: LocalizedProfileText::zh_en(
+            "WeAPM 角色，使用 weapm CLI 查询调用链 Trace 与日志 Log，定位慢调用、错误与超时。",
+            "WeAPM role for querying traces and logs with the weapm CLI to locate slow calls, errors, and timeouts.",
         ),
         dynamic_template: false,
     },
@@ -946,6 +957,7 @@ fn built_in_profile_content(key: &str, language: DesktopLanguage) -> String {
         "review" => prompt_by_language(language, PROFILE_REVIEW),
         "test" => prompt_by_language(language, PROFILE_TEST),
         "cicd" => prompt_by_language(language, PROFILE_CICD),
+        "weapm" => prompt_by_language(language, PROFILE_WEAPM),
         "accept" => prompt_by_language(language, PROFILE_ACCEPT),
         "cleanup" => prompt_by_language(language, PROFILE_CLEAN),
         "interview" => prompt_by_language(language, PROFILE_INTERVIEW),
@@ -1529,9 +1541,13 @@ profile body
     fn channel_profile_catalog_preserves_shared_roles_and_restricts_cicd() {
         for channel in ["default", "wb", "enterprise", ""] {
             let profiles = default_profile_seeds_for_channel(channel).collect::<Vec<_>>();
-            assert_eq!(profiles.len(), if channel == "wb" { 10 } else { 9 });
+            assert_eq!(profiles.len(), if channel == "wb" { 11 } else { 9 });
             assert_eq!(
                 profiles.iter().any(|seed| seed.id == "pf-builtin-cicd"),
+                channel == "wb"
+            );
+            assert_eq!(
+                profiles.iter().any(|seed| seed.id == "pf-builtin-weapm"),
                 channel == "wb"
             );
             for seed in DEFAULT_PROFILE_SEEDS

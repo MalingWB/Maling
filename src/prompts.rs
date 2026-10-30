@@ -90,6 +90,7 @@ pub const PROFILE_DEV_TEST: LocalizedText = localized_prompt!("profile/dev-test.
 pub const PROFILE_REVIEW: LocalizedText = localized_prompt!("profile/review.md");
 pub const PROFILE_TEST: LocalizedText = localized_prompt!("profile/test.md");
 pub const PROFILE_CICD: LocalizedText = localized_prompt_zh_en!("profile/cicd.md");
+pub const PROFILE_WEAPM: LocalizedText = localized_prompt_zh_en!("profile/weapm.md");
 pub const PROFILE_ACCEPT: LocalizedText = localized_prompt!("profile/accept.md");
 pub const PROFILE_CLEAN: LocalizedText = localized_prompt!("profile/clean.md");
 pub const PROFILE_INTERVIEW: LocalizedText = localized_prompt!("profile/interview.md");
@@ -162,6 +163,8 @@ pub const PROFILE_TEST_ZH_CN: &str = PROFILE_TEST.zh_cn;
 pub const PROFILE_TEST_EN: &str = PROFILE_TEST.en;
 pub const PROFILE_CICD_ZH_CN: &str = PROFILE_CICD.zh_cn;
 pub const PROFILE_CICD_EN: &str = PROFILE_CICD.en;
+pub const PROFILE_WEAPM_ZH_CN: &str = PROFILE_WEAPM.zh_cn;
+pub const PROFILE_WEAPM_EN: &str = PROFILE_WEAPM.en;
 pub const PROFILE_ACCEPT_ZH_CN: &str = PROFILE_ACCEPT.zh_cn;
 pub const PROFILE_ACCEPT_EN: &str = PROFILE_ACCEPT.en;
 pub const PROFILE_CLEAN_ZH_CN: &str = PROFILE_CLEAN.zh_cn;
@@ -243,6 +246,7 @@ pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
     ("profile/review.md", PROFILE_REVIEW),
     ("profile/test.md", PROFILE_TEST),
     ("profile/cicd.md", PROFILE_CICD),
+    ("profile/weapm.md", PROFILE_WEAPM),
     ("profile/accept.md", PROFILE_ACCEPT),
     ("profile/clean.md", PROFILE_CLEAN),
     ("profile/interview.md", PROFILE_INTERVIEW),

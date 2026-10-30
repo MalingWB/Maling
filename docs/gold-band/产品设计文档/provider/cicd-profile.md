@@ -20,7 +20,7 @@
 - `src/prompts/<language>/profile/cicd.md` 保持渠道中立，只描述 CI/CD 能力、输入和边界；CI/CD 仅对启用 `Cicd` 能力的渠道可见。其它渠道能力 overlay 同样不把渠道名写入文件名、标题或正文，由能力矩阵决定是否追加。
 - 渠道值在 core crate 只有一个读取点：`src/channel.rs` 的 `RELEASE_CHANNEL`（编译期 `option_env!("GOLD_BAND_RELEASE_CHANNEL")`，缺省 `default`）。桌面渠道身份 `DesktopChannelConfig.channel` 复用同一常量，`src-tauri/build.rs` 继续校验 `configs/channels/<channel>.json` 存在且 `channel` 字段一致；同一事实不再由两个 crate 各自解析。不依赖可变运行时环境、用户设置、前端过滤或名称判断。
 - 桌面 crate 保留一条跨 crate 一致性断言：构建脚本注入的渠道必须等于 core crate 编译期常量，两侧派生逻辑分叉时测试失败。
-- 角色列表、内置 ID 查找和默认 Profile ID 映射共用同一过滤后的目录。`wb` 提供 10 个内置角色，`default` 及其他渠道提供 9 个公共角色；未知渠道不提供 CI/CD。
+- 角色列表、内置 ID 查找和默认 Profile ID 映射共用同一过滤后的目录。`wb` 提供 11 个内置角色（含 CI/CD 与 WeAPM），`default` 及其他渠道提供 9 个公共角色；未知渠道不提供 CI/CD 或 WeAPM。
 - 工作流角色解析及节点执行前读取复用该目录。非 `wb` 渠道引用此内置 ID 时沿用现有角色不存在的处理，不增加替代角色、兼容层或隐式回退。
 
 ## 能力与参数
