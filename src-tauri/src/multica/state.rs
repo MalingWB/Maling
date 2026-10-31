@@ -111,11 +111,18 @@ pub struct ActiveRemoteRun {
     /// claim 时已链接的 DPMS story id（`system_story_id`，M5-cl）：Some = 已链接（rerun 场景，
     /// claim 后已种进任务记忆），终态不再回写；None = 未链接。
     pub claim_system_story_id: Option<i64>,
+    /// 最近一次已发送（成功或 409）的 DPMS 回写 body（M5-cm 早回写去重的事实源）：与新组装
+    /// body 相同 → 跳过（服务端已持有）；不同（M5-cn 后 body 只含 story id，即 run 内创建了
+    /// 新 story）→ 再发。发送网络失败不写（下一节点/turn/终态边界自然重试）。仅内存，随 run
+    /// 生命周期清理。
+    pub last_dpms_report: Option<crate::multica::client::ReportDpmsStoryRequest>,
 }
 
 /// 任务记忆中 DPMS story 身份的键名（M5-cl 回传对接）。角色创建成功后写入（`storyId`，与
 /// CICD 角色/DPMS 角色定义的共享参数记忆契约一致）；claim 播种与终态回写读同一键——单一
-/// 事实源，键名集中定义避免两处字符串漂移。
+/// 事实源，键名集中定义避免两处字符串漂移。M5-cn 契约定版后这是回写读取的**唯一** DPMS
+/// 记忆键（body 只回传 story id 关联；字段镜像由 multica 从 DPMS 拉取，其余 `dpms.*` 键
+/// 是角色自身预填/展示用，码灵不消费）。
 pub const DPMS_STORY_MEMORY_KEY: &str = "storyId";
 
 /// 门控命中的 run 模式字面量（`ConversationCreateInputVm.run_mode` 的 "direct" 值，
@@ -453,6 +460,7 @@ mod tests {
             run_mode: "direct".into(),
             dpms_required: false,
             claim_system_story_id: None,
+            last_dpms_report: None,
         }
     }
 

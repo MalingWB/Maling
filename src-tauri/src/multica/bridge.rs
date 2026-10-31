@@ -41,10 +41,14 @@ use gold_band::runtime::WorkerRefState;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tracing::{debug, info, warn};
 
-use crate::multica::client::{MULTICA_ISSUE_DONE_STATUS, MulticaClient};
+use crate::multica::client::{
+    ReportDpmsStoryRequest, MULTICA_ISSUE_DONE_STATUS, MulticaClient,
+};
 use crate::multica::config::{get_pat, multica_base_url, multica_settings};
 use crate::multica::handoff;
-use crate::multica::state::{ActiveRemoteRun, DPMS_STORY_MEMORY_KEY, SharedMulticaState};
+use crate::multica::state::{
+    ActiveRemoteRun, DPMS_STORY_MEMORY_KEY, SharedMulticaState,
+};
 use crate::remote::{REMOTE_SOURCE_SETTINGS_UPDATED_EVENT, REMOTE_TASKS_UPDATED_EVENT};
 use crate::state::{DesktopContext, DesktopState};
 
@@ -268,6 +272,7 @@ pub fn create_multica_subscriber(
                         remote_task_id,
                         run.clone(),
                         attempt_dir.clone(),
+                        outcome,
                     )
                     .await;
                 });
@@ -402,13 +407,24 @@ fn begin_completion_for_run(app: &AppHandle, remote_task_id: &str, run: &ActiveR
 
 // ── 异步处理（spawn 内执行）────────────────────────────────────────────────────
 
-/// NodeCompleted：采 session_id → 变更则 pin + 落 task_conversations。
+/// NodeCompleted：采 session_id → 变更则 pin + 落 task_conversations。M5-cm 起节点成功边界
+/// 兼任 DPMS 早回写钩子（workflow/auto 的 DPMS 创建节点成功即回写，不等终态）。
 async fn handle_node_completed(
     app: AppHandle,
     remote_task_id: String,
     run: ActiveRemoteRun,
     attempt_dir: String,
+    outcome: String,
 ) {
+    // M5-cm 早回写（节点成功边界）：故事已写任务记忆即回写，平台立即可见。失败/取消节点无
+    // 产出语义不触发；与 pin 逻辑相互独立（worker-ref 未就绪不阻断回写），守卫+去重在
+    // [`report_dpms_story_if_changed`] 内。direct 任务同 turn 也有 turn 边界钩子，重复触发由
+    // `last_dpms_report` 去重吸收。
+    if outcome == NODE_COMPLETED_OUTCOME_SUCCESS
+        && let (Some(context), Some(shared)) = (desktop_context(&app), shared_multica_state(&app))
+    {
+        report_dpms_story_if_changed(&context, &shared, &remote_task_id, &run).await;
+    }
     let Some((session_id, work_dir)) = read_worker_ref_session(&attempt_dir) else {
         return; // worker-ref 未就绪/非 ACP 节点 → 跳过。
     };
@@ -545,7 +561,6 @@ async fn execute_complete_run(
                 Some(block.as_str()),
                 session_id.as_deref(),
                 work_dir.as_deref(),
-                dpms_story_to_report(&context, &run),
             )
             .await;
         }
@@ -567,10 +582,15 @@ async fn execute_complete_run(
                 completion_output.as_deref(),
                 session_id.as_deref(),
                 work_dir.as_deref(),
-                dpms_story_to_report(&context, &run),
             )
             .await;
         }
+    }
+    // M5-cm 终态兜底回写：早回写已覆盖中途创建，此处兜底「最后一轮才写记忆」与「中途回写
+    // 网络失败」。放在 finalize（清 active_runs）之前——run 仍在飞，去重与「已收尾不再补发」
+    // 判定都成立；扣留（Withhold）分支提前 return，非终态、由 turn 边界钩子负责。
+    if let Some(shared) = shared_multica_state(app) {
+        report_dpms_story_if_changed(&context, &shared, remote_task_id, &run).await;
     }
     finalize_terminal(app, remote_task_id, &run, PendingUpdate::ClearOnSuccess);
     // 远程任务终态（complete/fail）已上报 + 本地索引已清 → 通知前端刷新 sidebar。
@@ -601,10 +621,11 @@ async fn handle_run_failed(
     if let Err(e) = client.fail_task(&remote_task_id, &error, &reason).await {
         warn!(task = %remote_task_id, %e, "multica fail_task failed");
     }
-    // M5-cl：失败路径同样回写 DPMS story——角色可能已在失败前创建需求并写入记忆，链接事实
-    // 照样要落（端点无任务状态前置校验）；fail_task 失败不影响（回写幂等，rerun 载荷收敛）。
-    if let Some(story_id) = dpms_story_to_report(&context, &run) {
-        report_dpms_story(&client, &remote_task_id, &run, story_id).await;
+    // M5-cl 建立失败路径回写；M5-cm 改走统一入口：角色可能已在失败前创建需求并写入记忆，
+    // 链接事实照样要落（端点无任务状态前置校验）；fail_task 失败不影响（回写幂等，rerun 载荷
+    // 收敛）。finalize（清 active_runs）之前执行，去重与「已收尾不再补发」判定成立。
+    if let Some(shared) = shared_multica_state(&app) {
+        report_dpms_story_if_changed(&context, &shared, &remote_task_id, &run).await;
     }
     finalize_terminal(&app, &remote_task_id, &run, PendingUpdate::AddOnFailure);
     emit_remote_tasks_updated(&app);
@@ -620,9 +641,9 @@ async fn handle_run_failed(
 /// 任务终态已上报，issue 状态推进不阻断完成（issue 保持原状，server 扫描器/用户兜底）；
 /// issue 关联缺失（issue_id 为空，如非 issue 来源任务）则跳过流转。
 ///
-/// M5-cl：`dpms_story_id` = 终态前从任务记忆提取的 DPMS story id（[`dpms_story_to_report`]，
-/// 调用方在认领完成路径后、进入本函数前取值）。issue done 之后回写——同为「终态后尽力而为」
-/// 步骤，失败仅 warn 不影响任务终态（服务端 `dpms_story_missing` 对账告警兜底）。
+/// M5-cl 曾在此内联 DPMS 回写（issue done 之后顺带）；M5-cm 起回写提前到产出边界（节点成功/
+/// turn 边界）并由各终态路径在 finalize 前兜底调用 [`report_dpms_story_if_changed`]——故事链接
+/// 事实独立于任务终态上报，不再挂在 complete 之后。
 async fn complete_with_issue_done(
     client: &MulticaClient,
     remote_task_id: &str,
@@ -631,7 +652,6 @@ async fn complete_with_issue_done(
     completion_output: Option<&str>,
     session_id: Option<&str>,
     work_dir: Option<&str>,
-    dpms_story_id: Option<i64>,
 ) {
     if let Err(e) = client
         .complete_task(
@@ -658,15 +678,17 @@ async fn complete_with_issue_done(
             "multica update_issue_status(done) failed (task already completed; ignored)"
         );
     }
-    if let Some(story_id) = dpms_story_id {
-        report_dpms_story(client, remote_task_id, run, story_id).await;
-    }
 }
 
-// ── M5-cl：DPMS 需求回写（complete/fail 终态两路各一次）────────────────────────
+// ── DPMS 需求回写（M5-cl 建立；M5-cm 早回写时机前移；M5-cn 载荷收缩为单字段关联）──
 //
-// 分工铁律：角色会话只写任务记忆（`storyId` 等），HTTP 回写由 daemon 侧（码灵中介，自身 PAT）
-// 执行。触发条件取 claim 快照（领取即定版）：dpms_required=true 且当时未链接 system_story_id。
+// 分工铁律：角色会话只写任务记忆（`storyId` 等），HTTP 回写由 daemon 侧（码灵中介，
+// 自身 PAT）执行。触发条件取 claim 快照（领取即定版）：dpms_required=true 且当时未链接
+// system_story_id。时机（M5-cm）：**早回写**——workflow/auto 节点成功边界、direct turn 边界
+// 即回写（产出后平台立即可见，不等终态）；终态路径（complete×3 / fail / cancel）保留为兜底，
+// 覆盖「最后一轮才创建」「中途发送网络失败」与「失败/取消前已创建」。
+// 载荷（M5-cn 契约定版）：只回传 `dpms_story_id` 关联——字段镜像（链接/负责人/发布计划/
+// 产品）由 multica 从 DPMS 拉取，码灵不搬运值（搬运时刻 ≠ 查看时刻，推送注定陈旧）。
 
 /// 回写触发判定（纯函数）：claim 快照 `dpms_required` 且当时未链接（`claim_system_story_id`
 /// 为 None）且 issue 关联。缺键/false（旧 server 灰度）/ 非 issue 任务 → 不触发，全程无 DPMS 语义。
@@ -679,34 +701,56 @@ fn should_report_dpms_story(run: &ActiveRemoteRun) -> bool {
             .is_some_and(|s| !s.trim().is_empty())
 }
 
-/// 任务记忆快照中可回写的 DPMS story id（纯函数）：键 [`DPMS_STORY_MEMORY_KEY`] 的值解析为
-/// 正整数才回传——非数字/非正（角色未真正写入或写坏）一律 None，不做启发式修复。
-fn dpms_story_id_from_snapshot(snapshot: &gold_band::memory::Snapshot) -> Option<i64> {
-    let record = snapshot
-        .task
-        .iter()
-        .find(|record| record.entry.key == DPMS_STORY_MEMORY_KEY)?;
-    record
-        .entry
-        .value
-        .trim()
-        .parse::<i64>()
-        .ok()
-        .filter(|id| *id > 0)
+/// 守卫未命中的原因描述（可观测用）：三条件各自独立短路，报告首个未满足项——
+/// 「为何没回写」一眼可判（M5-cn：此前该分支完全静默，内网排查需日志往返）。
+fn dpms_report_skip_reason(run: &ActiveRemoteRun) -> Option<&'static str> {
+    if !run.dpms_required {
+        Some("dpms_required=false in claim snapshot")
+    } else if run.claim_system_story_id.is_some() {
+        Some("issue already linked at claim (system_story_id present)")
+    } else if !run
+        .issue_id
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        Some("issue_id missing")
+    } else {
+        None
+    }
 }
 
-/// 终态回写的取值：触发条件命中时读任务记忆提取 story id。读失败/键缺失/不可解析 → None
-/// （warn 可观测；None = 不回写——角色未创建或未写记忆时静默跳过，服务端
-/// `dpms_story_missing` 对账告警兜底「任务已终态但从未回写」的运营缺口）。
+/// 任务记忆快照 → 回写 body（纯函数，M5-cn 契约定版）：`storyId` 解析为正整数才可回写
+/// （键缺失/非数字/非正 → None 不回写，不做启发式修复）。body 只含 story id——码灵只回传
+/// **关联**，字段镜像（链接/负责人/发布计划/产品）由 multica 从 DPMS 拉取，码灵不搬运值。
+fn dpms_report_body_from_snapshot(
+    snapshot: &gold_band::memory::Snapshot,
+) -> Option<ReportDpmsStoryRequest> {
+    let story_id = |key: &str| {
+        snapshot
+            .task
+            .iter()
+            .find(|record| record.entry.key == key)
+            .map(|record| record.entry.value.trim())
+            .and_then(|value| value.parse::<i64>().ok())
+            .filter(|id| *id > 0)
+    };
+    Some(ReportDpmsStoryRequest {
+        dpms_story_id: story_id(DPMS_STORY_MEMORY_KEY)?,
+    })
+}
+
+/// 回写取值：读任务记忆组装 body。读失败/`storyId` 缺失或不可解析 → None（warn 可观测；
+/// None = 不回写——角色未创建或未写记忆时静默跳过，服务端 `dpms_story_missing` 对账告警
+/// 兜底「任务已终态但从未回写」的运营缺口）。
 ///
-/// 记忆属**工作区项目**：调用方（bridge 终态收尾 / 手动取消）只持 home context，此处按
-/// run 快照 `local_project_id` → home StateConfig 反查工作区路径 → 构造绑定该目录的 App
-/// （home App 的 `paths.project_id` ≠ 任务项目，直接用会被 `MemoryService` locator 校验
-/// 拒绝——与 seeding/teardown 同一解析路径，单一事实源）。
-pub(crate) fn dpms_story_to_report(context: &DesktopContext, run: &ActiveRemoteRun) -> Option<i64> {
-    if !should_report_dpms_story(run) {
-        return None;
-    }
+/// 记忆属**工作区项目**：调用方（bridge 各边界）只持 home context，此处按 run 快照
+/// `local_project_id` → home StateConfig 反查工作区路径 → 构造绑定该目录的 App（home App 的
+/// `paths.project_id` ≠ 任务项目，直接用会被 `MemoryService` locator 校验拒绝——与
+/// seeding/teardown 同一解析路径，单一事实源）。
+fn read_dpms_report_body(
+    context: &DesktopContext,
+    run: &ActiveRemoteRun,
+) -> Option<ReportDpmsStoryRequest> {
     let workspace_path = context
         .app()
         .load_state()
@@ -736,7 +780,7 @@ pub(crate) fn dpms_story_to_report(context: &DesktopContext, run: &ActiveRemoteR
             error
         })
         .ok()?;
-    let story_id = MemoryService::new(
+    MemoryService::new(
         workspace_app.paths.clone(),
         &run.local_project_id,
         Some(run.local_task_id.clone()),
@@ -751,39 +795,75 @@ pub(crate) fn dpms_story_to_report(context: &DesktopContext, run: &ActiveRemoteR
         error
     })
     .ok()
-    .and_then(|snapshot| dpms_story_id_from_snapshot(&snapshot));
-    if story_id.is_none() {
-        // 触发条件命中但无可回写值（角色未写记忆/值不可解析）：可观测，便于区分「没建」与「回写失败」。
+    .and_then(|snapshot| dpms_report_body_from_snapshot(&snapshot))
+}
+
+/// 回写统一入口（早回写钩子与终态兜底共用，M5-cm 建立）：守卫 → 组装 body → 与在飞 run 的
+/// `last_dpms_report` 比较 → 不同才 POST → 成功/409 后记录。body 只含 story id（M5-cn）。
+///
+/// 去重：相同 body 跳过（服务端已持有）；不同（run 内创建了新 story）再发。409（已链接异
+/// id，服务端不落任何字段）同样记录 body：再发只会再 409，记录即「不再为该 body 重试」。
+/// 网络失败不记录，下一边界（节点/turn/终态）自然重试，终态是最后机会。
+///
+/// 并发容忍：比较与发送不在同一临界区（锁不覆盖网络调用）——同 run 的节点与 turn 钩子并发
+/// 双发由服务端幂等（同 id 重放 200）吸收，最坏一次冗余 POST。run 已不在飞（他方终态收尾
+/// 已清映射）→ 比较时即整体跳过。
+pub(crate) async fn report_dpms_story_if_changed(
+    context: &DesktopContext,
+    shared: &SharedMulticaState,
+    remote_task_id: &str,
+    run: &ActiveRemoteRun,
+) {
+    if let Some(reason) = dpms_report_skip_reason(run) {
+        debug!(
+            task = %remote_task_id,
+            reason,
+            "multica dpms story report: guard skipped"
+        );
+        return;
+    }
+    let Some(body) = read_dpms_report_body(context, run) else {
+        // 触发条件命中但无可回写值（角色未写记忆/storyId 不可解析）：可观测，区分「没建」与「回写失败」。
         debug!(
             task = %run.local_task_id,
             "multica dpms story report: no reportable storyId in task memory"
         );
+        return;
+    };
+    // 锁内只做比较（run 不在飞 = 他方已收尾 → 整体退出，防对已终态任务补发）。
+    let unchanged = shared
+        .lock()
+        .expect("multica state lock")
+        .active_runs
+        .get(remote_task_id)
+        .is_some_and(|live| live.last_dpms_report.as_ref() == Some(&body));
+    if unchanged {
+        return;
     }
-    story_id
-}
-
-/// 回写执行（complete/fail 两路共用）：issue 关联守卫 + 单次 POST。失败仅 warn——任务终态已
-/// 上报，回写不阻断、不重试（网络瞬时错由 client 内一般重试兜底；409 = 已链接异 id，服务端
-/// 已把 dpms_required 置 false，下次 claim 载荷条件自然失效，行为等价「永不再发」）。
-pub(crate) async fn report_dpms_story(
-    client: &MulticaClient,
-    remote_task_id: &str,
-    run: &ActiveRemoteRun,
-    story_id: i64,
-) {
     let Some(issue) = run.issue_id.as_deref().filter(|s| !s.trim().is_empty()) else {
         return;
     };
-    if let Err(e) = client
-        .report_issue_dpms_story(&run.workspace_id, issue, story_id)
+    let Some(client) = multica_client(context) else {
+        return;
+    };
+    match client
+        .report_issue_dpms_story(&run.workspace_id, issue, &body)
         .await
     {
-        warn!(
+        Ok(()) | Err(crate::multica::error::MulticaError::IssueLinkConflict) => {
+            // 记录已发 body（成功与 409 都不再为同一 body 重发）；run 已被终态收尾清出则放弃记录。
+            if let Ok(mut state) = shared.lock() {
+                if let Some(live) = state.active_runs.get_mut(remote_task_id) {
+                    live.last_dpms_report = Some(body);
+                }
+            }
+        }
+        Err(e) => warn!(
             task = %remote_task_id,
             issue = %issue,
             %e,
-            "multica report_issue_dpms_story failed (terminal already reported; ignored)"
-        );
+            "multica report_issue_dpms_story failed (next boundary retries; terminal is last chance)"
+        ),
     }
 }
 
@@ -807,6 +887,12 @@ async fn handle_turn_completion_gate(
 ) {
     if !is_gated_direct_issue_run(&run) {
         return;
+    }
+    // M5-cm 早回写（direct 的 turn 边界）：direct 任务不经节点边界（无 NodeCompleted 钩子
+    // 语义），每个 turn 收尾即回写——故事在对话中途创建时平台立即可见，不等完成块出现。
+    // 无块（对话继续）路径也先回写再退出，扣留状态不影响。
+    if let (Some(context), Some(shared)) = (desktop_context(&app), shared_multica_state(&app)) {
+        report_dpms_story_if_changed(&context, &shared, &remote_task_id, &run).await;
     }
     // final 口径（最后一条 assistant 消息）：direct 门控的协议语义是块出现在「最终回复末尾」。
     let probe = attempt_dir
@@ -842,9 +928,13 @@ async fn handle_turn_completion_gate(
         Some(block.as_str()),
         session_id.as_deref(),
         work_dir.as_deref(),
-        dpms_story_to_report(&context, &run),
     )
     .await;
+    // M5-cm 终态兜底回写：覆盖「最后 turn 才写记忆」与「早回写网络失败」（finalize 清
+    // active_runs 之前执行）。
+    if let (Some(context), Some(shared)) = (desktop_context(&app), shared_multica_state(&app)) {
+        report_dpms_story_if_changed(&context, &shared, &remote_task_id, &run).await;
+    }
     finalize_terminal(&app, &remote_task_id, &run, PendingUpdate::ClearOnSuccess);
     emit_remote_tasks_updated(&app);
 }
@@ -1645,10 +1735,11 @@ mod tests {
             run_mode: "direct".into(),
             dpms_required: false,
             claim_system_story_id: None,
+            last_dpms_report: None,
         }
     }
 
-    // ===== M5-cl：DPMS 需求回写触发条件与取值 =====
+    // ===== DPMS 需求回写（M5-cl 触发条件；M5-cm 载荷组装与守卫；M5-cn 单字段契约 + 守卫可观测）=====
 
     #[test]
     fn should_report_dpms_story_requires_all_three_claim_conditions() {
@@ -1676,9 +1767,10 @@ mod tests {
     }
 
     #[test]
-    fn dpms_story_id_from_snapshot_parses_only_positive_integers() {
-        // 键 storyId 的值解析为正整数才回传；非数字 / 非正 / 键缺失 → None（不做启发式修复，
-        // 服务端 dpms_story_missing 对账告警兜底）。
+    fn dpms_report_body_from_snapshot_maps_memory_keys_and_guards() {
+        // M5-cn 载荷组装：storyId 解析为正整数才可回写（键缺失/非数字/非正 → None 整体不回写，
+        // 不做启发式修复，服务端 dpms_story_missing 对账告警兜底）；body 只含 story id——
+        // 其余 dpms.* 记忆键是角色自身预填/展示用，码灵不消费（字段镜像由 multica 从 DPMS 拉取）。
         let snapshot = |records: Vec<Record>| Snapshot {
             project_id: "proj-1".into(),
             task_id: Some("local-task-1".into()),
@@ -1698,30 +1790,64 @@ mod tests {
             revision: "r1".into(),
         };
 
+        // storyId → dpms_story_id，两端 trim；记忆中的其他 DPMS 键（角色预填用）不进 wire body。
         assert_eq!(
-            dpms_story_id_from_snapshot(&snapshot(vec![record("storyId", "889001")])),
-            Some(889001)
-        );
-        // 值允许两端空白（角色写入形态宽松）；其余键不干扰。
-        assert_eq!(
-            dpms_story_id_from_snapshot(&snapshot(vec![
+            dpms_report_body_from_snapshot(&snapshot(vec![
+                record("storyId", " 889001 "),
                 record("storyName", "登录修复"),
-                record("storyId", " 777001 ")
+                record("dpms.devUser", "张三"),
+                record("dpms.productId", "889121"),
             ])),
-            Some(777001)
+            Some(ReportDpmsStoryRequest {
+                dpms_story_id: 889001,
+            })
         );
-        // 非数字 / 零 / 负数 → None。
+        // storyId 非数字 / 零 / 负数 / 键缺失 → 整体 None（不回写）。
         for bad in ["abc", "88.5", "0", "-5", ""] {
             assert_eq!(
-                dpms_story_id_from_snapshot(&snapshot(vec![record("storyId", bad)])),
+                dpms_report_body_from_snapshot(&snapshot(vec![record("storyId", bad)])),
                 None,
                 "值 {bad:?} 必须判不可回写"
             );
         }
-        // 键缺失（角色未写记忆）→ None。
         assert_eq!(
-            dpms_story_id_from_snapshot(&snapshot(vec![record("storyName", "登录修复")])),
+            dpms_report_body_from_snapshot(&snapshot(vec![record("storyName", "登录修复")])),
             None
+        );
+    }
+
+    #[test]
+    fn dpms_report_skip_reason_reports_first_unmet_guard() {
+        // M5-cn 可观测性：守卫未命中不再静默——三条件各自短路，报告首个未满足项，
+        // 「为何没回写」从日志一行可判（内网排查实例：dpms_required=false 需日志往返定位）。
+        let run = |dpms_required: bool,
+                   claim_system_story_id: Option<i64>,
+                   issue_id: Option<&str>|
+         -> ActiveRemoteRun {
+            let mut run = active_run(None, None);
+            run.dpms_required = dpms_required;
+            run.claim_system_story_id = claim_system_story_id;
+            run.issue_id = issue_id.map(str::to_string);
+            run
+        };
+        // 全条件命中 → None（回写路径继续）。
+        assert_eq!(dpms_report_skip_reason(&run(true, None, Some("iss-1"))), None);
+        // 首个未满足项逐一报告（顺序即短路顺序）。
+        assert_eq!(
+            dpms_report_skip_reason(&run(false, None, Some("iss-1"))),
+            Some("dpms_required=false in claim snapshot")
+        );
+        assert_eq!(
+            dpms_report_skip_reason(&run(false, Some(1), None)),
+            Some("dpms_required=false in claim snapshot")
+        );
+        assert_eq!(
+            dpms_report_skip_reason(&run(true, Some(889001), Some("iss-1"))),
+            Some("issue already linked at claim (system_story_id present)")
+        );
+        assert_eq!(
+            dpms_report_skip_reason(&run(true, None, Some("  "))),
+            Some("issue_id missing")
         );
     }
 

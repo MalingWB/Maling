@@ -1688,6 +1688,7 @@ mod tests {
             run_mode: "direct".into(),
             dpms_required: false,
             claim_system_story_id: None,
+            last_dpms_report: None,
         };
         let vm = RemoteTaskVm::from_active_run("remote-9", &run, "proj-1");
         assert_eq!(vm.id, "remote-9");

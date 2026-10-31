@@ -482,13 +482,17 @@ struct UpdateIssueCompletionOutputRequest {
     completion_output: String,
 }
 
-/// DPMS 需求回写请求（M5-cl：`POST /api/daemon/issues/{id}/dpms-story` body）。
+/// DPMS 需求回写请求（M5-cl 建立；M5-cm 一度扩展为 7 字段载荷，M5-cn 收缩回单字段）。
 ///
-/// 码灵作为中介持 PAT 回写（角色只写任务记忆，不发 HTTP）。服务端 claim-once 幂等：同 id 重放
-/// 200；异 id 409（issue 已链接不同 story，服务端同事务把 `dpms_required` 两半置 false）。
-#[derive(Debug, Serialize)]
-struct ReportDpmsStoryRequest {
-    dpms_story_id: i64,
+/// 码灵作为中介持 PAT 回写（角色只写任务记忆，不发 HTTP）。契约（multica 2026-10-31 定版）：
+/// body 只带 `dpms_story_id` ——码灵只回传**关联**（本任务创建出的 story 是哪一个），
+/// 字段镜像（链接/负责人/发布计划/产品等）全部由 multica 从 DPMS 拉取，码灵不搬运值
+/// （搬运时刻 ≠ 查看时刻，值在 DPMS 后续会变，推送注定陈旧）。幂等：同 id 重放 200；
+/// 异 id 409（issue 已链接不同 story，不落任何字段）。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReportDpmsStoryRequest {
+    /// 必填：创建的 DPMS 系统需求 id（任务记忆 `storyId`）。
+    pub dpms_story_id: i64,
 }
 
 // ===== skill 同步 wire 类型（设计 `.claude/design/multica_skill/` §3-§5）=====
@@ -1532,29 +1536,30 @@ impl MulticaClient {
         .await
     }
 
-    /// `POST /api/daemon/issues/{issue_id}/dpms-story` —— DPMS 需求回写（M5-cl）。
+    /// `POST /api/daemon/issues/{issue_id}/dpms-story` —— DPMS 需求回写（M5-cl 建立；M5-cn 契约
+    /// 定版为单字段关联回传）。
     ///
-    /// 任务终态（complete/fail 两路）时，若 claim 快照命中回写条件（`dpms_required=true` 且
-    /// `system_story_id` 空）且任务记忆 `storyId` 可解析为正整数，把 DPMS 创建结果回写 issue。
-    /// 鉴权与其余 `/api/daemon/*` 相同（PAT bearer + `X-Workspace-ID`，服务端按 issue 所属 ws 做
-    /// `requireDaemonWorkspaceAccess` 范围校验）。响应体不消费（只关心 HTTP 状态）。
+    /// 调用方（bridge `report_dpms_story_if_changed`：早回写节点/turn 边界 + 终态兜底）在 claim 快照
+    /// 命中回写条件（`dpms_required=true` 且 `system_story_id` 空）且任务记忆 `storyId` 可解析为
+    /// 正整数时，把 story id 回传 issue（字段镜像由 multica 从 DPMS 拉取，码灵不回传确认字段）。
+    /// 鉴权与其余 `/api/daemon/*` 相同（PAT bearer + `X-Workspace-ID`，服务端按
+    /// issue 所属 ws 做 `requireDaemonWorkspaceAccess` 范围校验）。响应体不消费（只关心 HTTP 状态）。
     ///
-    /// 状态语义：200 = 落库（同 id 重放幂等）；**409 = 已链接不同 story**——本端点专属语义，
-    /// 映射为 [`MulticaError::IssueLinkConflict`]（不重试：服务端已把 `dpms_required` 置 false，
-    /// 调用方记日志即止）；400/404 = 参数/越权错误，同样不重试。走一般网络重试（仅 NetworkFailed）。
+    /// 状态语义：200 = 落库（同 id 重放幂等，带字段时刷新）；**409 = 已链接不同 story**——本端点
+    /// 专属语义，映射为 [`MulticaError::IssueLinkConflict`]（不重试：服务端不落任何字段，调用方记
+    /// 录已发 body 即止）；400/404 = 参数/越权错误，同样不重试。走一般网络重试（仅 NetworkFailed）。
     pub async fn report_issue_dpms_story(
         &self,
         workspace_id: &str,
         issue_id: &str,
-        dpms_story_id: i64,
+        body: &ReportDpmsStoryRequest,
     ) -> Result<(), MulticaError> {
         let path = format!("/api/daemon/issues/{issue_id}/dpms-story");
-        let body = ReportDpmsStoryRequest { dpms_story_id };
         self.with_network_retry("report_issue_dpms_story", || async {
             // body 丢弃：只关心 HTTP 状态。409 在本端点是「已链接异 id」而非 claim 冲突——
             // 译为 IssueLinkConflict，避免调用方误读（ClaimConflict 语义为任务领取冲突）。
             let _resp = self
-                .json_send(Method::POST, &path, Some(workspace_id), &body, None)
+                .json_send(Method::POST, &path, Some(workspace_id), body, None)
                 .await
                 .map_err(|e| match e {
                     MulticaError::ClaimConflict => MulticaError::IssueLinkConflict,
@@ -2194,21 +2199,30 @@ mod tests {
     }
 
     #[test]
-    fn report_dpms_story_request_serializes_only_story_id() {
-        // body 恰为 {"dpms_story_id": <正整数>}——服务端按 int64 正整数校验，多余键不发送。
-        let body = serde_json::to_value(ReportDpmsStoryRequest { dpms_story_id: 889001 })
-            .unwrap();
+    fn report_dpms_story_request_serializes_story_id_only() {
+        // M5-cn 契约定版：body 恰为 {"dpms_story_id": <正整数>}——码灵只回传关联，
+        // 字段镜像由 multica 从 DPMS 拉取。
+        let body = serde_json::to_value(ReportDpmsStoryRequest {
+            dpms_story_id: 889001,
+        })
+        .unwrap();
         assert_eq!(body, serde_json::json!({"dpms_story_id": 889001}));
     }
 
     #[tokio::test]
     async fn report_issue_dpms_story_posts_to_daemon_issue_endpoint() {
         // 验收：POST /api/daemon/issues/{id}/dpms-story，PAT bearer + X-Workspace-ID 路由，
-        // body 只带 dpms_story_id；200 即成功（响应体不消费）。
+        // body 单字段上送；200 即成功（响应体不消费）。
         let (base, handle) = mock_http_responses(vec![(200, r#"{"issue_id":"iss-1","dpms_story_id":889001,"story_id":889001}"#)]);
         let client = test_client(base);
         client
-            .report_issue_dpms_story("ws-1", "iss-1", 889001)
+            .report_issue_dpms_story(
+                "ws-1",
+                "iss-1",
+                &ReportDpmsStoryRequest {
+                    dpms_story_id: 889001,
+                },
+            )
             .await
             .unwrap();
         let requests = handle.join().unwrap();
@@ -2217,7 +2231,10 @@ mod tests {
         assert!(request.starts_with("POST /api/daemon/issues/iss-1/dpms-story HTTP/1.1"));
         assert!(request.contains("authorization: Bearer pat-test"));
         assert!(request.contains("x-workspace-id: ws-1"));
-        assert!(request.contains(r#""dpms_story_id":889001"#));
+        assert_eq!(
+            request.split("\r\n\r\n").nth(1).map(str::trim),
+            Some(r#"{"dpms_story_id":889001}"#)
+        );
     }
 
     #[tokio::test]
@@ -2228,7 +2245,13 @@ mod tests {
             mock_http_responses(vec![(409, r#"{"error":"issue already linked to a different DPMS story"}"#)]);
         let client = test_client(base);
         let error = client
-            .report_issue_dpms_story("ws-1", "iss-1", 777001)
+            .report_issue_dpms_story(
+                "ws-1",
+                "iss-1",
+                &ReportDpmsStoryRequest {
+                    dpms_story_id: 777001,
+                },
+            )
             .await
             .unwrap_err();
         assert!(matches!(error, MulticaError::IssueLinkConflict));

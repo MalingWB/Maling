@@ -560,6 +560,7 @@ mod tests {
                         run_mode: "workflow".into(),
                         dpms_required: false,
                         claim_system_story_id: None,
+                        last_dpms_report: None,
                     },
                 );
         });

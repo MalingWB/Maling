@@ -2996,6 +2996,47 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **联调注意**（multica 侧交接）：multica 测试需 `DATABASE_URL`（开发库 `postgres://multica:multica@172.21.18.88:5432/multica`）否则静默跳过；既有失败基线 TestListIssues 3 个 + TestDaemon|TestStory|TestClaim 约 40 个（与本改动无关，排查时 stash 对比 HEAD）。
 
+### 12.84 改动八十二：DPMS 回写载荷扩展 + 早回写时机前移（M5-cm，2026-10-30）
+
+**背景**：内网真实 `dpms_required` 任务实测——DPMS 创建成功、multica issue 字段未更新（用户内网包早于 M5-cl 属已知 stale-binary 假回归，真实增量是契约缺口：旧 body 只回链 story id）。multica 6161b33f 把端点 D4 body 扩到 7 字段：`dpms_story_id`（必填正整数）+ 可选 `dev_user`/`test_user`/`release_plan_id`/`origin_url`/`product_id`/`product_name`；**提供即更新**（出现的字段覆盖、缺省逐列 COALESCE 保留现值）、同 id 重放 200 刷新字段并把 `dpms_required` 两半置回 true、**409 不落任何字段**（仍翻 false + `IssueLinkConflict` 不重试）、`product_name` 无 `product_id` → 400、产品映射复用转换规则。码灵侧对应两件事：从任务记忆组装全量 body；回写时机从终态前移到产出边界（「不再等 `/complete` 顺带捎」）。`completion_output` 回归交付文本职责（无代码改动）。
+
+**方案**：
+
+- **① wire body**（client.rs）：`ReportDpmsStoryRequest` 扩 7 字段（`Debug/Clone/PartialEq/Serialize`，可选字段 `skip_serializing_if`——缺省不发，仅 story-id 的 body 与旧契约逐字节等价，灰度安全）；`report_issue_dpms_story` 改收 body 引用；ClaimConflict→`IssueLinkConflict` 映射与「409 不重试」不变。
+- **② 记忆组装**（bridge.rs 纯函数 `dpms_report_body_from_snapshot`）：8 键映射 `storyId→dpms_story_id`、`dpms.devUser→dev_user`、`dpms.testUser→test_user`、`dpms.releasePlanId→release_plan_id`、`dpms.storyUrl→origin_url`、`dpms.productId→product_id`、`dpms.productName→product_name`（键名常量进 state.rs 与 `DPMS_STORY_MEMORY_KEY` 同排）；`storyName` 记忆专用（rerun 复用核对）不进 wire。边界：文本 trim 非空、数值正整数（`storyId` 不可解析 → 整体 None 不回写，沿 M5-cl 口径）；**`product_name` 只在 `product_id` 存在时随行**——服务端 400 守卫前置规避，宁缺毋发。
+- **③ 早回写时机**：`handle_node_completed` 加 outcome 参（订阅器既有载荷透传），节点成功边界触发（workflow/auto 的 DPMS 创建节点成功即回写，平台立即可见）；`handle_turn_completion_gate` 门控判定后、final probe 前触发（direct 的 turn 边界；无块对话继续也先回写再退出）。两钩子都与 pin/完成判定逻辑独立（worker-ref 未就绪/扣留完成不阻断回写）。`complete_with_issue_done` 卸下回写职责（删尾参）——故事链接事实独立于任务终态上报，改由各终态路径在 **finalize 之前**（active_runs 未清，去重与「已收尾不补发」判定成立）兜底调用：complete 路径（execute_complete_run match 后）×1、turn 收尾完成路径 ×1、`handle_run_failed`、`cancel_remote_task`（teardown 前）。
+- **④ 统一入口 `report_dpms_story_if_changed`**：守卫（claim 快照三条件，不变）→ 组装 → 与在飞 run 的 `last_dpms_report` 比较 → 不同才 POST → 成功/409 记录 body。**去重与渐进刷新**：`ActiveRemoteRun.last_dpms_report: Option<ReportDpmsStoryRequest>`（仅内存）同 body 跳过、不同 body 再发——配套服务端「提供即更新」：溯源值经用户确认渐进写入记忆后，下一边界把确认值刷新进早先导入的行；409 同样记录（再发只会再 409）；**网络失败不记录**（下一节点/turn/终态边界自然重试，终态是最后机会）。并发容忍：比较与发送不在同一临界区（锁不覆盖网络调用），节点与 turn 钩子同拍双发由服务端幂等（同 id 重放 200）吸收，最坏一次冗余 POST；run 已被终态收尾清出 → 比较时即整体退出。
+- **⑤ 门提示词**：`remote_task_dpms_gate.md`（zh/en）写记忆契约由 3 键扩为 8 键（含键名与语义），其余锚点（复用不重复创建/推荐值需确认/不调工作项平台接口）不动。
+- **⑥ 修正记录（与角色定义联审发现）**：初版产品键沿用了 multica 交接单转述的 `dpms.product`，而 DPMS 角色定义（写入方，`.claude/design/dpms_cli/`，已在内网创建）实际写 `dpms.productId`——键名不一致会使 `product_id`/`product_name` 永远读不到、静默不回写。**键名以角色定义（写入方）为准**：码灵侧常量/门块/测试/文档统一改读 `dpms.productId`（M5-cm 未提交，零成本）；反向改角色需内网重存，弃。同轮联审补齐角色侧 `dpms.devUser` 缺口（角色记忆表原只有 `dpms.testUser`，`dev_user` 无写入来源），角色设计稿同步修订。
+
+**方案自评审**：过度设计——`last_dpms_report` 复用 `ActiveRemoteRun` 内存生命周期（不建 per-issue 发送史持久表：渐进刷新只需「最近一次」，终态即清理；409「不再发」沿服务端翻转 + claim 条件失效的既有机制）；早回写钩子全部挂在既有事件路径上（NodeCompleted/AcpTurnFinished/终态五路），无新事件无轮询；比较/记录是锁内两次 HashMap 操作。性能——回写组装全部在 `should_report_dpms_story` 守卫之后（非 DPMS 任务零成本）；DPMS 任务每边界一次小文件读（home state.json + 工作区 memory.json，与 M5-cl 终态取值同量级）+ 至多一次 POST；早回写把 POST 从终态提前到产出边界，总发送次数受 body 去重约束（同 body 只发一次，典型 1–2 次），无新增高频路径。
+
+**验证结果**：desktop `multica::` 240 passed / 0 failed（client：全量 body 序列化（7 键 JSON + 仅 story-id 灰度等价）、socket 集成断言路径/鉴权头/全 7 字段、409→`IssueLinkConflict` 单请求不重试；bridge：组装映射穷举（全键→wire 键、trim、`storyName` 不进 body）、`product_name` 无 `product_id` 整列丢弃、文本空白/数值非正 → 列缺省、`storyId` 非数字/零/负/缺失 → 整体 None）；lib `prompts::` 19 passed / 0 failed（门模板 8 键双语契约锁定）。早回写钩子为事件布线（AppHandle/socket harness 不可注入），时机与去重语义以调用点注释 + 纯函数契约锁定，内网真实任务全链路（创建→字段补全→渐进刷新→409）待打包联调验收。
+
+**联调注意**：用户内网包若仍报「字段未更新」，先核实运行版本含 M5-cl+M5-cm（stale-binary 前科：M5-ca）；multica 侧 6161b33f 已合入其 5 项新测试。
+
+**联调结论（2026-10-30/31 补记）**：首跑 issue `dpms_required=false` → 回写按灰度契约静默休眠（runtime.log 全程零 DPMS 痕迹；角色仍建 story 557993、写 8 记忆键——角色行为不经门控）；排查靠日志往返坐实「守卫未命中但不可见」，催生 M5-cn 可观测性。手动置 `dpms_required=true` 重跑 → 需求 id 成功回写 issue，M5-cl/cm 链路端到端验证通过。7 字段载荷随即被 M5-cn 契约收缩替代（multica 2026-10-31 定版：字段镜像由 multica 从 DPMS 拉取）。
+
+---
+
+### 12.85 改动八十三：DPMS 回写契约收缩为单字段关联 + 守卫可观测（M5-cn，2026-10-31）
+
+**背景**：M5-cm 落地并内网验证后设计复盘——码灵不应搬运 DPMS 字段值：值的所有权在 DPMS，multica 作为消费方应自己拉新鲜值（搬运时刻 ≠ 查看时刻，DPMS 侧后续变更码灵永远不知道，回写注定陈旧；「渐进刷新/晚到确认重发」等复杂度全为此而生）。码灵只回传自己独有的事实：**本任务创建出的 story 是哪一个**（join key，只能来自创建方——DPMS 不认识 multica issue，反查必靠模糊匹配）。multica 2026-10-31 契约定版：`POST /api/daemon/issues/{id}/dpms-story` body 只带 `{"dpms_story_id": N}`，字段镜像全部由 multica 从 DPMS 拉取。另以内网排查实例（守卫静默 + claim 快照不落日志 → 需日志往返定位 `dpms_required=false`）为契机补可观测性。
+
+**方案**：
+
+- **① wire body 收缩**（client.rs）：`ReportDpmsStoryRequest` 收缩为 `dpms_story_id` 单字段（`Debug/Clone/PartialEq/Serialize` 保留）；`report_issue_dpms_story` 签名不变（body 引用）；409→`IssueLinkConflict` 不重试、网络重试均不变。
+- **② 组装收缩**（bridge.rs）：`dpms_report_body_from_snapshot` 只读 `storyId`（trim + 正整数，口径不变）；删 state.rs 的 6 个载荷键常量（`dpms.devUser/testUser/releasePlanId/storyUrl/productId/productName`）与逐键映射——这些键退回**角色自身预填/留档语义**（角色定义继续写，runtime 不消费；内网已重存的角色无需改动）。
+- **③ 时机/兜底/去重骨架不动**：早回写钩子（节点成功边界 + direct turn 边界）与终态五路兜底不变——关联尽早落地仍成立；`last_dpms_report` 语义收敛为「同 id 跳过、run 内换新 story 再发」（「渐进刷新」随载荷退役）。
+- **④ 可观测性**：claim 两处登记点（fresh/续跑）落 INFO 快照（`dpms_required`/`system_story_id`/`issue_id` 定版值——「领取即定版」变成事实记录）；`report_dpms_story_if_changed` 守卫未命中从静默 return 改为 debug + 首个未满足原因（`dpms_report_skip_reason` 纯函数：三条件短路序）。
+- **⑤ 门提示词**（`remote_task_dpms_gate.md` zh/en）：写记忆契约收缩为 `storyId` 单键（runtime 只回传该关联；`storyName`/`dpms.*` 按角色定义写入），复用不重复创建/推荐值需确认/不调工作项平台接口锚点不动。
+
+**方案自评审**：过度设计——净删除为主（7 字段组装、6 常量、8 键清单、`product_name` 守卫），零新增抽象（`dpms_report_skip_reason` 是三条件短路的一行化）；保留骨架与拉取设计互补非冲突。性能——回写路径每边界少读 6 个记忆键，无新增 I/O；可观测性日志每任务 claim 一次 INFO + 守卫未命中 debug（DPMS 任务才有），量级可忽略。
+
+**验证结果**：desktop `multica::` 241 passed / 0 failed（client：单字段 body 序列化恰为 `{"dpms_story_id":N}`、socket 断言 body 单字段 + 路径/鉴权头、409→`IssueLinkConflict` 单请求不重试；bridge：组装只读 `storyId`、`storyId` 非数字/零/负/缺失 → 整体 None、`dpms_report_skip_reason` 三条件短路序穷举）；lib `prompts::` 19 passed / 0 failed（门模板单键契约 + 拉取边界双语锁定）。内网全链路（创建→关联回传→multica 从 DPMS 拉字段）待打包联调验收。
+
+**联调注意**：回写侧 multica 已定版单字段；`dpms_required` 标记机制如何覆盖非 story_sync 来源的 issue（首跑 false 的根因）仍待 multica 侧明确——验收用 issue 必须置 true。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

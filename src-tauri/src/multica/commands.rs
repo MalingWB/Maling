@@ -935,9 +935,19 @@ pub async fn start_remote_conversation_run(
                             // 本地任务的记忆随其首次 claim 已播种/由角色写入。
                             dpms_required: task.dpms_required == Some(true),
                             claim_system_story_id: task.system_story_id,
+                            last_dpms_report: None,
                         },
                     );
                 }
+                // M5-cn 可观测性：claim 快照即定版的 DPMS 回写条件落日志——「为何没回写」
+                // 无需再靠日志往返反推（内网实例：dpms_required=false 导致回写休眠）。
+                info!(
+                    task = %remote_task_id,
+                    issue = issue_id.as_deref().unwrap_or(""),
+                    dpms_required = task.dpms_required == Some(true),
+                    system_story_id = ?task.system_story_id,
+                    "multica claim snapshot (resume): DPMS write-back conditions fixed at claim"
+                );
                 // 通知 server dispatched→running（续跑与 Fresh 都 false；force_fresh 仅整任务重跑）。
                 if let Err(start_err) = client.start_task(&remote_task_id, false).await {
                     // start 响应可能在传输层丢失而 server 已 running：盲目 release 会致任务永久卡 running
@@ -1065,7 +1075,7 @@ pub async fn start_remote_conversation_run(
                         local_project_id: local_project.clone(),
                         local_task_id: run.task_id.clone(),
                         local_run_id: run.run_id.clone(),
-                        issue_id: issue,
+                        issue_id: issue.clone(),
                         title,
                         started_at: chrono::Utc::now().to_rfc3339(),
                         issue_kind: task.issue_kind.clone(),
@@ -1075,10 +1085,19 @@ pub async fn start_remote_conversation_run(
                         // system_story_id → storyId，核实复用不重复创建）。
                         dpms_required: task.dpms_required == Some(true),
                         claim_system_story_id: task.system_story_id,
+                        last_dpms_report: None,
                     },
                 );
                 // 建成 run + 登记 active_run（claim-at-send 无 lease 需释放）。
             }
+            // M5-cn 可观测性：同续跑路径——claim 快照的 DPMS 回写条件落日志。
+            info!(
+                task = %remote,
+                issue = issue.as_deref().unwrap_or(""),
+                dpms_required = task.dpms_required == Some(true),
+                system_story_id = ?task.system_story_id,
+                "multica claim snapshot (fresh): DPMS write-back conditions fixed at claim"
+            );
             if let Some(story_id) = task.system_story_id {
                 seed_dpms_story_memory(&app, &local_project, &run.task_id, story_id);
             }
@@ -1237,13 +1256,13 @@ pub async fn cancel_remote_task(
                     "multica cancel: best-effort fail_task failed (task may already be terminal); proceeding with local teardown"
                 );
             }
-            // M5-cl：取消也是 failed 终态——角色可能在取消前已创建 DPMS 需求并写入记忆，链接事实
-            // 照样要落。teardown 前取值（本地收尾后 active_runs 即清，条件快照随 run 消失）。
-            if let Some(story_id) = crate::multica::bridge::dpms_story_to_report(&context, &run) {
-                crate::multica::bridge::report_dpms_story(&client, &task_id, &run, story_id).await;
-            }
         }
     }
+    // M5-cl 建立取消路径回写；M5-cm 改走统一入口（自建 client）：取消也是 failed 终态——角色
+    // 可能在取消前已创建 DPMS 需求并写入记忆，链接事实照样要落。teardown 前执行（本地收尾后
+    // active_runs 即清，条件快照与 last_dpms_report 去重都依赖在飞映射）。
+    crate::multica::bridge::report_dpms_story_if_changed(&context, shared.inner(), &task_id, &run)
+        .await;
 
     let local_task_id = run.local_task_id.clone();
     let local_run_id = run.local_run_id.clone();
