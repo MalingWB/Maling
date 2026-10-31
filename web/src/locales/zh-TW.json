@@ -3213,8 +3213,12 @@
         "test": "測試"
       },
       "readiness": {
-        "notReady": "未就緒",
-        "notReadyHint": "對應開發任務尚未完成，建議等待其完成後再執行"
+        "ready": "已就緒",
+        "readyHint": "對應開發任務已完成，可以開始執行"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "該任務需建立 DPMS 系統需求並回傳關聯，回傳完成後此標籤自動消失"
       },
       "issueStatus": {
         "todo": "待辦",

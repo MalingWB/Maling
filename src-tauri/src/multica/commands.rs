@@ -2757,6 +2757,7 @@ mod tests {
             issue_status_category: None,
             issue_status_name: None,
             rerun_of_task_id: None,
+            dpms_link_pending: false,
         }
     }
 

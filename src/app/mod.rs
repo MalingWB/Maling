@@ -10016,6 +10016,8 @@ mod tests {
             completed_at: "2026-08-13T00:00:00Z".into(),
             issue_status_category: None,
             issue_status_name: None,
+            dpms_required: false,
+            dpms_story_id: None,
         }
     }
 

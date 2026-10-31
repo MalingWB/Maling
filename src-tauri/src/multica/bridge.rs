@@ -1311,6 +1311,10 @@ fn completed_task_from_run(
         // 周期对账首填/更新（apply_reconciled_issue_status）。
         issue_status_category: None,
         issue_status_name: None,
+        // DPMS 回传快照：要求标记（claim 定版）+ 本 run 已回传的 story id（成功 / 409 已链接
+        // 都算已回传——两种情况关联都已在服务端成立）→ 终态行「待回传 DPMS」徽标不丢。
+        dpms_required: run.dpms_required,
+        dpms_story_id: run.last_dpms_report.as_ref().map(|r| r.dpms_story_id),
     }
 }
 
@@ -1590,6 +1594,8 @@ mod tests {
             completed_at: completed_at.into(),
             issue_status_category: None,
             issue_status_name: None,
+            dpms_required: false,
+            dpms_story_id: None,
         }
     }
 
@@ -1923,6 +1929,28 @@ mod tests {
     }
 
     #[test]
+    fn completed_task_from_run_snapshots_dpms_report_state() {
+        // 终态行「待回传 DPMS」徽标的数据源：dpms_required（claim 定版）+ last_dpms_report
+        // 载荷（成功 / 409 已链接都算已回传）。此处锁住「来源 = run 快照」——被改成常量会让
+        // 徽标静默失真（该提醒的不提醒 / 已回传的仍提醒）。
+        let mut run = active_run(Some("标题"), Some("dev"));
+        run.dpms_required = true;
+        let pending = completed_task_from_run("rt-1", &run, "completed", "2026-10-31T00:00:00Z".into());
+        assert!(pending.dpms_required);
+        assert!(pending.dpms_story_id.is_none(), "未回传 → None（徽标保持提醒）");
+
+        run.last_dpms_report = Some(ReportDpmsStoryRequest { dpms_story_id: 889001 });
+        let reported =
+            completed_task_from_run("rt-2", &run, "completed", "2026-10-31T00:01:00Z".into());
+        assert_eq!(reported.dpms_story_id, Some(889001), "已回传 → story id 快照（徽标即消）");
+
+        run.dpms_required = false;
+        let untouched =
+            completed_task_from_run("rt-3", &run, "failed", "2026-10-31T00:02:00Z".into());
+        assert!(!untouched.dpms_required);
+    }
+
+    #[test]
     fn record_completed_task_caps_history_at_limit() {
         // 超 MAX 的旧条目被截断（最新 MAX 条保留，仍按时间倒序）。
         let mut state = StateConfig::default();
@@ -1968,6 +1996,8 @@ mod tests {
             completed_at: "2026-09-20T00:00:00Z".into(),
             issue_status_category: None,
             issue_status_name: None,
+            dpms_required: false,
+            dpms_story_id: None,
         }
     }
 

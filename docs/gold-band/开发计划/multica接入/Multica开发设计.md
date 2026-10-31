@@ -3039,6 +3039,27 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.86 改动八十四：需求管理看板 DPMS 待回传徽标 + 就绪正向化 + 待办就绪优先（M5-co，2026-10-31）
+
+**背景**：M5-cn 收口后用户提出三项看板体验需求：① 需求管理界面标出哪些任务需要创建 DPMS 需求——红色「DPMS」徽标提醒，回传成功后自动消失（用户关心的是「该任务还有 DPMS 环节未完成」，非「任务是什么类型」）；② 就绪标记反转——开发任务已完成的 test 任务显示绿色「已就绪」徽标，取代 §12.42 的「未就绪」负向提醒（正向确认更显著、更符合用户直觉：挑能做的先做）；③ 待办列内已就绪任务优先靠前展示。
+
+**方案**：
+
+- **① 终态快照补 DPMS 回传状态**（config/mod.rs + bridge.rs）：`RemoteCompletedTask` 增 `dpms_required: bool` + `dpms_story_id: Option<i64>`（均 `#[serde(default)]`，旧历史缺省 → 不渲染徽标；开发阶段破坏式更新无迁移）；`completed_task_from_run` 从 `ActiveRemoteRun` 快照——`dpms_story_id` 取 `last_dpms_report` 载荷（成功与 409 已链接都算已回传，两种情况关联都已在服务端成立）。
+- **② VM 三源合成单字段**（vm.rs）：`RemoteTaskVm.dpms_link_pending`（camelCase `dpmsLinkPending`）——pending/detail 行 = wire `dpms_required == true && system_story_id.is_none()`；active 行 = claim 快照「`dpms_required` + `claim_system_story_id` 空 + `last_dpms_report` 空」（与 bridge 回写守卫同源判定，回传成功后徽标即消）；completed 行 = 快照「`dpms_required && dpms_story_id.is_none()`」。前端只消费这一个 bool，三行来源差异不外露。
+- **③ 看板双徽标**（RemoteTaskBoard.tsx）：`dpmsLinkPending` → 红色「DPMS」徽标（destructive 色系，与 bug 徽标同 token 风格；Tooltip 说明「需创建 DPMS 系统需求并回传关联，回传完成后自动消失」；**全状态列渲染**——提醒覆盖任务全生命周期，queued/running/终态行都可能待回传）。
+- **④ 就绪正向化**：谓词 `isTaskNotReady` → `isTaskReady`（`test && readiness === true`）；queued 且就绪 → 绿色「已就绪」徽标（emerald 色系，与「已完成」列同族）+ Tooltip；未就绪 / 非 test / 缺失（旧 server）→ 无徽标（**无信号不标**——修正原「缺失按未就绪展示」的灰度兜底，反转后缺失自然回到无信号）。仍不阻断执行（入口本就全开）。本改动取代 §12.42「未就绪提醒」产品决策。
+- **⑤ 待办就绪优先排序**：纯函数 `orderQueuedReadyFirst`（导出供单测）对 queued 列稳定排序就绪靠前，其余保持后端顺序（ES2019 稳定排序）；仅待办列，其余列不动。
+- **⑥ i18n（7 语言）**：删 `readiness.notReady/notReadyHint`（破坏式，无兼容层），增 `readiness.ready/readyHint` + `dpms.badge/hint`；DPMS 为专名，`badge` 值 7 语言一致保留拉丁字样。
+
+**方案自评审**：过度设计——零新增抽象：字段复刻 `kind` 徽标的既有链路（wire/claim 快照 → 终态历史 → VM → 徽标），VM 侧三源合成收敛为单 bool；排序是列内一次稳定 sort（列表规模 = active 任务数，个位到几十）。性能——`dpmsLinkPending` 随行返回零新增 I/O；旧历史 serde default 不触发迁移写盘。正向化删除负向文案属破坏式更新，符合开发阶段规约。
+
+**验证结果**：desktop `multica::` **243 passed / 0 failed**（vm：`dpms_link_pending` 三源真值表——wire 缺键/预链接/false、active 回传后即消/claim 已链接、completed 已回传/旧历史；bridge：终态快照来源锁定——`last_dpms_report` 载荷进 `dpms_story_id`；config：DPMS 字段 roundtrip + 旧条目缺省；序列化 camelCase `dpmsLinkPending`）；web vitest 5 套件 **79 passed**（board：正向谓词真值表 + `orderQueuedReadyFirst` 排序不变量 + 红/绿徽标渲染与缺席 + 待办列渲染顺序；i18n：双语精确值 + 7 语言目录契约）。
+
+**联调注意**：徽标视觉（红/绿双主题）与真实数据下的排序效果随 M5-cn 打包联调一并目视验收；本地 multica 不可达，单元/组件测试已覆盖渲染判定与排序不变量。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）

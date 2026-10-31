@@ -3191,8 +3191,12 @@
         "test": "Test"
       },
       "readiness": {
-        "notReady": "Not ready",
-        "notReadyHint": "The matching dev task is not done yet; consider waiting for it"
+        "ready": "Ready",
+        "readyHint": "The matching dev task is done; this test task can start now"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "This task must create a DPMS story and report its link; the badge clears once reported"
       },
       "issueStatus": {
         "todo": "To do",

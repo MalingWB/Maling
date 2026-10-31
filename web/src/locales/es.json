@@ -3213,8 +3213,12 @@
         "test": "Prueba"
       },
       "readiness": {
-        "notReady": "No listo",
-        "notReadyHint": "La tarea de desarrollo correspondiente aún no está terminada; considere esperarla"
+        "ready": "Listo",
+        "readyHint": "La tarea de desarrollo correspondiente ha terminado; esta tarea puede comenzar"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "Esta tarea debe crear una demanda en DPMS y reportar el vínculo; la etiqueta desaparece al completar el reporte"
       },
       "issueStatus": {
         "todo": "Pendiente",

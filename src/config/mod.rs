@@ -3853,6 +3853,8 @@ mod tests {
                 completed_at: "2026-08-06T01:00:00Z".to_string(),
                 issue_status_category: None,
                 issue_status_name: None,
+                dpms_required: false,
+                dpms_story_id: None,
             }],
             ..StateConfig::default()
         };
@@ -4054,6 +4056,15 @@ pub struct RemoteCompletedTask {
     /// 展示优先于分类（更精确），旧条目同样缺省 None。
     #[serde(default)]
     pub issue_status_name: Option<String>,
+    /// DPMS 需求创建要求快照（finalize 时从 `ActiveRemoteRun.dpms_required` 快照，claim 定版）。
+    /// 与 `dpms_story_id` 组成终态行「待回传 DPMS」徽标判定：`dpms_required && dpms_story_id.is_none()`。
+    /// 旧历史条目无此字段 → serde 缺省 false，不渲染徽标。
+    #[serde(default)]
+    pub dpms_required: bool,
+    /// 终态时已回传的 DPMS story id（`ActiveRemoteRun::last_dpms_report` 载荷快照；成功与 409
+    /// 已链接都算已回传——两种情况关联都已在服务端成立）。None = 未回传。旧历史条目缺省 None。
+    #[serde(default)]
+    pub dpms_story_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

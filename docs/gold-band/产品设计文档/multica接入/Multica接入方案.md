@@ -432,7 +432,7 @@ multica.session-resume-failed   // 保留在码表但 M4-d 起不 emit（resume 
 - **页头 UX（M5-aa）**：页头右侧含「任务来源」下拉（i18n `multica.taskManagement.source.label`，当前唯一项 Multica，由 `REMOTE_TASK_SOURCES` 配置数组驱动、页级 `source` state 作渲染分流唯一键，为未来多来源接入保留切换位）+ 副标题 `multica.taskManagement.subtitle`「查看并执行远程任务」（M5-ab 再精简：页头「任务来源」下拉已点名来源，副标题不再重复 "multica" 限定词；原尾部关于执行时选本地目录的半句早已删除——该流程已被 claim-at-click → composer 覆盖）；列表区内右侧常驻手动刷新按钮（`RotateCw` ghost 图标，`aria-label="common.refresh"`，`refreshing` 态驱动 `animate-spin`，调与 mount/事件订阅同源的 `fetchTasks()`）；状态词以有色 Badge 呈现，色调按看板词汇锁定并由导出常量 `MULTICA_STATUS_TONE` 集中管理（待办=灰 / 进行中=黄 / 已完成=绿 / 失败=红），`queued` 文案对齐看板列为「待办」（码灵作为 daemon 直接驱动 board issue.status，本地任务生命周期与看板词汇 1:1，不再用暗示独立「领取」中间态的旧词）。
 - **列表视觉/层级系统（M5-ab，统一一次做完非补丁）**：workspace→任务树状列表建立一致的间距节奏与层级表达——**workspace 分组头**=可折叠容器（统一 `ChevronDown` 折叠箭头规格 + 名称左侧 `Server` 图标标识「工作空间容器行」+ 名称右侧轻量任务计数 `（N个任务）`/`(N tasks)`，仅在该工作空间有任务时显示 + 整行 `rounded-md hover:bg-muted/40` 容器 hover 底色）；**任务行**=其下叶子节点（标题 14px font-medium 主文本、Badge 居左 + 时间戳 `ml-auto` 推右、相对组头统一缩进）；组间距 `mb-2` 加大、任务间距 `space-y-0.5`、水平 padding 组头 `px-1.5`/任务行 `px-2` 对齐；组内空状态居中带垂直留白（`px-2 py-4 text-center`），文案「该工作空间下暂无远程任务」明确所属与对象。pinned 失败段同规格（折叠箭头 + hover 底色 + 间距），但非 workspace 故不加 Server 图标。「服务器图标 = workspace 容器行 / 无图标 = 任务叶子行」一眼可读。
 
-- **issue 类型标记 / 类型过滤 / 未就绪提醒（M5-ba §12.40 → M5-bb §12.42 改提醒不阻断）**：适配 multica 的 story dev/test 拆分。任务卡片在状态徽标左侧增加**类型徽标**（仅 dev/test/bug 渲染，`general` 与未知值不渲染——对齐 multica 自有 views 的 `hideGeneral` 惯例，新类型不猜文案）；页脚工具条增加**类型过滤**下拉（全部/开发/测试，纯客户端过滤已加载列表，bug/general 归「全部」，过滤态是瞬时 UI 状态、不持久化）。**未就绪的 test 任务**（父 dev issue 未 done）：仅「未就绪」标记 + 原因 Tooltip 提醒（「对应开发任务尚未完成，建议等待」），**不置灰、不阻断执行**——经实测评审的产品决策（开发设计 §12.42），`is_ready` 只作展示信号：看板徽标由前端谓词 `isTaskNotReady`（与后端无门控耦合）驱动，claim 路径无拦截。
+- **issue 类型标记 / 类型过滤 / 未就绪提醒（M5-ba §12.40 → M5-bb §12.42 改提醒不阻断）**：适配 multica 的 story dev/test 拆分。任务卡片在状态徽标左侧增加**类型徽标**（仅 dev/test/bug 渲染，`general` 与未知值不渲染——对齐 multica 自有 views 的 `hideGeneral` 惯例，新类型不猜文案）；页脚工具条增加**类型过滤**下拉（全部/开发/测试，纯客户端过滤已加载列表，bug/general 归「全部」，过滤态是瞬时 UI 状态、不持久化）。**就绪标记正向化 + 待办就绪优先（M5-co，取代 §12.42「未就绪」负向提醒）**：对应开发任务已完成的 test 任务（`is_ready === true`）显示绿色「已就绪」徽标 + 语义 Tooltip，并在待办列内**稳定靠前排序**（可执行的任务优先被看见）；未就绪 / 非 test / 字段缺失（旧 server）不显示任何就绪徽标（无信号不标）；仍**不置灰、不阻断执行**——徽标由前端谓词 `isTaskReady` 驱动，claim 路径无拦截。另：需要创建 DPMS 需求且 story 关联尚未回传的任务显示红色「DPMS」徽标（后端三源合成 `dpmsLinkPending`，Tooltip 说明，回传成功后自动消失，M5-co）。
 - **移出列表（M5-bm §12.52 → M5-bo §12.54 按行数据源分派）**：任务卡片（四列全状态，含待办与已完成）带「移出列表」按钮（Trash2）。**语义按行数据源分派（M5-bo 修正）**：**终态行**（completed/failed）的唯一数据源是本地 `remote_completed_tasks` 历史（服务端不回传终态）——移出即**真删除本地历史条目**（`remove_remote_completed_task` 命令，幂等），刷新不再「复活」，Tooltip「移出并删除本地完成记录，刷新不再显示」；删除的是列表回看索引，**不删本地会话本体**。**pending/running 行**每次刷新从服务端/内存重建——纯本页内存态视图过滤即全部语义，不调删除接口，Tooltip「仅从码灵侧列表移除，刷新后恢复」，服务端侧删除后自然消失（服务端是 active 行的唯一事实源）。均不弹确认框（ui-interaction §1 的删除确认针对破坏性删除；hint 如实说明各行语义）。
 - **multica 平台快捷跳转（M5-ck）**：底部工具条右侧组（账号标识与手动刷新之间）增加 `ExternalLink` ghost 图标按钮，点击经系统浏览器打开 multica 平台 Web（地址 = settings VM 的 `multicaAppUrl`，渠道编译期默认或运行期地址覆盖产生；桌面端走 tauri opener 插件）。门控继承 footer 的 `source === 'multica' && connected`——非 multica 来源、未连接不出现；`multicaAppUrl` 未配置（null）时不渲染。Tooltip 与 aria-label 同文案 `remote.taskManagement.openPlatform`「打开 {{source}} 平台」，来源名经注册表名片插值，不散写品牌名。跳转目标为平台根地址，不做 workspace/issue 深链（multica Web 路由结构无本仓可验证真源）。
 
@@ -542,7 +542,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - `GET /api/daemon/runtimes/{runtimeId}/tasks/pending` ｜ PAT
 - 响应：任务数组，含 `status ∈ ('queued','dispatched')` 的任务
 - 说明：**只读、不锁任务、不改状态**。客户端按 `status=='queued'` 过滤得到真正可领取的列表，展示给用户。
-- **story dev/test 拆分（§12.40 / §12.42）**：任务另带 `issue_kind`（dev/test/bug/general）与 `is_ready`（仅 test 型有意义：父 dev issue 是否 done）。**server 对 pending 不做任何就绪过滤——未就绪的 test 任务照常下发**；码灵侧 `is_ready` **仅作看板提醒展示**（未就绪徽标 + 原因 Tooltip），不做执行门控（M5-bb 产品决策）。码灵两字段皆 serde-optional：旧 server 缺失 → 行为与拆分前逐字节一致。
+- **story dev/test 拆分（§12.40 / §12.42）**：任务另带 `issue_kind`（dev/test/bug/general）与 `is_ready`（仅 test 型有意义：父 dev issue 是否 done）。**server 对 pending 不做任何就绪过滤——未就绪的 test 任务照常下发**；码灵侧 `is_ready` **仅作看板提醒展示**（M5-co 起为正向「已就绪」绿色徽标 + 待办列就绪优先排序），不做执行门控（M5-bb 产品决策）。码灵两字段皆 serde-optional：旧 server 缺失 → 行为与拆分前逐字节一致。
 
 **B2. 领取指定任务（selective claim）** ★ 核心 ｜ **新增接口（需 server 改造，见 3.1）**
 - `POST /api/daemon/runtimes/{runtimeId}/tasks/{taskId}/claim` ｜ PAT ｜ 请求体 `{}`
@@ -753,7 +753,7 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
 - [x] **S3 · story dev/test 拆分对接**（详 3.2 / §12.40 / §12.42）：`AgentTaskResponse`（pending/claim/detail 共用）暴露 `issue_kind`(string omitempty) + `is_ready`(bool)；**server 侧不做就绪过滤**（未就绪 test 任务照常下发；码灵侧经 M5-bb 决策**只提醒不门控**，`is_ready` 仅作看板展示信号）
   - **上线证据（2026-09-11 客户端实测）**：桌面端连 multica 后 pending 载荷已携带 `issue_kind`，看板类型徽标与类型过滤生效（首帧曾缺字段、经一次心跳后收敛——§12.41 有分析）。
   - **原「claim 路径必须回填 is_ready」硬约束已随门控移除而失效（M5-bb / §12.42）**：码灵 claim 路径不再消费 `is_ready` 判定，只回 `issue_kind` 也不影响领取；`is_ready` 事实源是 pending 列表（看板徽标）。
-- [ ] **S4 · 心跳 ack 就绪 diff**（待 multica 侧最终确认线格式）：`POST /api/daemon/heartbeat` 的 ack 增加就绪变更 diff（码灵侧提议 `pending_readiness_changes: [{task_id, is_ready}]`，仅在父 dev issue done 使 test 任务就绪翻转时下发）。**不阻塞码灵上线**——缺失时页面不自动刷新，未就绪徽标停留旧值直至手动刷新（M5-bb 后无 claim 拦截兜底，仅展示层提醒）；形状不同仅需改 `client.rs` 反序列化
+- [ ] **S4 · 心跳 ack 就绪 diff**（待 multica 侧最终确认线格式）：`POST /api/daemon/heartbeat` 的 ack 增加就绪变更 diff（码灵侧提议 `pending_readiness_changes: [{task_id, is_ready}]`，仅在父 dev issue done 使 test 任务就绪翻转时下发）。**不阻塞码灵上线**——缺失时页面不自动刷新，就绪徽标停留旧值直至手动刷新（M5-bb 后无 claim 拦截兜底，仅展示层提醒）；形状不同仅需改 `client.rs` 反序列化
 - [x] **S5 · 任务重试改造两接口**（multica 侧已实现，码灵 M5-cb 消费）：`POST /api/daemon/tasks/batch-status`（≤500 id/批终态对账，B4）+ `POST /api/daemon/tasks/{taskId}/rerun`（任务级重新执行，202 幂等，D1a）。旧 server 缺路由 → 404 → 码灵静默降级，双向兼容。
 
 > 其余需求（任务列表 `GET /tasks/pending`、失败恢复 `POST /api/issues/{id}/rerun`、注册 `POST /api/daemon/register`、心跳、recover-orphans、complete/fail）均用 multica 现有接口，**无需改源码**。
@@ -1342,6 +1342,11 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **实现**：① `ReportDpmsStoryRequest` 收缩为单字段；② 组装只读 `storyId`（删 6 个 `dpms.*` 载荷键常量与逐键映射；`storyName`/`dpms.*` 键退回角色自身预填/留档语义，runtime 不消费）；③ 早回写/终态兜底/去重/409 语义不变（body 收缩后「不同 body 再发」收敛为「run 内换了新 story」）；④ claim 快照（fresh/续跑）落 INFO（`dpms_required`/`system_story_id`/`issue_id` 定版值），守卫未命中带原因落 debug（三条件短路序）；⑤ 门提示词 `remote_task_dpms_gate.md`（zh/en）收缩为 `storyId` 单键运行时契约。
   - **方案自评审**：净删除为主（7 字段组装、6 常量、8 键清单），零新增抽象；保留的时机/兜底/去重骨架与拉取设计互补。性能：回写路径少读 6 个记忆键，无新增 I/O。
   - **验证**：desktop `multica::` 与 lib `prompts::` 回归（见开发设计 §12.85）；内网全链路（创建→关联回传→multica 字段拉取）待打包联调验收。
+- [x] **M5-co**（2026-10-31）需求管理看板：DPMS 待回传红色徽标 + 就绪标记正向化 + 待办就绪优先排序（Rust + 前端，开发设计 §12.86 改动八十四）：
+  - **需求（用户）**：① 需求管理界面标出哪些任务需要创建 DPMS 需求——红色「DPMS」徽标提醒，回传成功后自动消失；② 就绪标记反转——开发任务已完成的 test 任务显示绿色「已就绪」徽标（更显著、符合用户直觉），取代「未就绪」负向提醒；③ 待办列内已就绪任务优先靠前。
+  - **实现**：① `RemoteCompletedTask` 增 `dpms_required` + `dpms_story_id` 快照（finalize 从 `ActiveRemoteRun` 快照，serde default 兼容旧历史）；② VM 增 `dpmsLinkPending` 单字段三源合成（pending/detail = wire `dpms_required && system_story_id` 空；active = claim 快照「要求 + 未预链接 + 本 run 未回传」；completed = 快照「要求 + story id 空」）——与 bridge 回写守卫同源判定；③ 看板红色 DPMS 徽标（destructive 色系，Tooltip 说明，全状态列渲染）；④ 谓词 `isTaskNotReady` → `isTaskReady`（`test && readiness === true`；缺失不标——旧 server 行为回到无信号），绿色徽标（emerald 色系）+ Tooltip；⑤ 待办列 `orderQueuedReadyFirst` 稳定排序；i18n 删 `readiness.notReady/notReadyHint`、增 `readiness.ready/readyHint` + `dpms.badge/hint`（DPMS 专名 7 语言保留拉丁字样）。
+  - **方案自评审**：纯展示投影 + 列内稳定排序（列表 = active 任务规模，无性能问题）；零新增抽象（复用 `kind` 链路模式，VM 单 bool 合成）；破坏式删除旧「未就绪」文案与谓词，无兼容层。
+  - **验证**：desktop `multica::` **243/243**（三源真值表 + 终态快照来源锁定 + roundtrip）；web vitest 5 套件 **79/79**（谓词/排序/双徽标渲染、i18n 双语精确值、7 语言目录契约）；tsc 对改动文件零错（既有 workspace 测试漂移报错与本次无关）。浏览器双主题目视验收随打包联调进行。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

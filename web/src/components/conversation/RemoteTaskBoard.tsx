@@ -61,13 +61,12 @@ export function visibleIssueKind(kind: string | null): RemoteIssueKind | null {
   return REMOTE_ISSUE_KINDS.find((value) => value === kind) ?? null;
 }
 
-/// 未就绪展示谓词（仅提醒，不阻断执行——§12.42 产品决策：经实测评审，
-/// 未就绪 test 任务保留「未就绪」徽标与原因提示，但执行入口照常可用）：
-/// test 且 `readiness !== true`（缺失按未就绪展示——覆盖服务端灰度窗口）。
-/// 旧 server（两字段皆 null）→ `null !== 'test'` → 无提醒，行为与拆分前一致。
-/// 导出供单测固化「哪些任务渲染未就绪提醒」这一接口层契约。
-export function isTaskNotReady(task: Pick<RemoteTaskVm, 'kind' | 'readiness'>): boolean {
-  return task.kind === 'test' && task.readiness !== true;
+/// 就绪展示谓词（正向确认——取代 §12.42「未就绪」负向提醒的产品决策：开发任务已完成的
+/// 测试任务才值得被显著标出，更符合用户直觉）：test 且 `readiness === true` 渲染绿色
+/// 「已就绪」徽标。未就绪 / 非 test / 缺失（旧 server 两字段皆 null）→ 无徽标（无信号不标）。
+/// 仍不阻断执行（入口照常可用）。导出供单测固化「哪些任务渲染已就绪徽标」这一接口层契约。
+export function isTaskReady(task: Pick<RemoteTaskVm, 'kind' | 'readiness'>): boolean {
+  return task.kind === 'test' && task.readiness === true;
 }
 
 /// 可「重新执行」的 issue 状态分类闭集（multica 状态对账口径）：任务终态后 issue 处于
@@ -131,6 +130,13 @@ export function bucketTasksByStatus(tasks: RemoteTaskVm[]): Record<BoardColumnSt
   return buckets;
 }
 
+/// 纯函数：待办列排序——「已就绪」的 test 任务稳定靠前（可执行的任务优先被看见，
+/// 与绿色徽标同一用户逻辑），其余保持后端返回顺序（ES2019 稳定排序）。
+/// 仅用于 queued 列。导出供单测固化排序不变量（就绪优先 + 非就绪保序）。
+export function orderQueuedReadyFirst(tasks: RemoteTaskVm[]): RemoteTaskVm[] {
+  return [...tasks].sort((a, b) => Number(isTaskReady(b)) - Number(isTaskReady(a)));
+}
+
 interface RemoteTaskBoardProps {
   /// 选定工作空间的全部远程任务（active queued/running + 终态 completed/failed）。
   tasks: RemoteTaskVm[];
@@ -165,7 +171,8 @@ export function RemoteTaskBoard({
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
       {BOARD_COLUMNS.map((status) => {
-        const colTasks = buckets[status];
+        // 待办列内「已就绪」优先靠前；其余列保持后端顺序。
+        const colTasks = status === 'queued' ? orderQueuedReadyFirst(buckets.queued) : buckets[status];
         return (
           <section key={status} className="flex min-h-0 min-w-0 flex-col gap-2">
             <header className="flex items-center justify-between gap-2 px-1">
@@ -230,9 +237,9 @@ function RemoteTaskCard({
 }) {
   const readOnly = useReadOnlyExperience();
   const queued = task.status === 'queued';
-  /// 未就绪的 test 任务（父 dev issue 未 done）：仅徽标 + 原因 Tooltip 提醒，**不阻断执行**
-  /// （§12.42 产品决策：提醒而非门控，执行入口照常可用）。
-  const notReady = queued && isTaskNotReady(task);
+  /// 已就绪的 test 任务（对应开发任务已完成）：绿色「已就绪」正向徽标（取代 §12.42
+  /// 「未就绪」负向提醒）；仅提示，不改变执行入口（本就全开）。
+  const ready = queued && isTaskReady(task);
   const canClaim = queued;
   const canCancel = task.status === 'running';
   // 终态行（completed/failed）：唯一数据源是本地完成历史——「移出列表」语义与 active 行不同
@@ -244,7 +251,8 @@ function RemoteTaskCard({
   const rerunBadge = queued && !!task.rerunOfTaskId;
   const statusTone = REMOTE_STATUS_TONE[task.status as BoardColumnStatus] ?? REMOTE_STATUS_TONE.queued;
   const issueKind = visibleIssueKind(task.kind);
-  const notReadyHint = t('remote.taskManagement.readiness.notReadyHint');
+  const readyHint = t('remote.taskManagement.readiness.readyHint');
+  const dpmsHint = t('remote.taskManagement.dpms.hint');
   // issue 状态标记文案：自定义状态名优先（对账回填，更精确），否则按分类闭集取 i18n。
   const issueStatusLabel =
     showsIssueStatusChip(task) && task.issueStatusCategory
@@ -271,23 +279,40 @@ function RemoteTaskCard({
         <Badge variant="outline" className={cn('h-4 shrink-0 px-1 text-[10px] leading-none', statusTone)}>
           {t(`conversation.sidebar.remoteTasks.status.${task.status}`, task.status)}
         </Badge>
-        {notReady && (
-          /* 未就绪标记（仅提醒不阻断）：原因（对应开发任务尚未完成）经项目 Tooltip 说明；
-             tabIndex 让键盘也能触发提示；执行入口照常可用。 */
+        {task.dpmsLinkPending && (
+          /* 待回传 DPMS（红色提醒）：该任务需要创建 DPMS 系统需求且 story 关联尚未回传——
+             提醒用户该任务带 DPMS 环节，回传成功后徽标自动消失（语义经 Tooltip 说明）。 */
           <Tooltip>
             <TooltipTrigger asChild>
-              <span
-                tabIndex={0}
-                aria-label={notReadyHint}
+              <Badge
+                variant="outline"
                 className={cn(
-                  'inline-flex h-4 shrink-0 items-center rounded-full px-1 text-[10px] leading-none',
-                  REMOTE_STATUS_TONE.queued,
+                  'h-4 shrink-0 px-1 text-[10px] leading-none',
+                  'border-transparent bg-destructive/15 text-destructive',
                 )}
               >
-                {t('remote.taskManagement.readiness.notReady')}
-              </span>
+                {t('remote.taskManagement.dpms.badge')}
+              </Badge>
             </TooltipTrigger>
-            <TooltipContent side="top" className="text-xs">{notReadyHint}</TooltipContent>
+            <TooltipContent side="top" className="text-xs">{dpmsHint}</TooltipContent>
+          </Tooltip>
+        )}
+        {ready && (
+          /* 已就绪（正向确认）：test 任务且对应开发任务已完成——绿色让可执行的任务更显著
+             （用户逻辑：挑能做的先做）；语义经 Tooltip 说明，不阻断任何入口。 */
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge
+                variant="outline"
+                className={cn(
+                  'h-4 shrink-0 px-1 text-[10px] leading-none',
+                  'border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
+                )}
+              >
+                {t('remote.taskManagement.readiness.ready')}
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-xs">{readyHint}</TooltipContent>
           </Tooltip>
         )}
         {rerunBadge && (

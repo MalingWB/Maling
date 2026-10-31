@@ -184,6 +184,9 @@ export interface RemoteTaskVm {
   /// rerun 血缘：本任务是 rerun 产生的新任务时指回源任务 id（wire attribution.rerun_of_task_id）。
   /// 看板 queued 卡片渲染「重新执行」徽标（multica「归组到源任务行」的看板投影）。null = 普通任务。
   rerunOfTaskId: string | null;
+  /// DPMS 需求「待回传」提醒（后端三源合成：要求创建 DPMS 需求且 story 关联尚未回传）。
+  /// true 时看板卡片渲染红色「DPMS」徽标；回传成功（或 issue 已预链接 / 不涉及 DPMS）→ false。
+  dpmsLinkPending: boolean;
 }
 
 /// issue 需求附件元数据展示投影（RemoteTaskVm.attachments 元素）。

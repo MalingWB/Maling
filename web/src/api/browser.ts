@@ -2749,6 +2749,7 @@ export const browserApi: RuntimeApi = {
       issueStatusCategory: null,
       issueStatusName: null,
       rerunOfTaskId: null,
+      dpmsLinkPending: false,
     });
   },
   startRemoteConversationRun(input, _remoteTaskId, _workspaceId) {

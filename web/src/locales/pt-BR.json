@@ -3213,8 +3213,12 @@
         "test": "Teste"
       },
       "readiness": {
-        "notReady": "Não pronto",
-        "notReadyHint": "A tarefa de desenvolvimento correspondente ainda não foi concluída; considere aguardá-la"
+        "ready": "Pronto",
+        "readyHint": "A tarefa de desenvolvimento correspondente foi concluída; esta tarefa pode começar"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "Esta tarefa precisa criar uma demanda no DPMS e reportar o vínculo; o selo desaparece após o reporte"
       },
       "issueStatus": {
         "todo": "A fazer",

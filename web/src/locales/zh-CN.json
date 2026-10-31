@@ -3191,8 +3191,12 @@
         "test": "测试"
       },
       "readiness": {
-        "notReady": "未就绪",
-        "notReadyHint": "对应开发任务尚未完成，建议等待其完成后再执行"
+        "ready": "已就绪",
+        "readyHint": "对应开发任务已完成，可以开始执行"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "该任务需创建 DPMS 系统需求并回传关联，回传完成后此标签自动消失"
       },
       "issueStatus": {
         "todo": "待办",

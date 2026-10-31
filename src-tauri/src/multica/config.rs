@@ -359,6 +359,8 @@ mod tests {
                 completed_at: "2026-08-11T00:00:00".into(),
                 issue_status_category: None,
                 issue_status_name: None,
+                dpms_required: false,
+                dpms_story_id: None,
             }],
             ..StateConfig::default()
         }
@@ -401,10 +403,15 @@ mod tests {
             // 状态对账改造：issue 状态字段可缺省（对账首填前 None），roundtrip 不丢。
             issue_status_category: Some("done".into()),
             issue_status_name: None,
+            // DPMS 回传快照（M5-cn 后引入）：roundtrip 不丢，旧条目缺键缺省。
+            dpms_required: true,
+            dpms_story_id: Some(889001),
         };
         let json = serde_json::to_string(&task).unwrap();
         // camelCase 键名（与 StateConfig 其余索引一致）。
         assert!(json.contains(r#""kind":"test""#));
+        assert!(json.contains(r#""dpmsRequired":true"#));
+        assert!(json.contains(r#""dpmsStoryId":889001"#));
         let back: RemoteCompletedTask = serde_json::from_str(&json).unwrap();
         assert_eq!(back, task);
 
@@ -418,6 +425,9 @@ mod tests {
         // 旧条目同样缺 issue 状态键 → 缺省 None（未对账，前端不渲染 issue 状态/重新执行入口）。
         assert!(legacy.issue_status_category.is_none());
         assert!(legacy.issue_status_name.is_none());
+        // 旧条目缺 DPMS 快照键 → 缺省 false/None（不渲染「待回传 DPMS」徽标）。
+        assert!(!legacy.dpms_required);
+        assert!(legacy.dpms_story_id.is_none());
     }
 
     #[test]

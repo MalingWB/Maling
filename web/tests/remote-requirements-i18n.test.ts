@@ -41,15 +41,25 @@ describe('Multica requirements localization', () => {
     expect(i18n.t('remote.taskManagement.issueKindFilter.all', { lng: 'en' })).toBe('All');
   });
 
-  it('localizes the not-ready marker and its advisory reason in both languages', () => {
-    expect(i18n.t('remote.taskManagement.readiness.notReady', { lng: 'zh-CN' })).toBe('未就绪');
-    expect(i18n.t('remote.taskManagement.readiness.notReady', { lng: 'en' })).toBe('Not ready');
-    // 提醒文案不得暗示「不能执行」——未就绪仅提醒不阻断（§12.42）。
-    expect(i18n.t('remote.taskManagement.readiness.notReadyHint', { lng: 'zh-CN' })).toBe(
-      '对应开发任务尚未完成，建议等待其完成后再执行',
+  it('localizes the ready badge and the DPMS pending marker in both languages', () => {
+    // 正向就绪徽标（取代 §12.42「未就绪」负向提醒）：开发任务已完成的 test 任务才标绿。
+    expect(i18n.t('remote.taskManagement.readiness.ready', { lng: 'zh-CN' })).toBe('已就绪');
+    expect(i18n.t('remote.taskManagement.readiness.ready', { lng: 'en' })).toBe('Ready');
+    expect(i18n.t('remote.taskManagement.readiness.readyHint', { lng: 'zh-CN' })).toBe(
+      '对应开发任务已完成，可以开始执行',
     );
-    expect(i18n.t('remote.taskManagement.readiness.notReadyHint', { lng: 'en' })).toBe(
-      'The matching dev task is not done yet; consider waiting for it',
+    expect(i18n.t('remote.taskManagement.readiness.readyHint', { lng: 'en' })).toBe(
+      'The matching dev task is done; this test task can start now',
+    );
+
+    // DPMS 待回传徽标：DPMS 是专有名词，两种语言下均保留拉丁字样不翻译。
+    expect(i18n.t('remote.taskManagement.dpms.badge', { lng: 'zh-CN' })).toBe('DPMS');
+    expect(i18n.t('remote.taskManagement.dpms.badge', { lng: 'en' })).toBe('DPMS');
+    expect(i18n.t('remote.taskManagement.dpms.hint', { lng: 'zh-CN' })).toBe(
+      '该任务需创建 DPMS 系统需求并回传关联，回传完成后此标签自动消失',
+    );
+    expect(i18n.t('remote.taskManagement.dpms.hint', { lng: 'en' })).toBe(
+      'This task must create a DPMS story and report its link; the badge clears once reported',
     );
   });
 });

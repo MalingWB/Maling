@@ -16,7 +16,7 @@ use gold_band::provider::PromptHiddenSection;
 use serde::Serialize;
 use serde_json::json;
 
-use crate::multica::client::RemoteTask;
+use crate::multica::client::{RemoteTask, ReportDpmsStoryRequest};
 use crate::multica::markdown_source::markdown_source_to_plain_text;
 use crate::multica::state::ActiveRemoteRun;
 
@@ -75,6 +75,13 @@ pub struct RemoteTaskVm {
     /// 源行持久删除由 rerun 命令 202 后执行，过滤兜底他端发起与删除失败残留）。普通任务 /
     /// 旧 server → None。
     pub rerun_of_task_id: Option<String>,
+    /// DPMS 需求「待回传」提醒（M5-cn 契约定版后的 UI 投影，前端渲染红色「DPMS」徽标）：
+    /// true = 该任务需要创建 DPMS 需求且 story 关联尚未回传。三源合成——pending/detail 行 =
+    /// wire `dpms_required == true` 且 issue 尚无 `system_story_id`；active 行 = claim 快照
+    /// `dpms_required` 且已链接排除（`claim_system_story_id` 空）且本 run 尚未成功回传
+    /// （`last_dpms_report` 空）；completed 行 = 终态快照 `dpms_required && dpms_story_id.is_none()`。
+    /// 不涉及 DPMS / 已回传 / 旧历史 / 旧 server → false，不渲染徽标。
+    pub dpms_link_pending: bool,
 }
 
 /// issue 需求附件元数据的展示投影（[`RemoteTaskVm::attachments`] 元素）：文件名（空/纯空白
@@ -165,6 +172,8 @@ impl RemoteTaskVm {
             issue_status_name: c.issue_status_name.clone(),
             // rerun 血缘不持久化在终态历史（徽标只在 queued 卡片渲染）→ 恒 None。
             rerun_of_task_id: None,
+            // 待回传 DPMS = 终态快照「要求创建且未回传」（旧历史缺字段缺省 false/None → 不渲染）。
+            dpms_link_pending: c.dpms_required && c.dpms_story_id.is_none(),
         }
     }
 
@@ -198,6 +207,11 @@ impl RemoteTaskVm {
             issue_status_category: None,
             issue_status_name: None,
             rerun_of_task_id: None,
+            // 待回传 DPMS = claim 快照「要求创建 + 未预链接 + 本 run 尚未成功回传」
+            //（与 bridge 回写守卫同源数据，回传成功后徽标即消）。
+            dpms_link_pending: run.dpms_required
+                && run.claim_system_story_id.is_none()
+                && run.last_dpms_report.is_none(),
         }
     }
 
@@ -234,6 +248,9 @@ impl RemoteTaskVm {
                 .attribution
                 .as_ref()
                 .and_then(|a| a.rerun_of_task_id.clone()),
+            // 待回传 DPMS = wire「要求创建且 issue 尚无 story 关联」（与 claim 守卫同源判定；
+            // 旧 server 缺键 → false 不渲染）。
+            dpms_link_pending: task.dpms_required == Some(true) && task.system_story_id.is_none(),
         }
     }
 }
@@ -1556,6 +1573,7 @@ mod tests {
             issue_status_category: Some("todo".into()),
             issue_status_name: Some("待产品评审".into()),
             rerun_of_task_id: Some("t-old".into()),
+            dpms_link_pending: true,
         };
         let json = serde_json::to_value(&vm).unwrap();
         // 锁定 camelCase 键名（对齐 line 650 TS，前端按这些键取值）。
@@ -1573,6 +1591,8 @@ mod tests {
         assert_eq!(json["issueStatusCategory"], "todo");
         assert_eq!(json["issueStatusName"], "待产品评审");
         assert_eq!(json["rerunOfTaskId"], "t-old");
+        // DPMS 待回传提醒（M5-cn 后 UI 投影）：camelCase 键，前端红色「DPMS」徽标的判据。
+        assert_eq!(json["dpmsLinkPending"], true);
         // 附件元数据（输入框可见性）：空数组序列化为 []，前端按长度判空不渲染。
         assert_eq!(json["attachments"], serde_json::json!([]));
         // active 行无本地 run 链接（终态行才填）。
@@ -1620,6 +1640,9 @@ mod tests {
             completed_at: "2026-08-06T01:23:45Z".into(),
             issue_status_category: Some("todo".into()),
             issue_status_name: None,
+            // DPMS 快照：要求创建且未回传 → 终态行渲染「待回传 DPMS」徽标。
+            dpms_required: true,
+            dpms_story_id: None,
         };
         let vm = RemoteTaskVm::from_completed(&c, "proj-1");
         assert_eq!(vm.id, "rt-1");
@@ -1640,11 +1663,19 @@ mod tests {
         assert_eq!(vm.issue_status_category.as_deref(), Some("todo"));
         assert!(vm.issue_status_name.is_none());
         assert!(vm.rerun_of_task_id.is_none());
+        // 要求创建且未回传 → 待回传徽标为真；已回传（dpms_story_id 有值）→ 徽标即消。
+        assert!(vm.dpms_link_pending);
+        let reported = RemoteCompletedTask {
+            dpms_story_id: Some(889001),
+            ..c.clone()
+        };
+        assert!(!RemoteTaskVm::from_completed(&reported, "proj-1").dpms_link_pending);
 
         // 旧历史条目（缺 kind）→ None，徽标不渲染（无迁移、无兼容层）。
         let legacy = RemoteCompletedTask {
             kind: None,
             issue_status_category: None,
+            dpms_required: false,
             ..c.clone()
         };
         let legacy_vm = RemoteTaskVm::from_completed(&legacy, "proj-1");
@@ -1654,6 +1685,7 @@ mod tests {
             legacy_vm.issue_status_category.is_none(),
             "未对账条目无 issue 状态"
         );
+        assert!(!legacy_vm.dpms_link_pending, "不涉及 DPMS 的终态无徽标");
 
         // title 空白 → 用 remote_task_id 兜底（不留空标签）。
         let blank = RemoteCompletedTask {
@@ -1706,6 +1738,8 @@ mod tests {
         // story 拆分：类型取 ActiveRemoteRun 快照（claim 时落盘）；已领取执行中无就绪语义 → 恒 None。
         assert_eq!(vm.kind.as_deref(), Some("test"));
         assert!(vm.readiness.is_none());
+        // 本 run 不涉及 DPMS（dpms_required=false 快照）→ 无「待回传 DPMS」徽标。
+        assert!(!vm.dpms_link_pending);
 
         // title 空/纯空白 → remote_task_id 兜底（不留空标签，与其它构造器一致）。
         let blank = ActiveRemoteRun {
@@ -1723,6 +1757,69 @@ mod tests {
         assert_eq!(
             RemoteTaskVm::from_active_run("remote-9", &ws, "proj-1").title,
             "remote-9"
+        );
+    }
+
+    #[test]
+    fn dpms_link_pending_truth_table_across_three_sources() {
+        // 「待回传 DPMS」徽标（M5-cn 后 UI 投影）：三源各自合成，语义统一为
+        // 「要求创建 DPMS 需求且 story 关联尚未回传」，与 bridge 回写守卫同源。
+        //
+        // pending/detail 行：wire dpms_required + system_story_id（issue 已预链接 = 无需提醒）。
+        let wire = RemoteTask {
+            id: "t-1".into(),
+            ..RemoteTask::default()
+        };
+        assert!(
+            !RemoteTaskVm::from_pending(&wire, "ws-1").dpms_link_pending,
+            "不涉及 DPMS（缺键）→ 无徽标"
+        );
+        let required = RemoteTask {
+            dpms_required: Some(true),
+            system_story_id: None,
+            ..wire.clone()
+        };
+        assert!(RemoteTaskVm::from_pending(&required, "ws-1").dpms_link_pending);
+        let prelinked = RemoteTask {
+            system_story_id: Some(889001),
+            ..required.clone()
+        };
+        assert!(
+            !RemoteTaskVm::from_pending(&prelinked, "ws-1").dpms_link_pending,
+            "issue 已链接 story（rerun 场景）→ 无徽标"
+        );
+        let not_required = RemoteTask {
+            dpms_required: Some(false),
+            ..required.clone()
+        };
+        assert!(!RemoteTaskVm::from_pending(&not_required, "ws-1").dpms_link_pending);
+
+        // active 行：claim 快照三条件（要求 + 未预链接 + 本 run 未成功回传）。
+        let mut run = ActiveRemoteRun {
+            workspace_id: "ws-1".into(),
+            local_project_id: "proj-1".into(),
+            local_task_id: "task-9".into(),
+            local_run_id: "run-9".into(),
+            issue_id: Some("iss-9".into()),
+            title: Some("In flight".into()),
+            started_at: "2026-08-07T03:00:00Z".into(),
+            issue_kind: None,
+            run_mode: "direct".into(),
+            dpms_required: true,
+            claim_system_story_id: None,
+            last_dpms_report: None,
+        };
+        assert!(RemoteTaskVm::from_active_run("remote-9", &run, "proj-1").dpms_link_pending);
+        run.last_dpms_report = Some(ReportDpmsStoryRequest { dpms_story_id: 889001 });
+        assert!(
+            !RemoteTaskVm::from_active_run("remote-9", &run, "proj-1").dpms_link_pending,
+            "回传成功后徽标即消"
+        );
+        run.last_dpms_report = None;
+        run.claim_system_story_id = Some(889001);
+        assert!(
+            !RemoteTaskVm::from_active_run("remote-9", &run, "proj-1").dpms_link_pending,
+            "claim 时已链接 → 无徽标"
         );
     }
 }
