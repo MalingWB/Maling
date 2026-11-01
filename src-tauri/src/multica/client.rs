@@ -662,22 +662,26 @@ pub enum SkillFilesResponse {
     Bare(Vec<RemoteSkillFile>),
 }
 
-// ===== runtime-assets（角色共享通道 B）wire 类型（设计 `.claude/design/multica-role-management/` §4）=====
+// ===== runtime-assets（角色/工作流共享通道 B）wire 类型 =====
 //
-// 三种工单共用一个详情响应与一个 install 上报端点，形态由 action/item_id 区分：
-// - list（盘点）：`GET .../assets/request/{id}` → 枚举本地角色，**只报摘要不报正文**（§5.1）；
-// - export（提取）：action=install 且 item_id 空、payload={asset_key} → 按 key 读完整角色回传；
-// - push-install（推送安装）：action=install 且 item_id 非空、payload 即角色正文 → 落库 + 回报名字。
+// 设计：角色 `.claude/design/multica-role-management/` §4；工作流
+// `.claude/design/multica-workflow-management/码灵对接说明(1).md` §4。两类资产共用同一组
+// 端点与工单形态，由详情 `asset_type`（role / workflow）区分；三种工单由 action/item_id 区分：
+// - list（盘点）：`GET .../assets/request/{id}` → 枚举本地资产，**只报摘要不报正文**；
+// - export（提取）：action=install 且 item_id 空、payload={asset_key} → 按 key 读完整资产回传；
+// - push-install（推送安装）：action=install 且 item_id 非空、payload 即资产正文 → 落库 + 回报名字。
 
 /// `GET /api/daemon/runtimes/{rid}/assets/request/{requestId}` —— 工单详情（权威 action 来源）。
 ///
 /// 只建模消费字段（id/slug/version 等信息性字段不承载；serde 未知字段容忍即忽略）。
-/// `payload` 形态随工单变化（export 是 `{asset_key}`、push-install 是角色正文），故承载为
+/// `payload` 形态随工单变化（export 是 `{asset_key}`、push-install 是资产正文），故承载为
 /// `Value` 由处理侧按工单解析（`runtime_assets::classify_runtime_assets_request`）。
 #[derive(Debug, Deserialize)]
 pub struct RuntimeAssetsRequest {
     /// `list` | `install`（详情权威值；ack 里的 action 只是建议）。
     pub action: String,
+    /// `role` | `workflow`（list 工单也以详情该字段为权威——ack 对 list 不带 asset_type，
+    /// 必须先 GET 再回报；空 = 尚未分化的旧 server，按 role 容忍）。
     #[serde(default)]
     pub asset_type: String,
     /// 空 = export（本机提取），非空（market item uuid）= push-install（推送安装）。
@@ -687,7 +691,7 @@ pub struct RuntimeAssetsRequest {
     pub payload: Option<serde_json::Value>,
 }
 
-/// export 工单详情 payload（`{"asset_key":"pf-my-role"}`）。
+/// export 工单详情 payload（`{"asset_key":"pf-my-role"}`；两类资产同形，key 空间各归各）。
 #[derive(Debug, Deserialize)]
 pub struct RuntimeAssetsExportPayload {
     pub asset_key: String,
@@ -704,7 +708,8 @@ pub struct RuntimeAssetsListReport {
     pub error: Option<String>,
 }
 
-/// list 上报的单个角色摘要（无正文；`key` = 本地 profile.id，export 工单按它回取）。
+/// list 上报的单个资产摘要（无正文；`key` = 本地资产 id，export 工单按它回取；
+/// `type` = `role` | `workflow`，web 弹窗按传入类型渲染，混类会显示错乱）。
 #[derive(Debug, Serialize)]
 pub struct RuntimeAssetSummary {
     pub key: String,
@@ -715,14 +720,23 @@ pub struct RuntimeAssetSummary {
     pub updated_at: String,
 }
 
+/// export 工单回传的交付物 payload：角色交换文档或工作流模板 envelope（两类资产同端点，
+/// 形态由工单 asset_type 决定；untagged 序列化即内层文档本身，不带类型标签）。
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum RuntimeAssetPayload {
+    Role(gold_band::app::MulticaRoleExchange),
+    Workflow(gold_band::app::MulticaWorkflowExchange),
+}
+
 /// export / push-install 工单上报 body（`POST .../assets/install/{requestId}/result`，两形态共用）。
 ///
-/// export completed → `payload`（角色正文）；push-install completed → `result`（实际落库名字
+/// export completed → `payload`（资产正文）；push-install completed → `result`（实际落库名字
 /// + 可读展示名）；failed → `error`。
 #[derive(Debug, Serialize)]
 pub struct RuntimeAssetsInstallReport {
     pub status: &'static str,
-    pub payload: Option<gold_band::app::MulticaRoleExchange>,
+    pub payload: Option<RuntimeAssetPayload>,
     pub result: Option<RuntimeAssetsInstallResult>,
     pub error: Option<String>,
 }
@@ -2000,6 +2014,7 @@ fn hex_val(b: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gold_band::dsl::WorkflowDsl;
     use serde_json::json;
 
     #[test]
@@ -3197,12 +3212,12 @@ mod tests {
         // export completed：payload 承载角色正文（交换文档 wire 形态：name=slug、is_builtin snake）。
         let export = RuntimeAssetsInstallReport {
             status: "completed",
-            payload: Some(gold_band::app::MulticaRoleExchange {
+            payload: Some(RuntimeAssetPayload::Role(gold_band::app::MulticaRoleExchange {
                 name: "pf-my-role".into(),
                 description: "一句话".into(),
                 content: "---\nname: pf-my-role\n---\nbody".into(),
                 is_builtin: false,
-            }),
+            })),
             result: None,
             error: None,
         };
@@ -3212,6 +3227,35 @@ mod tests {
         assert!(json["payload"].get("dynamicTemplate").is_none());
         // Option 字段显式 null（与 skill 上报同约定，不加 skip_serializing_if）。
         assert!(json["result"].is_null());
+
+        // export completed（workflow）：payload 承载模板 envelope（isBuiltIn camelCase、
+        // 四键形状、绝不携带 modelBindings——multaca 发布校验 MODEL_BINDINGS_PRESENT 双保险）。
+        let export = RuntimeAssetsInstallReport {
+            status: "completed",
+            payload: Some(RuntimeAssetPayload::Workflow(
+                gold_band::app::MulticaWorkflowExchange {
+                    id: "my-pipeline".into(),
+                    name: "我的流水线".into(),
+                    is_built_in: true,
+                    workflow: WorkflowDsl {
+                        version: "0.1".into(),
+                        id: "workflow-abc".into(),
+                        entry: "dev".into(),
+                        control: Default::default(),
+                        nodes: Vec::new(),
+                        edges: Vec::new(),
+                    },
+                },
+            )),
+            result: None,
+            error: None,
+        };
+        let json = serde_json::to_value(&export).unwrap();
+        assert_eq!(json["payload"]["id"], "my-pipeline");
+        assert_eq!(json["payload"]["isBuiltIn"], true);
+        assert_eq!(json["payload"]["workflow"]["entry"], "dev");
+        assert!(json["payload"].get("modelBindings").is_none());
+        assert!(json["payload"].get("is_builtin").is_none());
 
         // push-install completed：result.installed_name（= 新本地 profile.id）+
         // installed_display_name（实际展示名，multica 反馈 P3）；failed：error。

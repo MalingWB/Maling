@@ -13,6 +13,7 @@ mod state_access;
 mod state_factory;
 mod transition_context;
 pub mod upstream;
+mod workflow_share;
 
 pub use self::conversation_run::{
     CONVERSATION_METADATA_VERSION, CONVERSATION_SOURCE_CLI, CONVERSATION_SOURCE_DESKTOP,
@@ -177,6 +178,9 @@ pub use self::profiles::{
     ImportProfilesInput, ImportProfilesResult, MulticaRoleExchange, ProfileCommandError,
     ProfileEntry, ProfileInput, ProfileList, ProfileScope, multica_exchange_to_profile_input,
     profile_to_multica_exchange,
+};
+pub use self::workflow_share::{
+    MulticaWorkflowExchange, workflow_template_to_multica_exchange,
 };
 
 fn tail_text(text: &str, limit: usize) -> String {
@@ -3866,6 +3870,74 @@ impl App {
         workflow: WorkflowDsl,
     ) -> Result<WorkflowTemplateStore> {
         self.save_workflow_template_with_bindings(name, workflow, WorkflowModelBindings::default())
+    }
+
+    /// multica push-install 工单落库（工作流共享通道 B；wire envelope 在 `workflow_share`）。
+    ///
+    /// 语义（multica 工作流对接 §4.4/§5.4，`conflict_strategy:"skip"` 由本侧执行）：
+    /// - 同 id 既有**用户**模板 → 跳过不覆盖，返回既有条目（重装幂等，回报现有名）；
+    /// - 同 id 是**内置**模板（只读）→ 物化用户副本（ADR-0008 D6：内置随版本演进不覆盖，
+    ///   共享副本可能是更新的编排）；
+    /// - 无冲突 → 新模板**保留 payload id**：本地 id 空间与 multica asset key 对齐，
+    ///   「同 key 跳过」的重装去重才成立。
+    ///
+    /// 与 [`App::save_workflow_template_with_bindings`] 的刻意差异：
+    /// - inner `workflow.id` 恒重新生成——外来 inner id 是他机事实，撞本地 `DuplicateWorkflowId`
+    ///   不应拒装；asset 身份在模板 id（payload id），inner id 只是本机编排事实；
+    /// - 不做 `resolve_workflow_profiles` / `validate_ai_dynamic_allowed_workflows`（§5.5 角色
+    ///   依赖首版不处理：引用缺失不阻断安装，客户端打开/运行时既有提示兜底）；
+    /// - 不动 `last_used_template_id`（后台被动安装不改变用户本地默认选中）。
+    ///
+    /// [`App::save_workflow_template_with_bindings`]: App::save_workflow_template_with_bindings
+    pub fn install_workflow_template_from_multica(
+        &self,
+        exchange: &MulticaWorkflowExchange,
+    ) -> Result<WorkflowTemplate> {
+        let name = exchange.name.trim();
+        if name.is_empty() {
+            bail!("workflow template name cannot be empty");
+        }
+        let mut store = self.load_workflow_template_store()?;
+        if let Some(existing) = store
+            .templates
+            .iter()
+            .find(|template| template.id == exchange.id)
+        {
+            if !existing.is_built_in {
+                return Ok(existing.clone());
+            }
+            // builtin 只读：继续走物化用户副本（返回的是本次安装产物，不是既有内置）。
+        }
+        let mut workflow = exchange.workflow.clone();
+        workflow.id = next_workflow_id();
+        let mut model_bindings = WorkflowModelBindings::default();
+        reconcile_authoring_workflow_for_save(&mut workflow, &mut model_bindings, None, None)?;
+        let validated = validate_authoring_workflow(workflow)?;
+        // payload id 保留为本地模板 id；被占（builtin 撞 id / payload id 空）时按名字派生唯一 id。
+        let id = if !exchange.id.trim().is_empty()
+            && store
+                .templates
+                .iter()
+                .all(|template| template.id != exchange.id)
+        {
+            exchange.id.clone()
+        } else {
+            unique_workflow_template_id(&store, name)
+        };
+        let now = now_rfc3339_like();
+        let template = WorkflowTemplate {
+            id,
+            name: name.to_string(),
+            is_built_in: false,
+            optional_entry_stage: None,
+            workflow: validated.raw,
+            model_bindings,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        store.templates.push(template.clone());
+        self.save_workflow_template_store(&store)?;
+        Ok(template)
     }
 
     pub fn save_workflow_template_with_bindings(
@@ -7871,6 +7943,157 @@ mod tests {
             unreachable!();
         };
         assert_eq!(model.as_deref(), Some("gpt-5.4"));
+    }
+
+    #[test]
+    fn multica_workflow_install_skip_builtin_copy_and_id_preservation() {
+        use super::*;
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+
+        let exchange_for = |id: &str, name: &str| MulticaWorkflowExchange {
+            id: id.to_string(),
+            name: name.to_string(),
+            is_built_in: false,
+            workflow: WorkflowDsl {
+                version: "0.1".to_string(),
+                id: "workflow-foreign-inner".to_string(),
+                entry: "dev".to_string(),
+                control: Default::default(),
+                nodes: vec![NodeDsl::Worker(WorkerNode {
+                    id: "dev".to_string(),
+                    execution_slot_id: Some("slot-dev".to_string()),
+                    provider: Some("claude-acp".to_string()),
+                    model: None,
+                    profile: Some("pf-builtin-dev".to_string()),
+                    goal: Some("实现需求".to_string()),
+                    output: None,
+                    success_condition: None,
+                    permission_mode: None,
+                    auto_accept: false,
+                    config_options: Default::default(),
+                    manual_check: None,
+                    prompt_envelope: Default::default(),
+                })],
+                edges: vec![EdgeDsl {
+                    from: "dev".to_string(),
+                    to: crate::dsl::END_NODE.to_string(),
+                    on: crate::dsl::EdgeOutcome::Success,
+                    session: None,
+                    new_round_entry: None,
+                }],
+            },
+        };
+
+        // 新装：保留 payload id 作本地模板 id；inner workflow.id 重新生成（外来 inner id 不进本地）；
+        // envelope worker 携带的 provider 经 save 侧统一迁移进本地 binding（node 侧剥空）。
+        let created = app
+            .install_workflow_template_from_multica(&exchange_for("shared-pipeline", "共享流水线"))
+            .unwrap();
+        assert_eq!(created.id, "shared-pipeline");
+        assert_eq!(created.name, "共享流水线");
+        assert!(!created.is_built_in);
+        assert_ne!(created.workflow.id, "workflow-foreign-inner");
+        assert_eq!(created.model_bindings.bindings.len(), 1);
+        assert_eq!(
+            created.model_bindings.bindings[0].agent_id,
+            "claude-acp"
+        );
+        // 后台被动安装不动用户默认选中。
+        let store = app.workflow_templates().unwrap();
+        assert_eq!(store.last_used_template_id.as_deref(), Some("default"));
+
+        // 重装同 key：跳过不覆盖，返回既有条目（updated_at 不变佐证未覆盖）。
+        let before = store
+            .templates
+            .iter()
+            .find(|template| template.id == "shared-pipeline")
+            .unwrap()
+            .updated_at
+            .clone();
+        let skipped = app
+            .install_workflow_template_from_multica(&exchange_for("shared-pipeline", "改名也不覆盖"))
+            .unwrap();
+        assert_eq!(skipped.id, "shared-pipeline");
+        assert_eq!(skipped.name, "共享流水线");
+        assert_eq!(skipped.updated_at, before);
+
+        // builtin id 推送：内置只读，物化用户副本（派生 id、is_built_in=false、名字保留）。
+        let builtin_copy = app
+            .install_workflow_template_from_multica(&exchange_for("default", "默认完整工作流"))
+            .unwrap();
+        assert_ne!(builtin_copy.id, "default");
+        assert!(!builtin_copy.is_built_in);
+        assert_eq!(builtin_copy.name, "默认完整工作流");
+        // 内置本体未被覆盖（仍是 builtin 且名字未变）。
+        let store = app.workflow_templates().unwrap();
+        let builtin = store
+            .templates
+            .iter()
+            .find(|template| template.id == "default")
+            .unwrap();
+        assert!(builtin.is_built_in);
+    }
+
+    #[test]
+    fn multica_workflow_install_tolerates_missing_role_references() {
+        use super::*;
+        // §5.5：引用非 builtin 角色缺失不阻断安装（客户端打开/运行时既有提示兜底）——
+        // save_workflow_template 的 resolve_workflow_profiles 硬校验不适用于安装路径。
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+        let mut exchange = MulticaWorkflowExchange {
+            id: "needs-roles".to_string(),
+            name: "依赖角色".to_string(),
+            is_built_in: false,
+            workflow: WorkflowDsl {
+                version: "0.1".to_string(),
+                id: "workflow-x".to_string(),
+                entry: "dev".to_string(),
+                control: Default::default(),
+                nodes: vec![NodeDsl::Worker(WorkerNode {
+                    id: "dev".to_string(),
+                    execution_slot_id: None,
+                    provider: Some("claude-acp".to_string()),
+                    model: None,
+                    profile: Some("pf-not-installed".to_string()),
+                    goal: None,
+                    output: None,
+                    success_condition: None,
+                    permission_mode: None,
+                    auto_accept: false,
+                    config_options: Default::default(),
+                    manual_check: None,
+                    prompt_envelope: Default::default(),
+                })],
+                edges: vec![EdgeDsl {
+                    from: "dev".to_string(),
+                    to: crate::dsl::END_NODE.to_string(),
+                    on: crate::dsl::EdgeOutcome::Success,
+                    session: None,
+                    new_round_entry: None,
+                }],
+            },
+        };
+        // 对照：同一 workflow 走 save_workflow_template 会被角色解析拒绝。
+        assert!(
+            app.save_workflow_template("依赖角色".to_string(), exchange.workflow.clone())
+                .is_err()
+        );
+        let installed = app.install_workflow_template_from_multica(&exchange).unwrap();
+        assert_eq!(installed.id, "needs-roles");
+
+        // 结构非法仍拒绝（entry 引用未声明节点 → 与 multica INVALID_TEMPLATE 同族校验）。
+        // 用新 id：同 key 已存在时 skip 先于校验（幂等不覆盖，不重验旧 payload）。
+        exchange.id = "needs-roles-invalid".to_string();
+        exchange.workflow.entry = "ghost".to_string();
+        assert!(app.install_workflow_template_from_multica(&exchange).is_err());
+
+        // 名字空白拒绝（envelope 名是落库名的唯一来源）。
+        let mut blank = exchange.clone();
+        blank.name = "   ".to_string();
+        blank.workflow.entry = "dev".to_string();
+        assert!(app.install_workflow_template_from_multica(&blank).is_err());
     }
 
     #[test]

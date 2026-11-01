@@ -3083,6 +3083,24 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.88 改动八十六：multica 工作流共享——daemon 工单被动上传/下载（M5-cr，2026-11-01）
+
+**背景**：multica「共享」组新增「工作流管理」页面（`/[workspace]/workflows`，与角色管理共用 runtime-assets 通道，见 `.claude/design/multica-workflow-management/码灵对接说明(1).md`）。**server 零改动**——工作流复用 role 的「心跳认领 → 取详情 → 执行 → 回报」框架（12.87 / M5-cq），仅新增 `asset_type=workflow` 分支与工作流特有规则：modelBindings 永不共享（ADR-0008 D3 per-device 配置）、builtin id 推送落改名副本（D6）、§5.5 角色依赖首版不处理。码灵仍**纯被动、零桌面 UI、零通道 A**。
+
+**方案**：
+
+- **lib 格式转换真值源**（`src/app/workflow_share.rs`，新）：`MulticaWorkflowExchange {id, name, isBuiltIn, workflow}`——wire camelCase 四键（§5.1 envelope 定稿；与角色交换的 snake `is_builtin` 不同，两类 envelope 各自跟随 multica 侧定稿形状，不强求统一）。`workflow` 即 `WorkflowDsl` 原生 wire 形态（节点 `"type"` tag / 边 `$end`·`$new-round` 伪节点 / `on` kebab 值 / `executionSlotId` 显式 camel 与其余 Rust 原名混排——两端天然一致，无需自定义 DSL 映射）。**modelBindings 剥离由构造保证**：envelope 结构上没有该字段，序列化不可能带出（multica 发布校验 `MODEL_BINDINGS_PRESENT` 双保险的另一侧）；`optionalEntryStage`/时间戳不进 envelope（前者本地私有、后者无 wire 字段）。
+- **lib 安装入口**（`App::install_workflow_template_from_multica`，`src/app/mod.rs`）：同 id（模板 id）已存在且非 builtin → 跳过返回现有（skip 策略，**skip 判定先于校验**——重复安装幂等，结构问题不二次翻旧账）；`reconcile_authoring_workflow_for_save` 迁移（执行槽指派/worker 绑定搬移进 bindings——注意该副作用会为带 provider 的 worker 生成绑定条目，属本地私有数据，不影响 wire）+ `validate_authoring_workflow` 结构校验（≈multica `INVALID_TEMPLATE`），**跳过 `resolve_workflow_profiles` / `validate_ai_dynamic_allowed_workflows`**（§5.5 角色引用缺失不阻断安装，缺失提示沿用客户端打开/运行时既有交互）；inner `workflow.id` 恒重生成（`next_workflow_id`，防外来 id 撞本地 DuplicateWorkflowId）；payload id 可用作模板 id 时**保留**（list key = export asset_key = 安装去重锚点，同一 key 空间），builtin id 碰撞/空 id → `unique_workflow_template_id` 派生副本 id；不触碰 `last_used_template_id`。
+- **client wire 双形态 payload**（`client.rs`）：`RuntimeAssetPayload`（serde untagged enum Role/Workflow）承载 export/install 上报 body 的 `payload`——两类资产 envelope 形状不同，enum 是最小建模而非新抽象层；其余 wire 类型与 API **零新增**。
+- **工单处理扩展**（`src-tauri/src/multica/runtime_assets.rs`）：`classify_runtime_assets_request` 按详情 `asset_type` 分派——空 = 旧版 role 容忍（role 通道早于该字段），`workflow` → `ExportWorkflow{asset_key}` / `PushInstallWorkflow{exchange}`，**未知类型 → Err（"unsupported runtime-assets asset type"）→ failed 上报**（spec §6 防御：web gate 只挡界面入口，CLI 直连用户 API 同样能触发 install 端点，不得误当 role 处理）。list 工单 `want_role`/`want_workflow` 双类型过滤（`asset_type` 空 = 合并上报逐条带 `type`；非空**只回该类型**——web 弹窗按传入类型渲染，混入另一类显示错乱；未知类型 list → completed + `supported:false` 降级而非错误）。`workflow_asset_summaries`：key = 模板 id、type="workflow"、description 恒空（本地模板无描述字段）、`updated_at` epoch `{secs}Z` → RFC3339 UTC（`rfc3339_from_epoch_timestamp`，解析失败原样返回——与 role 的本地时区格式不同，工作流模板时间戳本就是 epoch 形态）。export 按 asset_key 读模板 → `workflow_template_to_multica_exchange` 回传；push-install → `install_workflow_template_from_multica` → result `{installed_name=落库模板 id, installed_display_name=实际落库名}`。
+- **明确不做**：通道 A market API（同 M5-cq）；multica 侧安装入口 gate 放开（spec §8 multica 配套事项，码灵 ready 后由 multica 侧放开 `runtime-asset-detail-page.tsx` 两处 role gate）；§5.5 角色依赖一并安装提示（multica deps 恒空未实现）。
+
+**方案自评审**：过度设计——零新增端点/持久状态/分发骨架（全量复用 M5-cq 心跳认领-详情-回报框架与 loop 分发器；安装复用 `save_workflow_template` 同一落库管线，无平行写入路径）；`RuntimeAssetPayload` enum 是两类 envelope 并存的最小建模。性能——心跳 tick 零增量（分发器不变）；list 只传摘要（正文仅 export/install 传输，单 artifact ≤8MB 且 serde 一次性序列化）；模板读写 spawn_blocking（与角色/skill 待办同模式）；本地工作流模板数与角色同级（个位~几十），全量读 store 是既有加载路径。
+
+**验证结果**：lib `app::workflow_share` 3 例（envelope 序列化无 modelBindings/optionalEntryStage/时间戳、wire 往返 + 键名锁定 `success_condition`/`prompt_envelope`/`executionSlotId`、缺 workflow 正文拒绝→failed）；lib `app` install 2 例（skip 幂等、builtin 副本 id 派生、payload id 保留、inner id 重生成、缺失角色引用容忍）；desktop `multica::runtime_assets` 新增 3 例（workflow 工单分类路由、未知 asset_type 拒绝 + 空=role 容忍 + workflow envelope 误投 role 通道失败、摘要 key/epoch→RFC3339 映射）+ `multica::client` 上报 body 扩展（Role 包裹 + Workflow payload 形态断言）；回归 lib `app::` **371/371**、desktop `multica::` **254/254**；clippy 两 crate 对改动文件零新告警。内网网页端到端（spec §7 联调验收用例）待打包联调，且需 multica 侧放开 workflow 安装入口（§8）。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）
