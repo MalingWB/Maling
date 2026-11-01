@@ -410,6 +410,40 @@ pub async fn get_conversation_pinned_task_page(
 }
 
 #[tauri::command]
+pub async fn get_conversation_recent_task_page(
+    state: State<'_, DesktopState>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> CommandResult<crate::view_models_conversation::ConversationRecentTaskPageVm> {
+    let started = Instant::now();
+    let context = state.context().map_err(command_error)?;
+    let result = spawn_blocking_command(move || {
+        let app = context.app();
+        let state = app.load_state().map_err(command_error)?;
+        let sources =
+            conversation_sidebar_sources(&context, &app, &state).map_err(command_error)?;
+        Ok(
+            crate::view_models_conversation::conversation_recent_task_page_vm(
+                &sources,
+                cursor.as_deref(),
+                limit.unwrap_or(
+                    crate::view_models_conversation::CONVERSATION_TASK_PAGE_DEFAULT_LIMIT,
+                ),
+            ),
+        )
+    })
+    .await;
+    info!(
+        target: "gold_band::perf",
+        command = "get_conversation_recent_task_page",
+        elapsed_ms = started.elapsed().as_millis(),
+        status = if result.is_ok() { "ok" } else { "error" },
+        "conversation recent task page loaded"
+    );
+    result
+}
+
+#[tauri::command]
 pub async fn get_conversation_run_summary_page(
     state: State<'_, DesktopState>,
     project_id: String,

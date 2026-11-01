@@ -3,7 +3,7 @@ import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Gl
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStableCallbacks } from '@/hooks/use-stable-callbacks';
-import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
+import type { ConversationPage, ConversationRecentTaskRowVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
 import { saveConversationPreference } from '../../api';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
@@ -90,6 +90,7 @@ interface ConversationSidebarProps {
   onRetryBootstrap: () => void;
   onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void;
   onRequestPinnedTasks: (cursor?: string | null) => void;
+  onRequestRecentTasks: (cursor?: string | null) => void;
   onRequestTaskRuns: (task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>, cursor?: string | null) => void;
 }
 
@@ -117,6 +118,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   onRetryBootstrap,
   onRequestWorkspaceTasks,
   onRequestPinnedTasks,
+  onRequestRecentTasks,
   onRequestTaskRuns,
 }: ConversationSidebarProps) {
   const readOnly = useReadOnlyExperience();
@@ -124,6 +126,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>({});
   const [expandedTaskKeys, setExpandedTaskKeys] = useState<ConversationSidebarExpandedTaskKeys>({ pinned: null, workspace: null });
   const [activeRunListScope, setActiveRunListScope] = useState<ConversationSidebarRunListScope>('workspace');
+  const [recentCollapsed, setRecentCollapsed] = useState(false);
   const [pinnedCollapsed, setPinnedCollapsed] = useState(() => {
     const pref = vm.preferences?.['pinned.collapsed'];
     if (typeof pref === 'boolean') return pref;
@@ -440,6 +443,53 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) cancelPendingTaskReveal();
           }}
         >
+        {/* Cross-workspace recent section: with a single workspace it duplicates the
+            workspace list below, so it only renders with at least two workspaces. */}
+        {vm.workspaces.length >= 2 ? (
+          <div className="my-1.5 border-y border-border/55 py-2">
+            <button
+              type="button"
+              data-conversation-sidebar-heading="recent"
+              className="sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1 text-left text-sm font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
+              onClick={() => setRecentCollapsed((collapsed) => !collapsed)}
+            >
+              <ChevronDown className={cn('size-3 transition-transform', recentCollapsed && '-rotate-90')} />
+              {t('conversation.sidebar.recent')}
+            </button>
+            {!recentCollapsed ? (
+              <div className="mt-1 space-y-0.5">
+                {(vm.recentTasks ?? []).map((row) => (
+                  <RecentTaskRow
+                    key={`recent-${conversationSidebarTaskKey(row.projectId, row.taskId, row.taskUuid)}`}
+                    row={row}
+                    isActive={active.kind === 'conversation-run' && active.projectId === row.projectId && active.taskId === row.taskId}
+                    onSelect={onSelect}
+                    t={t}
+                  />
+                ))}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'loading' ? (
+                  <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
+                    <Loader2 className="size-3 animate-spin" />
+                    {t('conversation.sidebar.loadingRecent')}
+                  </div>
+                ) : null}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'error' ? (
+                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => onRequestRecentTasks()}>
+                    {t('conversation.sidebar.retryRecent')}
+                  </Button>
+                ) : null}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && (vm.recentTasks ?? []).length === 0 ? (
+                  <div className="px-2 py-1 text-xs text-muted-foreground">{t('conversation.sidebar.noRecent')}</div>
+                ) : null}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && vm.recentTaskPage?.nextCursor ? (
+                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => onRequestRecentTasks(vm.recentTaskPage?.nextCursor)}>
+                    {t('conversation.sidebar.loadMoreRecent')}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {vm.pinRefs.length > 0 || vm.pinnedTasks.length > 0 ? (
           <div className="my-1.5 border-y border-border/55 py-2">
             <button
@@ -1154,6 +1204,68 @@ const TaskRow = memo(function TaskRow({
       </AlertDialogContent>
     </AlertDialog>
     </>
+  );
+});
+
+// ── Recent (cross-workspace) row ──
+
+/** Lightweight navigation row for the merged recent list. Full row interactions
+ *  (runs, rename, pin) stay in the workspace and pinned sections. */
+const RecentTaskRow = memo(function RecentTaskRow({
+  row,
+  isActive,
+  onSelect,
+  t,
+}: {
+  row: ConversationRecentTaskRowVm;
+  isActive: boolean;
+  onSelect: (page: ConversationPage) => void;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  const useAgentIdentity = conversationSidebarIdentityKind(row) === 'agent-icon';
+  const latestColor = row.latestRun ? conversationSidebarRunStatusClass(row.latestRun) : 'bg-muted-foreground/30';
+  const relativeTime = row.lastActivityAt && (row.runMode === 'direct' || row.latestRun?.status !== 'running')
+    ? formatCompactRelativeTime(row.lastActivityAt, t('conversation.runtime.justNow'))
+    : null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          data-recent-task-id={row.taskId}
+          data-recent-task-project={row.projectId}
+          className={cn(
+            'flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sidebar-foreground',
+            isActive ? 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground' : 'cursor-pointer hover:bg-sidebar-accent',
+          )}
+          onClick={() => {
+            if (!row.latestRun) return;
+            onSelect({
+              kind: 'conversation-run',
+              projectId: row.projectId,
+              taskId: row.taskId,
+              taskUuid: row.taskUuid,
+              runId: row.latestRun.runId,
+            });
+          }}
+        >
+          <span className="flex size-4 shrink-0 items-center justify-center">
+            {useAgentIdentity && row.agentIdentity ? (
+              <img src={agentIconSrc(row.agentIdentity.iconKey)} alt="" className={agentIconClass(row.agentIdentity.iconKey, 'size-3')} />
+            ) : (
+              <span className={cn('size-1.5 rounded-full', latestColor)} />
+            )}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-sm">{row.title}</span>
+          <span className="shrink-0 truncate text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">
+            {relativeTime ? `${row.workspaceName} · ${relativeTime}` : row.workspaceName}
+          </span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" className="max-w-[min(36rem,calc(100vw-2rem))] break-all">
+        {row.workspaceName} · {row.title}
+      </TooltipContent>
+    </Tooltip>
   );
 });
 

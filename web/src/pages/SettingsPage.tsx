@@ -27,6 +27,7 @@ import { Page, PageHeader } from '@/components/PageScaffold';
 import { Button } from '@/components/ui/button';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Input } from '@/components/ui/input';
+import { Slider } from '@/components/ui/slider';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
@@ -40,6 +41,14 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { cn } from '@/lib/utils';
 import { useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
 import { formatLocalDateTime } from '@/lib/datetime';
+import {
+  INTERFACE_ZOOM_DEFAULT,
+  INTERFACE_ZOOM_MAX,
+  INTERFACE_ZOOM_MIN,
+  INTERFACE_ZOOM_STEP,
+  previewInterfaceZoomPercent,
+  withInterfaceZoomPercent,
+} from '@/lib/desktop-zoom';
 import { normalizeFontCatalogFamilies } from '@/lib/font-families';
 import { ScheduledRuntimeSettings } from '@/components/scheduled-tasks/ScheduledRuntimeSettings';
 import { AvatarSettings } from '@/components/settings/AvatarSettings';
@@ -122,6 +131,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const [language, setLanguage] = useState(preferences.language);
   const [uiFontSize, setUiFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui'));
   const [editorFontSize, setEditorFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor'));
+  const [interfaceZoomPercent, setInterfaceZoomPercent] = useState(() => preferences.personalization.interfaceZoomPercent);
   const useLocalClaude = false;
   const [verboseLogging, setVerboseLogging] = useState(preferences.verboseLogging);
   const [browser, setBrowser] = useState(preferences.browser);
@@ -137,6 +147,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   useEffect(() => setLanguage(preferences.language), [preferences.language]);
   useEffect(() => setUiFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui')), [preferences.appearance, preferences.personalization]);
   useEffect(() => setEditorFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor')), [preferences.appearance, preferences.personalization]);
+  useEffect(() => setInterfaceZoomPercent(preferences.personalization.interfaceZoomPercent), [preferences.personalization.interfaceZoomPercent]);
   useEffect(() => setVerboseLogging(preferences.verboseLogging), [preferences.verboseLogging]);
   useEffect(() => setBrowser(preferences.browser), [preferences.browser]);
   useEffect(() => setUpdaterOverrideUrl(updaterSettings.overrideUrl ?? ''), [updaterSettings.overrideUrl]);
@@ -233,6 +244,18 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const previewTypographySize = (kind: 'ui' | 'editor', value: number) => {
     if (kind === 'ui') setUiFontSize(value); else setEditorFontSize(value);
     applyPersonalization(withTypographySize(personalization, kind, { source: 'custom', px: value }));
+  };
+
+  const previewZoomPercent = (value: number) => {
+    setInterfaceZoomPercent(value);
+    void previewInterfaceZoomPercent(value);
+  };
+
+  const chooseZoomPercent = (value: number) => {
+    const next = withInterfaceZoomPercent(personalization, value);
+    setPersonalization(next);
+    setInterfaceZoomPercent(next.interfaceZoomPercent);
+    onSave(appearance, next, language, useLocalClaude, verboseLogging, browser);
   };
 
   const resetTypographySize = (kind: 'ui' | 'editor') => {
@@ -410,6 +433,33 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                     </Select>
                   </div>
                 ) : null}
+                <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-border/45 p-3" data-interface-zoom-row="true">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold">{t('settings.interfaceZoom')}</div>
+                    <div className="text-xs text-muted-foreground">{t('settings.interfaceZoomDescription')}</div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3">
+                    <span className="w-12 text-right text-sm tabular-nums text-muted-foreground">{interfaceZoomPercent}%</span>
+                    <Slider
+                      aria-label={t('settings.interfaceZoom')}
+                      className="w-40"
+                      min={INTERFACE_ZOOM_MIN}
+                      max={INTERFACE_ZOOM_MAX}
+                      step={INTERFACE_ZOOM_STEP}
+                      value={[interfaceZoomPercent]}
+                      onValueChange={(values) => previewZoomPercent(values[0] ?? interfaceZoomPercent)}
+                      onValueCommit={(values) => chooseZoomPercent(values[0] ?? interfaceZoomPercent)}
+                    />
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button type="button" variant="ghost" size="icon-sm" aria-label={t('settings.resetZoom')} onPointerDown={(event) => event.preventDefault()} onClick={() => chooseZoomPercent(INTERFACE_ZOOM_DEFAULT)}>
+                          <RotateCcw className="size-3.5" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{t('settings.resetZoom')}</TooltipContent>
+                    </Tooltip>
+                  </div>
+                </div>
               </div>
             </SettingsSection>
 
@@ -737,7 +787,7 @@ function withTypographyFontStack(
   const normalized = normalizeFontFamilies(families);
   return {
     ...personalization,
-    schemaVersion: 4,
+    schemaVersion: 5,
     typography: {
       ...personalization.typography,
       [kind]: {

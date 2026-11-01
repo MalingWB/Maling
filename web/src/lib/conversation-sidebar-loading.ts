@@ -1,5 +1,7 @@
 import type {
   ConversationPinnedTaskPageVm,
+  ConversationRecentTaskPageVm,
+  ConversationRecentTaskRowVm,
   ConversationRunSummaryPageVm,
   ConversationSidebarBootstrapVm,
   ConversationSidebarVm,
@@ -8,8 +10,8 @@ import type {
 } from '@/types';
 import { parseTimestamp } from '@/lib/datetime';
 
-export const CONVERSATION_TASK_PAGE_SIZE = 24;
-export const CONVERSATION_RUN_PAGE_SIZE = 20;
+export const CONVERSATION_TASK_PAGE_SIZE = 10;
+export const CONVERSATION_RUN_PAGE_SIZE = 10;
 export const CONVERSATION_SIDEBAR_TASK_WINDOW = 120;
 export const CONVERSATION_SIDEBAR_RUN_WINDOW = 100;
 
@@ -135,6 +137,8 @@ export function createEmptyConversationSidebar(): ConversationSidebarVm {
     pinRefs: [],
     pinnedTasks: [],
     pinnedTaskPage: { status: 'not-loaded', nextCursor: null },
+    recentTasks: [],
+    recentTaskPage: { status: 'not-loaded', nextCursor: null },
     tasksByWorkspace: {},
     workspaceTaskPages: {},
     lastActiveWorkspaceId: null,
@@ -174,6 +178,10 @@ export function applyConversationSidebarBootstrap(
     pinnedTaskPage: bootstrap.pinRefs.length === 0
       ? { status: 'ready', nextCursor: null }
       : { status: 'not-loaded', nextCursor: null },
+    // The workspace identity set changed; the merged recent list restarts from
+    // a fresh page so removed workspaces cannot linger in it.
+    recentTasks: sidebar.recentTasks.filter((task) => projectIds.has(task.projectId)),
+    recentTaskPage: { status: 'not-loaded', nextCursor: null },
     tasksByWorkspace,
     workspaceTaskPages,
     lastActiveWorkspaceId: bootstrap.lastActiveWorkspaceId ?? null,
@@ -267,6 +275,78 @@ export function applyConversationPinnedTaskPage(
   };
 }
 
+/** Merged recent rows stay ordered by the backend page order (activity desc). */
+export const CONVERSATION_SIDEBAR_RECENT_WINDOW = 100;
+
+function mergeRecentTasks(
+  first: ConversationRecentTaskRowVm[],
+  second: ConversationRecentTaskRowVm[],
+) {
+  const seen = new Set<string>();
+  const merged: ConversationRecentTaskRowVm[] = [];
+  for (const task of [...first, ...second]) {
+    const key = taskKey(task);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(task);
+    if (merged.length >= CONVERSATION_SIDEBAR_RECENT_WINDOW) break;
+  }
+  return merged;
+}
+
+export function beginConversationRecentTaskLoad(sidebar: ConversationSidebarVm): ConversationSidebarVm {
+  return { ...sidebar, recentTaskPage: { ...sidebar.recentTaskPage, status: 'loading' } };
+}
+
+export function failConversationRecentTaskLoad(sidebar: ConversationSidebarVm): ConversationSidebarVm {
+  return { ...sidebar, recentTaskPage: { ...sidebar.recentTaskPage, status: 'error' } };
+}
+
+export function applyConversationRecentTaskPage(
+  sidebar: ConversationSidebarVm,
+  page: ConversationRecentTaskPageVm,
+  append: boolean,
+): ConversationSidebarVm {
+  const recentTasks = append
+    ? mergeRecentTasks(sidebar.recentTasks, page.tasks)
+    : mergeRecentTasks(page.tasks, sidebar.recentTasks);
+  return {
+    ...sidebar,
+    recentTasks,
+    recentTaskPage: {
+      status: 'ready',
+      nextCursor: recentTasks.length >= CONVERSATION_SIDEBAR_RECENT_WINDOW ? null : page.nextCursor ?? null,
+    },
+  };
+}
+
+/** Projects one task-row transform into recent rows, preserving `workspaceName`. */
+export function mapConversationRecentTasks(
+  recentTasks: ConversationRecentTaskRowVm[],
+  transform: (task: ConversationTaskRowVm) => ConversationTaskRowVm,
+): ConversationRecentTaskRowVm[] {
+  if (recentTasks.length === 0) return recentTasks;
+  let changed = false;
+  const next = recentTasks.map((row) => {
+    const transformed = transform(row);
+    if (transformed === row) return row;
+    changed = true;
+    return { ...transformed, workspaceName: row.workspaceName };
+  });
+  return changed ? next : recentTasks;
+}
+
+/** Moves recent rows whose activity advanced to the merged front. */
+export function promoteConversationRecentTasks(
+  recentTasks: ConversationRecentTaskRowVm[],
+  predicate: (task: ConversationTaskRowVm) => boolean,
+): ConversationRecentTaskRowVm[] {
+  if (recentTasks.length === 0) return recentTasks;
+  const front = recentTasks.filter(predicate);
+  if (front.length === 0) return recentTasks;
+  return [...front, ...recentTasks.filter((task) => !predicate(task))];
+}
+
 function updateTaskCopies(
   sidebar: ConversationSidebarVm,
   predicate: (task: ConversationTaskRowVm) => boolean,
@@ -275,6 +355,7 @@ function updateTaskCopies(
   return {
     ...sidebar,
     pinnedTasks: sidebar.pinnedTasks.map((task) => predicate(task) ? update(task) : task),
+    recentTasks: mapConversationRecentTasks(sidebar.recentTasks ?? [], (task) => predicate(task) ? update(task) : task),
     tasksByWorkspace: Object.fromEntries(Object.entries(sidebar.tasksByWorkspace).map(([projectId, tasks]) => [
       projectId,
       tasks.map((task) => predicate(task) ? update(task) : task),

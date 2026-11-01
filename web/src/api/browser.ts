@@ -2605,6 +2605,11 @@ export const browserApi: RuntimeApi = {
     const preferences = browserPreviewState.setPreferences({ ...current, appearance, personalization, language, useLocalClaude, verboseLogging, browser });
     return Promise.resolve(preferences);
   },
+  applyDesktopZoom(percent: number) {
+    // Browser preview has no webview zoom; echo the clamped value back.
+    const stepped = Math.round(percent / 5) * 5;
+    return Promise.resolve(Math.min(200, Math.max(70, stepped)));
+  },
   saveDesktopAvatar(input) {
     const current = browserPreviewState.getPreferences();
     const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -2998,6 +3003,17 @@ export const browserApi: RuntimeApi = {
     const page = tasks.slice(start, start + limit);
     return Promise.resolve({
       tasks: page,
+      nextCursor: start + limit < tasks.length ? page.at(-1)?.taskId ?? null : null,
+      errors: [],
+    });
+  },
+  getConversationRecentTaskPage(cursor, limit = 24) {
+    const tasks = [...browserConversationTasks.values()]
+      .sort((left, right) => (right.lastActivityAt ?? '').localeCompare(left.lastActivityAt ?? ''));
+    const start = cursor ? Math.max(0, tasks.findIndex((task) => task.taskId === cursor) + 1) : 0;
+    const page = tasks.slice(start, start + limit);
+    return Promise.resolve({
+      tasks: page.map((task) => ({ ...task, workspaceName: 'Default Workspace' })),
       nextCursor: start + limit < tasks.length ? page.at(-1)?.taskId ?? null : null,
       errors: [],
     });

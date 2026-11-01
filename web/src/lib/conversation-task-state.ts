@@ -1,5 +1,5 @@
-import type { ConversationSidebarVm, ConversationTaskRowVm } from '@/types';
-import { CONVERSATION_SIDEBAR_TASK_WINDOW, promoteConversationLocatedTask } from '@/lib/conversation-sidebar-loading';
+import type { ConversationRecentTaskRowVm, ConversationSidebarVm, ConversationTaskRowVm } from '@/types';
+import { CONVERSATION_SIDEBAR_RECENT_WINDOW, CONVERSATION_SIDEBAR_TASK_WINDOW, promoteConversationLocatedTask } from '@/lib/conversation-sidebar-loading';
 import { parseTimestamp } from '@/lib/datetime';
 
 function sameTask(
@@ -58,6 +58,7 @@ export function applyConversationTaskSnapshot(
   const next = {
     ...sidebar,
     pinnedTasks: nextPinnedTasks,
+    recentTasks: upsertConversationRecentTask(sidebar, mergedTask, Boolean(existing)),
     tasksByWorkspace: {
       ...sidebar.tasksByWorkspace,
       [task.projectId]: boundedWorkspaceTasks,
@@ -67,4 +68,33 @@ export function applyConversationTaskSnapshot(
     && (parseTimestamp(task.lastActivityAt)?.getTime() ?? Number.NEGATIVE_INFINITY)
       > (parseTimestamp(existing.lastActivityAt)?.getTime() ?? Number.NEGATIVE_INFINITY);
   return activityAdvanced ? promoteConversationLocatedTask(next, mergedTask) : next;
+}
+
+/**
+ * Keeps the merged recent list in sync with one authoritative task snapshot:
+ * an already-listed row is updated in place; a brand-new task joins the front
+ * so a conversation created in this client is immediately visible. Rows from
+ * workspaces outside the loaded page set are left untouched.
+ */
+function upsertConversationRecentTask(
+  sidebar: ConversationSidebarVm,
+  task: ConversationTaskRowVm,
+  exists: boolean,
+): ConversationRecentTaskRowVm[] {
+  const recentTasks = sidebar.recentTasks ?? [];
+  if (recentTasks.length === 0 && !exists) return recentTasks;
+  const index = recentTasks.findIndex((candidate) => sameTask(candidate, task.projectId, task.taskId));
+  if (index >= 0) {
+    const current = recentTasks[index];
+    const updated: ConversationRecentTaskRowVm = { ...task, workspaceName: current.workspaceName };
+    if (updated === current) return recentTasks;
+    const next = [...recentTasks];
+    next[index] = updated;
+    return next;
+  }
+  // Only add unseen tasks when the recent page is already materialized; a
+  // not-loaded list stays empty until its own page request fills it.
+  if (sidebar.recentTaskPage?.status !== 'ready') return recentTasks;
+  const workspaceName = sidebar.workspaces.find((workspace) => workspace.projectId === task.projectId)?.name ?? task.projectId;
+  return [{ ...task, workspaceName }, ...recentTasks].slice(0, CONVERSATION_SIDEBAR_RECENT_WINDOW);
 }

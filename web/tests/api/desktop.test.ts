@@ -316,6 +316,12 @@ describe('desktopApi', () => {
       limit: 24,
     });
 
+    await desktopApi.getConversationRecentTaskPage('recent-10', 10);
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_recent_task_page', {
+      cursor: 'recent-10',
+      limit: 10,
+    });
+
     await desktopApi.getConversationRunSummaryPage('project-1', 'task-1', 'run-20', 20);
     expect(invokeCommand).toHaveBeenCalledWith('get_conversation_run_summary_page', {
       projectId: 'project-1',

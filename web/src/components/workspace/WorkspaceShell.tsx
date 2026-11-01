@@ -90,6 +90,7 @@ interface WorkspaceShellProps {
   onRetryBootstrap: () => void;
   onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void;
   onRequestPinnedTasks: (cursor?: string | null) => void;
+  onRequestRecentTasks: (cursor?: string | null) => void;
   onRequestTaskRuns: (task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>, cursor?: string | null) => void;
   activeWorkspaceId?: string | null;
   defaultExpandedWorkspaceId?: string | null;
@@ -335,6 +336,7 @@ function WorkspaceShellLayout({
   onRetryBootstrap,
   onRequestWorkspaceTasks,
   onRequestPinnedTasks,
+  onRequestRecentTasks,
   onRequestTaskRuns,
   activeWorkspaceId: _activeWorkspaceId,
   defaultExpandedWorkspaceId,
@@ -801,6 +803,7 @@ function WorkspaceShellLayout({
               onRetryBootstrap={onRetryBootstrap}
               onRequestWorkspaceTasks={onRequestWorkspaceTasks}
               onRequestPinnedTasks={onRequestPinnedTasks}
+              onRequestRecentTasks={onRequestRecentTasks}
               onRequestTaskRuns={onRequestTaskRuns}
             />
           ) : null}

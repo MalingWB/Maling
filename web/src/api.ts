@@ -794,6 +794,9 @@ export function getConversationTaskSummary(projectId: string, taskId: string, ta
 export function getConversationPinnedTaskPage(cursor?: string | null, limit?: number) {
   return getRuntimeApi().getConversationPinnedTaskPage(cursor, limit);
 }
+export function getConversationRecentTaskPage(cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationRecentTaskPage(cursor, limit);
+}
 
 export function getConversationRunSummaryPage(projectId: string, taskId: string, cursor?: string | null, limit?: number) {
   return getRuntimeApi().getConversationRunSummaryPage(projectId, taskId, cursor, limit);

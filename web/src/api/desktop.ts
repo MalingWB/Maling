@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteImageTrustVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRecentTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteImageTrustVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT } from './client';
 import {
@@ -552,6 +552,9 @@ export const desktopApi: RuntimeApi = {
   saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser) {
     return invokeCommand<PreferencesVm>('save_desktop_preferences', { appearance, personalization, language, useLocalClaude, verboseLogging, browser }).then(withWallpaperAssetUrls);
   },
+  applyDesktopZoom(percent: number) {
+    return invokeCommand<number>('apply_desktop_zoom', { percent });
+  },
   saveDesktopAvatar(input) {
     return invokeCommand<PreferencesVm>('save_desktop_avatar', { input }).then(withWallpaperAssetUrls);
   },
@@ -696,6 +699,9 @@ export const desktopApi: RuntimeApi = {
   },
   getConversationPinnedTaskPage(cursor, limit) {
     return invokeCommand<ConversationPinnedTaskPageVm>('get_conversation_pinned_task_page', { cursor, limit });
+  },
+  getConversationRecentTaskPage(cursor, limit) {
+    return invokeCommand<ConversationRecentTaskPageVm>('get_conversation_recent_task_page', { cursor, limit });
   },
   getConversationRunSummaryPage(projectId, taskId, cursor, limit) {
     return invokeCommand<ConversationRunSummaryPageVm>('get_conversation_run_summary_page', { projectId, taskId, cursor, limit });

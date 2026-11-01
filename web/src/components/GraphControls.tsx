@@ -1,22 +1,91 @@
 import { ControlButton, Controls } from '@xyflow/react';
-import { Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
+import { Expand, Maximize2, MoveDown, MoveRight, Shuffle, ZoomIn, ZoomOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import type { WorkflowGraphDirectionPreference } from '@/types';
+
+export interface GraphDirectionControlProps {
+  preference: WorkflowGraphDirectionPreference;
+  onChange: (next: WorkflowGraphDirectionPreference) => void;
+}
 
 export function GraphControls({
   disabled = false,
   onZoomIn,
   onZoomOut,
   onFitView,
+  direction,
+  onFullscreen,
 }: {
   disabled?: boolean;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onFitView: () => void;
+  /** When present, renders the horizontal/vertical direction switcher. */
+  direction?: GraphDirectionControlProps;
+  /** When present, renders the fullscreen toggle. */
+  onFullscreen?: () => void;
 }) {
   const { t } = useTranslation();
+  const directionIcon = direction?.preference === 'vertical'
+    ? <MoveDown />
+    : direction?.preference === 'horizontal'
+      ? <MoveRight />
+      : <Shuffle />;
   return (
     <Controls showZoom={false} showFitView={false} showInteractive={false} position="bottom-right">
+      {onFullscreen ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <ControlButton disabled={disabled} aria-label={t('graph.fullscreen')} onClick={onFullscreen}><Expand /></ControlButton>
+          </TooltipTrigger>
+          <TooltipContent side="left">{t('graph.fullscreen')}</TooltipContent>
+        </Tooltip>
+      ) : null}
+      {direction ? (
+        <DropdownMenu>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <ControlButton disabled={disabled} aria-label={t('graph.direction')}>{directionIcon}</ControlButton>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="left">{t('graph.direction')}</TooltipContent>
+          </Tooltip>
+          <DropdownMenuContent align="end" sideOffset={4}>
+            <DropdownMenuItem
+              aria-label={t('graph.directionAuto')}
+              onClick={() => direction.onChange('auto')}
+            >
+              <Shuffle className="size-4" />
+              <span className="flex-1">{t('graph.directionAuto')}</span>
+              {direction.preference === 'auto' ? <span aria-hidden className="text-muted-foreground">✓</span> : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              aria-label={t('graph.directionHorizontal')}
+              onClick={() => direction.onChange('horizontal')}
+            >
+              <MoveRight className="size-4" />
+              <span className="flex-1">{t('graph.directionHorizontal')}</span>
+              {direction.preference === 'horizontal' ? <span aria-hidden className="text-muted-foreground">✓</span> : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              aria-label={t('graph.directionVertical')}
+              onClick={() => direction.onChange('vertical')}
+            >
+              <MoveDown className="size-4" />
+              <span className="flex-1">{t('graph.directionVertical')}</span>
+              {direction.preference === 'vertical' ? <span aria-hidden className="text-muted-foreground">✓</span> : null}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
       <Tooltip>
         <TooltipTrigger asChild>
           <ControlButton disabled={disabled} aria-label={t('graph.zoomIn')} onClick={onZoomIn}><ZoomIn /></ControlButton>

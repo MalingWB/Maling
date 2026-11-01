@@ -16,6 +16,7 @@ import {
   getConversationRun,
   getConversationRunMode,
   getConversationPinnedTaskPage,
+  getConversationRecentTaskPage,
   getConversationRunSummaryPage,
   getConversationSidebarBootstrap,
   getConversationTaskPage,
@@ -107,6 +108,9 @@ import { Shell, type ShellProps } from './components/Shell';
 import { BrandLoadingState } from '@/components/BrandLoadingState';
 import i18n, { displayAppError, loadI18nLanguage } from './i18n';
 import { useScheduledTaskCreatedNotice } from '@/lib/scheduled-task-created-notice';
+import { useDesktopZoomShortcuts } from '@/hooks/use-desktop-zoom-shortcuts';
+import { WorkflowGraphDirectionProvider } from '@/components/workflow-direction-preference';
+import type { WorkflowGraphDirectionPreference } from '@/types';
 import {
   conversationAcpRunRefreshStatus,
   isRuntimeControlledConversationLifecycle,
@@ -223,6 +227,9 @@ import {
   clearConversationLocatedTask,
   locateConversationSidebarTask,
   applyConversationPinnedTaskPage,
+  applyConversationRecentTaskPage,
+  beginConversationRecentTaskLoad,
+  failConversationRecentTaskLoad,
   applyConversationRunSummaryPage,
   applyConversationSidebarBootstrap as mergeConversationSidebarBootstrap,
   applyConversationTaskPage,
@@ -458,7 +465,7 @@ function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
 }
 
 /** Shell callbacks App keeps identity-stable across renders. */
-type ShellCommands = Required<Pick<ShellProps, 'onSelect' | 'onSelectConversation' | 'onToggleSidebar' | 'onOpenPersonalAnalytics' | 'onOpenReleaseNotes' | 'onChooseWorkspace' | 'onConversationNew' | 'onConversationSearch' | 'onConversationRetrySidebar' | 'onConversationRequestWorkspaceTasks' | 'onConversationRequestPinnedTasks' | 'onConversationRequestTaskRuns' | 'onConversationPauseRun' | 'onConversationRenameTask' | 'onConversationDeleteTask' | 'onConversationSetResident' | 'onConversationPinTask' | 'onConversationUnpinTask' | 'onConversationNewInWorkspace' | 'onConversationAddWorkspace' | 'onConversationRemoveWorkspace'>>;
+type ShellCommands = Required<Pick<ShellProps, 'onSelect' | 'onSelectConversation' | 'onToggleSidebar' | 'onOpenPersonalAnalytics' | 'onOpenReleaseNotes' | 'onChooseWorkspace' | 'onConversationNew' | 'onConversationSearch' | 'onConversationRetrySidebar' | 'onConversationRequestWorkspaceTasks' | 'onConversationRequestPinnedTasks' | 'onConversationRequestRecentTasks' | 'onConversationRequestTaskRuns' | 'onConversationPauseRun' | 'onConversationRenameTask' | 'onConversationDeleteTask' | 'onConversationSetResident' | 'onConversationPinTask' | 'onConversationUnpinTask' | 'onConversationNewInWorkspace' | 'onConversationAddWorkspace' | 'onConversationRemoveWorkspace'>>;
 
 export function App() {
   const { t } = useTranslation();
@@ -729,6 +736,37 @@ export function App() {
     });
   }, [conversationSidebarFlights]);
 
+  const loadConversationRecentTasks = useCallback((cursor?: string | null) => {
+    const append = Boolean(cursor);
+    const flightKey = 'recent';
+    return conversationSidebarFlights.run(flightKey, async () => {
+      const generation = conversationSidebarFlights.generation(flightKey);
+      setConversationSidebar((current) => {
+        const next = beginConversationRecentTaskLoad(current);
+        conversationSidebarRef.current = next;
+        return next;
+      });
+      try {
+        const page = await getConversationRecentTaskPage(cursor, CONVERSATION_TASK_PAGE_SIZE);
+        if (!conversationSidebarFlights.isCurrent(flightKey, generation)) return page;
+        setConversationSidebar((current) => {
+          const next = applyConversationRecentTaskPage(current, page, append);
+          conversationSidebarRef.current = next;
+          return next;
+        });
+        return page;
+      } catch (error) {
+        if (!conversationSidebarFlights.isCurrent(flightKey, generation)) throw error;
+        setConversationSidebar((current) => {
+          const next = failConversationRecentTaskLoad(current);
+          conversationSidebarRef.current = next;
+          return next;
+        });
+        throw error;
+      }
+    });
+  }, [conversationSidebarFlights]);
+
   const loadConversationRunHistory = useCallback((
     task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
     cursor?: string | null,
@@ -785,6 +823,7 @@ export function App() {
         ?? sidebarBootstrap.workspaces[0]?.projectId;
       if (projectId) void loadConversationWorkspaceTasks(projectId).catch(() => {});
       if (sidebarBootstrap.pinRefs.length > 0) void loadConversationPinnedTasks().catch(() => {});
+      if (sidebarBootstrap.workspaces.length >= 2) void loadConversationRecentTasks().catch(() => {});
       return sidebarBootstrap;
     } catch (error) {
       if (!conversationSidebarFlights.isCurrent('bootstrap', generation)) throw error;
@@ -799,6 +838,7 @@ export function App() {
     applyConversationSidebarBootstrap,
     conversationSidebarFlights,
     loadConversationPinnedTasks,
+    loadConversationRecentTasks,
     loadConversationWorkspaceTasks,
   ]);
 
@@ -1035,6 +1075,16 @@ export function App() {
   }, []);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
+  useDesktopZoomShortcuts(preferences, (nextPersonalization) => {
+    onSavePreferences(
+      preferences.appearance,
+      nextPersonalization,
+      preferences.language,
+      preferences.useLocalClaude,
+      preferences.verboseLogging,
+      preferences.browser,
+    );
+  });
   const updaterSettings = bootstrap?.updaterSettings ?? defaultUpdaterSettings;
   const metricsSettings = bootstrap?.metricsSettings ?? null;
   const updateStatus = bootstrap?.updateStatus ?? defaultUpdateStatus;
@@ -2100,6 +2150,25 @@ export function App() {
     preferenceSaveQueueRef.current = save;
   };
 
+  const onSaveWorkflowGraphDirection = (next: WorkflowGraphDirectionPreference) => {
+    onSavePreferences(
+      preferences.appearance,
+      { ...preferences.personalization, workflowGraphDirection: next },
+      preferences.language,
+      preferences.useLocalClaude,
+      preferences.verboseLogging,
+      preferences.browser,
+    );
+  };
+  // Latest-ref keeps the context value stable so graph surfaces do not re-render
+  // on unrelated App state changes.
+  const saveWorkflowGraphDirectionRef = useRef(onSaveWorkflowGraphDirection);
+  saveWorkflowGraphDirectionRef.current = onSaveWorkflowGraphDirection;
+  const workflowGraphDirectionControl = useMemo(() => ({
+    preference: preferences.personalization.workflowGraphDirection,
+    setPreference: (next: WorkflowGraphDirectionPreference) => saveWorkflowGraphDirectionRef.current(next),
+  }), [preferences.personalization.workflowGraphDirection]);
+
   const applySavedPreferences = useCallback((saved: PreferencesVm) => {
     setBootstrap((current) => current ? { ...current, preferences: saved } : current);
   }, []);
@@ -2433,6 +2502,9 @@ export function App() {
     onConversationRequestPinnedTasks: (cursor) => {
       void loadConversationPinnedTasks(cursor).catch(() => {});
     },
+    onConversationRequestRecentTasks: (cursor) => {
+      void loadConversationRecentTasks(cursor).catch(() => {});
+    },
     onConversationRequestTaskRuns: (task, cursor) => {
       void loadConversationRunHistory(task, cursor).catch(() => {});
     },
@@ -2514,16 +2586,19 @@ export function App() {
     },
     onConversationAddWorkspace: () => {
       invalidateConversationSidebarLoad('bootstrap');
+      invalidateConversationSidebarLoad('recent');
       addConversationWorkspace().then((sidebarBootstrap) => {
         applyConversationSidebarBootstrap(sidebarBootstrap);
         const projectId = sidebarBootstrap.lastActiveWorkspaceId ?? sidebarBootstrap.workspaces[0]?.projectId;
         if (projectId) void loadConversationWorkspaceTasks(projectId).catch(() => {});
+        if (sidebarBootstrap.workspaces.length >= 2) void loadConversationRecentTasks().catch(() => {});
       }).catch(() => {});
     },
     onConversationRemoveWorkspace: (projectId) => {
       cancelConversationSidebarReveal();
       invalidateConversationSidebarLoad(`workspace:${projectId}`);
       invalidateConversationSidebarLoad('pinned');
+      invalidateConversationSidebarLoad('recent');
       invalidateConversationSidebarLoad('bootstrap');
       setError(null);
       return removeConversationWorkspace(projectId)
@@ -2548,6 +2623,7 @@ export function App() {
           if (transition.activeWorkspaceId) {
             void loadConversationWorkspaceTasks(transition.activeWorkspaceId).catch(() => {});
           }
+          if (sidebarBootstrap.workspaces.length >= 2) void loadConversationRecentTasks().catch(() => {});
         })
         .catch((err) => {
           setError(displayAppError(t, err));
@@ -2557,6 +2633,7 @@ export function App() {
   });
 
   return (
+    <WorkflowGraphDirectionProvider value={workflowGraphDirectionControl}>
     <AvatarPreferencesProvider preferences={preferences.avatars}>
     <GitBranchPickerSnapshotProvider>
     <ConversationComposerDraftBoundary ref={composerDraftRef}>
@@ -2604,6 +2681,7 @@ export function App() {
       onConversationRetrySidebar={shellCommands.onConversationRetrySidebar}
       onConversationRequestWorkspaceTasks={shellCommands.onConversationRequestWorkspaceTasks}
       onConversationRequestPinnedTasks={shellCommands.onConversationRequestPinnedTasks}
+      onConversationRequestRecentTasks={shellCommands.onConversationRequestRecentTasks}
       onConversationRequestTaskRuns={shellCommands.onConversationRequestTaskRuns}
       onConversationPauseRun={shellCommands.onConversationPauseRun}
       onConversationRenameTask={shellCommands.onConversationRenameTask}
@@ -2657,6 +2735,7 @@ export function App() {
     </ConversationComposerDraftBoundary>
     </GitBranchPickerSnapshotProvider>
     </AvatarPreferencesProvider>
+    </WorkflowGraphDirectionProvider>
   );
 
   function renderConversationContent() {

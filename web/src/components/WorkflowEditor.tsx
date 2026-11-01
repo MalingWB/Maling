@@ -39,13 +39,17 @@ import {
   workflowSuccessTopologyOrder,
   isBackwardEdge,
   authoringEdgeColor,
-  SOURCE_POS,
-  TARGET_POS,
+  workflowHandlePositions,
   type WorkflowLayout,
+  type WorkflowLayoutDirection,
   type WorkflowLayoutRoute,
   type WorkflowLayoutSpec,
 } from './workflowGraph';
 import { useWorkflowLayout } from '@/hooks/useWorkflowLayout';
+import {
+  resolveWorkflowLayoutDirection,
+  useWorkflowGraphDirectionPreference,
+} from '@/components/workflow-direction-preference';
 import { WorkflowLayoutStatus } from '@/components/WorkflowLayoutStatus';
 import { AppCard } from '@/components/AppCard';
 import {
@@ -109,6 +113,7 @@ type EditorNodeData = {
   kind: string;
   terminal?: boolean;
   targetPosition?: Position;
+  sourcePosition?: Position;
   iconKey?: string;
   entryCandidate?: boolean;
   entryLabel?: string;
@@ -343,7 +348,7 @@ function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
   const updateNodeInternals = useUpdateNodeInternals();
   useEffect(() => {
     updateNodeInternals(id);
-  }, [data.supportsFailureOutcome, id, updateNodeInternals]);
+  }, [data.sourcePosition, data.supportsFailureOutcome, data.targetPosition, id, updateNodeInternals]);
   if (data.terminal) {
     return (
       <div data-theme-role="workflow-node" className="flex size-full items-center justify-center rounded-full border border-dashed border-border/80 bg-muted/20 px-3 text-xs tracking-wide text-muted-foreground">
@@ -357,7 +362,12 @@ function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
       </div>
     );
   }
-  const successHandleTop = data.supportsFailureOutcome ? WORKFLOW_NODE_SPLIT_OUTCOME_TOP.success : WORKFLOW_NODE_SINGLE_OUTCOME_TOP;
+  // Handle offsets run along the node's cross axis: vertical flows mirror the
+  // outcome ratios from `top` percentages to `left` percentages.
+  const vertical = data.sourcePosition === Position.Bottom;
+  const successHandleOffset = data.supportsFailureOutcome ? WORKFLOW_NODE_SPLIT_OUTCOME_TOP.success : WORKFLOW_NODE_SINGLE_OUTCOME_TOP;
+  const successHandleStyle = vertical ? { left: successHandleOffset } : { top: successHandleOffset };
+  const failureHandleStyle = vertical ? { left: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure } : { top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure };
   return (
       <div data-theme-role="workflow-node" data-selected={data.selected} className="relative flex size-full flex-col items-center justify-center gap-1 border border-border bg-card px-3 py-2">
       <NodeToolbar isVisible={data.selected} position={Position.Bottom} offset={10} className="flex items-center gap-1 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
@@ -396,17 +406,17 @@ function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
         </Badge>
       ) : null}
       {/* Shares the primary source handle height so success chains stay on one row (workflowTargetHandleRatio). */}
-      <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" style={{ top: successHandleTop }} />
+      <Handle type="target" position={data.targetPosition ?? Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" style={successHandleStyle} />
       <Tooltip>
         <TooltipTrigger asChild>
-          <Handle id="success" type="source" position={Position.Right} className="workflow-handle-success !size-2.5 !border-2 !border-card !bg-emerald-500" style={{ top: successHandleTop }} />
+          <Handle id="success" type="source" position={data.sourcePosition ?? Position.Right} className="workflow-handle-success !size-2.5 !border-2 !border-card !bg-emerald-500" style={successHandleStyle} />
         </TooltipTrigger>
         <TooltipContent>{data.successLabel}</TooltipContent>
       </Tooltip>
       {data.supportsFailureOutcome ? (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Handle id="failure" type="source" position={Position.Right} className="workflow-handle-failure !size-2.5 !border-2 !border-card !bg-destructive" style={{ top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure }} />
+            <Handle id="failure" type="source" position={data.sourcePosition ?? Position.Right} className="workflow-handle-failure !size-2.5 !border-2 !border-card !bg-destructive" style={failureHandleStyle} />
           </TooltipTrigger>
           <TooltipContent>{data.failureLabel}</TooltipContent>
         </Tooltip>
@@ -473,6 +483,9 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const [isCompact, setIsCompact] = useState(false);
   const [viewportRevision, setViewportRevision] = useState(0);
   const [historyRevision, setHistoryRevision] = useState(0);
+  const { preference: directionPreference, setPreference: setDirectionPreference } = useWorkflowGraphDirectionPreference();
+  const [layoutDirection, setLayoutDirection] = useState<WorkflowLayoutDirection>('RIGHT');
+  const layoutDirectionRef = useRef<WorkflowLayoutDirection>('RIGHT');
   const [terminalMenu, setTerminalMenu] = useState<TerminalMenu | null>(null);
   const [validationDialogOpen, setValidationDialogOpen] = useState(false);
   const [pendingValidation, setPendingValidation] = useState<WorkflowValidationResult | null>(null);
@@ -500,6 +513,25 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const historyRef = useRef<WorkflowEditorHistory>({ past: [], future: [] });
   const viewportRef = useRef<Viewport>(initialSessionDraft?.viewport ?? { x: 0, y: 0, zoom: 1 });
   const hasStableViewportRef = useRef(Boolean(initialSessionDraft?.viewport));
+  // Auto direction follows the canvas container aspect with hysteresis; a flip
+  // invalidates the stable viewport so the new arrangement is re-fitted.
+  useEffect(() => {
+    if (tab !== 'canvas') return undefined;
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    const recompute = () => {
+      const next = resolveWorkflowLayoutDirection(directionPreference, canvas.clientWidth, canvas.clientHeight, layoutDirectionRef.current);
+      if (next !== layoutDirectionRef.current) {
+        layoutDirectionRef.current = next;
+        hasStableViewportRef.current = false;
+        setLayoutDirection(next);
+      }
+    };
+    recompute();
+    const observer = new ResizeObserver(() => recompute());
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [directionPreference, tab]);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const canvasActionsRef = useRef<{
     quickAdd: (nodeId: string, outcome: EdgeOutcome) => void;
@@ -542,8 +574,8 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     [agentIconKeys, nodeAgentSignature],
   );
   const authoringGraph = useMemo(
-    () => createAuthoringGraph(workflow, visibleTerminalIds, t),
-    [visibleTerminalSignature, workflowTopologySignature, t],
+    () => createAuthoringGraph(workflow, visibleTerminalIds, t, layoutDirection),
+    [visibleTerminalSignature, workflowTopologySignature, layoutDirection, t],
   );
   const layoutState = useWorkflowLayout(authoringGraph.spec);
   const graphLayout = layoutState.layout;
@@ -1034,10 +1066,10 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     const canvas = canvasRef.current;
     const bounds = graphLayout?.bounds;
     if (!flowInstance || !canvas || !bounds || canvas.clientWidth === 0 || canvas.clientHeight === 0) return null;
-    const viewport = entryAnchoredViewport(bounds, { width: canvas.clientWidth, height: canvas.clientHeight }, { padding: WORKFLOW_EDITOR_FIT_PADDING, minZoom: WORKFLOW_EDITOR_MIN_ZOOM, maxZoom: WORKFLOW_EDITOR_FIT_MAX_ZOOM });
+    const viewport = entryAnchoredViewport(bounds, { width: canvas.clientWidth, height: canvas.clientHeight }, { padding: WORKFLOW_EDITOR_FIT_PADDING, minZoom: WORKFLOW_EDITOR_MIN_ZOOM, maxZoom: WORKFLOW_EDITOR_FIT_MAX_ZOOM, direction: layoutDirection });
     void flowInstance.setViewport(viewport);
     return viewport;
-  }, [flowInstance, graphLayout]);
+  }, [flowInstance, graphLayout, layoutDirection]);
 
   // Only the first finished layout fits; later relayouts keep the user's viewport.
   useEffect(() => {
@@ -1178,6 +1210,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
                 onZoomIn={() => { void flowInstance?.zoomIn(); }}
                 onZoomOut={() => { void flowInstance?.zoomOut(); }}
                 onFitView={() => { fitLayoutViewport(); }}
+                direction={{ preference: directionPreference, onChange: setDirectionPreference }}
               />
             </ReactFlow>
             <WorkflowLayoutStatus state={layoutState} />
@@ -2963,7 +2996,7 @@ export type AuthoringGraph = {
   spec: WorkflowLayoutSpec;
 };
 
-export function createAuthoringGraph(workflow: WorkflowDsl, visibleTerminalIds: ReadonlySet<string> = new Set(), t: AuthoringTranslate = (key) => key): AuthoringGraph {
+export function createAuthoringGraph(workflow: WorkflowDsl, visibleTerminalIds: ReadonlySet<string> = new Set(), t: AuthoringTranslate = (key) => key, direction: WorkflowLayoutDirection = 'RIGHT'): AuthoringGraph {
   const collectedNodes = collectAuthoringNodes(workflow);
   const collectedIds = new Set(collectedNodes.map((node) => node.id));
   const nodeOrder = workflowSuccessTopologyOrder(workflow);
@@ -2996,6 +3029,7 @@ export function createAuthoringGraph(workflow: WorkflowDsl, visibleTerminalIds: 
     nodeLabels,
     edgeLabels,
     spec: {
+      direction,
       nodes: items.map((item) => ({
         id: item.id,
         width: item.terminal ? terminalNodeWidth(nodeLabels.get(item.id)!) : NODE_WIDTH,
@@ -3039,6 +3073,7 @@ export function createAuthoringFlowProjection(
 ): { nodes: Node<EditorNodeData>[]; edges: Edge[] } {
   const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
   const specById = new Map(graph.spec.nodes.map((node) => [node.id, node]));
+  const handlePositions = workflowHandlePositions(layout?.direction ?? 'RIGHT');
   const nodes: Node<EditorNodeData>[] = graph.items.map((item) => {
     const rect = layout?.nodes.get(item.id);
     const spec = specById.get(item.id)!;
@@ -3049,20 +3084,21 @@ export function createAuthoringFlowProjection(
     const iconKey = node ? nodeIconKeys.get(node.id) : undefined;
     const supportsFailureOutcome = nodeSupportsFailureOutcome(node);
     const selected = item.terminal ? item.id === selectedTerminalId : item.id === selectedNodeId;
-    const targetPosition = spec.pinBelow ? SOURCE_POS : TARGET_POS;
+    const targetPosition = spec.pinBelow ? handlePositions.source : handlePositions.target;
     return {
       id: item.id,
       type: 'editorCanvas',
       position: rect ? { x: rect.x, y: rect.y } : { x: 0, y: 0 },
       // A node added after the last finished layout appears once its position is known.
       hidden: !rect,
-      sourcePosition: SOURCE_POS,
+      sourcePosition: handlePositions.source,
       targetPosition,
       data: {
         label: graph.nodeLabels.get(item.id) ?? item.id,
         kind: item.terminal ? 'terminal' : node?.type ?? 'node',
         terminal: item.terminal,
         targetPosition,
+        sourcePosition: handlePositions.source,
         iconKey,
         entryCandidate: !item.terminal && graph.entryCandidateIds.has(item.id),
         entryLabel: t('workflowEditor.entryBadge'),

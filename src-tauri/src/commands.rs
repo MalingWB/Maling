@@ -56,10 +56,10 @@ use gold_band::config::{
     AcpAdapterConfig, AppearancePreference, AvatarPreference, AvatarShapePreference,
     BrowserPreferences, ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage,
     FontSizePreference, FontStackPreference, MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT,
-    MAX_FONT_FAMILY_CHARS, MAX_FONT_STACK_FAMILIES, MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT,
-    ManagedAgentConfig, ManagedAgentId, MulticaAccountRef, PersonalizationAvatarShape,
-    PersonalizationPreference, WallpaperImagePreference, normalize_desktop_editor_font_size,
-    normalize_desktop_ui_font_size,
+    MAX_FONT_FAMILY_CHARS, MAX_FONT_STACK_FAMILIES, MAX_INTERFACE_ZOOM_PERCENT,
+    MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT, MIN_INTERFACE_ZOOM_PERCENT, ManagedAgentConfig,
+    ManagedAgentId, MulticaAccountRef, PersonalizationAvatarShape, PersonalizationPreference,
+    WallpaperImagePreference, normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{
@@ -9643,6 +9643,7 @@ pub fn show_worker_ref(
 
 #[tauri::command]
 pub fn save_desktop_preferences(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     mut appearance: AppearancePreference,
     personalization: PersonalizationPreference,
@@ -9708,6 +9709,7 @@ pub fn save_desktop_preferences(
         .map_err(command_error)?;
     let log_level = settings.log_level.unwrap_or(context.config.log_level);
     set_runtime_log_level(log_level);
+    apply_interface_zoom_to_main_window(&app_handle, personalization.interface_zoom_percent);
     Ok(preferences_vm(
         appearance,
         personalization.clone(),
@@ -9721,10 +9723,33 @@ pub fn save_desktop_preferences(
     ))
 }
 
+/// Applies an interface zoom percent to the main window webview. The zoom is a
+/// pure display projection of the persisted preference; failures only log and
+/// never fail the surrounding preference command.
+pub(crate) fn apply_interface_zoom_to_main_window(app_handle: &AppHandle, percent: u16) {
+    let Some(window) = app_handle.get_webview_window("main") else {
+        return;
+    };
+    let factor = f64::from(percent) / 100.0;
+    if let Err(error) = window.set_zoom(factor) {
+        warn!(%error, percent, "failed to apply interface zoom to main window");
+    }
+}
+
+/// Live zoom preview used by the settings slider and the Ctrl+wheel / Ctrl+`+/-/0`
+/// shortcuts. Applies the clamped percent to the webview without persisting;
+/// persistence always flows through `save_desktop_preferences`.
+#[tauri::command]
+pub fn apply_desktop_zoom(app_handle: AppHandle, percent: u16) -> CommandResult<u16> {
+    let percent = percent.clamp(MIN_INTERFACE_ZOOM_PERCENT, MAX_INTERFACE_ZOOM_PERCENT);
+    apply_interface_zoom_to_main_window(&app_handle, percent);
+    Ok(percent)
+}
+
 fn normalize_personalization_preference(
     mut preference: PersonalizationPreference,
 ) -> CommandResult<PersonalizationPreference> {
-    if preference.schema_version != 4 {
+    if preference.schema_version != 5 {
         return Err(CommandErrorVm::new(
             "personalization.contract-version-unsupported",
             serde_json::json!({ "schemaVersion": preference.schema_version }),
@@ -9797,6 +9822,9 @@ fn normalize_personalization_preference(
             ));
         }
     }
+    preference.interface_zoom_percent = preference
+        .interface_zoom_percent
+        .clamp(MIN_INTERFACE_ZOOM_PERCENT, MAX_INTERFACE_ZOOM_PERCENT);
     Ok(preference)
 }
 

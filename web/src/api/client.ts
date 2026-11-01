@@ -23,6 +23,7 @@ import type {
   ConversationSidebarBootstrapVm,
   ConversationSidebarVm,
   ConversationPinnedTaskPageVm,
+  ConversationRecentTaskPageVm,
   ConversationTaskPageVm,
   ConversationTaskRowVm,
   ConversationValidationResultVm,
@@ -568,6 +569,8 @@ export interface RuntimeApi {
   showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser: import('../types').BrowserPreferences): Promise<PreferencesVm>;
+  /** Applies a zoom percent to the main webview without persisting it. */
+  applyDesktopZoom(percent: number): Promise<number>;
   saveDesktopAvatar(input: SaveDesktopAvatarInput): Promise<PreferencesVm>;
   selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<PreferencesVm>;
   saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape | null): Promise<PreferencesVm>;
@@ -622,6 +625,7 @@ export interface RuntimeApi {
   getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number): Promise<ConversationTaskPageVm>;
   getConversationTaskSummary(projectId: string, taskId: string, taskUuid?: string | null): Promise<ConversationTaskRowVm>;
   getConversationPinnedTaskPage(cursor?: string | null, limit?: number): Promise<ConversationPinnedTaskPageVm>;
+  getConversationRecentTaskPage(cursor?: string | null, limit?: number): Promise<ConversationRecentTaskPageVm>;
   getConversationRunSummaryPage(projectId: string, taskId: string, cursor?: string | null, limit?: number): Promise<ConversationRunSummaryPageVm>;
   acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string): Promise<import('../types').ConversationTerminalResultAcknowledgementVm>;
   listScheduledTasks(projectId?: string | null): Promise<import('../types').ScheduledTaskVm[]>;

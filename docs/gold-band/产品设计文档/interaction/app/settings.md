@@ -109,7 +109,8 @@
 - 生成 CSS 中跨主题的 `@font-face` 必须通过 `runtimeFamily + weightMin/weightMax + style + coverage` 形成不会竞争的匹配身份，不能让同一匹配键指向多个主题 URL。Variable Font 必须以资产元数据范围内的连续区间注册，不能把同一 variable 文件重复伪装成 400/500/600/700 静态 face。主题切换和自定义字体栈只把已保存的作者 family 投影为当前主题 runtime family，不改写用户数据；浏览器只允许请求当前主题实际命中的字体资源。
 - 点击未选字体会追加到栈末尾；点击已选字体或删除按钮会取消；已选项显示从 1 开始的优先级，并可通过上移/下移调整。清空最后一项后必须写回 `source: theme`，不保存空的 custom 栈。
 - 自定义栈最多 16 项，family 去除首尾空白后按大小写不敏感去重；空值、超过 128 个 Unicode 字符及包含 `, ; { }` 的 family 无效。保存接口重新校验并返回 canonical 顺序。
-- UI 基准字号允许 `12–18px`；编辑器字号允许 `10–18px`，步长均为 `1px`。输入时只更新根级 CSS 变量进行即时预览，失焦后保存 `source: custom`；点击恢复时保存 `source: theme` 并立即展示当前主题预设，内置主题的明暗方案默认 UI 为 `14px`、编辑器为 `13px`，已有自定义字号（包括 `12px`）不变；禁止把恢复操作写成固定字号、使用浏览器 zoom 或新增 localStorage 旁路。
+- UI 基准字号允许 `12–18px`；编辑器字号允许 `10–18px`，步长均为 `1px`。输入时只更新根级 CSS 变量进行即时预览，失焦后保存 `source: custom`；点击恢复时保存 `source: theme` 并立即展示当前主题预设，内置主题的明暗方案默认 UI 为 `14px`、编辑器为 `13px`，已有自定义字号（包括 `12px`）不变；禁止把恢复操作写成固定字号或新增 localStorage 旁路。
+- 「界面缩放」是外观区的独立设置行：整窗等比缩放客户端界面，范围为 `70%–200%`、步长 `5%`、默认 `100%`，使用 shadcn `Slider`（拖动即时预览、`onValueCommit` 提交保存）与恢复默认按钮。缩放值持久化在 `PersonalizationPreference.interfaceZoomPercent`，由桌面端通过 Tauri `WebviewWindow::set_zoom` 应用到主窗口 webview（应用启动时按已保存值应用，保存偏好在同一命令内生效）；`Ctrl+滚轮`、`Ctrl+加/减` 与 `Ctrl+0` 快捷键被应用接管为同一步进/重置入口——原生浏览器缩放手势始终被拦截，缩放唯一事实源是持久化偏好，内置浏览器子 WebView 不在此设置范围内。
 - UI 字号控制侧栏、设置页、聊天正文、Thought 与普通 Markdown，并通过派生 token 覆盖紧凑说明、徽标和时间等层级；聊天行内代码与代码块只切换等宽字形，字号继续从 UI 基准派生。
 - 编辑器字体和字号只覆盖所有 CodeMirror 文件查看/编辑、运行产物、Markdown 编辑器以及 Git/本轮 Diff；技术标识使用等宽字体不等同于消费编辑器字号。
 - 全局字重语义采用 variable font 轻量轴映射：正文 `330`、常规强调 `380`、标题/强强调 `450`、最高强调 `520`；Inter face 暴露字体原生连续轴，MiSans face 暴露 `250–520` 连续轴，确保四档值命中真实字形而不是吸附到静态 400/500/600。最高中文视觉层级不超过 Semibold。保留视觉层次，不按页面机械替换字重类，也不通过透明度或错配字体文件伪造较细字重。
@@ -185,7 +186,7 @@
 ## 8. Tauri 2.x MVP 对应实现
 
 - 外观权威字段改为 `appearance`：`schemaVersion = 2`、稳定 `themeId`、`colorScheme = system | light | dark`、按主题隔离的 `visualQualityByTheme`。旧 `desktopTheme` 在 settings schema v5 一次性迁移后删除，不双写。
-- 个性化权威字段为 `personalization`：`schemaVersion = 4`，显式保存两套有序字体栈、字号、按明暗模式隔离的壁纸来源/可见度以及 Agent / 个人头像图片与形状的 `source`。settings schema v8 破坏式删除 v1 单字体字段；settings schema v9 增加单壁纸；settings schema v10 将它一次性升级为 light/dark 两份配置，不保留双读。主题来源持续跟随当前主题，用户资产历史全局共享。
+- 个性化权威字段为 `personalization`：`schemaVersion = 5`，显式保存两套有序字体栈、字号、按明暗模式隔离的壁纸来源/可见度、Agent / 个人头像图片与形状的 `source`、界面缩放 `interfaceZoomPercent`（70–200，默认 100）以及工作流图布局方向 `workflowGraphDirection`（`auto | horizontal | vertical`，默认 `auto`）。v4 及更早文件在加载时由 `normalized()` 升级并补默认值，不保留双读。settings schema v8 破坏式删除 v1 单字体字段；settings schema v9 增加单壁纸；settings schema v10 将它一次性升级为 light/dark 两份配置，不保留双读。主题来源持续跟随当前主题，用户资产历史全局共享。
 - 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。主题 Catalog、Schema、主题包 `dist` 文本产物、Web generated catalog/CSS 与 Agent SVG 图标在仓库层固定为 LF 文本；`.gitattributes` 的精确路径规则优先于本机 `core.autocrlf`，避免生成脚本重写相同内容后在 Windows Changes 中反复出现假变更。
 - 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。当前两个内置主题均不声明视觉质量能力，因此不显示质量档控件。
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。

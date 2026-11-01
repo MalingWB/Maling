@@ -8,7 +8,7 @@ import type {
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm } from '@/api/client';
 import { parseTimestamp } from '@/lib/datetime';
 import { findConversationTask } from '@/lib/conversation-task-state';
-import { promoteConversationLocatedTask } from '@/lib/conversation-sidebar-loading';
+import { mapConversationRecentTasks, promoteConversationRecentTasks, promoteConversationLocatedTask } from '@/lib/conversation-sidebar-loading';
 import { isDirectBackgroundActive, useDirectBackgroundActive } from '@/lib/acp-background-control';
 
 export type ConversationSidebarRunStateRefreshTarget =
@@ -163,11 +163,15 @@ function projectConversationSidebarTask(
     : updatedWorkspaceTasks;
   const pinnedChanged = pinnedTasks.some((task, index) => task !== sidebar.pinnedTasks[index]);
   const workspaceChanged = nextWorkspaceTasks.some((task, index) => task !== workspaceTasks[index]);
-  if (!pinnedChanged && !workspaceChanged) return sidebar;
+  const priorRecentTasks = sidebar.recentTasks ?? [];
+  const recentTasks = mapConversationRecentTasks(priorRecentTasks, updateTask);
+  const recentChanged = recentTasks !== priorRecentTasks;
+  if (!pinnedChanged && !workspaceChanged && !recentChanged) return sidebar;
 
-  const next = {
+  let next = {
     ...sidebar,
     pinnedTasks: pinnedChanged ? pinnedTasks : sidebar.pinnedTasks,
+    recentTasks,
     tasksByWorkspace: workspaceChanged
       ? {
           ...sidebar.tasksByWorkspace,
@@ -175,6 +179,13 @@ function projectConversationSidebarTask(
         }
       : sidebar.tasksByWorkspace,
   };
+  // Recent rows also cover workspaces whose task page is not loaded, so the
+  // reorder trigger must check them independently of the workspace list.
+  const shouldPromoteRecent = shouldMoveToFront
+    || (sidebar.recentTasks ?? []).some((task) => activityTimeAdvanced(task));
+  if (shouldPromoteRecent) {
+    next = { ...next, recentTasks: promoteConversationRecentTasks(next.recentTasks, (task) => task.projectId === projectId && task.taskId === taskId) };
+  }
   const activatedTask = shouldMoveToFront ? nextWorkspaceTasks[0] : null;
   return activatedTask ? promoteConversationLocatedTask(next, activatedTask) : next;
 }
@@ -317,13 +328,16 @@ export function applyConversationSidebarRunStateUpdate(
   const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
   const workspaceTasks = sidebar.tasksByWorkspace[event.projectId] ?? [];
   const nextWorkspaceTasks = workspaceTasks.map(updateTask);
+  const priorRecentTasks = sidebar.recentTasks ?? [];
+  const recentTasks = mapConversationRecentTasks(priorRecentTasks, updateTask);
   const pinnedChanged = pinnedTasks.some((task, index) => task !== sidebar.pinnedTasks[index]);
   const workspaceChanged = nextWorkspaceTasks.some((task, index) => task !== workspaceTasks[index]);
-  if (!pinnedChanged && !workspaceChanged) return sidebar;
+  if (!pinnedChanged && !workspaceChanged && recentTasks === priorRecentTasks) return sidebar;
 
   return {
     ...sidebar,
     pinnedTasks: pinnedChanged ? pinnedTasks : sidebar.pinnedTasks,
+    recentTasks,
     tasksByWorkspace: workspaceChanged
       ? {
           ...sidebar.tasksByWorkspace,

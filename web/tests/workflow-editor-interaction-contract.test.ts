@@ -316,9 +316,10 @@ describe('workflow editor interaction contracts', () => {
     expect(editorSource).toContain("const WORKFLOW_NODE_SINGLE_OUTCOME_TOP = '50%';");
     expect(editorSource).toContain("const WORKFLOW_NODE_SPLIT_OUTCOME_TOP = { success: '34%', failure: '66%' } as const;");
     expect(editorSource).toContain('data.supportsFailureOutcome ? WORKFLOW_NODE_SPLIT_OUTCOME_TOP.success : WORKFLOW_NODE_SINGLE_OUTCOME_TOP');
-    expect(editorSource).toContain('style={{ top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure }}');
+    expect(editorSource).toContain('const failureHandleStyle = vertical ? { left: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure } : { top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure };');
+    expect(editorSource).toContain('const successHandleStyle = vertical ? { left: successHandleOffset } : { top: successHandleOffset };');
     expect(editorSource).toContain('updateNodeInternals(id);');
-    expect(editorSource).toContain('[data.supportsFailureOutcome, id, updateNodeInternals]');
+    expect(editorSource).toContain('[data.sourcePosition, data.supportsFailureOutcome, data.targetPosition, id, updateNodeInternals]');
   });
 
   it('routes node, terminal, and edge deletion through the canvas toolbar', () => {
@@ -368,7 +369,7 @@ describe('workflow editor interaction contracts', () => {
 
   it('preserves the viewport, exposes keyboard/connection affordances, and lazily refreshes JSON', () => {
     expect(editorSource).toContain('viewport?: Viewport');
-    expect(editorSource).toContain('[visibleTerminalSignature, workflowTopologySignature, t]');
+    expect(editorSource).toContain('[visibleTerminalSignature, workflowTopologySignature, layoutDirection, t]');
     expect(editorSource).toContain('onMoveEnd={handleMoveEnd}');
     expect(editorSource).toContain('defaultViewport={viewportRef.current}');
     expect(editorSource).toContain('connectOnClick');

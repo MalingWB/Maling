@@ -62,7 +62,7 @@ export const defaultAppearancePreference: AppearancePreference = {
   schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {},
 };
 export const defaultPersonalizationPreference: PersonalizationPreference = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   typography: {
     ui: { fontStack: { source: 'theme' }, fontSize: { source: 'theme' } },
     editor: { fontStack: { source: 'theme' }, fontSize: { source: 'theme' } },
@@ -77,6 +77,8 @@ export const defaultPersonalizationPreference: PersonalizationPreference = {
     agent: { image: { source: 'theme' }, shape: { source: 'theme' } },
     user: { image: { source: 'theme' }, shape: { source: 'theme' } },
   },
+  interfaceZoomPercent: 100,
+  workflowGraphDirection: 'auto',
 };
 
 export function normalizeAppearancePreference(value: AppearancePreference): AppearancePreference {
