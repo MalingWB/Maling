@@ -3058,6 +3058,8 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **联调注意**：徽标视觉（红/绿双主题）与真实数据下的排序效果随 M5-cn 打包联调一并目视验收；本地 multica 不可达，单元/组件测试已覆盖渲染判定与排序不变量。
 
+**修正记录（M5-cp，2026-10-31，内网实测终态行 DPMS 徽标常驻）**：① `dpms_story_id` 终态快照数据源缺陷——回写唯一写入 live 在飞条目（`report_dpms_story_if_changed` 记 `active_runs`），而终态路径持有的 `run` 是事件回调时克隆的旧副本，「同 turn 回写 + 完成」（direct 单轮完成的典型路径）与「终态兜底才回写成功」两窗口内快照恒 None → 终态历史把「已回传」记成「未回传」，徽标常驻（active 行不受影响——VM 直接读 live 映射）。② 修复：`finalize_terminal` 在清映射同一临界区先读 live 条目 `last_dpms_report`，经纯函数 `resolve_terminal_dpms_report` live 优先、快照回退（live 缺席 = 映射已被他方收尾清除的防御路径），覆盖进 `run` 克隆后构造终态历史；三条终态路径（complete/fail/turn-gate）均汇经 `finalize_terminal` 单点收口。③ 验证：最小失败测试（live 有值 + 快照 None → 解析必为 Some）修复前稳定红（读快照恒 None）、修复后绿；desktop `multica::` **244/244**。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

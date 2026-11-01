@@ -1347,6 +1347,7 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **实现**：① `RemoteCompletedTask` 增 `dpms_required` + `dpms_story_id` 快照（finalize 从 `ActiveRemoteRun` 快照，serde default 兼容旧历史）；② VM 增 `dpmsLinkPending` 单字段三源合成（pending/detail = wire `dpms_required && system_story_id` 空；active = claim 快照「要求 + 未预链接 + 本 run 未回传」；completed = 快照「要求 + story id 空」）——与 bridge 回写守卫同源判定；③ 看板红色 DPMS 徽标（destructive 色系，Tooltip 说明，全状态列渲染）；④ 谓词 `isTaskNotReady` → `isTaskReady`（`test && readiness === true`；缺失不标——旧 server 行为回到无信号），绿色徽标（emerald 色系）+ Tooltip；⑤ 待办列 `orderQueuedReadyFirst` 稳定排序；i18n 删 `readiness.notReady/notReadyHint`、增 `readiness.ready/readyHint` + `dpms.badge/hint`（DPMS 专名 7 语言保留拉丁字样）。
   - **方案自评审**：纯展示投影 + 列内稳定排序（列表 = active 任务规模，无性能问题）；零新增抽象（复用 `kind` 链路模式，VM 单 bool 合成）；破坏式删除旧「未就绪」文案与谓词，无兼容层。
   - **验证**：desktop `multica::` **243/243**（三源真值表 + 终态快照来源锁定 + roundtrip）；web vitest 5 套件 **79/79**（谓词/排序/双徽标渲染、i18n 双语精确值、7 语言目录契约）；tsc 对改动文件零错（既有 workspace 测试漂移报错与本次无关）。浏览器双主题目视验收随打包联调进行。
+  - **修正记录（M5-cp，2026-10-31）**：内网实测终态行 DPMS 徽标常驻——根因：回写只记 live 在飞条目，终态快照读事件回调时克隆的旧副本，同 turn「回写 + 完成」窗口内快照恒 None，已回传被记成未回传。修复：`finalize_terminal` 清映射同一临界区 live 优先解析（纯函数 `resolve_terminal_dpms_report`，快照回退），单点覆盖三条终态路径；红→绿复现测试 + desktop `multica::` 244/244（开发设计 §12.86 修正记录）。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

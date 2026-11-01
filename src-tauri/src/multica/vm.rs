@@ -1152,7 +1152,8 @@ mod tests {
         let mut non_issue = task;
         non_issue.issue_id = None;
         assert!(
-            remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &[], "workflow").is_none(),
+            remote_task_hidden_section(&non_issue, DesktopLanguage::ZhCn, &[], "workflow")
+                .is_none(),
             "非 issue 任务无 DPMS 门语义"
         );
     }
@@ -1810,7 +1811,9 @@ mod tests {
             last_dpms_report: None,
         };
         assert!(RemoteTaskVm::from_active_run("remote-9", &run, "proj-1").dpms_link_pending);
-        run.last_dpms_report = Some(ReportDpmsStoryRequest { dpms_story_id: 889001 });
+        run.last_dpms_report = Some(ReportDpmsStoryRequest {
+            dpms_story_id: 889001,
+        });
         assert!(
             !RemoteTaskVm::from_active_run("remote-9", &run, "proj-1").dpms_link_pending,
             "回传成功后徽标即消"

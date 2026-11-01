@@ -41,14 +41,10 @@ use gold_band::runtime::WorkerRefState;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tracing::{debug, info, warn};
 
-use crate::multica::client::{
-    ReportDpmsStoryRequest, MULTICA_ISSUE_DONE_STATUS, MulticaClient,
-};
+use crate::multica::client::{MULTICA_ISSUE_DONE_STATUS, MulticaClient, ReportDpmsStoryRequest};
 use crate::multica::config::{get_pat, multica_base_url, multica_settings};
 use crate::multica::handoff;
-use crate::multica::state::{
-    ActiveRemoteRun, DPMS_STORY_MEMORY_KEY, SharedMulticaState,
-};
+use crate::multica::state::{ActiveRemoteRun, DPMS_STORY_MEMORY_KEY, SharedMulticaState};
 use crate::remote::{REMOTE_SOURCE_SETTINGS_UPDATED_EVENT, REMOTE_TASKS_UPDATED_EVENT};
 use crate::state::{DesktopContext, DesktopState};
 
@@ -1245,14 +1241,24 @@ fn finalize_terminal(
     run: &ActiveRemoteRun,
     pending: PendingUpdate,
 ) {
+    // live 优先读取在飞条目的 DPMS 回传值（与清映射同一临界区，读取先于 drop）：终态路径
+    // 持有的 run 是事件回调时克隆的旧副本，同 turn「回写 + 完成」窗口内快照恒旧——终态
+    // 历史读快照会把已回传记成未回传（徽标常驻），解析规则见 [`resolve_terminal_dpms_report`]。
+    let mut live_dpms_report = None;
     if let Some(shared) = shared_multica_state(app) {
         if let Ok(mut g) = shared.lock() {
+            live_dpms_report = g
+                .active_runs
+                .get(remote_task_id)
+                .and_then(|live| live.last_dpms_report.clone());
             g.drop_active_run(remote_task_id);
             // 完成路径认领随 finalize 终结（M5-bp：认领生命周期 = [begin, finalize]，
             // 成功/失败皆然——complete 失败也走本地终态，认领不得泄漏阻塞后续事件）。
             g.end_completion(remote_task_id);
         }
     }
+    let mut resolved_run = run.clone();
+    resolved_run.last_dpms_report = resolve_terminal_dpms_report(live_dpms_report.as_ref(), run);
     let Some(context) = desktop_context(app) else {
         return;
     };
@@ -1271,12 +1277,31 @@ fn finalize_terminal(
         // task_conversations 此处已清（续跑语义不变），但 completed 历史独立常驻，供用户回看本地会话。
         record_completed_task(
             state,
-            completed_task_from_run(remote_task_id, run, status, chrono::Utc::now().to_rfc3339()),
+            completed_task_from_run(
+                remote_task_id,
+                &resolved_run,
+                status,
+                chrono::Utc::now().to_rfc3339(),
+            ),
         );
         (true, ())
     }) {
         warn!(%e, "multica finalize: state rmw failed");
     }
+}
+
+/// 终态历史 DPMS 回传值解析（纯函数）：live 在飞条目的 `last_dpms_report` 优先，快照回退。
+///
+/// 根因修正：回写唯一写入 live 条目（[`report_dpms_story_if_changed`]），而终态路径持有的
+/// `run` 是事件回调时克隆的旧副本——「同 turn 回写 + 完成」（direct 单轮完成的最典型路径）
+/// 与「终态兜底才回写成功」两种窗口内快照恒 None，终态历史读快照会把「已回传」记成
+/// 「未回传」，终态行「待回传 DPMS」徽标常驻不清。live 未记/缺席回退快照值：快照是更早
+/// 时刻的 live 克隆，其值 live 必然也持有，缺席只在映射已被他方收尾清除的防御路径出现。
+fn resolve_terminal_dpms_report(
+    live: Option<&crate::multica::client::ReportDpmsStoryRequest>,
+    snapshot: &ActiveRemoteRun,
+) -> Option<crate::multica::client::ReportDpmsStoryRequest> {
+    live.cloned().or_else(|| snapshot.last_dpms_report.clone())
 }
 
 /// 由在飞 run 快照构造终态历史条目（纯函数：不碰 AppHandle/StateConfig，便于单测固化字段来源）。
@@ -1837,7 +1862,10 @@ mod tests {
             run
         };
         // 全条件命中 → None（回写路径继续）。
-        assert_eq!(dpms_report_skip_reason(&run(true, None, Some("iss-1"))), None);
+        assert_eq!(
+            dpms_report_skip_reason(&run(true, None, Some("iss-1"))),
+            None
+        );
         // 首个未满足项逐一报告（顺序即短路顺序）。
         assert_eq!(
             dpms_report_skip_reason(&run(false, None, Some("iss-1"))),
@@ -1935,19 +1963,69 @@ mod tests {
         // 徽标静默失真（该提醒的不提醒 / 已回传的仍提醒）。
         let mut run = active_run(Some("标题"), Some("dev"));
         run.dpms_required = true;
-        let pending = completed_task_from_run("rt-1", &run, "completed", "2026-10-31T00:00:00Z".into());
+        let pending =
+            completed_task_from_run("rt-1", &run, "completed", "2026-10-31T00:00:00Z".into());
         assert!(pending.dpms_required);
-        assert!(pending.dpms_story_id.is_none(), "未回传 → None（徽标保持提醒）");
+        assert!(
+            pending.dpms_story_id.is_none(),
+            "未回传 → None（徽标保持提醒）"
+        );
 
-        run.last_dpms_report = Some(ReportDpmsStoryRequest { dpms_story_id: 889001 });
+        run.last_dpms_report = Some(ReportDpmsStoryRequest {
+            dpms_story_id: 889001,
+        });
         let reported =
             completed_task_from_run("rt-2", &run, "completed", "2026-10-31T00:01:00Z".into());
-        assert_eq!(reported.dpms_story_id, Some(889001), "已回传 → story id 快照（徽标即消）");
+        assert_eq!(
+            reported.dpms_story_id,
+            Some(889001),
+            "已回传 → story id 快照（徽标即消）"
+        );
 
         run.dpms_required = false;
         let untouched =
             completed_task_from_run("rt-3", &run, "failed", "2026-10-31T00:02:00Z".into());
         assert!(!untouched.dpms_required);
+    }
+
+    #[test]
+    fn resolve_terminal_dpms_report_prefers_live_entry_over_stale_snapshot() {
+        // M5-cp 根因（同 turn「回写 + 完成」时序）：回写唯一写入 live 在飞条目
+        // （`report_dpms_story_if_changed`），终态路径持有的 run 是事件回调时克隆的旧副本——
+        // 回写发生在快照克隆之后时快照恒 None，终态历史读快照会把「已回传」记成「未回传」，
+        // 终态行「待回传 DPMS」徽标常驻不清。锁定解析规则：live 有值优先；live 未记/缺席
+        // 回退快照值；双缺 → None。
+        let mut snapshot = active_run(Some("标题"), Some("dev"));
+        snapshot.dpms_required = true;
+
+        // live 已回传、快照仍 None（回写发生在快照克隆之后）→ 取 live。
+        let live = ReportDpmsStoryRequest {
+            dpms_story_id: 889001,
+        };
+        assert_eq!(
+            resolve_terminal_dpms_report(Some(&live), &snapshot),
+            Some(ReportDpmsStoryRequest {
+                dpms_story_id: 889001
+            }),
+            "live 已回传必须覆盖旧快照，否则终态行徽标常驻"
+        );
+
+        // live 未记（映射已被他方收尾清除的防御路径）→ 回退快照值。
+        snapshot.last_dpms_report = Some(ReportDpmsStoryRequest {
+            dpms_story_id: 889002,
+        });
+        assert_eq!(
+            resolve_terminal_dpms_report(None, &snapshot),
+            Some(ReportDpmsStoryRequest {
+                dpms_story_id: 889002
+            })
+        );
+
+        // 双缺 → None（徽标保持提醒——本 run 确实未回传）。
+        assert_eq!(
+            resolve_terminal_dpms_report(None, &active_run(None, None)),
+            None
+        );
     }
 
     #[test]
