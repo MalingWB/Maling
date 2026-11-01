@@ -175,9 +175,9 @@ pub(crate) fn attempt_runtime_state_lock(
 const STATE_CONFIG_LOCK_SHARDS: usize = 32;
 static STATE_CONFIG_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 pub use self::profiles::{
-    ImportProfileFilesInput, ImportProfilesInput, ImportProfilesResult, MulticaRoleExchange,
-    ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, ProfileScope,
-    multica_exchange_to_profile_input, profile_to_multica_exchange,
+    ImportProfileFilesInput, ImportProfilesInput, ImportProfilesResult, MulticaInstallOutcome,
+    MulticaRoleExchange, ProfileCommandError, ProfileEntry, ProfileInput, ProfileList,
+    ProfileScope, multica_exchange_to_profile_input, profile_to_multica_exchange,
 };
 pub use self::workflow_share::{MulticaWorkflowExchange, workflow_template_to_multica_exchange};
 
@@ -1877,9 +1877,10 @@ impl App {
 
     /// 注册上游交付引用解析器（M5-cf，`$upstream.completion-output` 令牌的消费端）。
     ///
-    /// 桌面壳 multica 域在启动时装入；引擎侧仅当节点 prompt 携带令牌时调用
-    /// （`node_executor::build_worker_invocation`）。同步阻塞调用——在 run 专用线程上执行，
-    /// 实现侧以轮询预算约束等待上限。
+    /// 桌面壳 multica 域在启动时装入；引擎侧仅当节点 prompt 携带令牌时调用（两个装配面：
+    /// workflow `node_executor::build_worker_invocation` 与 auto
+    /// `orchestrator::build_dynamic_worker_invocation`）。同步阻塞调用——在 run 专用线程上
+    /// 执行，实现侧以轮询预算约束等待上限。
     pub fn with_upstream_output_resolver(
         mut self,
         resolver: Arc<dyn upstream::UpstreamOutputResolver>,
@@ -3904,7 +3905,7 @@ impl App {
     pub fn install_workflow_template_from_multica(
         &self,
         exchange: &MulticaWorkflowExchange,
-    ) -> Result<WorkflowTemplate> {
+    ) -> Result<(WorkflowTemplate, MulticaInstallOutcome)> {
         let name = exchange.name.trim();
         if name.is_empty() {
             bail!("workflow template name cannot be empty");
@@ -3921,7 +3922,8 @@ impl App {
                     name = %existing.name,
                     "multica workflow install skipped: same-key user template exists"
                 );
-                return Ok(existing.clone());
+                // #6 安装回报：同 key 既有用户模板 → 复用（非新装），与全新落库可区分。
+                return Ok((existing.clone(), MulticaInstallOutcome::ReusedExisting));
             }
             // builtin 只读：继续走物化用户副本（返回的是本次安装产物，不是既有内置）。
         }
@@ -3959,7 +3961,7 @@ impl App {
             name = %template.name,
             "multica workflow template installed"
         );
-        Ok(template)
+        Ok((template, MulticaInstallOutcome::Created))
     }
 
     pub fn save_workflow_template_with_bindings(
@@ -8009,7 +8011,7 @@ mod tests {
 
         // 新装：保留 payload id 作本地模板 id；inner workflow.id 重新生成（外来 inner id 不进本地）；
         // envelope worker 携带的 provider 经 save 侧统一迁移进本地 binding（node 侧剥空）。
-        let created = app
+        let (created, created_outcome) = app
             .install_workflow_template_from_multica(&exchange_for("shared-pipeline", "共享流水线"))
             .unwrap();
         assert_eq!(created.id, "shared-pipeline");
@@ -8018,6 +8020,8 @@ mod tests {
         assert_ne!(created.workflow.id, "workflow-foreign-inner");
         assert_eq!(created.model_bindings.bindings.len(), 1);
         assert_eq!(created.model_bindings.bindings[0].agent_id, "claude-acp");
+        // #6 安装回报：全新落库形态必须可区分。
+        assert_eq!(created_outcome, MulticaInstallOutcome::Created);
         // 后台被动安装不动用户默认选中。
         let store = app.workflow_templates().unwrap();
         assert_eq!(store.last_used_template_id.as_deref(), Some("default"));
@@ -8030,7 +8034,7 @@ mod tests {
             .unwrap()
             .updated_at
             .clone();
-        let skipped = app
+        let (skipped, skipped_outcome) = app
             .install_workflow_template_from_multica(&exchange_for(
                 "shared-pipeline",
                 "改名也不覆盖",
@@ -8039,14 +8043,18 @@ mod tests {
         assert_eq!(skipped.id, "shared-pipeline");
         assert_eq!(skipped.name, "共享流水线");
         assert_eq!(skipped.updated_at, before);
+        // #6：同 key 既有用户模板 → 复用（非新装），服务端据此区分「已装过」。
+        assert_eq!(skipped_outcome, MulticaInstallOutcome::ReusedExisting);
 
         // builtin id 推送：内置只读，物化用户副本（派生 id、is_built_in=false、名字保留）。
-        let builtin_copy = app
+        let (builtin_copy, copy_outcome) = app
             .install_workflow_template_from_multica(&exchange_for("default", "默认完整工作流"))
             .unwrap();
         assert_ne!(builtin_copy.id, "default");
         assert!(!builtin_copy.is_built_in);
         assert_eq!(builtin_copy.name, "默认完整工作流");
+        // 副本是本次新落库的用户模板（Created），不是复用。
+        assert_eq!(copy_outcome, MulticaInstallOutcome::Created);
         // 内置本体未被覆盖（仍是 builtin 且名字未变）。
         let store = app.workflow_templates().unwrap();
         let builtin = store
@@ -8102,7 +8110,7 @@ mod tests {
             app.save_workflow_template("依赖角色".to_string(), exchange.workflow.clone())
                 .is_err()
         );
-        let installed = app
+        let (installed, _) = app
             .install_workflow_template_from_multica(&exchange)
             .unwrap();
         assert_eq!(installed.id, "needs-roles");

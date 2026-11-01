@@ -385,8 +385,7 @@ async fn handle_push_install<R: Runtime>(
     let report = match home_app(&app) {
         None => failed_install_report("app state unavailable".to_string()),
         Some(home) => {
-            let install =
-                tauri::async_runtime::spawn_blocking(move || -> Result<ProfileEntry, String> {
+            let install = tauri::async_runtime::spawn_blocking(move || -> Result<(ProfileEntry, gold_band::app::MulticaInstallOutcome), String> {
                     let existing = home
                         .profiles()
                         .map_err(|error| format!("profile scan failed: {error}"))?;
@@ -395,23 +394,26 @@ async fn handle_push_install<R: Runtime>(
                         .iter()
                         .map(|profile| profile.name.clone())
                         .collect();
-                    let input = multica_exchange_to_profile_input(&exchange, &used)
+                    let (input, outcome) = multica_exchange_to_profile_input(&exchange, &used)
                         .map_err(|error| error.to_string())?;
                     home.create_profile(input)
+                        .map(|entry| (entry, outcome))
                         .map_err(|error| format!("create profile failed: {error}"))
                 })
                 .await;
             match install {
-                Ok(Ok(entry)) => {
+                Ok(Ok((entry, outcome))) => {
                     emit_runtime_asset_installed(&app, &request_id, ASSET_TYPE_ROLE, &entry.name);
                     RuntimeAssetsInstallReport {
                         status: "completed",
                         payload: None,
                         result: Some(RuntimeAssetsInstallResult {
                             // id = 资产 key（回查句柄）；展示名 = 实际落库名（改名拷贝时是「xx-2」，
-                            // multica 反馈 P3——仅市场名兜底拿不到这个值）。
+                            // multica 反馈 P3——仅市场名兜底拿不到这个值）；outcome = 落库形态
+                            //（#6：created / renamed-copy，服务端不再靠名称兜底猜）。
                             installed_name: entry.id,
                             installed_display_name: entry.name,
+                            outcome: outcome.as_wire_str(),
                         }),
                         error: None,
                     }
@@ -489,7 +491,7 @@ async fn handle_push_install_workflow<R: Runtime>(
             })
             .await;
             match install {
-                Ok(Ok(template)) => {
+                Ok(Ok((template, outcome))) => {
                     emit_runtime_asset_installed(
                         &app,
                         &request_id,
@@ -501,9 +503,11 @@ async fn handle_push_install_workflow<R: Runtime>(
                         payload: None,
                         result: Some(RuntimeAssetsInstallResult {
                             // 与角色同约定：id = 资产 key（跳过时是既有模板 id），展示名 = 实际
-                            // 落库名（builtin 副本派生 id 场景用户可读）。
+                            // 落库名（builtin 副本派生 id 场景用户可读）；outcome = 落库形态
+                            //（#6：created / reused-existing——「已装过跳过」不再与新装混淆）。
                             installed_name: template.id,
                             installed_display_name: template.name,
+                            outcome: outcome.as_wire_str(),
                         }),
                         error: None,
                     }

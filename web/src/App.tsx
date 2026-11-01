@@ -1377,7 +1377,8 @@ export function App() {
       if (event.assetType === 'workflow') {
         getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
       } else if (event.assetType === 'role') {
-        loadProfiles().catch(() => setProfiles([]));
+        // best-effort 吞错（data-loading §3/§6）：后台重拉失败不得清空已加载的基础数据。
+        loadProfiles().catch(() => {});
       }
     }).then((dispose) => {
       if (active) {

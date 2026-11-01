@@ -52,7 +52,9 @@ use tracing::{info, warn};
 
 use crate::multica::bridge::{desktop_context, multica_client, shared_multica_state};
 use crate::multica::client::IssueDetail;
-use crate::multica::state::{ActiveRemoteRun, SharedMulticaState, UpstreamPullDecision};
+use crate::multica::state::{
+    ActiveRemoteRun, MulticaRuntimeState, SharedMulticaState, UpstreamPullDecision,
+};
 
 /// 有限退避轮询参数（用户决策 2026-10-24：有限退避轮询）：15s 起、×1.5 退避、间隔上限
 /// 60s、总预算 15 分钟。集中定义为模块常量（AGENTS：业务常量集中定义）。
@@ -80,10 +82,8 @@ async fn wait_for_active_run_within(
 ) -> Option<(String, ActiveRemoteRun)> {
     let deadline = std::time::Instant::now() + grace;
     loop {
-        if let Some(found) = shared
-            .lock()
-            .expect("multica state lock")
-            .find_active_run_by_task(task_id)
+        if let Some(found) = MulticaRuntimeState::lock_degraded(&shared)
+            .and_then(|guard| guard.find_active_run_by_task(task_id))
         {
             return Some(found);
         }
@@ -234,10 +234,9 @@ impl MulticaUpstreamResolver {
             }
             tokio::select! {
                 _ = notify.notified() => {
-                    let decision = shared
-                        .lock()
-                        .expect("multica state lock")
-                        .take_upstream_pull_decision(&run.local_run_id, node_id);
+                    let decision = MulticaRuntimeState::lock_degraded(&shared).and_then(
+                        |mut guard| guard.take_upstream_pull_decision(&run.local_run_id, node_id),
+                    );
                     match decision {
                         Some(UpstreamPullDecision::Manual(text)) => {
                             self.settle_pull(&shared, &run, node_id, &parent, "manual");
@@ -340,10 +339,11 @@ impl MulticaUpstreamResolver {
         node_id: &str,
         parent: &str,
     ) -> Arc<Notify> {
-        let notify = shared
-            .lock()
-            .expect("multica state lock")
-            .register_upstream_pull(&run.local_run_id, node_id, parent);
+        let notify = MulticaRuntimeState::lock_degraded(&shared)
+            .map(|mut guard| guard.register_upstream_pull(&run.local_run_id, node_id, parent))
+            // 中毒降级：未登记的 Notify（notify_one 无等待者即 no-op），等待侧按既有
+            // 轮询预算收口——不因锁中毒 panic 炸掉 resolve 路径。
+            .unwrap_or_default();
         let _ = self.handle.emit(
             MULTICA_UPSTREAM_PULL_PENDING_EVENT,
             UpstreamPullEventVm::pending(run, node_id, parent),
@@ -360,10 +360,9 @@ impl MulticaUpstreamResolver {
         parent: &str,
         outcome: &'static str,
     ) {
-        shared
-            .lock()
-            .expect("multica state lock")
-            .drop_upstream_pull(&run.local_run_id, node_id);
+        if let Some(mut guard) = MulticaRuntimeState::lock_degraded(&shared) {
+            guard.drop_upstream_pull(&run.local_run_id, node_id);
+        }
         let _ = self.handle.emit(
             MULTICA_UPSTREAM_PULL_SETTLED_EVENT,
             UpstreamPullEventVm::settled(run, node_id, parent, outcome),
@@ -481,7 +480,7 @@ impl CompletionProtocolSectionResolver for MulticaCompletionProtocolResolver {
         designation: CompletionProtocolDesignation,
     ) -> Option<PromptHiddenSection> {
         let shared = shared_multica_state(&self.handle)?;
-        let mut guard = shared.lock().ok()?;
+        let mut guard = MulticaRuntimeState::lock_degraded(&shared)?;
         let run = guard.find_active_run_by_task(task_id).map(|(_, run)| run)?;
         run.issue_id
             .as_deref()

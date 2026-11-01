@@ -147,9 +147,12 @@ pub async fn get_remote_tasks(
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         // 移动语义兜底：rerun 血缘活跃的源终态行不进本次响应（纯视图过滤，不写回——读命令不顺便
-        // 执行维护写，data-loading 规则 §5）。源行的持久退场由 rerun 命令 202 后真删除；此处保证
-        // 「他端机器发起 rerun / 删除瞬时失败」时终态列不显示有活跃排队后继的行。pending 拉取失败
+        // 执行维护写，data-loading 规则 §5）。持久退场两路：rerun 命令 202 后本机真删除；他端
+        // 发起的 rerun 由「此处记入观察备忘 + 心跳循环排空真删除」（#4，见
+        // record_observed_rerun_lineage / bridge::drain_observed_rerun_retirements）补齐——否则
+        // 后继被领取/完成后 pending 不再回传血缘，源行在本机回现且永不过时。pending 拉取失败
         // → 血缘集合为空 → 不过滤（失败安全，不误删显示）。
+        record_observed_rerun_lineage(&shared, &pending);
         let terminal = filter_rerun_retired_terminal(&pending, terminal);
         tasks_by_workspace.insert(
             workspace.id.clone(),
@@ -208,6 +211,23 @@ fn filter_rerun_retired_terminal(
         .filter(|task| !rerun_sources.contains(task.id.as_str()))
         .cloned()
         .collect()
+}
+
+/// 把 pending 观察到的 rerun 血缘记入共享内存态（#4，纯记录不写回）。
+///
+/// pending 行的 `rerun_of_task_id` 是 server 事实——源任务链已重新排队。读命令只记备忘，
+/// 持久退场由心跳循环排空（[`crate::multica::bridge::drain_observed_rerun_retirements`]）。
+/// claim-at-send 的 UI 入口即本列表（发送前必有本命令观察到血缘），故无需在 claim 时点
+/// 另设记录。锁中毒静默跳过——最坏延迟一个观察周期（下一次列表刷新重记）。
+fn record_observed_rerun_lineage(shared: &SharedMulticaState, pending: &[RemoteTaskVm]) {
+    let Ok(mut guard) = shared.lock() else {
+        return;
+    };
+    guard.observed_rerun_sources.extend(
+        pending
+            .iter()
+            .filter_map(|task| task.rerun_of_task_id.clone()),
+    );
 }
 
 /// 断点续跑判定结果（开发设计 改动三）。
@@ -1324,7 +1344,8 @@ const UPSTREAM_DECISION_SKIP: &str = "skip";
 ///
 /// `task_id`/`node_id` 与 pending 事件载荷一致（node_id 为引擎节点 display id）。决策迟到
 /// （resolve 已收口或 run 已终态）→ 结构化错误 `multica.upstream-pull-not-pending`（前端
-/// 通常已随 settled 事件关弹窗，此为竞态兜底）。
+/// 通常已随 settled 事件关弹窗，此为竞态兜底）。载荷非法（manual 空文本 / 未知字面量）→
+/// `multica.upstream-pull-invalid-decision`（槽未写入、等待方仍在，前端保留卡片重选）。
 #[tauri::command]
 pub async fn decide_upstream_pull(
     shared: State<'_, SharedMulticaState>,
@@ -1338,23 +1359,29 @@ pub async fn decide_upstream_pull(
         UPSTREAM_DECISION_SKIP => UpstreamPullDecision::Skip,
         UPSTREAM_DECISION_MANUAL => {
             // manual 必须携带非空文本（trim 后）；空文本前端已禁提交，此处兜底拒绝。
+            // 校验失败用 invalid-decision（≠ not-pending）：槽未写入、等待方仍在——前端
+            // 按 not-pending 会幂等收卡，静默丢掉等待中的拉取决策。
             let text = manual_text
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .ok_or(MulticaError::UpstreamPullNotPending)
+                .ok_or(MulticaError::UpstreamPullInvalidDecision)
                 .map_err(|e| command_error(e.into()))?;
             UpstreamPullDecision::Manual(text.to_string())
         }
-        // 未知决策字面量：不改槽（防手滑毁掉等待中的拉取），直接报错。
+        // 未知决策字面量：不改槽（防手滑毁掉等待中的拉取），直接报错（invalid-decision，
+        // 前端保留卡片重选）。
         other => {
             warn!(task = %task_id, node = %node_id, decision = %other, "multica decide_upstream_pull: unknown decision literal");
-            return Err(command_error(MulticaError::UpstreamPullNotPending.into()));
+            return Err(command_error(
+                MulticaError::UpstreamPullInvalidDecision.into(),
+            ));
         }
     };
-    let mut guard = shared.lock().map_err(|_| {
-        command_error(MulticaError::NetworkFailed("multica state lock poisoned".into()).into())
-    })?;
+    // 锁中毒 → runtime-offline（统一锁策略 #9：状态不可用、可重试；不折叠网络域错误）。
+    let mut guard = crate::multica::state::MulticaRuntimeState::lock_degraded(&shared)
+        .ok_or(MulticaError::RuntimeOffline)
+        .map_err(|e| command_error(e.into()))?;
     // task_id → 在飞 run → run 级键（决策槽键含 local_run_id，不直接用 task_id）。
     let Some((_, run)) = guard.find_active_run_by_task(&task_id) else {
         return Err(command_error(MulticaError::UpstreamPullNotPending.into()));
@@ -1379,9 +1406,10 @@ pub async fn list_upstream_pull_pendings(
     shared: State<'_, SharedMulticaState>,
     task_id: String,
 ) -> CommandResult<Vec<MulticaUpstreamPullPendingVm>> {
-    let guard = shared.lock().map_err(|_| {
-        command_error(MulticaError::NetworkFailed("multica state lock poisoned".into()).into())
-    })?;
+    // 锁中毒 → runtime-offline（统一锁策略 #9，同 decide_upstream_pull）。
+    let guard = crate::multica::state::MulticaRuntimeState::lock_degraded(&shared)
+        .ok_or(MulticaError::RuntimeOffline)
+        .map_err(|e| command_error(e.into()))?;
     // task_id → 在飞 run → run 级槽枚举（与 decide_upstream_pull 同一归属口径）。
     let Some((_, run)) = guard.find_active_run_by_task(&task_id) else {
         return Ok(Vec::new());

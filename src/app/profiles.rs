@@ -953,10 +953,33 @@ pub fn profile_to_multica_exchange(profile: &ProfileEntry) -> MulticaRoleExchang
 /// （`-{n}` 后缀，与文件夹导入同一策略），绝不覆盖既有角色；`pf-builtin-*` / `is_builtin`
 /// 推送同样落为**新**用户角色（内置角色只读，ADR-0008 D6 拷贝语义天然成立）。dynamicTemplate
 /// 为 true 但正文渲染校验不过时降级为 false（与导入同策略）。
+/// multica push-install 的落库形态（#6 安装回报：区分全新/拷贝/复用，multica 反馈 P3——
+/// 服务端无法从 id/名称兜底判断「装了副本」还是「全新安装」）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MulticaInstallOutcome {
+    /// 全新落库：无重名/无同 key 既有用户资产，市场身份直达。
+    Created,
+    /// 重名改名拷贝（`-{n}` 后缀副本；ADR-0008 D6 用户数据不覆盖）。
+    RenamedCopy,
+    /// 同 key 既有用户资产原样复用（不新落库，返回既有条目）。
+    ReusedExisting,
+}
+
+impl MulticaInstallOutcome {
+    /// 上报 wire 字面量（daemon → server 安装回报的 `outcome` 字段；服务端消费按需求文档跟进）。
+    pub fn as_wire_str(&self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::RenamedCopy => "renamed-copy",
+            Self::ReusedExisting => "reused-existing",
+        }
+    }
+}
+
 pub fn multica_exchange_to_profile_input(
     exchange: &MulticaRoleExchange,
     used_names: &BTreeSet<String>,
-) -> Result<ProfileInput> {
+) -> Result<(ProfileInput, MulticaInstallOutcome)> {
     // multica 硬校验规则 1 要求 content 必带 frontmatter 块——用严格解析，未闭合/缺失即失败
     // （工单按 failed 上报，不把半成品正文当角色正文落库）。
     let document = parse_frontmatter_document(&exchange.content)
@@ -981,12 +1004,22 @@ pub fn multica_exchange_to_profile_input(
         .get("dynamicTemplate")
         .is_some_and(|value| value.trim() == "true")
         && dynamic_template_body_renders(body);
-    Ok(ProfileInput {
-        name: resolve_unique_name(&display_name, used_names),
-        summary,
-        content: body.to_string(),
-        dynamic_template,
-    })
+    // 重名判定与改名同点发生（单一真源）：resolve 后名字偏离期望展示名 → 改名拷贝。
+    let resolved_name = resolve_unique_name(&display_name, used_names);
+    let outcome = if resolved_name == display_name {
+        MulticaInstallOutcome::Created
+    } else {
+        MulticaInstallOutcome::RenamedCopy
+    };
+    Ok((
+        ProfileInput {
+            name: resolved_name,
+            summary,
+            content: body.to_string(),
+            dynamic_template,
+        },
+        outcome,
+    ))
 }
 
 fn summary_from_body(body: &str) -> String {
@@ -2414,7 +2447,7 @@ profile body
     #[test]
     fn multica_exchange_round_trip_restores_display_fields() {
         let exchange = profile_to_multica_exchange(&exchange_source_profile());
-        let input = multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
+        let (input, _) = multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
         // display name 从 title 还原（不是 slug）、summary 取 wire description、
         // 正文剥离 frontmatter（落库后由本地键重新渲染）、dynamicTemplate 走 frontmatter。
         assert_eq!(input.name, "评审专家");
@@ -2434,7 +2467,7 @@ profile body
                 .fields["dynamicTemplate"],
             "true"
         );
-        let input = multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
+        let (input, _) = multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
         assert!(input.dynamic_template);
     }
 
@@ -2449,7 +2482,7 @@ profile body
             content: "---\nname: pf-third-party\ndescription: 第三方角色\n---\n\nbody".to_string(),
             is_builtin: false,
         };
-        let input = multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
+        let (input, _) = multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
         assert_eq!(input.name, "pf-third-party");
         assert_eq!(input.summary, "第三方角色");
         assert_eq!(input.content, "body");
@@ -2460,8 +2493,16 @@ profile body
         // 与既有角色重名 → 改名拷贝（-{n} 后缀，与文件夹导入同策略），绝不覆盖。
         let exchange = profile_to_multica_exchange(&exchange_source_profile());
         let used: BTreeSet<String> = ["评审专家".to_string()].into_iter().collect();
-        let input = multica_exchange_to_profile_input(&exchange, &used).unwrap();
+        let (input, outcome) = multica_exchange_to_profile_input(&exchange, &used).unwrap();
         assert_eq!(input.name, "评审专家-2");
+        // #6 安装回报：落库形态必须可区分（multica 反馈 P3——服务端无法从 id/名称兜底
+        // 判断「装了副本」还是「全新安装」）。
+        assert_eq!(outcome, MulticaInstallOutcome::RenamedCopy);
+        // 无重名 → 全新落库。
+        let (fresh, outcome) =
+            multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
+        assert_eq!(fresh.name, "评审专家");
+        assert_eq!(outcome, MulticaInstallOutcome::Created);
     }
 
     #[test]
@@ -2475,7 +2516,7 @@ profile body
                     .to_string(),
             is_builtin: false,
         };
-        let input = multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
+        let (input, _) = multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
         assert!(!input.dynamic_template);
     }
 

@@ -271,6 +271,13 @@ async fn run_heartbeat_loop<R: Runtime>(app: AppHandle<R>) {
             }
             trace_stage("heartbeat", stage);
 
+            // ②.5 rerun 血缘退场排空（#4）：读路径（get_remote_tasks）观察到的血缘在此持久化
+            //     （读命令不写回，data-loading §5——维护写归心跳生命周期）。空集零开销（锁内
+            //     判空即返回）；命中本地终态历史即真删除并广播，源行不再随后继离场回现。
+            let stage = Instant::now();
+            crate::multica::bridge::drain_observed_rerun_retirements(&app);
+            trace_stage("rerun_retire", stage);
+
             // ③ 取消检测：active run 的 remote terminal -> 作废本地（接入方案 C5）。
             let stage = Instant::now();
             detect_cancelled_active_runs(&app, &client).await;

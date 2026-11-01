@@ -745,11 +745,14 @@ pub struct RuntimeAssetsInstallReport {
 ///
 /// `installed_name` = 新本地 profile.id（key 空间与 list/export 统一，网页端可据此回查）；
 /// `installed_display_name` = 实际落库展示名（multica 反馈 P3——id 形如 `pf-mcx1a2` 用户不可读；
-/// 改名拷贝场景下它是**实际**名「xx-2」而非市场原名，multica 侧市场名兜底无法覆盖）。
+/// 改名拷贝场景下它是**实际**名「xx-2」而非市场原名，multica 侧市场名兜底无法覆盖）；
+/// `outcome` = 落库形态（#6，`created` / `renamed-copy` / `reused-existing`）——服务端不再
+/// 从 id/名称兜底猜测「装了副本」还是「全新安装/已装过」。
 #[derive(Debug, Serialize)]
 pub struct RuntimeAssetsInstallResult {
     pub installed_name: String,
     pub installed_display_name: String,
+    pub outcome: &'static str,
 }
 
 /// 进程级共享的 `reqwest::Client`（连接池/TLS 上下文复用）。
@@ -3260,19 +3263,22 @@ mod tests {
         assert!(json["payload"].get("is_builtin").is_none());
 
         // push-install completed：result.installed_name（= 新本地 profile.id）+
-        // installed_display_name（实际展示名，multica 反馈 P3）；failed：error。
+        // installed_display_name（实际展示名，multica 反馈 P3）+ outcome（#6 落库形态）；
+        // failed：error。
         let install = RuntimeAssetsInstallReport {
             status: "completed",
             payload: None,
             result: Some(RuntimeAssetsInstallResult {
                 installed_name: "pf-new-id".into(),
                 installed_display_name: "开发工程师".into(),
+                outcome: "created",
             }),
             error: None,
         };
         let json = serde_json::to_value(&install).unwrap();
         assert_eq!(json["result"]["installed_name"], "pf-new-id");
         assert_eq!(json["result"]["installed_display_name"], "开发工程师");
+        assert_eq!(json["result"]["outcome"], "created");
         assert!(json["payload"].is_null());
 
         let failed = RuntimeAssetsInstallReport {

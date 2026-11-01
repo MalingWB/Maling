@@ -1143,6 +1143,7 @@
       "runtime-offline": "运行时未就绪，请稍后重试。",
       "session-resume-failed": "会话恢复失败，将以全新任务重跑。",
       "task-not-found": "找不到该 Multica 任务。",
+      "upstream-pull-invalid-decision": "决策无效，请检查后重试。",
       "upstream-pull-not-pending": "该拉取已结束，无需再选择。",
       "workspace-already-bound": "该工作空间已绑定。",
       "workspace-not-found": "找不到该工作空间绑定。"

@@ -1143,6 +1143,7 @@
       "runtime-offline": "Runtime is not ready. Please try again shortly.",
       "session-resume-failed": "Session resume failed. It will rerun as a new task.",
       "task-not-found": "This multica task could not be found.",
+      "upstream-pull-invalid-decision": "Invalid decision. Please check and try again.",
       "upstream-pull-not-pending": "This pull has already finished; no choice is needed.",
       "workspace-already-bound": "This workspace is already bound.",
       "workspace-not-found": "This workspace binding could not be found."

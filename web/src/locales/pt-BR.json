@@ -1140,6 +1140,7 @@
       "runtime-offline": "O runtime ainda não está pronto. Tente novamente em breve.",
       "session-resume-failed": "Falha ao retomar sessão. Uma nova execução será iniciada.",
       "task-not-found": "Esta tarefa multica não foi encontrada.",
+      "upstream-pull-invalid-decision": "Escolha inválida. Verifique e tente novamente.",
       "upstream-pull-not-pending": "Esta busca já foi concluída; nenhuma escolha é necessária.",
       "workspace-already-bound": "Este espaço de trabalho já está vinculado.",
       "workspace-not-found": "Esta vinculação de espaço de trabalho não foi encontrada."

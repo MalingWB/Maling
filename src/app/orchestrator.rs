@@ -13200,7 +13200,7 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "task_instruction");
-    let task_instruction = dynamic_task_instruction(ctx, graph, node, has_output_contract);
+    let mut task_instruction = dynamic_task_instruction(ctx, graph, node, has_output_contract);
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -13211,6 +13211,27 @@ fn build_dynamic_worker_invocation(
             "bytes": task_instruction.len(),
         }),
     );
+
+    // M5-cf 上游交付引用（auto 面）：与 workflow worker（`node_executor::build_worker_invocation`）
+    // 同一拉取契约——任务正文 / 角色正文携带令牌即声明拉取意图。解析结果注入隐式隐藏区段
+    // （仅 `SessionMode::New`，与首条区段加载策略一致），正文令牌随后移除（New/Continue 都
+    // 移除，防续跑时令牌原文漏进模型 prompt）。解析器缺席 / 失败 → 结构化错误，节点按执行
+    // 错误同路（与 workflow 面同契约，不静默放行）。
+    let mut profile_content = profile_content;
+    if crate::app::upstream::needs_upstream_resolution([
+        Some(task_instruction.as_str()),
+        profile_content.as_deref(),
+    ]) {
+        if session_mode == SessionMode::New {
+            let section = crate::app::upstream::upstream_hidden_section(
+                ctx.app.resolve_upstream_output(ctx.task_id, &node.id)?,
+            );
+            extra_hidden_sections.push(section);
+        }
+        task_instruction = crate::app::upstream::strip_upstream_references(&task_instruction);
+        profile_content =
+            profile_content.map(|text| crate::app::upstream::strip_upstream_references(&text));
+    }
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "permission_mode");
@@ -20751,6 +20772,161 @@ mod tests {
 
         assert_eq!(invocation.adapter_workspace_dir, repo_root);
         assert_eq!(invocation.workspace_dir, worktree_dir);
+    }
+
+    #[test]
+    fn dynamic_upstream_token_resolution_appends_hidden_section_and_strips_token() {
+        use std::sync::Mutex;
+
+        struct RecordingResolver {
+            replacement: &'static str,
+            calls: Mutex<Vec<(String, String)>>,
+        }
+        impl crate::app::upstream::UpstreamOutputResolver for RecordingResolver {
+            fn resolve_upstream_output(
+                &self,
+                task_id: &str,
+                node_id: &str,
+            ) -> Result<String, crate::app::upstream::UpstreamResolveError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((task_id.to_string(), node_id.to_string()));
+                Ok(self.replacement.to_string())
+            }
+        }
+
+        let (_temp, repo_root) = init_repo();
+        let resolver = std::sync::Arc::new(RecordingResolver {
+            replacement: "「上游交付说明：部署地址 https://t.example.com（父 issue in_progress）」",
+            calls: Mutex::new(Vec::new()),
+        });
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default())
+            .with_upstream_output_resolver(resolver.clone());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("upstream-pull-leaf");
+        // 任务正文（goal 面）声明拉取意图——auto 动态叶子与 workflow worker 同一声明语义。
+        node.task = "基于 $upstream.completion-output 开始回归测试".to_string();
+        let graph = test_dynamic_graph_at(repo_root.clone(), vec![node.clone()]);
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            None,
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 正文令牌移除（auto 面与 workflow 面同契约）。
+        assert!(
+            !invocation
+                .task_instruction
+                .as_deref()
+                .unwrap_or_default()
+                .contains("$upstream.completion-output"),
+            "task instruction must not leak the raw token: {:?}",
+            invocation.task_instruction
+        );
+        // 解析结果作为「上游交付说明」隐式隐藏区段追加。
+        let section = invocation
+            .extra_hidden_sections
+            .iter()
+            .find(|section| section.title == crate::app::upstream::UPSTREAM_HIDDEN_SECTION_TITLE)
+            .expect("upstream hidden section appended");
+        assert_eq!(
+            section.content,
+            "「上游交付说明：部署地址 https://t.example.com（父 issue in_progress）」"
+        );
+        assert_eq!(
+            resolver.calls.lock().unwrap().as_slice(),
+            [(ctx.task_id.to_string(), node.id.clone())]
+        );
+    }
+
+    #[test]
+    fn dynamic_upstream_token_on_continue_session_strips_without_resolving() {
+        use std::sync::Mutex;
+
+        struct RefusingResolver {
+            calls: Mutex<Vec<(String, String)>>,
+        }
+        impl crate::app::upstream::UpstreamOutputResolver for RefusingResolver {
+            fn resolve_upstream_output(
+                &self,
+                _task_id: &str,
+                _node_id: &str,
+            ) -> Result<String, crate::app::upstream::UpstreamResolveError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(("refused".to_string(), "refused".to_string()));
+                Err(crate::app::upstream::UpstreamResolveError::NoResolver)
+            }
+        }
+
+        let (_temp, repo_root) = init_repo();
+        let resolver = std::sync::Arc::new(RefusingResolver {
+            calls: Mutex::new(Vec::new()),
+        });
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default())
+            .with_upstream_output_resolver(resolver.clone());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("upstream-pull-continue");
+        node.task = "参考 $upstream.completion-output 的交付说明继续".to_string();
+        let graph = test_dynamic_graph_at(repo_root.clone(), vec![node.clone()]);
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            None,
+            SessionMode::Continue,
+            None,
+            Some("继续".to_string()),
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            !invocation
+                .task_instruction
+                .as_deref()
+                .unwrap_or_default()
+                .contains("$upstream.completion-output"),
+            "task instruction must not leak the raw token on continue: {:?}",
+            invocation.task_instruction
+        );
+        assert!(
+            !invocation
+                .extra_hidden_sections
+                .iter()
+                .any(|section| section.title == crate::app::upstream::UPSTREAM_HIDDEN_SECTION_TITLE),
+            "continue must not append a new upstream section"
+        );
+        assert!(
+            resolver.calls.lock().unwrap().is_empty(),
+            "continue session must not resolve the token"
+        );
     }
 
     #[test]

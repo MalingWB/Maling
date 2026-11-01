@@ -44,7 +44,9 @@ use tracing::{debug, info, warn};
 use crate::multica::client::{MULTICA_ISSUE_DONE_STATUS, MulticaClient, ReportDpmsStoryRequest};
 use crate::multica::config::{get_pat, multica_base_url, multica_settings};
 use crate::multica::handoff;
-use crate::multica::state::{ActiveRemoteRun, DPMS_STORY_MEMORY_KEY, SharedMulticaState};
+use crate::multica::state::{
+    ActiveRemoteRun, DPMS_STORY_MEMORY_KEY, MulticaRuntimeState, SharedMulticaState,
+};
 use crate::remote::{REMOTE_SOURCE_SETTINGS_UPDATED_EVENT, REMOTE_TASKS_UPDATED_EVENT};
 use crate::state::{DesktopContext, DesktopState};
 
@@ -196,6 +198,25 @@ fn decide_run_completion(run: &ActiveRemoteRun, block: Option<String>) -> Direct
     }
 }
 
+/// 终态交付的 M5-cj 会籍门禁（纯函数，可单测）。
+///
+/// workflow/auto 的 issue run 最终交付只认**获准节点**产出的块——装配侧判定 Final/Staged 时
+/// 已记入 run 级 `designated_output_nodes`（auto 验收叶 = Final，终态 `/complete` 是其唯一
+/// 交付通道，见 [`is_workflow_issue_run`] 测试注释）。终态节点无会籍（Prohibited / 未过解析器）
+/// 却扫出块（格式模仿 / 引用前文）→ 剥离：字段不发送，multica 保留 issue 现值——与中段快照
+/// 门禁（[`push_workflow_completion_snapshot`]）同判据同口径，堵住「终态路径绕过会籍」的旁路。
+/// 非 issue 不门：scan 未执行、block 恒 None，且 server 对非 issue 任务静默忽略该字段。
+fn gate_terminal_completion_output(
+    has_issue: bool,
+    designated: bool,
+    block: Option<String>,
+) -> Option<String> {
+    if has_issue && !designated {
+        return None;
+    }
+    block
+}
+
 /// 从 `WorkerRefState` 提取 ACP session_id + work_dir（断点续跑依据）。
 ///
 /// `continue_ref.acpSessionId` 为 session_id，`continue_ref.cwd` 为 work_dir；缺失/空 → None。
@@ -278,6 +299,7 @@ pub fn create_multica_subscriber(
                 run_id,
                 outcome,
                 node_label,
+                node_id,
                 attempt_dir,
                 ..
             } => {
@@ -310,6 +332,7 @@ pub fn create_multica_subscriber(
                             remote_task_id,
                             run,
                             node_label,
+                            node_id,
                             attempt_dir,
                         });
                     }
@@ -498,6 +521,7 @@ async fn execute_complete_run(
     remote_task_id: &str,
     run: ActiveRemoteRun,
     node_label: String,
+    node_id: &str,
     attempt_dir: Option<String>,
 ) {
     // 执行时映射复验（M5-cj）：入队（事件回调）到执行（消费者）之间隔着前序作业的 HTTP，
@@ -506,11 +530,12 @@ async fn execute_complete_run(
     // 映射：映射已落 = 他方已终态收尾 → 本作业整体退出（终态上报/历史/刷新均由认领方完成），
     // 防对已终态任务二次 complete。复验后、认领前的窗口仍由 begin_completion 兜底。
     let mapping_alive = shared_multica_state(app).is_some_and(|shared| {
-        shared
-            .lock()
-            .expect("multica state lock")
-            .find_active_run_by_local(&run.local_task_id, &run.local_run_id)
-            .is_some()
+        MulticaRuntimeState::lock_degraded(&shared)
+            .is_some_and(|guard| {
+                guard
+                    .find_active_run_by_local(&run.local_task_id, &run.local_run_id)
+                    .is_some()
+            })
     });
     if !mapping_alive {
         info!(task = %remote_task_id, "multica complete-run job skip: run already finalized");
@@ -566,10 +591,29 @@ async fn execute_complete_run(
             // 倒序找块（收尾节点带 JSON 输出验证时最后一条消息是裁决 JSON、块在它
             // 之前）；提不出 → 字段不发送（multica 保留 issue 现值），near-miss 可观测、
             // 终态后补交通道可恢复。
+            //
+            // M5-cj 终态会籍门禁：issue run 只上送**获准节点**（Final/Staged，装配侧记入
+            // run 级 designated_output_nodes）扫出的块——无会籍终态节点（Prohibited / 图
+            // 异常收尾）的块属格式模仿/引用，剥离不上送；auto 的交付唯一通道在此，不门禁
+            // 则资格集对 auto 形同虚设。与中段快照门禁同判据（is_designated_output_node）。
             if let (Some(issue), Some(_)) = (issue, attempt_dir.as_deref()) {
                 log_workflow_completion_delivery(remote_task_id, issue, &scan.attempt_probe);
             }
-            let completion_output = scan.attempt_probe.block;
+            let designated = shared_multica_state(app).is_some_and(|shared| {
+                MulticaRuntimeState::lock_degraded(&shared)
+                    .is_some_and(|guard| guard.is_designated_output_node(&run.local_run_id, node_id))
+            });
+            let scanned_block = scan.attempt_probe.block;
+            let stripped = issue.is_some() && !designated && scanned_block.is_some();
+            let completion_output =
+                gate_terminal_completion_output(issue.is_some(), designated, scanned_block);
+            if stripped {
+                info!(
+                    task = %remote_task_id,
+                    node = %node_id,
+                    "multica completion-output: terminal block from undesignated node stripped (issue value preserved)"
+                );
+            }
             complete_with_issue_done(
                 &client,
                 remote_task_id,
@@ -827,12 +871,12 @@ pub(crate) async fn report_dpms_story_if_changed(
         return;
     };
     // 锁内只做比较（run 不在飞 = 他方已收尾 → 整体退出，防对已终态任务补发）。
-    let unchanged = shared
-        .lock()
-        .expect("multica state lock")
-        .active_runs
-        .get(remote_task_id)
-        .is_some_and(|live| live.last_dpms_report.as_ref() == Some(&body));
+    let unchanged = MulticaRuntimeState::lock_degraded(&shared).is_some_and(|guard| {
+        guard
+            .active_runs
+            .get(remote_task_id)
+            .is_some_and(|live| live.last_dpms_report.as_ref() == Some(&body))
+    });
     if unchanged {
         return;
     }
@@ -964,10 +1008,14 @@ enum CompletionOutputJob {
         attempt_dir: String,
     },
     /// run 成功终态的 `/complete`（completion_output 随 complete 同事务上送）。
+    ///
+    /// `node_id` = 终态节点（RunCompleted 事件携带）：终态交付会籍门禁
+    /// （[`gate_terminal_completion_output`]）按它查 run 级 designated 集。
     CompleteRun {
         remote_task_id: String,
         run: ActiveRemoteRun,
         node_label: String,
+        node_id: String,
         attempt_dir: Option<String>,
     },
 }
@@ -1034,9 +1082,11 @@ async fn execute_completion_output_job(app: &tauri::AppHandle, job: CompletionOu
             remote_task_id,
             run,
             node_label,
+            node_id,
             attempt_dir,
         } => {
-            execute_complete_run(app, &remote_task_id, run, node_label, attempt_dir).await;
+            execute_complete_run(app, &remote_task_id, run, node_label, &node_id, attempt_dir)
+                .await;
         }
     }
 }
@@ -1080,10 +1130,8 @@ async fn push_workflow_completion_snapshot(
     };
     // M5-cj 上送侧会籍门禁：先于 context/采集获取（无会籍即零成本退出，不做 timeline 读）。
     let designated = shared_multica_state(app).is_some_and(|shared| {
-        shared
-            .lock()
-            .expect("multica state lock")
-            .is_designated_output_node(&run.local_run_id, node_id)
+        MulticaRuntimeState::lock_degraded(&shared)
+            .is_some_and(|guard| guard.is_designated_output_node(&run.local_run_id, node_id))
     });
     if !designated {
         // 无记录节点是常态（多数节点 Prohibited），逐节点 info 只会成为噪音——debug 级。
@@ -1109,12 +1157,12 @@ async fn push_workflow_completion_snapshot(
     };
     // 值去重：与上次上送相同即跳过。成功后回写缓存；失败不回写（下一 turn / 完成路径重试）。
     if let Some(shared) = shared_multica_state(app) {
-        let already_pushed = shared
-            .lock()
-            .expect("multica state lock")
-            .issue_output_pushed
-            .get(issue)
-            .is_some_and(|pushed| pushed == &block);
+        let already_pushed = MulticaRuntimeState::lock_degraded(&shared).is_some_and(|guard| {
+            guard
+                .issue_output_pushed
+                .get(issue)
+                .is_some_and(|pushed| pushed == &block)
+        });
         if already_pushed {
             return;
         }
@@ -1128,11 +1176,9 @@ async fn push_workflow_completion_snapshot(
     {
         Ok(()) => {
             if let Some(shared) = shared_multica_state(app) {
-                shared
-                    .lock()
-                    .expect("multica state lock")
-                    .issue_output_pushed
-                    .insert(issue.to_string(), block);
+                if let Some(mut guard) = MulticaRuntimeState::lock_degraded(&shared) {
+                    guard.issue_output_pushed.insert(issue.to_string(), block);
+                }
             }
             info!(
                 task_run = %run.local_run_id,
@@ -1369,6 +1415,63 @@ pub(crate) fn remove_completed_task_entry(state: &mut StateConfig, remote_task_i
         .remote_completed_tasks
         .retain(|c| c.remote_task_id != remote_task_id);
     before != state.remote_completed_tasks.len()
+}
+
+/// #4 rerun 血缘退场排空（纯状态函数，可单测）：观察到的源任务 id ∩ 本地终态历史 → 真删除。
+///
+/// 观察集来自读命令（[`crate::multica::commands::get_remote_tasks`]）在 pending 行看到的
+/// `rerun_of_task_id`（server 事实：该任务链已重新排队）。命中本地历史的源行已过时——复用
+/// [`remove_completed_task_entry`] 逐个删除；本地没有的 id no-op（终态历史只增于本机完成路径，
+/// 现在没有 ⇒ 之后也不会有）。返回删除条数（0 = 无变化，调用方不落盘不广播）。
+pub(crate) fn apply_observed_rerun_retirements(
+    state: &mut StateConfig,
+    observed: &std::collections::HashSet<String>,
+) -> usize {
+    observed
+        .iter()
+        .filter(|source| remove_completed_task_entry(state, source))
+        .count()
+}
+
+/// 心跳循环侧的排空入口（#4 维护写，独立生命周期）：把读路径记入共享态的 rerun 血缘观察集
+/// 持久化为源终态行删除。
+///
+/// 读命令不顺便执行维护写（data-loading 规则 §5）——观察只记入内存备忘，本函数在心跳 tick
+/// 排空：命中即 with_state 真删除（dirty 才落盘）并广播 `remote-tasks-updated`（前端即时收行）。
+/// RMW 失败保留观察集下 tick 重试；观察集为空时零开销（一次锁内判空即返回，不触发 RMW）。
+/// 残余边界（诚实标注）：本机整个离线期间错过 pending 观察窗口（后继从排队到终态全程未见）
+/// 时源行保留——与修复前行为一致，仅显示过时行，不产生错误数据。
+pub(crate) fn drain_observed_rerun_retirements<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(shared) = app.try_state::<SharedMulticaState>().map(|s| s.inner().clone()) else {
+        return;
+    };
+    let Some(context) = app.try_state::<DesktopState>().and_then(|s| s.context().ok()) else {
+        return;
+    };
+    let observed: std::collections::HashSet<String> = match shared.lock() {
+        Ok(guard) if !guard.observed_rerun_sources.is_empty() => {
+            guard.observed_rerun_sources.clone()
+        }
+        _ => return,
+    };
+    match context.app().with_state(|state| {
+        let removed = apply_observed_rerun_retirements(state, &observed);
+        (removed > 0, removed)
+    }) {
+        Ok(removed) => {
+            // 排空成功（含 0 命中）：只清本批观察，保留排空期间新记入的观察（retain 而非 clear）。
+            if let Ok(mut guard) = shared.lock() {
+                guard.observed_rerun_sources.retain(|id| !observed.contains(id));
+            }
+            if removed > 0 {
+                emit_remote_tasks_updated(app);
+                info!(removed, "multica rerun-retired terminal rows drained");
+            }
+        }
+        Err(error) => {
+            warn!(%error, "multica rerun retire drain failed (will retry next tick)");
+        }
+    }
 }
 
 /// 把 `batch-status` 对账行应用进「最近完成」历史的 issue 状态字段（纯状态函数，可单测）。
@@ -1911,6 +2014,44 @@ mod tests {
         assert_eq!(state.remote_completed_tasks.len(), 1);
     }
 
+    // ===== #4 rerun 血缘退场：观察备忘 → 心跳排空的接口层固化 =====
+
+    #[test]
+    fn apply_observed_rerun_retirements_removes_only_observed_local_rows() {
+        use std::collections::HashSet;
+
+        // 退场窗口根因：rerun 移动语义的持久删除只在发起机 202 后执行；他端机器在 pending
+        // 观察到血缘时若只做视图过滤，后继被领取/完成后 pending 不再回传血缘 → 源终态行在
+        // 该机回现且永不过时。锁住排空语义：观察集 ∩ 本地历史 → 真删除；本地没有的 id
+        // （他端执行的历史）no-op；同批重复排空幂等。
+        let mut state = StateConfig::default();
+        state.remote_completed_tasks = vec![
+            completed("rt-src", "2026-09-20T01:00:00Z"),
+            completed("rt-keep", "2026-09-20T02:00:00Z"),
+        ];
+        let observed: HashSet<String> = ["rt-src", "rt-foreign"]
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
+
+        let removed = apply_observed_rerun_retirements(&mut state, &observed);
+
+        assert_eq!(removed, 1, "只删命中本地历史的源行");
+        let ids: Vec<&str> = state
+            .remote_completed_tasks
+            .iter()
+            .map(|c| c.remote_task_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["rt-keep"], "未观察到的历史行保留");
+
+        assert_eq!(
+            apply_observed_rerun_retirements(&mut state, &observed),
+            0,
+            "同批重复排空 → 幂等 no-op"
+        );
+        assert_eq!(state.remote_completed_tasks.len(), 1);
+    }
+
     // ===== story dev/test 拆分：C1「终态历史保留类型快照」的接口层固化 =====
 
     #[test]
@@ -2220,6 +2361,32 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn gate_terminal_completion_output_strips_block_from_undesignated_node() {
+        // M5-cj 会籍门禁在**终态交付**的应用（与中段快照同判据）：终态节点无会籍
+        // （Prohibited / 未过解析器）却扫出块（格式模仿 / 引用前文块）→ 剥离，字段不发送
+        // （multica 保留 issue 现值）。终态 `/complete` 是 auto 的唯一交付通道，此处不门禁
+        // 即整个 M5-cj 资格集对 auto 形同虚设。
+        assert_eq!(
+            gate_terminal_completion_output(true, false, Some("伪交付".to_string())),
+            None,
+            "issue run + 无会籍节点 → 剥离"
+        );
+        // 有会籍（Final/Staged，装配侧判定并记入 designated_output_nodes）→ 放行。
+        assert_eq!(
+            gate_terminal_completion_output(true, true, Some("交付说明".to_string())),
+            Some("交付说明".to_string())
+        );
+        // 非 issue：scan 未执行 block 恒 None；即便未来采集也不按会籍门（server 对非 issue
+        // 任务静默忽略该字段）。
+        assert_eq!(
+            gate_terminal_completion_output(false, false, Some("本地交付".to_string())),
+            Some("本地交付".to_string())
+        );
+        // 有会籍但没产出块 → 仍 None（near-miss 由交付日志另行观测）。
+        assert_eq!(gate_terminal_completion_output(true, true, None), None);
+    }
+
     // ---- M5-cj：completion_output 写序（事件回调入队 → 单消费者顺序执行）----
 
     fn snapshot_job(local_run: &str, node_id: &str) -> CompletionOutputJob {
@@ -2239,6 +2406,7 @@ mod tests {
             remote_task_id: format!("remote-{local_run}"),
             run,
             node_label: "收尾".to_string(),
+            node_id: format!("node-{local_run}"),
             attempt_dir: Some(format!("attempts/{local_run}")),
         }
     }

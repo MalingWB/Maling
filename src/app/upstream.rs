@@ -1,10 +1,11 @@
-//! 上游交付引用（`$upstream.completion-output`）与完成输出生产门禁——工作流节点 prompt 中的
-//! 跨任务交付机制。
+//! 上游交付引用（`$upstream.completion-output`）与完成输出生产门禁——编排节点 prompt 中的
+//! 跨任务交付机制（两个装配面：workflow worker 与 auto 动态叶子）。
 //!
 //! # 拉取（读侧）
 //!
 //! 令牌由外部导入的「交付拉取」角色文件携带（角色正文或 goal 中出现即视为该节点声明了拉取
-//! 意图）。节点启动装配 prompt 时，[`super::node_executor`] 发现令牌 → 调用 App 上注册的
+//! 意图）。节点启动装配 prompt 时，workflow 面的 [`super::node_executor`] 与 auto 面的
+//! `orchestrator::build_dynamic_worker_invocation` 都会发现令牌 → 调用 App 上注册的
 //! [`UpstreamOutputResolver`]（桌面壳注入，multica 域实现：父 issue 寻址 + 有限退避轮询）→
 //! 解析结果注入首条 prompt 的隐式隐藏区段（「上游交付说明」），正文中的令牌随之移除。引擎不
 //! 感知 multica：解析器缺席或解析失败 → 节点按结构化错误失败，与其他节点执行错误同路
@@ -184,14 +185,49 @@ pub trait CompletionProtocolSectionResolver: Send + Sync {
     ) -> Option<crate::provider::PromptHiddenSection>;
 }
 
-/// 冻结区段嗅探目标：`completion-output` 协议正文的特征串（提取围栏 info 串，见
-/// multica `handoff`）。M5-cg 前的 claim 时冻结段对**所有节点**写入了通用协议正文；重放
-/// 旧任务时冻结段已含协议 → 不再叠加按节点变体（新旧两套产出规则并存会互相干扰）。
-const FROZEN_PROTOCOL_SNIPPET: &str = "completion-output";
+/// 冻结区段「已含完成输出协议正文」判据（纯函数）。
+///
+/// 协议正文在任务级冻结区段的块序中恒为**首块**（multica `vm::remote_task_hidden_section`：
+/// 完成协议（仅 direct）→ DPMS 门 → 附件失败清单，块间 `\n\n` join），因此判据取
+/// 「区段内容以协议模板文档开头」（与模板同源计算，见 [`completion_protocol_document_openers`]），
+/// 位置锚定、不以裸子串匹配——附件失败清单会把用户侧文件名 / 失败原因原文插进同一区段，
+/// `completion-output` 子串出现在清单里不代表协议已冻结。M5-cg 前的旧任务冻结段对所有
+/// 节点写入了通用协议正文（且协议在首块），同一判据仍正确识别。
+fn frozen_carries_completion_protocol(
+    sections: &[crate::provider::PromptHiddenSection],
+) -> bool {
+    sections.iter().any(|section| {
+        completion_protocol_document_openers()
+            .iter()
+            .any(|opener| section.content.starts_with(opener.as_str()))
+    })
+}
+
+/// 协议文档开头行（zh / en 模板空上下文渲染后取首行；协议为恒定文案无变量），惰性计算一次。
+fn completion_protocol_document_openers() -> &'static [String] {
+    static OPENERS: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+        [crate::config::DesktopLanguage::ZhCn, crate::config::DesktopLanguage::En]
+            .iter()
+            .map(|&language| {
+                let template = crate::prompts::prompt_by_language(
+                    language,
+                    crate::prompts::RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
+                );
+                crate::prompts::render(template, serde_json::json!({}))
+                    .expect("remote task completion protocol renders")
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
+    });
+    &OPENERS
+}
 
 /// 装配时的按节点协议区段（M5-cg 产出侧门禁的注入入口）。
 ///
-/// 两个装配面（workflow worker / auto 动态叶子）共用：先嗅探 `frozen_sections`（**仅**任务级
+/// 两个装配面（workflow worker / auto 动态叶子）共用：先判 `frozen_sections`（**仅**任务级
 /// 冻结区段——上游交付说明块含父任务任意正文，混入会误伤）已含协议正文 → 跳过（旧任务照旧
 /// 重放冻结文本）；否则经 App 注册的解析器取按节点变体。`SessionMode::New` 策略由调用方
 /// 把关（与首条区段加载策略一致，Continue 回合不重放）。
@@ -202,10 +238,7 @@ pub(crate) fn completion_protocol_designation_section(
     designation: CompletionProtocolDesignation,
     frozen_sections: &[crate::provider::PromptHiddenSection],
 ) -> Option<crate::provider::PromptHiddenSection> {
-    if frozen_sections
-        .iter()
-        .any(|section| section.content.contains(FROZEN_PROTOCOL_SNIPPET))
-    {
+    if frozen_carries_completion_protocol(frozen_sections) {
         return None;
     }
     app.completion_protocol_section(task_id, node_id, designation)
@@ -226,6 +259,37 @@ pub(crate) fn upstream_hidden_section(content: String) -> crate::provider::Promp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frozen_section_with_attachment_failure_text_does_not_count_as_protocol() {
+        // 回归：任务级冻结区段只含 DPMS 门 / 附件失败清单时，清单中的用户侧文件名携带
+        // `completion-output` 子串不得被判为「已冻结协议正文」——否则按节点协议对全任务
+        // 所有节点静默不注入，交付丢失且无任何报错。
+        let section = crate::provider::PromptHiddenSection {
+            title: "Gold Band remote task context".to_string(),
+            content: "附件下载失败：\n- `completion-output-spec.md`：下载超时".to_string(),
+        };
+        assert!(!frozen_carries_completion_protocol(&[section]));
+    }
+
+    #[test]
+    fn frozen_section_starting_with_protocol_document_is_recognized() {
+        // 旧任务（M5-cg 前）/ direct 冻结段以协议正文开头 → 识别为已含协议（不叠加变体）。
+        // 附件清单在协议之后出现，不影响识别。
+        let template = crate::prompts::prompt_by_language(
+            crate::config::DesktopLanguage::ZhCn,
+            crate::prompts::RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
+        );
+        let protocol = crate::prompts::render(template, serde_json::json!({})).unwrap();
+        let section = crate::provider::PromptHiddenSection {
+            title: "Gold Band remote task context".to_string(),
+            content: format!(
+                "{}\n\n附件下载失败：\n- completion-output-spec.md：下载超时",
+                protocol.trim()
+            ),
+        };
+        assert!(frozen_carries_completion_protocol(&[section]));
+    }
 
     #[test]
     fn detects_token_in_goal_and_profile() {
@@ -464,10 +528,17 @@ mod tests {
             .is_none()
         );
 
-        // 旧任务冻结段已含协议正文（M5-cg 前 claim 时定版）→ 跳过（不调用解析器叠加变体）。
+        // 旧任务冻结段已含协议正文（M5-cg 前 claim 时定版，协议正文为冻结区段首块）→
+        // 跳过（不调用解析器叠加变体）。
+        let legacy_template = crate::prompts::prompt_by_language(
+            crate::config::DesktopLanguage::ZhCn,
+            crate::prompts::RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
+        );
+        let legacy_protocol =
+            crate::prompts::render(legacy_template, serde_json::json!({})).unwrap();
         let frozen_legacy = vec![crate::provider::PromptHiddenSection {
             title: "Gold Band remote task context".to_string(),
-            content: "完成输出协议……```completion-output……".to_string(),
+            content: format!("{}\n\nDPMS 溯源块……", legacy_protocol.trim()),
         }];
         let resolver = std::sync::Arc::new(StubProtocolResolver {
             designation: std::sync::Mutex::new(Vec::new()),

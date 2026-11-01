@@ -45,6 +45,14 @@ pub struct MulticaRuntimeState {
     /// 同生命周期清理。旧版冻结段任务（M5-cg 前旧 run 重放）不经过解析器 → 集合为空 →
     /// 快照上送一律拒绝（开发阶段破坏式更新，不做兼容放行）。
     pub designated_output_nodes: HashMap<String, HashSet<String>>,
+    /// 观察到的 rerun 血缘（#4 退场窗口）：读命令（get_remote_tasks）在 pending 行看到的
+    /// `rerun_of_task_id` 集合——server 事实「该源任务链已重新排队」的内存备忘。
+    ///
+    /// 读命令不执行维护写（data-loading 规则 §5），持久退场由心跳循环排空
+    /// （bridge::drain_observed_rerun_retirements：命中本地终态历史即真删除）后按批清出。
+    /// 有界：单批 ≤ 一次 pending 拉取的行数，排空即清；进程重启丢失无害——丢失窗口内
+    /// 退化为仅视图过滤（本机制引入前的行为）。
+    pub observed_rerun_sources: HashSet<String>,
 }
 
 /// 上游拉取的等待决策（M5-ch）：父 `completion_output` 首拉为空时交还控制权。
@@ -138,6 +146,27 @@ pub type SharedMulticaState = Arc<Mutex<MulticaRuntimeState>>;
 /// 构造共享运行期状态（main.rs setup 经 `.manage()` 注入）。
 pub fn shared_state() -> SharedMulticaState {
     Arc::new(Mutex::new(MulticaRuntimeState::default()))
+}
+
+impl MulticaRuntimeState {
+    /// 共享态锁的统一获取策略（#9）：中毒 = 某临界区内 panic 过——不二次 panic
+    /// （订阅器回调在 runtime 热路径，`expect` 会把整个应用炸掉），不折叠
+    /// `NetworkFailed`（非网络域，前端文案误导），也不静默 `.ok()`（无观测）。
+    /// 统一降级为「状态不可用」：读路径跳过（warn 在此记录），命令路径由调用方映射
+    /// `multica.runtime-offline`（既有可重试码）。热路径周期调用（心跳/读命令）保持
+    /// 既有 `if let Ok` 静默跳过即可，不经本函数（避免逐 tick 刷 warn）。
+    pub fn lock_degraded(shared: &SharedMulticaState) -> Option<std::sync::MutexGuard<'_, Self>> {
+        match shared.lock() {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "multica runtime state lock poisoned (state unavailable, degrading)"
+                );
+                None
+            }
+        }
+    }
 }
 
 /// 进行中 connect 的取消槽（M5-ay：连接弹窗「取消连接」）。
@@ -446,6 +475,25 @@ fn upstream_pull_key(local_run_id: &str, node_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lock_degraded_returns_none_on_poison_instead_of_panicking() {
+        // #9 统一锁策略的接口层固化：中毒锁不得二次 panic（订阅器回调在 runtime 热路径，
+        // expect 会把整个应用炸掉），统一降级 None（调用方按「状态不可用」走读路径跳过 /
+        // 命令路径 runtime-offline）。未中毒正常取锁。
+        let shared = shared_state();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = shared.lock().unwrap();
+            panic!("poison the multica runtime state lock");
+        }));
+        assert!(
+            MulticaRuntimeState::lock_degraded(&shared).is_none(),
+            "中毒 → 降级 None，不 panic"
+        );
+
+        let fresh = shared_state();
+        assert!(MulticaRuntimeState::lock_degraded(&fresh).is_some());
+    }
 
     fn sample_run(local: &str) -> ActiveRemoteRun {
         ActiveRemoteRun {

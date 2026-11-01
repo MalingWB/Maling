@@ -150,12 +150,7 @@ impl RemoteTaskVm {
             // 本地历史 status 已是归一值（"completed" | "failed"），原样透传。
             status: c.status.clone(),
             workspace_id: c.workspace_id.clone(),
-            title: c
-                .title
-                .trim()
-                .is_empty()
-                .then(|| c.remote_task_id.clone())
-                .unwrap_or_else(|| c.title.clone()),
+            title: display_title(Some(c.title.as_str()), &c.remote_task_id),
             last_activity_at: Some(c.completed_at.clone()),
             requirement: None,
             local_task_id: Some(c.local_task_id.clone()),
@@ -188,11 +183,7 @@ impl RemoteTaskVm {
             issue_ref: run.issue_id.clone(),
             status: "running".to_string(),
             workspace_id: run.workspace_id.clone(),
-            title: run
-                .title
-                .clone()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| remote_task_id.to_string()),
+            title: display_title(run.title.as_deref(), remote_task_id),
             last_activity_at: Some(run.started_at.clone()),
             requirement: None,
             local_task_id: Some(run.local_task_id.clone()),
@@ -221,13 +212,7 @@ impl RemoteTaskVm {
             issue_ref: task.issue_id.clone(),
             status: normalize_remote_status(&task.status),
             workspace_id: workspace_id.to_string(),
-            // 兑现 client.rs 的兜底约定：thread_name 缺失/空白时用 task id 兜底，
-            // 保证列表每行都有可辨识标签（即使 webank 未补全名字也不留空行）。
-            title: task
-                .title
-                .clone()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| task.id.clone()),
+            title: display_title(task.title.as_deref(), &task.id),
             last_activity_at: task.last_activity_at.clone(),
             // pending 列表无正文来源（server pending 只给 thread_name）；任务详情由 from_detail 覆盖。
             requirement: None,
@@ -422,6 +407,17 @@ struct ParentOutputTemplateContext<'a> {
     parent_output: &'a str,
 }
 
+/// 侧栏行标题（三源统一：pending / 在飞 / 终态）：`thread_name` 与需求正文同为 web 侧
+/// 序列化产出，统一过 [`markdown_source_to_plain_text`] 解码（防 `\_`/HTML 残留直接透传到
+/// 列表行，与 composer 预填首行 [`title_block`] 同一渲染口径）；缺失 / 纯空白 / 解码后空白
+/// → `fallback`（remote_task_id，兑现 client.rs 的兜底约定——每行都有可辨识标签）。
+fn display_title(raw: Option<&str>, fallback: &str) -> String {
+    raw.map(markdown_source_to_plain_text)
+        .map(|decoded| decoded.trim().to_string())
+        .filter(|decoded| !decoded.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
 /// 任务名称块：解码后的标题本身即预填首行（M5-cc 起无「任务名称：/Task name: 」标签前缀，
 /// 标签随模板一并删除——无语言差异、无装饰文案的模板没有存在意义）。
 ///
@@ -557,6 +553,77 @@ pub struct MulticaUpstreamPullPendingVm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 测试夹具：最小可用 `RemoteTask`（字段缺省与 wire 缺键同形）。
+    fn fixture_task(id: &str) -> RemoteTask {
+        RemoteTask {
+            id: id.into(),
+            issue_id: None,
+            status: "queued".into(),
+            auth_token: None,
+            prior_session_id: None,
+            parent_task_id: None,
+            title: None,
+            quick_create_prompt: None,
+            chat_message: None,
+            trigger_comment_content: None,
+            autopilot_description: None,
+            handoff_note: None,
+            issue_description: None,
+            last_activity_at: None,
+            issue_kind: None,
+            is_ready: None,
+            release_plan_id: None,
+            dev_user: None,
+            test_user: None,
+            business_story_id: None,
+            origin_url: None,
+            parent_output: None,
+            issue_attachments: Vec::new(),
+            attribution: None,
+            dpms_required: None,
+            system_story_id: None,
+            dpms_product_id: None,
+        }
+    }
+
+    /// 测试夹具：最小可用 `ActiveRemoteRun`（claim 快照字段缺省）。
+    fn fixture_active_run(_remote_task_id: &str) -> ActiveRemoteRun {
+        ActiveRemoteRun {
+            workspace_id: "ws-1".into(),
+            local_project_id: "proj-1".into(),
+            local_task_id: "task-1".into(),
+            local_run_id: "run-1".into(),
+            issue_id: None,
+            title: None,
+            started_at: "2026-08-07T03:00:00Z".into(),
+            issue_kind: None,
+            run_mode: "direct".into(),
+            dpms_required: false,
+            claim_system_story_id: None,
+            last_dpms_report: None,
+        }
+    }
+
+    /// 测试夹具：最小可用 `RemoteCompletedTask`（终态快照字段缺省）。
+    fn fixture_completed(remote_task_id: &str) -> RemoteCompletedTask {
+        RemoteCompletedTask {
+            remote_task_id: remote_task_id.into(),
+            local_task_id: "task-1".into(),
+            local_run_id: "run-1".into(),
+            workspace_id: "ws-1".into(),
+            local_project_id: "proj-1".into(),
+            issue_ref: None,
+            kind: None,
+            status: "completed".into(),
+            title: String::new(),
+            completed_at: "2026-08-06T01:23:45Z".into(),
+            issue_status_category: None,
+            issue_status_name: None,
+            dpms_required: false,
+            dpms_story_id: None,
+        }
+    }
 
     #[test]
     fn normalize_remote_status_maps_known_and_unknown() {
@@ -1704,6 +1771,46 @@ mod tests {
             RemoteTaskVm::from_completed(&failed, "proj-1").status,
             "failed"
         );
+    }
+
+    #[test]
+    fn sidebar_row_titles_decode_web_serialization_for_all_sources() {
+        // 回归：thread_name 与需求正文同为 web 侧序列化产出——三个侧栏行来源（pending /
+        // 在飞 / 终态）的标题都须解码（防 `\_`/HTML 残留直接透传到列表行），与 composer
+        // 预填首行（title_block）同一渲染口径；解码后空白仍走 id 兜底。
+        let pending = RemoteTask {
+            title: Some(r"修复\_登录\_bug".into()),
+            ..fixture_task("t-decode")
+        };
+        assert_eq!(
+            RemoteTaskVm::from_pending(&pending, "ws-1").title,
+            "修复_登录_bug"
+        );
+
+        let run = ActiveRemoteRun {
+            title: Some("上线<b>支付</b>模块".into()),
+            ..fixture_active_run("rt-decode")
+        };
+        assert_eq!(
+            RemoteTaskVm::from_active_run("rt-decode", &run, "proj-1").title,
+            "上线支付模块"
+        );
+
+        let completed = RemoteCompletedTask {
+            title: r"修复\_登录\_bug".into(),
+            ..fixture_completed("rt-done")
+        };
+        assert_eq!(
+            RemoteTaskVm::from_completed(&completed, "proj-1").title,
+            "修复_登录_bug"
+        );
+
+        // 原文纯空白（解码后仍空白）→ id 兜底，不留空标签。
+        let blank = RemoteTask {
+            title: Some("   ".into()),
+            ..fixture_task("t-blank")
+        };
+        assert_eq!(RemoteTaskVm::from_pending(&blank, "ws-1").title, "t-blank");
     }
 
     #[test]

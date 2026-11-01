@@ -1140,6 +1140,7 @@
       "runtime-offline": "런타임이 아직 준비되지 않았습니다. 잠시 후 다시 시도하세요.",
       "session-resume-failed": "세션 재개에 실패했습니다. 새 작업으로 다시 실행됩니다.",
       "task-not-found": "이 Multica 작업을 찾을 수 없습니다.",
+      "upstream-pull-invalid-decision": "선택이 올바르지 않습니다. 확인 후 다시 시도하세요.",
       "upstream-pull-not-pending": "이 가져오기는 이미 종료되었습니다. 선택이 필요하지 않습니다.",
       "workspace-already-bound": "이 워크스페이스는 이미 바인딩되어 있습니다.",
       "workspace-not-found": "이 워크스페이스 바인딩을 찾을 수 없습니다."
