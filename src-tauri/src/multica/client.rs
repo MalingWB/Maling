@@ -515,6 +515,10 @@ pub struct HeartbeatAck {
     pub pending_update: Option<serde_json::Value>,
     /// v1 占位不消费。
     pub pending_model_list: Option<serde_json::Value>,
+    /// runtime-assets（角色共享）工单引用（通道 B；与 skill 待办同模型：server 只回非空 pending
+    /// 字段，缺失 = 无待办）。每次心跳最多一个工单，多个排队靠后续心跳逐个消化（server 侧限速）。
+    /// 处理 spawn 独立任务（`runtime_assets::handle_runtime_assets_request`），不阻塞心跳 tick。
+    pub pending_runtime_assets: Option<PendingRuntimeAssetsRef>,
     /// 就绪变化 diff（story dev/test 拆分，R8 方案 1；wire 最终形态由 multica 定稿，
     /// 码灵按此提案实现，不一致时仅调整本结构反序列化）。
     ///
@@ -552,6 +556,17 @@ pub struct ReadinessChange {
 pub struct PendingLocalSkillImportRef {
     pub id: String,
     pub skill_key: String,
+}
+
+/// 心跳 ack：runtime-assets（角色共享）工单引用（requestId + 建议 action）。
+///
+/// action 只是建议性预分类，**权威 action 以工单详情为准**（详情 GET 是认领后的必经步骤），
+/// 分发器不依赖本字段判定工单类型。
+#[derive(Debug, Deserialize)]
+pub struct PendingRuntimeAssetsRef {
+    pub id: String,
+    #[serde(default)]
+    pub action: String,
 }
 
 /// 发现上报 body（`POST .../local-skills/{requestId}/result`，multica `runtime_local_skills.go`）。
@@ -645,6 +660,82 @@ pub struct RemoteSkillFile {
 pub enum SkillFilesResponse {
     Wrapped { files: Vec<RemoteSkillFile> },
     Bare(Vec<RemoteSkillFile>),
+}
+
+// ===== runtime-assets（角色共享通道 B）wire 类型（设计 `.claude/design/multica-role-management/` §4）=====
+//
+// 三种工单共用一个详情响应与一个 install 上报端点，形态由 action/item_id 区分：
+// - list（盘点）：`GET .../assets/request/{id}` → 枚举本地角色，**只报摘要不报正文**（§5.1）；
+// - export（提取）：action=install 且 item_id 空、payload={asset_key} → 按 key 读完整角色回传；
+// - push-install（推送安装）：action=install 且 item_id 非空、payload 即角色正文 → 落库 + 回报名字。
+
+/// `GET /api/daemon/runtimes/{rid}/assets/request/{requestId}` —— 工单详情（权威 action 来源）。
+///
+/// 只建模消费字段（id/slug/version 等信息性字段不承载；serde 未知字段容忍即忽略）。
+/// `payload` 形态随工单变化（export 是 `{asset_key}`、push-install 是角色正文），故承载为
+/// `Value` 由处理侧按工单解析（`runtime_assets::classify_runtime_assets_request`）。
+#[derive(Debug, Deserialize)]
+pub struct RuntimeAssetsRequest {
+    /// `list` | `install`（详情权威值；ack 里的 action 只是建议）。
+    pub action: String,
+    #[serde(default)]
+    pub asset_type: String,
+    /// 空 = export（本机提取），非空（market item uuid）= push-install（推送安装）。
+    #[serde(default)]
+    pub item_id: String,
+    #[serde(default)]
+    pub payload: Option<serde_json::Value>,
+}
+
+/// export 工单详情 payload（`{"asset_key":"pf-my-role"}`）。
+#[derive(Debug, Deserialize)]
+pub struct RuntimeAssetsExportPayload {
+    pub asset_key: String,
+}
+
+/// list 工单上报 body（`POST .../assets/{requestId}/result`）。
+///
+/// Option 字段不加 skip_serializing_if（与 skill 上报同约定：server 按显式 null/缺失区分上报形态）。
+#[derive(Debug, Serialize)]
+pub struct RuntimeAssetsListReport {
+    pub status: &'static str,
+    pub supported: bool,
+    pub assets: Vec<RuntimeAssetSummary>,
+    pub error: Option<String>,
+}
+
+/// list 上报的单个角色摘要（无正文；`key` = 本地 profile.id，export 工单按它回取）。
+#[derive(Debug, Serialize)]
+pub struct RuntimeAssetSummary {
+    pub key: String,
+    pub r#type: &'static str,
+    pub name: String,
+    pub description: String,
+    pub is_builtin: bool,
+    pub updated_at: String,
+}
+
+/// export / push-install 工单上报 body（`POST .../assets/install/{requestId}/result`，两形态共用）。
+///
+/// export completed → `payload`（角色正文）；push-install completed → `result`（实际落库名字
+/// + 可读展示名）；failed → `error`。
+#[derive(Debug, Serialize)]
+pub struct RuntimeAssetsInstallReport {
+    pub status: &'static str,
+    pub payload: Option<gold_band::app::MulticaRoleExchange>,
+    pub result: Option<RuntimeAssetsInstallResult>,
+    pub error: Option<String>,
+}
+
+/// push-install completed 的结果。
+///
+/// `installed_name` = 新本地 profile.id（key 空间与 list/export 统一，网页端可据此回查）；
+/// `installed_display_name` = 实际落库展示名（multica 反馈 P3——id 形如 `pf-mcx1a2` 用户不可读；
+/// 改名拷贝场景下它是**实际**名「xx-2」而非市场原名，multica 侧市场名兜底无法覆盖）。
+#[derive(Debug, Serialize)]
+pub struct RuntimeAssetsInstallResult {
+    pub installed_name: String,
+    pub installed_display_name: String,
 }
 
 /// 进程级共享的 `reqwest::Client`（连接池/TLS 上下文复用）。
@@ -1004,6 +1095,60 @@ impl MulticaClient {
             let path = format!(
                 "/api/daemon/runtimes/{runtime_id}/local-skills/import/{request_id}/result"
             );
+            self.json_send(Method::POST, &path, None, report, None)
+                .await?;
+            Ok(())
+        })
+        .await
+    }
+
+    // ===== runtime-assets（角色共享通道 B）：详情 + list/install 上报 =====
+
+    /// `GET /api/daemon/runtimes/{rid}/assets/request/{requestId}` —— 工单详情（权威 action）。
+    ///
+    /// 由 spawn 出的处理任务调用（非心跳 tick 内）；404（server 内存态请求已消失/重启）按确定
+    /// 错误立即返回，处理侧记日志放弃该工单（不重试——server 侧请求已不存在，重试无意义）。
+    pub async fn get_runtime_assets_request(
+        &self,
+        runtime_id: &str,
+        request_id: &str,
+    ) -> Result<RuntimeAssetsRequest, MulticaError> {
+        self.with_network_retry("get_runtime_assets_request", || async {
+            let path = format!("/api/daemon/runtimes/{runtime_id}/assets/request/{request_id}");
+            let resp = self.send(Method::GET, &path, None, None).await?;
+            resp.json::<RuntimeAssetsRequest>()
+                .await
+                .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))
+        })
+        .await
+    }
+
+    /// `POST /api/daemon/runtimes/{rid}/assets/{requestId}/result` —— list（盘点）工单上报。
+    pub async fn report_runtime_assets_list_result(
+        &self,
+        runtime_id: &str,
+        request_id: &str,
+        report: &RuntimeAssetsListReport,
+    ) -> Result<(), MulticaError> {
+        self.with_network_retry("report_runtime_assets_list", || async {
+            let path = format!("/api/daemon/runtimes/{runtime_id}/assets/{request_id}/result");
+            self.json_send(Method::POST, &path, None, report, None)
+                .await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// `POST /api/daemon/runtimes/{rid}/assets/install/{requestId}/result` —— export/push-install 上报。
+    pub async fn report_runtime_assets_install_result(
+        &self,
+        runtime_id: &str,
+        request_id: &str,
+        report: &RuntimeAssetsInstallReport,
+    ) -> Result<(), MulticaError> {
+        self.with_network_retry("report_runtime_assets_install", || async {
+            let path =
+                format!("/api/daemon/runtimes/{runtime_id}/assets/install/{request_id}/result");
             self.json_send(Method::POST, &path, None, report, None)
                 .await?;
             Ok(())
@@ -1855,6 +2000,7 @@ fn hex_val(b: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn callback_redirect_response_is_302_to_app_root_without_query() {
@@ -2213,7 +2359,10 @@ mod tests {
     async fn report_issue_dpms_story_posts_to_daemon_issue_endpoint() {
         // 验收：POST /api/daemon/issues/{id}/dpms-story，PAT bearer + X-Workspace-ID 路由，
         // body 单字段上送；200 即成功（响应体不消费）。
-        let (base, handle) = mock_http_responses(vec![(200, r#"{"issue_id":"iss-1","dpms_story_id":889001,"story_id":889001}"#)]);
+        let (base, handle) = mock_http_responses(vec![(
+            200,
+            r#"{"issue_id":"iss-1","dpms_story_id":889001,"story_id":889001}"#,
+        )]);
         let client = test_client(base);
         client
             .report_issue_dpms_story(
@@ -2241,8 +2390,10 @@ mod tests {
     async fn report_issue_dpms_story_maps_409_without_retry() {
         // 验收：409（已链接异 id）→ IssueLinkConflict（非 ClaimConflict），确定错误码不重试
         // ——mock 只准备一个响应，若重试会 panic（收不到第二个请求）。
-        let (base, handle) =
-            mock_http_responses(vec![(409, r#"{"error":"issue already linked to a different DPMS story"}"#)]);
+        let (base, handle) = mock_http_responses(vec![(
+            409,
+            r#"{"error":"issue already linked to a different DPMS story"}"#,
+        )]);
         let client = test_client(base);
         let error = client
             .report_issue_dpms_story(
@@ -2967,6 +3118,126 @@ mod tests {
         )
         .unwrap();
         assert!(ack.pending_local_skill_imports.is_none());
+    }
+
+    #[test]
+    fn heartbeat_ack_parses_pending_runtime_assets_and_tolerates_absence() {
+        // 角色共享工单引用：id + 建议 action（详情才是权威）；旧 server 不发该字段 → None。
+        let ack: HeartbeatAck = serde_json::from_str(
+            r#"{"status":"ok","pending_runtime_assets":{"id":"req-42","action":"list"}}"#,
+        )
+        .unwrap();
+        let pending = ack.pending_runtime_assets.expect("pending present");
+        assert_eq!(pending.id, "req-42");
+        assert_eq!(pending.action, "list");
+        // action 是建议字段，缺省容忍（分发器只消费 id）。
+        let ack: HeartbeatAck =
+            serde_json::from_str(r#"{"status":"ok","pending_runtime_assets":{"id":"req-43"}}"#)
+                .unwrap();
+        assert_eq!(ack.pending_runtime_assets.unwrap().action, "");
+
+        let legacy: HeartbeatAck =
+            serde_json::from_str(r#"{"status":"ok","pending_local_skills":{"id":"r"}}"#).unwrap();
+        assert!(legacy.pending_runtime_assets.is_none());
+    }
+
+    #[test]
+    fn runtime_assets_request_detail_parses_three_work_order_shapes() {
+        // list：无 item_id/payload 语义；id/slug/version 等信息性字段被忽略。
+        let list: RuntimeAssetsRequest = serde_json::from_str(
+            r#"{"id":"r1","action":"list","asset_type":"role","status":"running"}"#,
+        )
+        .unwrap();
+        assert_eq!(list.action, "list");
+        assert!(list.payload.is_none());
+        // export：action=install + item_id 空 + payload={asset_key}。
+        let export: RuntimeAssetsRequest = serde_json::from_value(json!({
+            "id": "r2", "action": "install", "asset_type": "role",
+            "item_id": "", "slug": "", "version": "",
+            "payload": {"asset_key": "pf-my-role"}
+        }))
+        .unwrap();
+        assert!(export.item_id.is_empty());
+        // push-install：item_id 非空 + payload 即角色正文。
+        let install: RuntimeAssetsRequest = serde_json::from_value(json!({
+            "id": "r3", "action": "install", "asset_type": "role",
+            "item_id": "item-uuid", "slug": "pf-my-role", "version": "1.2.0",
+            "payload": {"name": "pf-my-role", "description": "d",
+                        "content": "---\nname: pf-my-role\n---\nbody", "is_builtin": false}
+        }))
+        .unwrap();
+        assert_eq!(install.item_id, "item-uuid");
+        assert!(install.payload.is_some());
+    }
+
+    #[test]
+    fn runtime_assets_reports_serialize_wire_contract() {
+        // list 上报：摘要无正文、type 恒 role、key = 本地 profile.id。
+        let list = RuntimeAssetsListReport {
+            status: "completed",
+            supported: true,
+            assets: vec![RuntimeAssetSummary {
+                key: "pf-my-role".into(),
+                r#type: "role",
+                name: "我的角色".into(),
+                description: "一句话".into(),
+                is_builtin: false,
+                updated_at: "2026-10-31T10:00:00Z".into(),
+            }],
+            error: None,
+        };
+        let json = serde_json::to_value(&list).unwrap();
+        assert_eq!(json["status"], "completed");
+        assert_eq!(json["supported"], true);
+        assert_eq!(json["assets"][0]["key"], "pf-my-role");
+        assert_eq!(json["assets"][0]["type"], "role");
+        assert_eq!(json["assets"][0]["is_builtin"], false);
+        assert!(json["assets"][0].get("content").is_none());
+
+        // export completed：payload 承载角色正文（交换文档 wire 形态：name=slug、is_builtin snake）。
+        let export = RuntimeAssetsInstallReport {
+            status: "completed",
+            payload: Some(gold_band::app::MulticaRoleExchange {
+                name: "pf-my-role".into(),
+                description: "一句话".into(),
+                content: "---\nname: pf-my-role\n---\nbody".into(),
+                is_builtin: false,
+            }),
+            result: None,
+            error: None,
+        };
+        let json = serde_json::to_value(&export).unwrap();
+        assert_eq!(json["payload"]["name"], "pf-my-role");
+        assert_eq!(json["payload"]["is_builtin"], false);
+        assert!(json["payload"].get("dynamicTemplate").is_none());
+        // Option 字段显式 null（与 skill 上报同约定，不加 skip_serializing_if）。
+        assert!(json["result"].is_null());
+
+        // push-install completed：result.installed_name（= 新本地 profile.id）+
+        // installed_display_name（实际展示名，multica 反馈 P3）；failed：error。
+        let install = RuntimeAssetsInstallReport {
+            status: "completed",
+            payload: None,
+            result: Some(RuntimeAssetsInstallResult {
+                installed_name: "pf-new-id".into(),
+                installed_display_name: "开发工程师".into(),
+            }),
+            error: None,
+        };
+        let json = serde_json::to_value(&install).unwrap();
+        assert_eq!(json["result"]["installed_name"], "pf-new-id");
+        assert_eq!(json["result"]["installed_display_name"], "开发工程师");
+        assert!(json["payload"].is_null());
+
+        let failed = RuntimeAssetsInstallReport {
+            status: "failed",
+            payload: None,
+            result: None,
+            error: Some("profile not found".into()),
+        };
+        let json = serde_json::to_value(&failed).unwrap();
+        assert_eq!(json["status"], "failed");
+        assert_eq!(json["error"], "profile not found");
     }
 
     // ===== skill 同步：发现/导入上报 body 契约 =====

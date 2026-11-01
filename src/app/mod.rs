@@ -174,8 +174,9 @@ pub(crate) fn attempt_runtime_state_lock(
 const STATE_CONFIG_LOCK_SHARDS: usize = 32;
 static STATE_CONFIG_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 pub use self::profiles::{
-    ImportProfilesInput, ImportProfilesResult, ProfileCommandError, ProfileEntry, ProfileInput,
-    ProfileList, ProfileScope,
+    ImportProfilesInput, ImportProfilesResult, MulticaRoleExchange, ProfileCommandError,
+    ProfileEntry, ProfileInput, ProfileList, ProfileScope, multica_exchange_to_profile_input,
+    profile_to_multica_exchange,
 };
 
 fn tail_text(text: &str, limit: usize) -> String {

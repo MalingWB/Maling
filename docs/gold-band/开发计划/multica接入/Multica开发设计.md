@@ -3060,6 +3060,27 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **修正记录（M5-cp，2026-10-31，内网实测终态行 DPMS 徽标常驻）**：① `dpms_story_id` 终态快照数据源缺陷——回写唯一写入 live 在飞条目（`report_dpms_story_if_changed` 记 `active_runs`），而终态路径持有的 `run` 是事件回调时克隆的旧副本，「同 turn 回写 + 完成」（direct 单轮完成的典型路径）与「终态兜底才回写成功」两窗口内快照恒 None → 终态历史把「已回传」记成「未回传」，徽标常驻（active 行不受影响——VM 直接读 live 映射）。② 修复：`finalize_terminal` 在清映射同一临界区先读 live 条目 `last_dpms_report`，经纯函数 `resolve_terminal_dpms_report` live 优先、快照回退（live 缺席 = 映射已被他方收尾清除的防御路径），覆盖进 `run` 克隆后构造终态历史；三条终态路径（complete/fail/turn-gate）均汇经 `finalize_terminal` 单点收口。③ 验证：最小失败测试（live 有值 + 快照 None → 解析必为 Some）修复前稳定红（读快照恒 None）、修复后绿；desktop `multica::` **244/244**。
 
+### 12.87 改动八十五：multica 角色共享——daemon 工单被动上传/下载（M5-cq，2026-10-31）
+
+**背景**：multica 侧落地「角色管理」页面（角色商店，kind=role，ADR-0008，server 零改动，接口全量就绪，见 `.claude/design/multica-role-management/设计方案与码灵对接说明.md`）。经方案收敛：**码灵只做被动的角色上传和下载**——上传 = multica 网页上传面板经 export 工单到本机提取；下载 = 网页「安装到我的码灵」经 push-install 工单推送落库；码灵唯一主动行为是既有 15s 心跳认领。**零桌面 UI、零通道 A**（multica market API 不接；版本/分类/可见性等发布决策全部由 multica 网页承载）。
+
+**方案**：
+
+- **lib 格式转换真值源**（`src/app/profiles.rs`）：`MulticaRoleExchange {name, description, content, is_builtin}`（wire 字段名即字段名，`is_builtin` 保持 snake）。**slug = 本地 profile.id**（canonical 身份；`pf-{base36}` 天然满足 multica slug 正则 `^[a-z0-9][a-z0-9._-]{0,63}$`；内置角色 id `pf-builtin-*` 恰与 multica 官方保留命名空间对齐）。`profile_to_multica_exchange`：frontmatter 重写为发布校验形态（`name`=slug〔硬校验规则 2〕、`description`=summary〔规则 3 必填〕），display name 无 wire 顶层字段可走（wire `name` 恒为 slug）→ `title` 键往返，id/createdAt/updatedAt/dynamicTemplate 原样保留。`multica_exchange_to_profile_input`：**严格** frontmatter 解析（契约规则 1 要求 content 必带 frontmatter，未闭合/缺失即失败→failed 上报）；display name 回退链 title→name→slug、summary 回退链 wire description→frontmatter summary/description→display name；fence 后单条框架换行归一（交换文档规范示例带空行，本地格式 body 紧贴 fence，保证往返字节一致）；重名 `-{n}` 改名拷贝（`resolve_unique_name`，与文件夹导入同策略）；dynamicTemplate 坏模板降级（`dynamic_template_body_renders` 与导入共用 helper，顺带消除导入处内联循环重复）。
+- **client wire 类型 + API ×3**（`client.rs`）：心跳 ack 增 `pending_runtime_assets: Option<PendingRuntimeAssetsRef>`（id + 建议性 action，**权威 action 在详情**；Option 字段旧 server 缺省 None）；`RuntimeAssetsRequest` 只建模消费字段（action/asset_type/item_id/payload，id/slug/version 信息性字段不承载——serde 未知字段容忍）；payload 形态随工单变化（export=`{asset_key}`、push-install=角色正文）承载 `Value` 由处理侧解析；上报 body `RuntimeAssetsListReport` / `RuntimeAssetsInstallReport`（Option 字段显式 null 不加 skip_serializing_if，与 skill 上报同约定）；API：详情 GET + list 结果 POST + install 结果 POST（daemon PAT，`with_network_retry` 3 次内重试）。
+- **工单处理模块**（`src-tauri/src/multica/runtime_assets.rs`，新）：纯函数 `classify_runtime_assets_request`（list / export{asset_key}〔item_id 空〕/ push-install{exchange}〔item_id 非空〕，结构性失败返回错误文案→failed 上报终态化）+ `asset_summaries`（key=profile.id 映射，`updated_at` 上报层转 RFC3339——multica 反馈 P4，本地存储格式是本地约定不动）+ 入口 `handle_runtime_assets_request`（详情 404/网络失败→放弃不上报〔server 内存态请求已消失，上报同样 404〕）+ 三 handler（list：`app.profiles()` 摘要枚举，非 role 资产类型 `supported:false`；export：`profile_show(asset_key)`→交换文档回传；push-install：转换→`create_profile` 落新用户角色→回报 `installed_name`=新 profile.id〔与 list/export key 同空间，网页可回查〕+ `installed_display_name`=实际落库展示名〔multica 反馈 P3；重名改名拷贝时是「xx-2」，仅市场名兜底拿不到〕）。本地读写走 spawn_blocking（与 skill 待办同模式）；上报失败记日志由服务端 60s running 超时兜底（multica 对迟到/重复上报幂等）。
+- **分发接线**（`loop_.rs` + `mod.rs`）：`dispatch_pending_runtime_assets` 复刻 `dispatch_pending_skill_work` 模式（无待办零开销、有待办 spawn 独立任务、**绝不阻塞心跳 tick**；不需要 provider——上报 body 无该字段）；心跳 tick 内先于 ack move 取引用调用。`local_skills::home_app` 开放 `pub(crate)` 复用（home 作用域 App 获取）。
+- **内置拷贝语义（ADR-0008 D6）**：push-install 落库恒为 `create_profile`（新 id 新用户角色）——内置角色 compile-in 只读天然不被覆盖、用户同名角色经改名拷贝不被覆盖；`is_builtin=true` / slug 撞 `pf-builtin-*` 推送均落用户副本，`installed_name` 回报实际 id。
+- **明确不做**：WS `EventDaemonPendingWork` 唤醒（advisory；15s 心跳在 3min pending 窗口 ≥12 次认领机会，丢失无害）；通道 A market API；版本管理/分类/可见性（multica 网页承载）；wire 顶层 `dynamicTemplate` 字符串字段（其他 runtime 形态，码灵单一事实源在 content frontmatter）。
+
+**方案自评审**：过度设计——零新增持久状态/aggregate（工单无状态消费，requestId 不落盘；三 handler 复用 lib 既有 `profiles()`/`profile_show()`/`create_profile()`，无新状态机）；复刻而非抽象 skill 待办分发骨架（两处并列尚不构成第三重复制点，抽公共层属过早抽象）。性能——心跳 tick 增量 = 一次 Option 判断；list 工单只传摘要（正文仅 export/install 全量传输，工单协议 §5.1）；本地角色目录十级文件扫描 <10ms 且在 spawn_blocking；上报独立任务不占 tick。
+
+**验证结果**：lib `app::profiles` 新增转换真值表 7 例（发布形态 frontmatter 全键、往返还原 display/summary/body/dynamicTemplate、第三方文档多级回退 + 框架换行归一、重名 `-{n}` 拷贝、坏 dynamicTemplate 降级、严格解析拒绝未闭合 fence）；desktop `multica::` 新增（ack 解析 `pending_runtime_assets` + 旧 server 缺省容忍 + action 建议字段缺省、详情三工单形态解析、list/export/install 上报 body 契约〔含显式 null 语义与 install result 双字段〕、分类三路由 + 结构性拒绝、摘要 key=profile.id + is_builtin 透传、RFC3339 转换〔含解析失败原样返回〕）；回归 lib `app::` **366/366**、desktop `multica::` **251/251**。内网网页端到端（上传面板列角色→发布→安装回装）待打包联调验收。
+
+**修正记录（multica 联调反馈，2026-11-01）**：
+1. **P3 install result 可读性**：初版 result 只回 `installed_name`（= profile.id，`pf-mcx1a2` 形态），multica 网页用户看不出装了什么。修复：result 增补 `installed_display_name`（= 实际落库 `entry.name`）——重名改名拷贝场景下它是「xx-2」而非市场原名，multica 侧市场名兜底拿不到此值，必须 daemon 回报；`installed_name` 仍恒 profile.id，key 空间统一（list key = export asset_key = install installed_name）不动。
+2. **P4 updated_at 非 RFC3339**：list 摘要 `updated_at` 原样外发本地存储格式 `2026-10-31 11:00:00`（空格分隔、无时区），multica 前端 `new Date(...)`/zod 解析失败。修复：上报层 `rfc3339_from_local_timestamp` 转换（chrono NaiveDateTime 解析 + 本地时区定位 + `to_rfc3339_opts`，秒级精度带 `±HH:MM` 偏移）；解析失败原样返回（展示降级好于错误时间）；本地存储格式是本地约定不动。export wire 顶层无时间字段，仅 list 受影响。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检
