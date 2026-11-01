@@ -3904,6 +3904,11 @@ impl App {
             .find(|template| template.id == exchange.id)
         {
             if !existing.is_built_in {
+                tracing::info!(
+                    template_id = %existing.id,
+                    name = %existing.name,
+                    "multica workflow install skipped: same-key user template exists"
+                );
                 return Ok(existing.clone());
             }
             // builtin 只读：继续走物化用户副本（返回的是本次安装产物，不是既有内置）。
@@ -3937,6 +3942,11 @@ impl App {
         };
         store.templates.push(template.clone());
         self.save_workflow_template_store(&store)?;
+        tracing::info!(
+            template_id = %template.id,
+            name = %template.name,
+            "multica workflow template installed"
+        );
         Ok(template)
     }
 

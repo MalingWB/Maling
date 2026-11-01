@@ -1,7 +1,7 @@
 import { getRuntimeApi } from './api/client';
 import { AGENT_MODEL_CONFIG_UPDATED_EVENT } from './lib/agent-diagnostic-update';
 import type { RuntimeApi } from './api/client';
-import type { CreateWorkspaceEntryInput, ResolvedColorScheme, WorkspaceRootRef } from './types';
+import type { CreateWorkspaceEntryInput, ResolvedColorScheme, RuntimeAssetInstalledEventVm, WorkspaceRootRef } from './types';
 
 export { isTauriRuntime } from './api/shared';
 export function readProjectMemory(projectId: string) { return getRuntimeApi().readProjectMemory(projectId); }
@@ -983,6 +983,11 @@ export function subscribeRemoteTaskUpdates(listener: () => void) {
 
 export function subscribeRemoteSourceSettingsUpdates(listener: () => void) {
   return getRuntimeApi().subscribeRemoteSourceSettingsUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+/// multica 被动安装落地（M5-cr）：按 event.assetType 重拉对应列表（App.tsx 消费）。
+export function subscribeRuntimeAssetInstalled(listener: (event: RuntimeAssetInstalledEventVm) => void) {
+  return getRuntimeApi().subscribeRuntimeAssetInstalled?.(listener) ?? Promise.resolve(() => {});
 }
 
 export function subscribeUpstreamPullEvents(listener: Parameters<NonNullable<RuntimeApi['subscribeUpstreamPullEvents']>>[0]) {

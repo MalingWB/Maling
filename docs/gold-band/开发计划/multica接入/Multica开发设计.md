@@ -3099,6 +3099,12 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证结果**：lib `app::workflow_share` 3 例（envelope 序列化无 modelBindings/optionalEntryStage/时间戳、wire 往返 + 键名锁定 `success_condition`/`prompt_envelope`/`executionSlotId`、缺 workflow 正文拒绝→failed）；lib `app` install 2 例（skip 幂等、builtin 副本 id 派生、payload id 保留、inner id 重生成、缺失角色引用容忍）；desktop `multica::runtime_assets` 新增 3 例（workflow 工单分类路由、未知 asset_type 拒绝 + 空=role 容忍 + workflow envelope 误投 role 通道失败、摘要 key/epoch→RFC3339 映射）+ `multica::client` 上报 body 扩展（Role 包裹 + Workflow payload 形态断言）；回归 lib `app::` **371/371**、desktop `multica::` **254/254**；clippy 两 crate 对改动文件零新告警。内网网页端到端（spec §7 联调验收用例）待打包联调，且需 multica 侧放开 workflow 安装入口（§8）。
 
+**修正记录（M5-cr 内网反馈，2026-11-01）**：内网联调「multica 安装显示成功，但码灵工作流列表看不到新模板」。排查：`workflows.json` 已正确落库（写读同源：daemon `home_app()` 与 UI 命令同为 `App::with_config(context.repo_root, context.config)`），根因是**被动通道缺本地反馈闭环**——前端工作流模板/角色列表只在会话壳就绪时拉取一次（App.tsx `conversationShellReady` effect），后台落库无事件触发重拉；且成功安装路径零日志（仅失败有 warn），排查只能翻 store 文件。属好设计实现不完善，修复补完被动通道的本地感知，不加新状态：
+1. `runtime_assets.rs`：push-install 成功（role/workflow 两 handler）后 emit `gold-band://runtime-asset-installed`（载荷 `{assetType, installedDisplayName}` camelCase；常量模块自持，先例 `upstream.rs`）+ INFO 日志（request_id/asset_type/落库名，工单关联）；emit best-effort，失败不影响工单上报。
+2. 前端六点接线（既有 subscribe* 门面模式：`app-events.ts` 常量 → `types.ts` VM → `client.ts` 接口 → `desktop.ts` 实现 → `browser.ts` 桩 → `api.ts` 门面），App.tsx 订阅后按 `assetType` **最小作用域重拉**（workflow → `getWorkflowTemplates`；role → `loadProfiles`；data-loading §6），异步 unlisten 竞态用 active flag 守卫（防泄漏，同 UPDATE_STATUS_EVENT 模式）；安装事件为用户步频单发，无风暴去重需求，不引 `useEventDrivenRefresh`。
+3. lib `install_workflow_template_from_multica` 补 skip/新增两条 INFO 日志——skip（同 key 已存在跳过）是 spec §4.4 预期语义，排查时要能区分「装了新模板」vs「同 key 跳过」。
+4. 验证：web 契约测试 `runtime-asset-installed-event.test.ts` 2 例（事件名 + 载荷形状）与 Rust `installed_event_serializes_camel_case_wire`（wire 键名）双侧锁跨端契约；tsc 改动文件零错。端到端（multica 网页安装 → 运行中码灵列表即时出现）待内网打包验收——本地无法产生 daemon 工单（依赖 multica server 下发），按 bug-fix-verification §3 例外以跨端契约测试 + INFO 日志为可审计证据。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

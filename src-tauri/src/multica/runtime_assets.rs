@@ -22,7 +22,8 @@ use gold_band::app::{
     multica_exchange_to_profile_input, profile_to_multica_exchange,
     workflow_template_to_multica_exchange,
 };
-use tauri::{AppHandle, Runtime};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::multica::client::{
     MulticaClient, RuntimeAssetPayload, RuntimeAssetSummary, RuntimeAssetsExportPayload,
@@ -34,6 +35,43 @@ use crate::multica::local_skills::home_app;
 /// 工单的资产类型常量（multica ADR-0008 runtime kinds）。
 const ASSET_TYPE_ROLE: &str = "role";
 const ASSET_TYPE_WORKFLOW: &str = "workflow";
+
+/// 被动安装落地事件：push-install 成功落库后 emit，前端按 `assetType` 只重拉对应列表
+/// （工作流模板 / 角色）——运行中的前端列表只在会话壳就绪时加载一次，multica 网页的成功
+/// toast 在远端，本地此前无任何感知（M5-cr 内网反馈「装完成功但列表不见」）。事件名与
+/// web `app-events.ts` 对应；常量模块自持（先例 `multica/upstream.rs`）。
+const RUNTIME_ASSET_INSTALLED_EVENT: &str = "gold-band://runtime-asset-installed";
+
+/// 安装事件载荷（wire camelCase，同 `multica/upstream.rs` 的 `UpstreamPullEventVm` 约定）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeAssetInstalledEventVm {
+    asset_type: String,
+    installed_display_name: String,
+}
+
+/// 安装成功后广播 + INFO 日志（此前成功路径零日志，联调排查只能翻 workflows.json）。
+/// emit best-effort：失败不影响工单上报（刷新是增强，不是链路前提）。
+fn emit_runtime_asset_installed<R: Runtime>(
+    app: &AppHandle<R>,
+    request_id: &str,
+    asset_type: &str,
+    installed_display_name: &str,
+) {
+    tracing::info!(
+        request_id,
+        asset_type,
+        installed_display_name,
+        "multica runtime-asset installed locally"
+    );
+    let _ = app.emit(
+        RUNTIME_ASSET_INSTALLED_EVENT,
+        RuntimeAssetInstalledEventVm {
+            asset_type: asset_type.to_string(),
+            installed_display_name: installed_display_name.to_string(),
+        },
+    );
+}
 
 /// 详情 → 工单分类结果（纯函数，可单测；action/asset_type 均以详情为权威，ack 里的 action
 /// 只是建议）。
@@ -350,10 +388,10 @@ async fn handle_push_install<R: Runtime>(
 ) {
     let report = match home_app(&app) {
         None => failed_install_report("app state unavailable".to_string()),
-        Some(app) => {
+        Some(home) => {
             let install =
                 tauri::async_runtime::spawn_blocking(move || -> Result<ProfileEntry, String> {
-                    let existing = app
+                    let existing = home
                         .profiles()
                         .map_err(|error| format!("profile scan failed: {error}"))?;
                     let used: BTreeSet<String> = existing
@@ -363,22 +401,30 @@ async fn handle_push_install<R: Runtime>(
                         .collect();
                     let input = multica_exchange_to_profile_input(&exchange, &used)
                         .map_err(|error| error.to_string())?;
-                    app.create_profile(input)
+                    home.create_profile(input)
                         .map_err(|error| format!("create profile failed: {error}"))
                 })
                 .await;
             match install {
-                Ok(Ok(entry)) => RuntimeAssetsInstallReport {
-                    status: "completed",
-                    payload: None,
-                    result: Some(RuntimeAssetsInstallResult {
-                        // id = 资产 key（回查句柄）；展示名 = 实际落库名（改名拷贝时是「xx-2」，
-                        // multica 反馈 P3——仅市场名兜底拿不到这个值）。
-                        installed_name: entry.id,
-                        installed_display_name: entry.name,
-                    }),
-                    error: None,
-                },
+                Ok(Ok(entry)) => {
+                    emit_runtime_asset_installed(
+                        &app,
+                        &request_id,
+                        ASSET_TYPE_ROLE,
+                        &entry.name,
+                    );
+                    RuntimeAssetsInstallReport {
+                        status: "completed",
+                        payload: None,
+                        result: Some(RuntimeAssetsInstallResult {
+                            // id = 资产 key（回查句柄）；展示名 = 实际落库名（改名拷贝时是「xx-2」，
+                            // multica 反馈 P3——仅市场名兜底拿不到这个值）。
+                            installed_name: entry.id,
+                            installed_display_name: entry.name,
+                        }),
+                        error: None,
+                    }
+                }
                 Ok(Err(error)) => failed_install_report(error),
                 Err(error) => failed_install_report(format!("install task failed: {error}")),
             }
@@ -445,24 +491,32 @@ async fn handle_push_install_workflow<R: Runtime>(
 ) {
     let report = match home_app(&app) {
         None => failed_install_report("app state unavailable".to_string()),
-        Some(app) => {
+        Some(home) => {
             let install = tauri::async_runtime::spawn_blocking(move || {
-                app.install_workflow_template_from_multica(&exchange)
+                home.install_workflow_template_from_multica(&exchange)
                     .map_err(|error| format!("install workflow template failed: {error}"))
             })
             .await;
             match install {
-                Ok(Ok(template)) => RuntimeAssetsInstallReport {
-                    status: "completed",
-                    payload: None,
-                    result: Some(RuntimeAssetsInstallResult {
-                        // 与角色同约定：id = 资产 key（跳过时是既有模板 id），展示名 = 实际
-                        // 落库名（builtin 副本派生 id 场景用户可读）。
-                        installed_name: template.id,
-                        installed_display_name: template.name,
-                    }),
-                    error: None,
-                },
+                Ok(Ok(template)) => {
+                    emit_runtime_asset_installed(
+                        &app,
+                        &request_id,
+                        ASSET_TYPE_WORKFLOW,
+                        &template.name,
+                    );
+                    RuntimeAssetsInstallReport {
+                        status: "completed",
+                        payload: None,
+                        result: Some(RuntimeAssetsInstallResult {
+                            // 与角色同约定：id = 资产 key（跳过时是既有模板 id），展示名 = 实际
+                            // 落库名（builtin 副本派生 id 场景用户可读）。
+                            installed_name: template.id,
+                            installed_display_name: template.name,
+                        }),
+                        error: None,
+                    }
+                }
                 Ok(Err(error)) => failed_install_report(error),
                 Err(error) => {
                     failed_install_report(format!("workflow install task failed: {error}"))
@@ -516,6 +570,20 @@ mod tests {
     use super::*;
     use gold_band::app::ProfileScope;
     use serde_json::json;
+
+    #[test]
+    fn installed_event_serializes_camel_case_wire() {
+        // 跨端契约（M5-cr 被动安装刷新）：前端 `web/tests/runtime-asset-installed-event.test.ts`
+        // 锁同一事件名与形状；Rust 侧键名漂移（如丢失 rename_all）此处先红。
+        let vm = RuntimeAssetInstalledEventVm {
+            asset_type: "workflow".to_string(),
+            installed_display_name: "我的流水线".to_string(),
+        };
+        let wire = serde_json::to_value(&vm).unwrap();
+        assert_eq!(wire["assetType"], "workflow");
+        assert_eq!(wire["installedDisplayName"], "我的流水线");
+        assert_eq!(wire.as_object().unwrap().len(), 2);
+    }
 
     fn detail(action: &str, item_id: &str, payload: serde_json::Value) -> RuntimeAssetsRequest {
         detail_typed("role", action, item_id, payload)
