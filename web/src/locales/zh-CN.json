@@ -2582,6 +2582,7 @@
     "resetFontSize": "恢复默认字号",
     "interfaceZoom": "界面缩放",
     "interfaceZoomDescription": "等比缩放整个客户端界面；也可用 Ctrl+滚轮或 Ctrl+加号/减号调整。",
+    "interfaceZoomInvalid": "请输入 50–250 之间的数字",
     "resetZoom": "恢复默认缩放",
     "localFonts": "自定义字体栈",
     "chooseLocalFont": "添加或取消字体",

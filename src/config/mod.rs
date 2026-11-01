@@ -346,8 +346,8 @@ impl WallpaperPersonalization {
     }
 }
 
-pub const MIN_INTERFACE_ZOOM_PERCENT: u16 = 70;
-pub const MAX_INTERFACE_ZOOM_PERCENT: u16 = 200;
+pub const MIN_INTERFACE_ZOOM_PERCENT: u16 = 50;
+pub const MAX_INTERFACE_ZOOM_PERCENT: u16 = 250;
 pub const DEFAULT_INTERFACE_ZOOM_PERCENT: u16 = 100;
 
 /// User preference for the workflow graph layout direction. `Auto` follows the
@@ -2448,7 +2448,7 @@ mod tests {
         }
         .normalized();
         assert_eq!(preference.schema_version, 5);
-        assert_eq!(preference.interface_zoom_percent, 200);
+        assert_eq!(preference.interface_zoom_percent, 250);
         assert_eq!(
             preference.workflow_graph_direction,
             WorkflowGraphDirectionPreference::Vertical
@@ -2475,10 +2475,10 @@ mod tests {
         .unwrap();
         // Deserialization keeps the stored value; normalization owns the clamp.
         assert_eq!(parsed.interface_zoom_percent, 40);
-        assert_eq!(parsed.normalized().interface_zoom_percent, 70);
+        assert_eq!(parsed.normalized().interface_zoom_percent, 50);
 
         let persisted = serde_json::to_value(&preference).unwrap();
-        assert_eq!(persisted["interfaceZoomPercent"], 200);
+        assert_eq!(persisted["interfaceZoomPercent"], 250);
         assert_eq!(persisted["workflowGraphDirection"], "vertical");
     }
 

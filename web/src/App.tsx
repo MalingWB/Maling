@@ -823,7 +823,7 @@ export function App() {
         ?? sidebarBootstrap.workspaces[0]?.projectId;
       if (projectId) void loadConversationWorkspaceTasks(projectId).catch(() => {});
       if (sidebarBootstrap.pinRefs.length > 0) void loadConversationPinnedTasks().catch(() => {});
-      if (sidebarBootstrap.workspaces.length >= 2) void loadConversationRecentTasks().catch(() => {});
+      void loadConversationRecentTasks().catch(() => {});
       return sidebarBootstrap;
     } catch (error) {
       if (!conversationSidebarFlights.isCurrent('bootstrap', generation)) throw error;
@@ -2497,13 +2497,15 @@ export function App() {
     onConversationSearch: () => setConversationSearchOpen(true),
     onConversationRetrySidebar: () => { void loadConversationSidebarBootstrap().catch(() => {}); },
     onConversationRequestWorkspaceTasks: (projectId, cursor) => {
-      void loadConversationWorkspaceTasks(projectId, cursor).catch(() => {});
+      // Return the load promise (already error-contained) so the sidebar
+      // auto-load sentinel can await completion and stop its chain on failure.
+      return loadConversationWorkspaceTasks(projectId, cursor).catch(() => undefined);
     },
     onConversationRequestPinnedTasks: (cursor) => {
-      void loadConversationPinnedTasks(cursor).catch(() => {});
+      void loadConversationPinnedTasks(cursor).catch(() => undefined);
     },
     onConversationRequestRecentTasks: (cursor) => {
-      void loadConversationRecentTasks(cursor).catch(() => {});
+      return loadConversationRecentTasks(cursor).catch(() => undefined);
     },
     onConversationRequestTaskRuns: (task, cursor) => {
       void loadConversationRunHistory(task, cursor).catch(() => {});
@@ -2591,7 +2593,7 @@ export function App() {
         applyConversationSidebarBootstrap(sidebarBootstrap);
         const projectId = sidebarBootstrap.lastActiveWorkspaceId ?? sidebarBootstrap.workspaces[0]?.projectId;
         if (projectId) void loadConversationWorkspaceTasks(projectId).catch(() => {});
-        if (sidebarBootstrap.workspaces.length >= 2) void loadConversationRecentTasks().catch(() => {});
+        void loadConversationRecentTasks().catch(() => {});
       }).catch(() => {});
     },
     onConversationRemoveWorkspace: (projectId) => {
@@ -2623,7 +2625,7 @@ export function App() {
           if (transition.activeWorkspaceId) {
             void loadConversationWorkspaceTasks(transition.activeWorkspaceId).catch(() => {});
           }
-          if (sidebarBootstrap.workspaces.length >= 2) void loadConversationRecentTasks().catch(() => {});
+          void loadConversationRecentTasks().catch(() => {});
         })
         .catch((err) => {
           setError(displayAppError(t, err));

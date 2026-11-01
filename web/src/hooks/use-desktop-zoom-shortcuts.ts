@@ -28,8 +28,14 @@ export function useDesktopZoomShortcuts(
 
   // The applied marker follows persisted changes (settings page commit); in
   // between, it advances locally so consecutive shortcut steps accumulate.
+  // An external commit also cancels any pending shortcut debounce — the newest
+  // persisted value must never be overwritten by a stale step target.
   useEffect(() => {
     appliedPercentRef.current = preferences.personalization.interfaceZoomPercent;
+    if (persistTimerRef.current !== null) {
+      window.clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+    }
   }, [preferences.personalization.interfaceZoomPercent]);
 
   useEffect(() => () => {

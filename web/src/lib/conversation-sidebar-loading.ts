@@ -418,6 +418,9 @@ export function removeConversationSidebarTask(
     ...sidebar,
     locatedTask: sidebar.locatedTask?.projectId === projectId && sidebar.locatedTask.taskId === taskId ? null : sidebar.locatedTask,
     pinnedTasks: sidebar.pinnedTasks.filter((task) => task.projectId !== projectId || task.taskId !== taskId),
+    // A deleted conversation must leave every projection, including the merged
+    // recent list, or it stays clickable there until the next page reload.
+    recentTasks: (sidebar.recentTasks ?? []).filter((task) => task.projectId !== projectId || task.taskId !== taskId),
     tasksByWorkspace: {
       ...sidebar.tasksByWorkspace,
       [projectId]: (sidebar.tasksByWorkspace[projectId] ?? [])

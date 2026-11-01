@@ -2582,6 +2582,7 @@
     "resetFontSize": "デフォルトのフォントサイズに戻す",
     "interfaceZoom": "インターフェースのズーム",
     "interfaceZoomDescription": "クライアント全体の表示を等倍で拡大縮小します。Ctrl+ホイールや Ctrl+プラス/マイナスでも調整できます。",
+    "interfaceZoomInvalid": "50～250 の数値を入力してください",
     "resetZoom": "デフォルトのズームに戻す",
     "localFonts": "カスタムフォントスタック",
     "chooseLocalFont": "フォントの追加または削除",

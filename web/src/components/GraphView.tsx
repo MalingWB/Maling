@@ -96,8 +96,12 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   const { t } = useTranslation();
   const mode: GraphMode = variant === 'actual' ? 'interactive' : 'readonly';
   const { preference: directionPreference, setPreference: setDirectionPreference } = useWorkflowGraphDirectionPreference();
-  const [layoutDirection, setLayoutDirection] = useState<WorkflowLayoutDirection>('RIGHT');
-  const layoutDirectionRef = useRef<WorkflowLayoutDirection>('RIGHT');
+  // Locked preferences seed the direction immediately so a vertical graph never
+  // pays a wasted horizontal first layout; `auto` resolves once the container
+  // is measured.
+  const [layoutDirection, setLayoutDirection] = useState<WorkflowLayoutDirection>(() =>
+    directionPreference === 'vertical' ? 'DOWN' : directionPreference === 'horizontal' ? 'RIGHT' : 'RIGHT');
+  const layoutDirectionRef = useRef<WorkflowLayoutDirection>(layoutDirection);
   const [fullscreen, setFullscreen] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; node: GraphNodeVm } | null>(null);
   const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null);

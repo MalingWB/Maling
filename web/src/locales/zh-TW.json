@@ -2582,6 +2582,7 @@
     "resetFontSize": "還原預設字型大小",
     "interfaceZoom": "介面縮放",
     "interfaceZoomDescription": "等比縮放整個用戶端介面；也可用 Ctrl+滾輪或 Ctrl+加號/減號調整。",
+    "interfaceZoomInvalid": "請輸入 50–250 之間的數字",
     "resetZoom": "還原預設縮放",
     "localFonts": "自訂字型堆疊",
     "chooseLocalFont": "新增或移除字型",

@@ -6,7 +6,9 @@ import {
   INTERFACE_ZOOM_DEFAULT,
   INTERFACE_ZOOM_MAX,
   INTERFACE_ZOOM_MIN,
+  clampInterfaceZoomPercent,
   normalizeInterfaceZoomPercent,
+  parseInterfaceZoomInput,
   withInterfaceZoomPercent,
 } from '@/lib/desktop-zoom';
 
@@ -17,6 +19,25 @@ describe('interface zoom preference', () => {
     expect(normalizeInterfaceZoomPercent(12)).toBe(INTERFACE_ZOOM_MIN);
     expect(normalizeInterfaceZoomPercent(400)).toBe(INTERFACE_ZOOM_MAX);
     expect(normalizeInterfaceZoomPercent(Number.NaN)).toBe(INTERFACE_ZOOM_DEFAULT);
+  });
+
+  it('bounds the manual range to 50-250', () => {
+    expect(INTERFACE_ZOOM_MIN).toBe(50);
+    expect(INTERFACE_ZOOM_MAX).toBe(250);
+    // Manual input clamps to the nearest bound without step snapping.
+    expect(clampInterfaceZoomPercent(12)).toBe(50);
+    expect(clampInterfaceZoomPercent(400)).toBe(250);
+    expect(clampInterfaceZoomPercent(73)).toBe(73);
+  });
+
+  it('parses manual input: invalid text is rejected, numbers clamp', () => {
+    expect(parseInterfaceZoomInput('125')).toEqual({ kind: 'valid', percent: 125 });
+    expect(parseInterfaceZoomInput(' 118 ')).toEqual({ kind: 'valid', percent: 118 });
+    expect(parseInterfaceZoomInput('12')).toEqual({ kind: 'valid', percent: 50 });
+    expect(parseInterfaceZoomInput('999')).toEqual({ kind: 'valid', percent: 250 });
+    expect(parseInterfaceZoomInput('abc')).toEqual({ kind: 'invalid' });
+    expect(parseInterfaceZoomInput('')).toEqual({ kind: 'invalid' });
+    expect(parseInterfaceZoomInput('12x5')).toEqual({ kind: 'invalid' });
   });
 
   it('stages the zoom percent into the personalization preference', () => {
@@ -30,8 +51,9 @@ describe('interface zoom preference', () => {
       avatars: { agent: { image: { source: 'theme' }, shape: { source: 'theme' } }, user: { image: { source: 'theme' }, shape: { source: 'theme' } } },
       interfaceZoomPercent: 100,
       workflowGraphDirection: 'auto',
-    }, 150);
-    expect(personalization.interfaceZoomPercent).toBe(150);
+    }, 153);
+    // Manual input keeps the exact integer instead of snapping to the slider step.
+    expect(personalization.interfaceZoomPercent).toBe(153);
     expect(personalization.workflowGraphDirection).toBe('auto');
   });
 });
@@ -40,6 +62,8 @@ describe('interface zoom wiring contract', () => {
   it('exposes the zoom row in settings with preview and commit handlers', () => {
     const source = readFileSync(path.resolve(__dirname, '../src/pages/SettingsPage.tsx'), 'utf8');
     expect(source).toContain('data-interface-zoom-row="true"');
+    expect(source).toContain('data-interface-zoom-invalid="true"');
+    expect(source).toContain('parseInterfaceZoomInput');
     expect(source).toContain('previewZoomPercent');
     expect(source).toContain('chooseZoomPercent');
     expect(source).toContain('onValueCommit');

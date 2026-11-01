@@ -2827,7 +2827,7 @@ export interface ConversationSidebarVm {
   pinRefs: PinRef[];
   pinnedTasks: ConversationTaskRowVm[];
   pinnedTaskPage: ConversationPageLoadVm;
-  // Cross-workspace recent conversations; only populated with ≥2 workspaces.
+  // Cross-workspace recent conversations; shown for any workspace count.
   recentTasks: ConversationRecentTaskRowVm[];
   recentTaskPage: ConversationPageLoadVm;
   tasksByWorkspace: Record<string, ConversationTaskRowVm[]>;

@@ -3,6 +3,7 @@ import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Gl
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStableCallbacks } from '@/hooks/use-stable-callbacks';
+import { useLoadMoreSentinel } from '@/hooks/use-load-more-sentinel';
 import type { ConversationPage, ConversationRecentTaskRowVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
 import { saveConversationPreference } from '../../api';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -443,10 +444,9 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) cancelPendingTaskReveal();
           }}
         >
-        {/* Cross-workspace recent section: with a single workspace it duplicates the
-            workspace list below, so it only renders with at least two workspaces. */}
-        {vm.workspaces.length >= 2 ? (
-          <div className="my-1.5 border-y border-border/55 py-2">
+        {/* Cross-workspace recent section: always visible; with a single
+            workspace it simply mirrors that workspace's recent tasks. */}
+        <div className="my-1.5 border-y border-border/55 py-2">
             <button
               type="button"
               data-conversation-sidebar-heading="recent"
@@ -486,11 +486,16 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     {t('conversation.sidebar.loadMoreRecent')}
                   </Button>
                 ) : null}
+                <LoadMoreSentinel
+                  marker="recent"
+                  enabled={(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && Boolean(vm.recentTaskPage?.nextCursor)}
+                  onLoadMore={() => onRequestRecentTasks(vm.recentTaskPage?.nextCursor)}
+                />
               </div>
             ) : null}
-          </div>
-        ) : null}
+        </div>
         {vm.pinRefs.length > 0 || vm.pinnedTasks.length > 0 ? (
+
           <div className="my-1.5 border-y border-border/55 py-2">
             <button
               type="button"
@@ -683,6 +688,11 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                         {t('conversation.sidebar.loadMoreConversations')}
                       </Button>
                     ) : null}
+                    <LoadMoreSentinel
+                      marker={`workspace:${ws.projectId}`}
+                      enabled={vm.workspaceTaskPages[ws.projectId]?.status === 'ready' && Boolean(vm.workspaceTaskPages[ws.projectId]?.nextCursor)}
+                      onLoadMore={() => onRequestWorkspaceTasks(ws.projectId, vm.workspaceTaskPages[ws.projectId]?.nextCursor)}
+                    />
                   </div>
                 ) : null}
               </div>
@@ -1267,6 +1277,21 @@ const RecentTaskRow = memo(function RecentTaskRow({
       </TooltipContent>
     </Tooltip>
   );
+});
+
+/** Invisible tail sentinel: scrolls into view -> load the next page. */
+const LoadMoreSentinel = memo(function LoadMoreSentinel({
+  enabled,
+  onLoadMore,
+  marker,
+}: {
+  enabled: boolean;
+  onLoadMore: () => void;
+  marker: string;
+}) {
+  const setSentinel = useLoadMoreSentinel(enabled, onLoadMore);
+  if (!enabled) return null;
+  return <div ref={setSentinel} data-load-more-sentinel={marker} aria-hidden className="h-px" />;
 });
 
 // ── Sidebar Button ──

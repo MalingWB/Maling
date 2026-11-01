@@ -2582,6 +2582,7 @@
     "resetFontSize": "Restore default font size",
     "interfaceZoom": "Interface zoom",
     "interfaceZoomDescription": "Scale the whole client interface; Ctrl+wheel or Ctrl+plus/minus also works.",
+    "interfaceZoomInvalid": "Enter a number between 50 and 250",
     "resetZoom": "Restore default zoom",
     "localFonts": "Custom font stack",
     "chooseLocalFont": "Add or remove fonts",

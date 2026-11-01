@@ -10,6 +10,7 @@ import {
 } from '@/lib/conversation-sidebar-loading';
 import { applyConversationTaskSnapshot } from '@/lib/conversation-task-state';
 import { applyConversationSidebarRunStateUpdate, applyConversationSidebarTaskActivity } from '@/lib/conversation-sidebar-activity';
+import { removeConversationSidebarTask } from '@/lib/conversation-sidebar-loading';
 
 function recentRow(overrides: Partial<Parameters<typeof applyConversationRecentTaskPage>[1]['tasks'][number]> = {}) {
   return {
@@ -54,11 +55,15 @@ describe('conversation sidebar recent tasks', () => {
     expect(sidebar.recentTaskPage.status).toBe('error');
   });
 
-  it('replaces the first page so a refresh cannot duplicate rows', () => {
-    const first = [recentRow({ taskId: 'task-1' }), recentRow({ taskId: 'task-2' })];
+  it('refreshes without duplicating rows and keeps loaded history like the workspace pages', () => {
+    const first = [recentRow({ taskId: 'task-1', taskUuid: 'uuid-1' }), recentRow({ taskId: 'task-2', taskUuid: 'uuid-2' })];
     let sidebar = applyConversationRecentTaskPage(createEmptyConversationSidebar(), { tasks: first, nextCursor: null, errors: [] }, false);
-    sidebar = applyConversationRecentTaskPage(sidebar, { tasks: [recentRow({ taskId: 'task-1' })], nextCursor: null, errors: [] }, false);
-    expect(sidebar.recentTasks.map((task) => task.taskId)).toEqual(['task-1']);
+    // A refresh (append=false) puts the incoming page first and keeps rows from
+    // earlier pages that the fresh page no longer covers — same contract as
+    // applyConversationTaskPage, so a refresh never clears loaded history.
+    sidebar = applyConversationRecentTaskPage(sidebar, { tasks: [recentRow({ taskId: 'task-1', taskUuid: 'uuid-1' })], nextCursor: null, errors: [] }, false);
+    expect(sidebar.recentTasks.map((task) => task.taskUuid)).toEqual(['uuid-1', 'uuid-2']);
+    expect(sidebar.recentTasks).toHaveLength(2);
   });
 
   it('restarts the recent page when the workspace set changes', () => {
@@ -111,5 +116,26 @@ describe('conversation sidebar recent tasks', () => {
     } as never);
     expect(created.recentTasks[0].taskId).toBe('task-9');
     expect(created.recentTasks[0].workspaceName).toBe('Workspace B');
+  });
+
+  it('inserts the very first conversation into a loaded-but-empty recent page', () => {
+    const empty = sidebarWithRecent([]);
+    expect(empty.recentTaskPage.status).toBe('ready');
+    const created = applyConversationTaskSnapshot(empty, {
+      projectId: 'a', taskId: 'task-1', taskUuid: 'uuid-1', title: 'First', autoTitle: true, runMode: 'direct',
+      runs: [], runHistoryStatus: 'not-loaded', pinned: false,
+    } as never);
+    expect(created.recentTasks).toHaveLength(1);
+    expect(created.recentTasks[0].taskId).toBe('task-1');
+    expect(created.recentTasks[0].workspaceName).toBe('Workspace A');
+  });
+
+  it('drops a deleted task from the recent projection', () => {
+    const sidebar = sidebarWithRecent([
+      recentRow({ taskId: 'task-1', taskUuid: 'uuid-1' }),
+      recentRow({ projectId: 'b', taskId: 'task-2', taskUuid: 'uuid-2', workspaceName: 'Workspace B' }),
+    ]);
+    const next = removeConversationSidebarTask(sidebar, 'a', 'task-1');
+    expect(next.recentTasks.map((task) => task.taskId)).toEqual(['task-2']);
   });
 });

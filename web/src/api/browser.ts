@@ -2607,8 +2607,7 @@ export const browserApi: RuntimeApi = {
   },
   applyDesktopZoom(percent: number) {
     // Browser preview has no webview zoom; echo the clamped value back.
-    const stepped = Math.round(percent / 5) * 5;
-    return Promise.resolve(Math.min(200, Math.max(70, stepped)));
+    return Promise.resolve(Math.min(250, Math.max(50, Math.round(percent))));
   },
   saveDesktopAvatar(input) {
     const current = browserPreviewState.getPreferences();
@@ -2965,7 +2964,7 @@ export const browserApi: RuntimeApi = {
       preferences: {},
     });
   },
-  getConversationTaskPage(projectId, cursor, limit = 24) {
+  getConversationTaskPage(projectId, cursor, limit = 10) {
     const previewTask: ConversationTaskRowVm = {
       projectId: 'default',
       taskId: 'mock-task',
@@ -2997,7 +2996,7 @@ export const browserApi: RuntimeApi = {
     }
     return Promise.resolve({ ...task, runs: [], runHistoryStatus: 'not-loaded', runsNextCursor: null });
   },
-  getConversationPinnedTaskPage(cursor, limit = 24) {
+  getConversationPinnedTaskPage(cursor, limit = 10) {
     const tasks = [...browserConversationTasks.values()].filter((task) => task.pinned);
     const start = cursor ? Math.max(0, tasks.findIndex((task) => task.taskId === cursor) + 1) : 0;
     const page = tasks.slice(start, start + limit);
@@ -3007,7 +3006,7 @@ export const browserApi: RuntimeApi = {
       errors: [],
     });
   },
-  getConversationRecentTaskPage(cursor, limit = 24) {
+  getConversationRecentTaskPage(cursor, limit = 10) {
     const tasks = [...browserConversationTasks.values()]
       .sort((left, right) => (right.lastActivityAt ?? '').localeCompare(left.lastActivityAt ?? ''));
     const start = cursor ? Math.max(0, tasks.findIndex((task) => task.taskId === cursor) + 1) : 0;

@@ -2582,6 +2582,7 @@
     "resetFontSize": "기본 글꼴 크기 복원",
     "interfaceZoom": "인터페이스 배율",
     "interfaceZoomDescription": "클라이언트 전체 인터페이스를 등비로 확대/축소합니다. Ctrl+휠 또는 Ctrl+더하기/빼기로도 조절할 수 있습니다.",
+    "interfaceZoomInvalid": "50~250 사이의 숫자를 입력하세요",
     "resetZoom": "기본 배율 복원",
     "localFonts": "사용자 지정 글꼴 스택",
     "chooseLocalFont": "글꼴 추가 또는 제거",

@@ -1407,7 +1407,9 @@ pub fn conversation_task_row_vm(
     ))
 }
 
-pub const CONVERSATION_TASK_PAGE_DEFAULT_LIMIT: usize = 24;
+/// Sidebar pages default to the documented 10-row page (docs:
+/// conversational-home.md 渐进加载契约). Callers may pass an explicit limit.
+pub const CONVERSATION_TASK_PAGE_DEFAULT_LIMIT: usize = 10;
 pub const CONVERSATION_RUN_PAGE_DEFAULT_LIMIT: usize = 20;
 pub const CONVERSATION_SIDEBAR_PAGE_MAX_LIMIT: usize = 100;
 

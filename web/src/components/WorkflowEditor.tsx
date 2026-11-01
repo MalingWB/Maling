@@ -1072,14 +1072,18 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   }, [flowInstance, graphLayout, layoutDirection]);
 
   // Only the first finished layout fits; later relayouts keep the user's viewport.
+  // A pending direction flip must not fit the stale pre-flip bounds: wait for a
+  // layout whose direction matches, otherwise the one-shot fit consumes the old
+  // arrangement and the new one is never framed.
   useEffect(() => {
     if (hasStableViewportRef.current) return;
+    if (graphLayout && graphLayout.direction !== layoutDirection) return;
     const viewport = fitLayoutViewport();
     if (!viewport) return;
     viewportRef.current = viewport;
     hasStableViewportRef.current = true;
     setViewportRevision((revision) => revision + 1);
-  }, [fitLayoutViewport]);
+  }, [fitLayoutViewport, graphLayout, layoutDirection]);
 
   const handleMoveEnd = useCallback((_: MouseEvent | TouchEvent | null, viewport: Viewport) => {
     viewportRef.current = viewport;

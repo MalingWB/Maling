@@ -58,7 +58,7 @@ export function applyConversationTaskSnapshot(
   const next = {
     ...sidebar,
     pinnedTasks: nextPinnedTasks,
-    recentTasks: upsertConversationRecentTask(sidebar, mergedTask, Boolean(existing)),
+    recentTasks: upsertConversationRecentTask(sidebar, mergedTask),
     tasksByWorkspace: {
       ...sidebar.tasksByWorkspace,
       [task.projectId]: boundedWorkspaceTasks,
@@ -79,10 +79,8 @@ export function applyConversationTaskSnapshot(
 function upsertConversationRecentTask(
   sidebar: ConversationSidebarVm,
   task: ConversationTaskRowVm,
-  exists: boolean,
 ): ConversationRecentTaskRowVm[] {
   const recentTasks = sidebar.recentTasks ?? [];
-  if (recentTasks.length === 0 && !exists) return recentTasks;
   const index = recentTasks.findIndex((candidate) => sameTask(candidate, task.projectId, task.taskId));
   if (index >= 0) {
     const current = recentTasks[index];

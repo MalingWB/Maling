@@ -2582,6 +2582,7 @@
     "resetFontSize": "Restaurar tamaño de fuente predeterminado",
     "interfaceZoom": "Zoom de la interfaz",
     "interfaceZoomDescription": "Escala toda la interfaz del cliente; también funciona con Ctrl+rueda o Ctrl+más/menos.",
+    "interfaceZoomInvalid": "Introduce un número entre 50 y 250",
     "resetZoom": "Restaurar zoom predeterminado",
     "localFonts": "Pila de fuentes personalizada",
     "chooseLocalFont": "Agregar o quitar fuentes",

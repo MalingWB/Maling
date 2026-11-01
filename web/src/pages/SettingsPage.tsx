@@ -46,6 +46,7 @@ import {
   INTERFACE_ZOOM_MAX,
   INTERFACE_ZOOM_MIN,
   INTERFACE_ZOOM_STEP,
+  parseInterfaceZoomInput,
   previewInterfaceZoomPercent,
   withInterfaceZoomPercent,
 } from '@/lib/desktop-zoom';
@@ -438,27 +439,11 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                     <div className="text-sm font-semibold">{t('settings.interfaceZoom')}</div>
                     <div className="text-xs text-muted-foreground">{t('settings.interfaceZoomDescription')}</div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-3">
-                    <span className="w-12 text-right text-sm tabular-nums text-muted-foreground">{interfaceZoomPercent}%</span>
-                    <Slider
-                      aria-label={t('settings.interfaceZoom')}
-                      className="w-40"
-                      min={INTERFACE_ZOOM_MIN}
-                      max={INTERFACE_ZOOM_MAX}
-                      step={INTERFACE_ZOOM_STEP}
-                      value={[interfaceZoomPercent]}
-                      onValueChange={(values) => previewZoomPercent(values[0] ?? interfaceZoomPercent)}
-                      onValueCommit={(values) => chooseZoomPercent(values[0] ?? interfaceZoomPercent)}
-                    />
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button type="button" variant="ghost" size="icon-sm" aria-label={t('settings.resetZoom')} onPointerDown={(event) => event.preventDefault()} onClick={() => chooseZoomPercent(INTERFACE_ZOOM_DEFAULT)}>
-                          <RotateCcw className="size-3.5" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>{t('settings.resetZoom')}</TooltipContent>
-                    </Tooltip>
-                  </div>
+                  <InterfaceZoomControl
+                    value={interfaceZoomPercent}
+                    onPreview={previewZoomPercent}
+                    onCommit={chooseZoomPercent}
+                  />
                 </div>
               </div>
             </SettingsSection>
@@ -872,6 +857,91 @@ function FontPreviewSample({ sample, fontFamily }: { sample: string; fontFamily:
           <span className="text-primary">{sample}</span>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Zoom row control: numeric input + slider + reset. Manual input keeps the
+ * exact integer the user typed (clamped to 50–250 with the slider following);
+ * non-numeric text is marked invalid and never changes the zoom.
+ */
+function InterfaceZoomControl({
+  value,
+  onPreview,
+  onCommit,
+}: {
+  value: number;
+  onPreview: (value: number) => void;
+  onCommit: (value: number) => void;
+}) {
+  const { t } = useTranslation();
+  const [draft, setDraft] = useState(String(value));
+  const [invalid, setInvalid] = useState(false);
+  // External value changes (reset button, persisted shortcut commits) resync
+  // the input text and clear any stale invalid hint.
+  useEffect(() => {
+    setDraft(String(value));
+    setInvalid(false);
+  }, [value]);
+  const commitDraft = () => {
+    const parsed = parseInterfaceZoomInput(draft);
+    if (parsed.kind === 'invalid') {
+      setInvalid(true);
+      return;
+    }
+    setDraft(String(parsed.percent));
+    setInvalid(false);
+    onCommit(parsed.percent);
+  };
+  return (
+    <div className="flex shrink-0 items-center gap-3">
+      <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <Input
+          aria-label={t('settings.interfaceZoom')}
+          aria-invalid={invalid}
+          className={cn('h-9 w-20 text-center tabular-nums', invalid && 'border-destructive focus-visible:ring-destructive/60')}
+          inputMode="numeric"
+          value={draft}
+          onChange={(event) => {
+            setDraft(event.currentTarget.value);
+            setInvalid(false);
+          }}
+          onBlur={commitDraft}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur();
+          }}
+        />
+        <span>%</span>
+      </label>
+      {invalid ? (
+        <span role="alert" className="text-xs text-destructive" data-interface-zoom-invalid="true">
+          {t('settings.interfaceZoomInvalid')}
+        </span>
+      ) : null}
+      <Slider
+        aria-label={t('settings.interfaceZoom')}
+        className="w-40"
+        min={INTERFACE_ZOOM_MIN}
+        max={INTERFACE_ZOOM_MAX}
+        step={INTERFACE_ZOOM_STEP}
+        value={[value]}
+        onValueChange={(values) => {
+          const next = values[0] ?? value;
+          setDraft(String(next));
+          setInvalid(false);
+          onPreview(next);
+        }}
+        onValueCommit={(values) => onCommit(values[0] ?? value)}
+      />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button type="button" variant="ghost" size="icon-sm" aria-label={t('settings.resetZoom')} onPointerDown={(event) => event.preventDefault()} onClick={() => onCommit(INTERFACE_ZOOM_DEFAULT)}>
+            <RotateCcw className="size-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{t('settings.resetZoom')}</TooltipContent>
+      </Tooltip>
     </div>
   );
 }
