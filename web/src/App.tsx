@@ -19,6 +19,7 @@ import {
   getConversationRunSummaryPage,
   getConversationSidebarBootstrap,
   getConversationTaskPage,
+  getConversationTaskSummary,
   acknowledgeConversationTerminalResult,
   getProfiles,
   getWorkflowTemplates,
@@ -220,6 +221,8 @@ import {
   CONVERSATION_RUN_PAGE_SIZE,
   CONVERSATION_TASK_PAGE_SIZE,
   ConversationSidebarSingleFlight,
+  clearConversationLocatedTask,
+  locateConversationSidebarTask,
   applyConversationPinnedTaskPage,
   applyConversationRunSummaryPage,
   applyConversationSidebarBootstrap as mergeConversationSidebarBootstrap,
@@ -604,6 +607,57 @@ export function App() {
   const workspaceRevealRequestIdRef = useRef(0);
   const [workspaceRevealRequest, setWorkspaceRevealRequest] = useState<ConversationSidebarWorkspaceRevealRequest | null>(null);
 
+  const cancelConversationSidebarReveal = useCallback((destination?: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>) => {
+    workspaceRevealRequestIdRef.current += 1;
+    setWorkspaceRevealRequest(null);
+    setConversationSidebar((current) => {
+      const next = clearConversationLocatedTask(current, destination);
+      conversationSidebarRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleConversationSidebarReveal = useCallback((requestId: number) => {
+    setWorkspaceRevealRequest((current) => current?.requestId === requestId && !current.scrollHandled
+      ? { ...current, scrollHandled: true }
+      : current);
+  }, []);
+
+  const revealConversationSidebarTask = useCallback(async (target: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>) => {
+    const requestId = ++workspaceRevealRequestIdRef.current;
+    const found = findConversationTask(conversationSidebarRef.current, target.projectId, target.taskId);
+    const existing = found && (!target.taskUuid || found.taskUuid === target.taskUuid) ? found : null;
+    const request = { ...target, requestId };
+    setWorkspaceRevealRequest(existing ? request : { ...request, status: 'loading' });
+    try {
+      const task = existing ?? await conversationSidebarFlights.run(
+        `summary:${target.projectId}:${target.taskUuid ?? target.taskId}`,
+        () => getConversationTaskSummary(target.projectId, target.taskId, target.taskUuid),
+      );
+      if (workspaceRevealRequestIdRef.current !== requestId) return;
+      setConversationSidebar((current) => {
+        if (workspaceRevealRequestIdRef.current !== requestId) return current;
+        const next = locateConversationSidebarTask(current, task);
+        conversationSidebarRef.current = next;
+        return next;
+      });
+      setWorkspaceRevealRequest((current) => current?.requestId === requestId
+        ? { ...current, taskUuid: task.taskUuid, status: undefined }
+        : current);
+    } catch {
+      if (workspaceRevealRequestIdRef.current !== requestId) return;
+      setWorkspaceRevealRequest((current) => current?.requestId === requestId ? { ...current, status: 'error' } : current);
+    }
+  }, [conversationSidebarFlights]);
+
+  const retryConversationSidebarReveal = useCallback(() => {
+    if (workspaceRevealRequest?.taskId) void revealConversationSidebarTask({
+      projectId: workspaceRevealRequest.projectId,
+      taskId: workspaceRevealRequest.taskId,
+      taskUuid: workspaceRevealRequest.taskUuid,
+    });
+  }, [workspaceRevealRequest, revealConversationSidebarTask]);
+
   const applyConversationSidebarBootstrap = useCallback((bootstrap: ConversationSidebarBootstrapVm, projectId?: string | null) => {
     setConversationSidebar((current) => {
       const merged = mergeConversationSidebarBootstrap(current, bootstrap);
@@ -614,7 +668,7 @@ export function App() {
     });
   }, []);
 
-  const loadConversationWorkspaceTasks = useCallback((projectId: string, cursor?: string | null) => {
+  const loadConversationWorkspaceTasks = useCallback((projectId: string, cursor?: string | null, refresh = false) => {
     const append = Boolean(cursor);
     const flightKey = `workspace:${projectId}`;
     return conversationSidebarFlights.run(flightKey, async () => {
@@ -642,7 +696,7 @@ export function App() {
         });
         throw error;
       }
-    });
+    }, refresh);
   }, [conversationSidebarFlights]);
 
   const loadConversationPinnedTasks = useCallback((cursor?: string | null) => {
@@ -679,6 +733,7 @@ export function App() {
   const loadConversationRunHistory = useCallback((
     task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
     cursor?: string | null,
+    refresh = false,
   ) => {
     const append = Boolean(cursor);
     const flightKey = `runs:${task.projectId}:${task.taskUuid ?? task.taskId}`;
@@ -712,7 +767,7 @@ export function App() {
         });
         throw error;
       }
-    });
+    }, refresh);
   }, [conversationSidebarFlights]);
 
   const loadConversationSidebarBootstrap = useCallback(() => conversationSidebarFlights.run('bootstrap', async () => {
@@ -817,6 +872,7 @@ export function App() {
     ?? 'default';
 
   const rememberConversationWorkspace = useCallback((projectId: string) => {
+    cancelConversationSidebarReveal();
     activeWorkspaceIdRef.current = projectId;
     setActiveWorkspaceId(projectId);
     workspaceRevealRequestIdRef.current += 1;
@@ -831,7 +887,7 @@ export function App() {
     if (taskPageStatus === 'not-loaded' || taskPageStatus === 'error') {
       void loadConversationWorkspaceTasks(projectId).catch(() => {});
     }
-  }, [loadConversationWorkspaceTasks]);
+  }, [loadConversationWorkspaceTasks, cancelConversationSidebarReveal]);
   const activeWorkspace = conversationSidebar.workspaces.find((w) => w.projectId === effectiveWorkspaceId)
     ?? conversationSidebar.workspaces[0];
   const draftWorkspace = conversationSidebar.workspaces.find((w) => w.projectId === draftConversationWorkspaceId)
@@ -1117,6 +1173,7 @@ export function App() {
   useEffect(() => {
     replaceRoute(primaryModule, taskPage, uiMode === 'conversation' ? conversationPage : undefined);
     const onPopState = () => {
+      cancelConversationSidebarReveal();
       const nextRoute = routeFromPath(window.location.pathname);
       setUiMode(nextRoute.uiMode);
       setPrimaryModule(nextRoute.module);
@@ -1183,9 +1240,9 @@ export function App() {
         activeProjectId,
       );
       if (refreshTarget?.kind === 'workspace-tasks') {
-        void loadConversationWorkspaceTasks(refreshTarget.projectId).catch(() => {});
+        void loadConversationWorkspaceTasks(refreshTarget.projectId, null, true).catch(() => {});
       } else if (refreshTarget?.kind === 'task-runs') {
-        void loadConversationRunHistory(refreshTarget.task).catch(() => {});
+        void loadConversationRunHistory(refreshTarget.task, null, true).catch(() => {});
       }
       if (!task || task.taskUuid !== event.taskUuid) return;
       setConversationSidebar((current) => {
@@ -2240,6 +2297,7 @@ export function App() {
   }, []);
 
   function onSelectConversation(page: ConversationPage) {
+    cancelConversationSidebarReveal(page.kind === 'conversation-run' ? page : undefined);
     setWorkspacePickerOpen(false);
     setUiMode('conversation');
     if (conversationRunRef.current) {
@@ -2413,6 +2471,7 @@ export function App() {
         .catch((err) => setError(displayAppError(t, err)));
     },
     onConversationDeleteTask: (projectId, taskId, taskUuid) => {
+      cancelConversationSidebarReveal();
       const deletionTarget = { projectId, taskId, taskUuid };
       invalidateConversationSidebarLoad(`workspace:${projectId}`);
       invalidateConversationSidebarLoad(`runs:${projectId}:${taskUuid ?? taskId}`);
@@ -2489,6 +2548,7 @@ export function App() {
       }).catch(() => {});
     },
     onConversationRemoveWorkspace: (projectId) => {
+      cancelConversationSidebarReveal();
       invalidateConversationSidebarLoad(`workspace:${projectId}`);
       invalidateConversationSidebarLoad('pinned');
       invalidateConversationSidebarLoad('bootstrap');
@@ -2536,6 +2596,8 @@ export function App() {
       activeWorkspaceId={conversationWorkspaceContextId}
       defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
       workspaceRevealRequest={workspaceRevealRequest}
+      onConversationRetryReveal={retryConversationSidebarReveal}
+      onConversationRevealHandled={handleConversationSidebarReveal}
       conversationTaskUuid={
         presentedConversationPage.kind === 'conversation-run'
         && conversationPageMatchesRun(presentedConversationPage, conversationRun)
@@ -2612,7 +2674,10 @@ export function App() {
         onOpenChange={setConversationSearchOpen}
         onSelectResult={(result) => {
           const page = conversationPageForSearchResult(result);
-          if (page) onSelectConversation(page);
+          if (page) {
+            onSelectConversation(page);
+            if (page.kind === 'conversation-run') void revealConversationSidebarTask(page);
+          }
         }}
       />
     </Shell>

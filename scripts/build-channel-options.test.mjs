@@ -92,3 +92,10 @@ test('metrics-disabled channel does not require a metrics API key', () => {
     {},
   ));
 });
+
+
+test('updater generator receives the URL as a single argument without shell interpolation', async () => {
+  const { updaterGeneratorArgs } = await import('./build-channel-options.mjs');
+  assert.deepEqual(updaterGeneratorArgs('release dir', 'latest.json', 'https://example.invalid/download', '1.2.3', true),
+    ['scripts/generate-updater-json.mjs', 'release dir', 'latest.json', '--base-url', 'https://example.invalid/download', '--version', '1.2.3', '--critical']);
+});

@@ -64,6 +64,7 @@ vi.mock('@/api', async () => {
     getAcpSession: vi.fn(),
     submitConversationPrompt: vi.fn(),
     submitManualCheck: vi.fn(),
+    listConversationComposerDrafts: vi.fn().mockResolvedValue({ revision: 0, maxItems: 20, items: [] }),
   };
 });
 
@@ -1826,6 +1827,138 @@ describe('ACP session re-entry reconciliation', () => {
 
       expect(vi.mocked(getAcpSession).mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(container.textContent).toContain('会话已经就绪');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it.each([
+    { liveTurnActivity: 'starting', readFailure: false },
+    { liveTurnActivity: 'accepted', readFailure: false },
+    { liveTurnActivity: 'running', readFailure: false },
+    { liveTurnActivity: 'starting', readFailure: true },
+  ] as const)(
+    'settles bounded Direct session reads from ACP activity ($liveTurnActivity, readFailure=$readFailure)',
+    async ({ liveTurnActivity, readFailure }) => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const lifecycle = terminalLifecycle('direct-startup');
+      lifecycle.runtime = {
+        ...lifecycle.runtime,
+        status: 'running',
+        pauseReason: null,
+        resumable: false,
+        active: false,
+        continuable: false,
+        phase: 'idle',
+      };
+      lifecycle.acp = {
+        ...lifecycle.acp,
+        sessionAvailability: 'unavailable',
+        liveTurnActivity,
+        latestTurnStatus: 'none',
+      };
+      lifecycle.composer = {
+        ...lifecycle.composer,
+        mode: 'runtime-active',
+        submitTarget: 'none',
+        processingKind: 'launching',
+        canStop: true,
+        lockInput: true,
+      };
+      const readError = new Error('ACP_READ_UNAVAILABLE');
+      if (readFailure) vi.mocked(getAcpSession).mockRejectedValue(readError);
+      else vi.mocked(getAcpSession).mockResolvedValue(null);
+      const queryStates: string[] = [];
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      try {
+        await act(async () => root.render(
+          <TestProviders>
+            <ACPChatDialog
+              {...locator}
+              session={null}
+              runtimeComposerContext={{
+                isOrchestrated: false,
+                workflowValid: true,
+                runtimeStatus: lifecycle.runtime.status,
+                lifecycle,
+              }}
+              allowEventOnlySessionShell={false}
+              onInitialSessionQueryStateChange={(state) => queryStates.push(state)}
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TestProviders>,
+        ));
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(40_000);
+        });
+
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(12);
+        if (readFailure) {
+          expect(container.querySelector('[role="alert"]')?.textContent).toContain(readError.message);
+          expect(queryStates.at(-1)).toBe('error');
+          expect(container.querySelector('[data-brand-loading-state="true"]')).toBeNull();
+        } else {
+          expect(container.textContent).not.toContain('ACP 会话失败');
+          expect(container.textContent).not.toContain('当前无法获取会话');
+          expect(queryStates.at(-1)).toBe('loading');
+          expect(container.querySelector('[data-brand-loading-state="true"]')).not.toBeNull();
+        }
+
+        const ready = session([event('direct-startup-reply', 1, 'textDelta', '启动完成后的正常回复')]);
+        await act(async () => {
+          runtime.listener?.({ ...locator, branchId: 'root', timelineGeneration: 1, session: ready });
+          await vi.advanceTimersByTimeAsync(200);
+        });
+        expect(container.textContent).toContain('启动完成后的正常回复');
+        expect(container.querySelector('[role="alert"]')).toBeNull();
+        expect(queryStates.at(-1)).toBe('success');
+        expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(12);
+      } finally {
+        await unmount(root);
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('renders an unmaterialized terminal failure without readiness retries', async () => {
+    const failed = {
+      ...session([], 'failed'),
+      sessionId: null,
+      turnError: {
+        code: { domain: 'provider', code: 'acp.session-restore-reference-missing' },
+        domain: 'provider',
+        recovery: 'manual' as const,
+        params: { attemptId: locator.attemptId },
+        diagnostic: 'provider session was not materialized before the turn stopped',
+      },
+    };
+    const queryStates: string[] = [];
+    vi.mocked(getAcpSession).mockResolvedValue(failed);
+
+    const { container, root } = await renderDialog(
+      null,
+      'root',
+      (state) => queryStates.push(state),
+    );
+    try {
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+      expect(queryStates.at(-1)).toBe('success');
+      expect(container.textContent).toContain('ACP 会话失败');
+      expect(container.textContent).toContain(
+        '当前 ACP 会话缺少 Provider 会话引用，无法恢复原会话。请新建会话后重新发送消息。',
+      );
+      expect(container.textContent).toContain('provider session was not materialized before the turn stopped');
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain('ACP 会话失败');
+
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+      });
+
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
     } finally {
       await unmount(root);
     }

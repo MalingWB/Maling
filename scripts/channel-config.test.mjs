@@ -1,3 +1,4 @@
+process.env.GOLD_BAND_WB_BASE_URL = 'https://example.invalid';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';

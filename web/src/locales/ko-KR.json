@@ -633,6 +633,8 @@
       "switchToTreeView": "폴더 트리 보기로 전환",
       "copyAbsolutePath": "절대 경로 복사",
       "copyRelativePath": "상대 경로 복사",
+      "relativeToRunDirectory": "실행 디렉터리 기준",
+      "relativeToAttachmentDirectory": "첨부 디렉터리 기준", "relativeToSourceWorkspace": "원본 작업 디렉터리 기준",
       "openWorkspaceFile": "워크스페이스 파일 열기",
       "referenceToConversation": "대화에 참조",
       "removeWorkspaceReference": "파일 참조 제거",
@@ -932,6 +934,7 @@
       "composer-history-query-failed": "입력 기록을 불러올 수 없습니다. 다시 시도해 주세요.",
       "turn-execution-failed": "이 메시지를 처리할 수 없습니다. 다시 시도해 주세요.",
       "session-request-failed": "세션을 준비할 수 없습니다. 다시 시도해 주세요.",
+      "session-restore-reference-missing": "현재 ACP 세션에 Provider 세션 참조가 없어 기존 세션을 재개할 수 없습니다. 새 세션을 만든 후 메시지를 다시 보내세요.",
       "missing-provider": "현재 노드에 provider 구성이 없습니다.",
       "subagent-protocol-upgrade-required": "Claude ACP를 {{minimumVersion}} 이상으로 업데이트한 후 다시 시도하세요.",
       "session-config-value-unavailable": "선택한 세션 구성을 더 이상 사용할 수 없습니다. 최신 목록에서 다른 값을 선택해 주세요.",
@@ -995,7 +998,10 @@
         "folder-not-found": "선택한 폴더를 찾을 수 없습니다",
         "folder-not-directory": "선택한 경로가 폴더가 아닙니다",
         "folder-read-failed": "선택한 폴더를 완전히 읽을 수 없습니다",
-        "no-markdown-files": "선택한 폴더에 Markdown 파일이 없습니다"
+        "no-markdown-files": "선택한 폴더에 Markdown 파일이 없습니다",
+        "file-not-found": "선택한 파일을 찾을 수 없습니다",
+        "file-not-markdown": "선택한 파일이 Markdown 파일이 아닙니다",
+        "no-files": "파일이 선택되지 않았습니다"
       }
     },
     "manual-check": {
@@ -1032,7 +1038,6 @@
       "workspace-file-read-failed": "참조된 파일 정보를 읽을 수 없습니다. 다시 시도해 주세요.",
       "workspace-file-count-exceeded": "컨텍스트에는 참조와 첨부 파일을 최대 {{max}}개까지 포함할 수 있습니다.",
       "session-restore-unsupported": "이 Agent는 기존 세션을 복원할 수 없습니다.",
-      "session-restore-reference-missing": "이 세션에 Provider 세션 참조가 없습니다.",
       "history-sync-unsupported": "이 Agent는 기존 세션의 전체 기록을 동기화할 수 없습니다.",
       "prompt-empty": "보낼 메시지를 입력해 주세요.",
       "prompt-quote-invalid": "인용 텍스트가 유효하지 않습니다. 제거한 뒤 메시지를 다시 인용해 주세요.",
@@ -1050,11 +1055,18 @@
       "prompt-queue-empty": "대기열이 비어 있습니다.",
       "prompt-queue-revision-conflict": "대기 순서가 변경되었습니다. 목록이 업데이트된 뒤 다시 시도해 주세요.",
       "prompt-queue-invalid-order": "대기 순서가 유효하지 않습니다. 다시 시도해 주세요.",
+      "prompt-queue-invalid-mode": "전송 모드가 유효하지 않습니다.",
       "prompt-queue-session-busy": "대기 중인 프롬프트를 수동으로 사용하기 전에 활성 세션을 중지해 주세요.",
+      "prompt-queue-interrupt-timeout": "현재 응답이 아직 중지 중입니다. 이 메시지는 대기열에 유지되며 잠시 후 다시 시도할 수 있습니다.",
+      "prompt-queue-dispatch-settling": "이전 응답이 완전히 끝나지 않았습니다. 이 메시지는 대기열로 돌아갔습니다. 잠시 후 다시 시도해 주세요.",
       "prompt-session-busy": "이전 메시지가 아직 처리 중입니다. 기다리거나 현재 응답을 먼저 중지해 주세요.",
       "prompt-submission-conflict": "이 메시지 식별자가 이미 다른 내용과 연결되어 있습니다. 다시 보내 주세요.",
       "prompt-submission-missing": "수락된 메시지 내용을 읽을 수 없습니다. 다시 보내 주세요.",
       "prompt-queue-storage-failed": "대기열을 저장할 수 없습니다. 다시 시도해 주세요.",
+      "composer-draft-empty": "저장할 내용이 없습니다.",
+      "composer-draft-full": "임시 보관함이 가득 찼습니다. 최대 {{max}}개까지 보관할 수 있습니다.",
+      "composer-draft-not-found": "이 임시 저장 내용은 더 이상 없습니다.",
+      "composer-draft-storage-failed": "초안 보관함에 접근할 수 없습니다. 다시 시도하세요.",
       "execution-plan": {
         "not-found": "이 Run에는 실행 계획이 없습니다.",
         "revision-conflict": "실행 계획이 바뀌었습니다. 다시 불러온 뒤 시도하세요.",
@@ -1328,7 +1340,6 @@
     "builtInSectionDescription": "초안으로 열어 새 사용자 정의 역할로 저장할 수 있는 고정 역할입니다.",
     "customSectionTitle": "사용자 정의 역할",
     "customSectionDescription": "사용자 역할이 여기에 페이지로 표시됩니다.",
-    "customProfilesPageRange": "사용자 정의 역할 {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "내장 역할은 직접 저장할 수 없습니다. 새 역할로 저장하세요.",
     "emptyContent": "역할 내용 없음",
     "profileRequired": "이름과 요약은 필수입니다.",
@@ -1461,10 +1472,12 @@
       }
     },
     "importProfile": "역할 가져오기",
-    "importSettingsDescription": "폴더에서 역할 Markdown 파일을 일괄 가져옵니다. 이름과 요약이 없으면 자동으로 채웁니다.",
+    "importSettingsDescription": "폴더에서 일괄 가져오거나 역할 Markdown 파일을 직접 선택하여 가져옵니다. 이름과 요약이 없으면 자동으로 채웁니다.",
     "importDynamicTemplateDescription": "활성화하면 가져온 모든 역할을 동적 템플릿으로 처리합니다. 본문이 유효하지 않으면 정적으로 다운그레이드됩니다.",
     "importPickFolder": "폴더 선택 후 가져오기",
     "importPickFolderTitle": "역할 Markdown 파일이 있는 폴더 선택",
+    "importPickFiles": "파일 선택 후 가져오기",
+    "importPickFilesTitle": "역할 Markdown 파일 선택",
     "importResultTitle": "가져오기 결과",
     "importResultSummary": "파일 {{total}}개 스캔, 성공 {{success}}, 실패 {{failed}}.",
     "importResultImported": "가져옴",
@@ -2345,9 +2358,37 @@
       "editDraftOccupied": "입력창의 현재 초안을 먼저 처리하세요",
       "restoreDraftConflict": "입력창 상태가 바뀌어 이 대기 내용을 되돌릴 수 없습니다.",
       "reorder": "대기 메시지 순서 변경",
-      "use": "사용",
+      "sendNow": "지금 보내기",
       "delete": "삭제",
-      "enqueue": "대기열에 추가"
+      "enqueue": "대기열에 추가",
+      "autoSend": "자동 전송",
+      "modeTooltip": "켜면 답변이 끝날 때마다 대기 중인 내용을 순서대로 자동 전송합니다. 끄면 내용이 대기열에 남아 있고 \"지금 보내기\"로 하나씩 보냅니다.",
+      "paused": {
+        "stopped": "일시중지됨: 세션이 중지됨",
+        "failed": "일시중지됨: 지난 전송이 실패함"
+      },
+      "resume": "재개",
+      "resumeLabel": "자동 전송 재개",
+      "moreActions": "더 보기",
+      "clear": "대기 중 항목 비우기",
+      "clearConfirmTitle": "대기열을 비우시겠습니까?",
+      "clearConfirmDescription": "대기 중인 메시지 {{count}}개가 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+      "clearConfirmAction": "대기 중 항목 비우기",
+      "interruptConfirmTitle": "이 내용을 지금 보낼까요?",
+      "interruptConfirmDescription": "현재 답변을 중지한 뒤 이 내용을 보냅니다.",
+      "interruptConfirmSkip": "다시 묻지 않기",
+      "interruptConfirmAction": "중지하고 보내기"
+    },
+    "composerDrafts": {
+      "title": "임시 보관함",
+      "titleWithCount": "임시 보관함({{count}})",
+      "count": "{{count}}/{{max}}",
+      "save": "임시 보관함에 저장",
+      "empty": "아직 임시 저장된 내용이 없습니다",
+      "take": "입력창으로 가져오기",
+      "takeOccupied": "먼저 입력창의 현재 내용을 처리하세요",
+      "delete": "임시 저장 삭제",
+      "takeConflict": "입력란에 내용이 있어 초안이 보관함에 그대로 남아 있습니다."
     },
     "sending": "전송 중",
     "sendFailed": "전송 실패",
@@ -2562,7 +2603,14 @@
     "im": {
       "title": "IM 원격 개입 및 알림",
       "enabled": "사용",
+      "channelEnabled": "{{channel}} 원격 개입 사용",
+      "channelSubtitle": "봇 · 1:1 채팅",
+      "expandChannel": "{{channel}} 설정 펼치기",
+      "collapseChannel": "{{channel}} 설정 접기",
+      "receiverAccount": "수신 계정",
+      "robotName": "봇 이름",
       "privateBinding": "1:1 채팅: {{name}}",
+      "privateBindingUnnamed": "1:1 채팅 바인딩됨",
       "notificationKinds": "알림 유형",
       "notificationGroups": {
         "needsAction": "조치 필요",
@@ -2583,6 +2631,8 @@
         "notConfigured": "{{channel}}이 연결되어 있지 않습니다. 원격 개입 및 알림을 구성하려면 연결해 주세요.",
         "connect": "스캔하여 연결",
         "reauthorize": "다시 인증",
+        "changeApp": "Feishu 앱 변경",
+        "changeAppWarning": "인증을 완료하면 현재 Feishu 앱이 교체되고 기존 비공개 채팅 바인딩이 해제됩니다. 새 봇으로 다시 바인딩하세요.",
         "generating": "QR 코드 생성 중…",
         "waiting": "{{channel}}으로 스캔하고 인증을 확인하세요",
         "expiresIn": "QR 코드가 {{countdown}} 후 만료됩니다",
@@ -2595,10 +2645,12 @@
       "channels": {
         "weCom": {
           "title": "WeCom",
+          "identityLabel": "봇 ID",
           "identity": "봇 ID: {{id}}"
         },
         "feishu": {
           "title": "Feishu / Lark",
+          "identityLabel": "App ID",
           "identity": "App ID: {{id}}",
           "singleDeviceHint": "작업이 다른 기기에 전달되지 않도록 봇 하나는 기기 한 대에만 연결하세요.",
           "permissions": {
@@ -2606,6 +2658,7 @@
             "send": "나에게 메시지 보내기",
             "receive": "내가 봇에 보낸 개인 메시지 읽기",
             "update": "봇이 보낸 카드 업데이트",
+            "profile": "받는 계정을 표시하기 위해 이름 읽기",
             "confirm": "동의하고 QR 코드 생성"
           },
           "resetBinding": {
@@ -2863,6 +2916,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "모두 보기({{count}}개)",
       "showLess": "접기"
+    },
+    "promptQueue": {
+      "title": "대기 중",
+      "description": "답변이 진행 중일 때 \"지금 보내기\"는 현재 답변을 먼저 중지합니다.",
+      "confirmInterrupt": "\"지금 보내기\"로 답변을 중단하기 전에 확인"
     }
   },
   "conversation": {

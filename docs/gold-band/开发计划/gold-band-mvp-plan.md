@@ -1,11 +1,37 @@
 # Gold Band Rust MVP 实现方案
 
+
+## 2026-10-30 上游 #151 IM 生命周期与体验增量
+
+- 复用现有审批领域和通知队列，迁移运行结束校准、取消语义、已结束源卡重试保护、共享答案回显、飞书迟到拒绝提示、七语言卡片与绑定姓名。
+- 保留本仓库的飞书应用选择、渠道名称、设置交互以及 #150 对话草稿/队列；不引入上游其他功能、规则或诊断清理。
+- 持久化按本仓库实际状态升级 IM schema 5→6，事务内规范旧取消结果，保留原身份、终态与审计，补充迁移回滚测试。
+- 修复先通过接口测试复现，再用同一测试验收；测试、构建与 UI 验证结果见 IM 实施计划本轮验收记录。真实飞书/企微账号仍待验证。
+- 评审：无新增依赖或业务状态机；后台 I/O 移入 blocking pool，校准只取有界的未过期未结束投递，不增加页面订阅或历史加载。
+
+
+## 2026-10-26 Direct 未物化失败投影第一阶段
+
+- 提示修正：`acp.session-restore-reference-missing` 的本地化 key 原本错误放在 `errors.conversation.*`，导致失败横幅只显示英文 diagnostic。七语言文案已迁移到 `errors.acp.*`；简体中文明确解释 Provider 会话引用缺失、原会话无法恢复，并引导新建会话后重新发送。横幅标题与原因改为上下分层并使用 alert 语义。错误映射与 DOM 最小用例先红后绿，相关 5 个测试文件 265 项、Web 生产构建、diff 校验通过；内置 iab 在 787px 视口确认无横向溢出。browser fixture 没有精确错误码，精确文案由 DOM 用例验收。不新增错误码、状态或请求，性能影响为常数级。
+- 根因：Attempt 详情查询把 unavailable、无 `sessionId`、空 timeline 的快照统一过滤为不存在，前端同时以“出现 canonical 消息”作为查询成功条件；因此已持久化的 terminal lifecycle / `turnError` 无法进入 UI，最终等待约 32 秒后才显示通用失败。该问题属于既有 canonical lifecycle、分页与 shell 分层设计的查询投影实现不完整，不需要新建状态机。
+- 实现：后端只继续过滤纯 runtime-control placeholder；存在非 `none` 的 `latestTurnStatus` 或合法 `turnError` 时返回 Attempt VM。前端将查询 readiness 与 canonical 内容物化资格拆开：settled 且 `eventPage.total=0` 的空响应进入 `ready-empty`，active 空响应继续等待，`eventPage.total>0` 但当前页为空继续分页；Workflow/AUTO 初始化中断/失败仍由 canonical 内容 helper 判定，不被空失败 VM 覆盖。本阶段不修改 create fence、identity、`session/new`、Prompt、snapshot schemaVersion 或恢复按钮。
+- 红绿证据：Rust 最小测试在原实现上因 VM 为 `None` 失败，Web 空历史/失败 readiness 用例在原实现上返回 false；复核新增“active + 旧 `turnError` 仍等待”的最小用例，原实现返回 true。修复后 Rust `acp_session_vm_` 过滤用例 5 项、ACP 相关 5 个 Web 文件 300 项通过；DOM 固定未物化失败首个响应立即显示错误且不再 readiness 重试。`cargo fmt --all -- --check`、桌面端 tests 编译、Web 生产构建和 diff 校验通过；内置 iab 验证 Direct settled、active、Workflow 暂停及 720px 响应式，精确空失败场景未打包真实 EXE。
+- 过度设计与性能评审：复用既有 snapshot lifecycle、Attempt VM、分页 `eventPage.total`、readiness 重试和 shell 判定，只增加常数级字段判断与两个职责明确的前端 helper；不新增 DTO、持久字段、状态机、缓存、队列、依赖或全量扫描。失败场景会提前结束重复查询，正常分页 I/O、事件窗口上限和 React 订阅范围不变，无需新增 benchmark。
+
+## 2026-10-20 WB 更新清单遵循渠道下载地址
+
+- 根因：GitHub 发布汇总入口读取了渠道产品名，却未将 `releaseBaseUrl` 传给清单生成器，导致 WB 清单沿用 GitHub 下载 URL；原回归测试也固定了错误地址。自定义地址分支另有版本筛选缺陷：同目录出现带版本号的签名包时，遗漏不含版本号的 macOS updater archive。
+- 实现：两条发布 workflow 已共用 `generate-release-assets.mjs`，该入口显式传递渠道 `releaseBaseUrl`，优先于环境变量；未配置渠道下载地址时保留 GitHub 仓库/tag 默认规则。生成器保留当前版本安装包和无版本号的原生更新包，继续排除旧版本安装包。七个语言 manifest 与 `latest.json` 使用相同规则，安装包及签名内容不变。
+- 红绿证据：修改实现前，3 项测试分别复现 GitHub URL 错误和两种调用路径遗漏 macOS 平台；修复后 51 项发布相关 Node 测试通过，覆盖 WB 渠道地址优先级、四平台完整性、七语言与默认清单、其他版本排除，以及 default 渠道的 GitHub 地址和现有关键更新契约。相关测试继续由既有 PR checks 执行。
+- 发布边界：修复只影响之后生成的清单，已有 Release 附件需使用修复后的工具重新生成并上传；仅修正清单下载地址不需要重新编译或签名安装包。WB 内网分发仍需部署清单引用的安装包及 `latest.json`。
+- 过度设计与性能评审：复用现有渠道配置、生成器和 Node 测试，不增加依赖、工作流或客户端状态。只扫描本次 release 的资产文件名并读取签名/发布说明，新增筛选为线性处理，不读取安装包正文，不影响客户端运行性能。
+
 ## 2026-10-19 GitHub Release 统一构建 WB 跨平台安装包
 
 - 根因：GitHub 两条发布 workflow 固定使用 default，而 WB 渠道又将 `bundleTargets` 限定为 Windows NSIS，混合了产品渠道与打包平台。用户要求保留跨平台 GitHub Release，全部产出 WB/MALING 包。
 - 实现：自动发布和手工 tag 重建统一设置 `GOLD_BAND_RELEASE_CHANNEL=wb`，保留 Windows x64、Linux x64、macOS x64/arm64 四组 runner；移除 WB 的 NSIS 专属覆盖，继承 Tauri 原生 `all` 平台目标。两条流程共用 `prepare-release-build.mjs` 校验签名与 metrics key、生成渠道 overlay 和 Release 名称，正式版本严格来自 release tag。本地 WB 时间戳版本入口不变；本地非 default 渠道仅在 Windows 通过 CLI 选择 NSIS，避免 WiX 不支持时间戳/提交号版本，Linux/macOS 使用原生目标。
 - 凭据：Actions Secrets 使用 `WB_TAURI_SIGNING_PRIVATE_KEY`、可选 `WB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 和 `GOLD_BAND_METRICS_API_KEY`；macOS 继续复用已有可选 Apple 证书和公证配置。私钥必须与 WB 渠道公钥配对。
-- 产物：Tauri 上传本渠道安装包及更新签名；后处理复用现有七语言 manifest、关键更新元数据和校验和生成器，Release 正文产品名从渠道配置读取。停止向 WB Release 上传指向上游的 macOS 安装辅助脚本。GitHub 下载 URL 使用当前仓库/tag；WB 客户端的内网更新地址、MCP、metrics、Multica 与渠道身份仍由 WB 配置提供，不因附件托管位置改变。
+- 产物：Tauri 上传本渠道安装包及更新签名；后处理复用现有七语言 manifest、关键更新元数据和校验和生成器，Release 正文产品名从渠道配置读取。停止向 WB Release 上传指向上游的 macOS 安装辅助脚本。GitHub 附件托管在当前仓库/tag；清单内下载 URL 按 2026-10-20 修正后的渠道 `releaseBaseUrl` 契约生成。WB 客户端的内网更新地址、MCP、metrics、Multica 与渠道身份仍由 WB 配置提供，不因附件托管位置改变。
 - 红绿证据：原实现上 6 项接口/工作流断言失败（仅 NSIS、两条 workflow 渠道不匹配、Gold Band 正文、两条上传命令携带上游脚本）；复核时新增本地时间戳版本测试并观察到 Windows 缺少 NSIS 选择的失败，再将约束移到本地构建入口。修复后相关 52 项 Node 测试通过，覆盖四平台签名与下载地址、缺失/空白凭据在写入前失败、tag 版本、可选 Apple 签名以及原有渠道行为。发布契约测试已纳入 PR checks。
 - 验收边界：本机完成配置与生成器接口验收，尚未在 GitHub 使用真实密钥执行四平台生产打包；发布用的七语言日志及 `release.json` 仍必须进入目标 release commit。仓库中既有未提交版本、Catalog 和日志改动不属于本次变更。
 - 过度设计与性能评审：复用 release-please、tauri-action、Tauri 原生平台打包及现有渠道/清单生成器，只增加两条 workflow 共用的构建准备入口，不新增依赖、运行时状态或第二套发布流程；runner 数量仍为 4，校验为固定字段读取，产物处理范围仍局限本次 release，客户端性能无新增影响。
@@ -2730,6 +2756,7 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 2026-09-07 IM 授权、outbox、请求超时与重连可靠性闭环：入站动作按当前 durable binding 完整校验；`claim_due` 在写事务前对最多 32 条候选逐条 typed decode；pending/command channel 上限 64；网络错误按 1 秒起步、60 秒封顶持续重连，永久错误才发布 `ConnectionFailed`。
 - [x] 2026-09-16 IM 对既有桌面功能的隔离：零配置且无 cleanup 时不创建 runtime、访问 keyring/IM schema 或启动周期任务，首次配置惰性激活；空 delivery poll 只读返回，不争用 `core.db` writer lock；lifecycle 空 target 快速返回；退出按 admission gate → scheduler → 可取消 IM worker 收敛；ManualCheck 不再把可选 Timeline 文本作为 canonical 提交前置条件。默认开发恢复 Cargo 并行度，低内存模式改为显式 `dev:low-memory`。核心 IM 90 项、ManualCheck 17 项、配置 57 项、桌面 IM 20 项、Web 定向 32 项和 Node 脚本 2 项均通过，两个 Rust crate check、Web 生产构建、格式与差异检查通过；只读 Demo 在 1252px/640px 均无隐藏功能泄漏、横向溢出或 console error。
 - [x] 2026-09-16 桌面 Elicitation 与 IM transport 能力解耦：桌面 Accept 按完整 ACP `requestedSchema` 校验，自由文本、自定义答案和超过三个问题不再受远程表单动作集合限制；IM 入站继续只接受 delivery 实际发布的动作，pending、expected state、幂等与 first-writer-wins 保持共用。接口回归覆盖三类合法桌面答案、三类非法 schema 答案和远程动作不可用断言。
+- [x] 2026-10-21 飞书扫码接入优化：机器人预填名称取渠道 `appName`（`wb` 为 `MALING`，`default` 为 `Gold Band`），全局配置只保留描述后缀；首次接入和“更换飞书应用”使用 `selectOrCreate`，由飞书原生 launcher 选择已有应用或新建，不再发送 `createOnly`；重新授权当前应用使用 `reauthorizeCurrent` 并发送 `clientID`。扫码后继续执行新凭据暂存、原子配置提交、旧凭据清理和重新绑定。
 - 性能与过度设计复评审：最多一个企业微信 WebSocket，lifecycle subscriber 只做 O(1) 有界投影且不等待网络；permission 摘要只读取当前 pending request；due/retention query plan 命中索引，队列、claim batch、租约和保留均有上限。未新增云网关、消息代理、第二套审批状态机、无界缓存或队列。
 
 ## 2026-09-16：wb Windows 厂商字段固定为 MALING

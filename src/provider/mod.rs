@@ -1720,10 +1720,7 @@ impl AcpProvider {
                 workspace_files: prompt
                     .workspace_files
                     .iter()
-                    .map(|reference| PromptWorkspaceFileRef {
-                        project_id: reference.project_id.clone(),
-                        relative_path: reference.relative_path.clone(),
-                    })
+                    .map(|reference| reference.source.clone())
                     .collect(),
             },
             attachment_paths: req
@@ -2453,6 +2450,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             vec![PromptWorkspaceRoot {
                 project_id: req.runtime_context.project_id.clone(),
                 root: req.adapter_workspace_dir.as_std_path().to_path_buf(),
+                paths: None,
             }]
         } else {
             req.workspace_file_roots.clone()
@@ -3589,7 +3587,7 @@ mod tests {
         let mut req = test_worker_invocation(attempt_dir);
         req.adapter_workspace_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         req.workspace_dir = req.adapter_workspace_dir.clone();
-        req.task_prompt_input.workspace_files = vec![PromptWorkspaceFileRef {
+        req.task_prompt_input.workspace_files = vec![PromptWorkspaceFileRef::Workspace {
             project_id: "project-001".to_string(),
             relative_path: "WorkspaceFileTree.tsx".to_string(),
         }];
@@ -3615,8 +3613,9 @@ mod tests {
         req.workspace_file_roots = vec![PromptWorkspaceRoot {
             project_id: "other-project".to_string(),
             root: other.path().to_path_buf(),
+            paths: None,
         }];
-        req.task_prompt_input.workspace_files = vec![PromptWorkspaceFileRef {
+        req.task_prompt_input.workspace_files = vec![PromptWorkspaceFileRef::Workspace {
             project_id: "other-project".to_string(),
             relative_path: "foreign.ts".to_string(),
         }];

@@ -50,9 +50,7 @@ pub fn workflow_template_to_multica_exchange(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsl::{
-        EdgeDsl, EdgeOutcome, END_NODE, NodeDsl, PromptEnvelopeMode, WorkerNode,
-    };
+    use crate::dsl::{END_NODE, EdgeDsl, EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode};
     use serde_json::json;
 
     fn sample_workflow() -> WorkflowDsl {
@@ -153,9 +151,21 @@ mod tests {
         assert_eq!(back["workflow"]["control"]["max_attempts"], 10);
         // wire 键名锁定（本地 WorkflowDsl 序列化漂移时此处先红）：envelope camelCase 四键、
         // DSL 正文混合命名（executionSlotId 显式 camel，其余 Rust 原名）与 multica §5.1 一致。
-        assert!(back["workflow"]["nodes"][0].get("success_condition").is_some());
-        assert!(back["workflow"]["nodes"][0].get("prompt_envelope").is_some());
-        assert!(back["workflow"]["nodes"][0].get("executionSlotId").is_some());
+        assert!(
+            back["workflow"]["nodes"][0]
+                .get("success_condition")
+                .is_some()
+        );
+        assert!(
+            back["workflow"]["nodes"][0]
+                .get("prompt_envelope")
+                .is_some()
+        );
+        assert!(
+            back["workflow"]["nodes"][0]
+                .get("executionSlotId")
+                .is_some()
+        );
     }
 
     #[test]

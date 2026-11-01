@@ -944,10 +944,7 @@ export function ConversationComposer({
         ? branchSelection.branch
         : undefined,
       ...(role ? { role } : {}),
-      workspaceFiles: workspaceFiles.map(({ projectId: refProjectId, relativePath }) => ({
-        projectId: refProjectId,
-        relativePath,
-      })),
+      workspaceFiles: workspaceFiles.map(({ source }) => source),
       quotes,
     };
     setSubmittingAttachments(true);
@@ -1024,10 +1021,7 @@ export function ConversationComposer({
       }) : undefined,
       autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
       ...(role ? { role } : {}),
-      workspaceFiles: workspaceFiles.map(({ projectId: refProjectId, relativePath }) => ({
-        projectId: refProjectId,
-        relativePath,
-      })),
+      workspaceFiles: workspaceFiles.map(({ source }) => source),
       quotes,
     };
   };

@@ -1658,6 +1658,11 @@ export interface ImportProfilesInput {
   dynamicTemplate: boolean;
 }
 
+export interface ImportProfileFilesInput {
+  filePaths: string[];
+  dynamicTemplate: boolean;
+}
+
 export type ImportRecordStatus =
   | 'imported'
   | 'imported-with-fallbacks'
@@ -2268,7 +2273,8 @@ export interface ImBindingSummaryVm {
   destinationId: string;
   conversationId: string;
   authorizedActorId: string;
-  displayName: string;
+  /** Platform name of the bound account; null shows a neutral label. */
+  displayName: string | null;
 }
 
 export interface ImObservedBindingVm {
@@ -2276,6 +2282,7 @@ export interface ImObservedBindingVm {
   conversationId: string;
   actorId: string;
   isPrivate: boolean;
+  displayName: string | null;
 }
 
 export type ImMessageUpdateMode = 'none' | 'callbackOnly' | 'anytime';
@@ -2353,6 +2360,8 @@ export interface ImGenerationInputVm {
     kind: ImChannelKind;
     expectedGeneration: number;
 }
+
+export type FeishuScanMode = 'selectOrCreate' | 'reauthorizeCurrent';
 
 export interface ImScanAuthorizationVm {
   sessionId: string;
@@ -2851,6 +2860,8 @@ export interface ConversationRunSummaryVm {
 }
 
 export interface ConversationSidebarVm {
+  // A single search target outside the regular paging window; its row stays in tasksByWorkspace.
+  locatedTask?: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'> | null;
   loadStatus: ConversationLoadStatus;
   workspaces: ConversationWorkspaceVm[];
   pinRefs: PinRef[];
@@ -2995,15 +3006,33 @@ export interface ConversationPromptInput {
   workspaceFiles?: PromptWorkspaceFileRef[];
 }
 
-export interface PromptWorkspaceFileRef {
+export type PromptWorkspaceFileRef =
+  | { kind: 'workspace'; projectId: string; relativePath: string }
+  | { kind: 'artifact'; locator: TurnFileLocatorVm & { taskUuid?: string | null }; name: string }
+  | { kind: 'turn-file'; locator: TurnFileLocatorVm & { taskUuid?: string | null }; changeSetId: string; changeId: string }
+  | { kind: 'turn-attachment'; locator: TurnFileLocatorVm & { taskUuid?: string | null }; changeSetId: string; attachmentId: string }
+  | { kind: 'git-file'; projectId: string; workspacePath: string | null; relativePath: string };
+
+export interface RightWorkspaceFileTargetVm {
+  source: PromptWorkspaceFileRef;
   projectId: string;
-  relativePath: string;
+  name: string;
+  absolutePath: string | null;
+  relativePath: string | null;
+  relativeBase: 'attempt' | 'workspace' | 'attachment' | null;
+  workspacePath: string | null;
+  byteLength: number | null;
+  mimeType: string;
+  availability: { kind: 'available' } | { kind: 'unavailable'; code: string; params: Record<string, unknown> };
 }
 
 export interface ConversationPromptQueueVm {
   revision: number;
   items: ConversationQueuedPromptVm[];
   maxItems: number;
+  dispatchMode: 'auto' | 'manual';
+  autoDispatchSuspended: boolean;
+  suspensionReason?: 'stopped' | 'failed' | null;
 }
 
 export interface ConversationAttemptLifecycleVm {
@@ -3206,6 +3235,33 @@ export interface ConversationQueuedPromptDraftVm {
   workspaceFiles?: PromptWorkspaceFileRef[];
 }
 
+/** One saved composer draft; drafts belong to the conversation task and are never auto-sent. */
+export interface ConversationComposerDraftVm {
+  id: string;
+  contentPreview: string;
+  attachmentCount: number;
+  quoteCount: number;
+  workspaceFileCount: number;
+  roleName?: string | null;
+  createdAt: string;
+}
+
+/** Newest first; `revision` advances on every mutation for last-writer-wins convergence. */
+export interface ConversationComposerDraftBoxVm {
+  revision: number;
+  maxItems: number;
+  items: ConversationComposerDraftVm[];
+}
+
+export interface ConversationComposerDraftReadVm {
+  draft: ConversationQueuedPromptDraftVm;
+  drafts: ConversationComposerDraftBoxVm;
+}
+
+export interface PromptQueueSettingsVm {
+  confirmInterrupt: boolean;
+}
+
 export interface ConversationRunWorktreeVm {
   path: string;
   branch: string;
@@ -3323,6 +3379,7 @@ export interface WorkflowRepairTarget {
 
 export interface ConversationSearchResultVm {
   projectId: string;
+  taskUuid?: string | null;
   workspacePath: string;
   workspaceName: string;
   taskId: string;

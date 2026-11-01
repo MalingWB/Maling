@@ -16,7 +16,7 @@ use wire::{
 use crate::acp::elicitation::ElicitationAction;
 use crate::app::intervention::{
     ElicitationQuestionKind, InterventionAction, InterventionAllowedAction,
-    REMOTE_CUSTOM_ANSWER_OPTION, RemoteElicitationAnswer,
+    REMOTE_CUSTOM_ANSWER_OPTION, RemoteElicitationAnswer, RemoteElicitationForm,
 };
 use crate::domain::NodeOutcome;
 use crate::im::{
@@ -26,7 +26,7 @@ use crate::im::{
 };
 
 use super::super::{
-    action_label, intervention_actions, localized, message_state_label,
+    accepted_answers, action_label, intervention_actions, localized, message_state_label,
     notification_context_markdown, notification_markdown, notification_markdown_without_context,
     resolved_by_copy,
 };
@@ -153,14 +153,11 @@ pub(crate) fn resolution_payload_card_content(
         Some(resolution.resolved_by),
         locale,
     );
+    let title = resolution_title(&resolution.outcome, locale);
     if let Some(source) = source {
         let elements =
             source_terminal_elements(source, token, locale, Some(&resolution.outcome), &extra);
-        return terminal_interactive_card(
-            elements,
-            message_state_label(locale, crate::im::ImMessageState::Handled),
-        )
-        .content();
+        return terminal_interactive_card(elements, title).content();
     }
     let display_ref = resolution
         .display_ref
@@ -168,11 +165,16 @@ pub(crate) fn resolution_payload_card_content(
         .unwrap_or_else(|| "----".to_owned());
     let mut lines = vec![format!("**id={}**", display_ref)];
     lines.extend(extra);
-    terminal_read_only_card(
-        &lines.join("\n\n"),
-        message_state_label(locale, crate::im::ImMessageState::Handled),
-    )
-    .content()
+    terminal_read_only_card(&lines.join("\n\n"), title).content()
+}
+
+/// A cancelled request was answered by no one: label it cancelled, not handled.
+fn resolution_title(outcome: &ImResolutionOutcome, locale: ImLocale) -> &'static str {
+    if outcome.is_cancelled() {
+        localized(locale, "im.intervention.cancelled")
+    } else {
+        message_state_label(locale, crate::im::ImMessageState::Handled)
+    }
 }
 
 fn pending_elements(
@@ -256,14 +258,7 @@ fn pending_elements(
         let ImDeliveryPayload::Intervention { reference, .. } = &delivery.payload else {
             return Err(ImInboundError::InformationNotActionable);
         };
-        let form = reference
-            .allowed_actions
-            .iter()
-            .find_map(|action| match action {
-                InterventionAllowedAction::ElicitationFixedForm { form } => Some(form),
-                _ => None,
-            });
-        if let Some(form) = form {
+        if let Some(form) = InterventionAllowedAction::fixed_form(&reference.allowed_actions) {
             let mut form_elements = Vec::new();
             for question in &form.questions {
                 form_elements.extend(question_elements(question, locale));
@@ -704,9 +699,9 @@ pub(crate) fn action_reply(
 ) -> Value {
     let content = message_state_label(locale, response.state.message_state());
     match response.state {
-        ImActionResponseState::AlreadyHandled if response.outcome.is_none() => {
-            Reply::new(ToastType::Info, content, None)
-        }
+        // `AlreadyHandled` is only reported for a settled request, so the card
+        // is disabled even when the winning result is not known yet; a later
+        // resolution PATCH fills it in.
         ImActionResponseState::Handled | ImActionResponseState::AlreadyHandled => {
             let toast_type = if response.state == ImActionResponseState::Handled {
                 ToastType::Success
@@ -729,6 +724,30 @@ pub(crate) fn action_reply(
         }
     }
     .into_value()
+}
+
+/// Chat message for a rejection whose callback window already closed: the
+/// user only saw "Processing", and a rejection has no durable resolution.
+pub(crate) fn late_rejection_card_content(
+    delivery: &ImDelivery,
+    code: ImErrorCode,
+    locale: ImLocale,
+) -> String {
+    let reason = match code {
+        ImErrorCode::ActionExpired => {
+            message_state_label(locale, crate::im::ImMessageState::Expired)
+        }
+        code => error_copy(code, locale),
+    };
+    let display_ref = delivery
+        .display_ref
+        .map(|value| format!("{value:04}"))
+        .unwrap_or_else(|| "----".to_owned());
+    read_only_card_content(
+        &localized(locale, "im.feishu.lateRejection")
+            .replace("{ref}", &display_ref)
+            .replace("{reason}", reason),
+    )
 }
 
 pub(crate) fn processing_reply(locale: ImLocale) -> Value {
@@ -803,6 +822,9 @@ fn terminal_details(
             outcome_copy(outcome, delivery, locale)
         ));
     }
+    // A cancelled request has no handling surface to attribute.
+    let resolved_by =
+        resolved_by.filter(|_| !outcome.is_some_and(ImResolutionOutcome::is_cancelled));
     if let Some(resolved_by) = resolved_by {
         extra.push(format!(
             "- {}: {}",
@@ -839,66 +861,37 @@ fn restore_terminal_values(
     delivery: &ImDelivery,
     outcome: Option<&ImResolutionOutcome>,
 ) {
-    let ImDeliveryPayload::Intervention { reference, .. } = &delivery.payload else {
-        return;
-    };
     let mut values = BTreeMap::<String, ControlValue>::new();
     match outcome {
         Some(ImResolutionOutcome::PermissionOption { option_id }) => {
             values.insert("q0".into(), ControlValue::Single(Some(option_id.clone())));
         }
         Some(ImResolutionOutcome::ElicitationSubmitted { content }) => {
-            let Some(form) = reference
-                .allowed_actions
-                .iter()
-                .find_map(|action| match action {
-                    InterventionAllowedAction::ElicitationFixedForm { form } => Some(form),
-                    _ => None,
-                })
-            else {
+            let Some(form) = delivery_fixed_form(delivery) else {
                 return;
             };
-            for question in &form.questions {
-                let answer = content.get(&question.question.field_name);
-                let custom = question
-                    .custom_answer_key
-                    .as_ref()
-                    .and_then(|key| content.get(key))
-                    .and_then(Value::as_str)
-                    .filter(|text| !text.trim().is_empty());
-                let selected: Vec<String> = if custom.is_some() {
-                    vec![REMOTE_CUSTOM_ANSWER_OPTION.into()]
-                } else {
-                    question
-                        .question
-                        .options
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, option)| {
-                            let matches = match question.question.question_kind {
-                                ElicitationQuestionKind::MultiSelect => answer
-                                    .and_then(Value::as_array)
-                                    .is_some_and(|values| values.contains(&option.value)),
-                                _ => answer == Some(&option.value),
-                            };
-                            matches.then(|| index.to_string())
-                        })
-                        .collect()
+            for answer in accepted_answers(form, content) {
+                let question = answer.question;
+                let mut selected: Vec<String> = match answer.custom_text() {
+                    Some(_) => vec![REMOTE_CUSTOM_ANSWER_OPTION.into()],
+                    None => answer.option_ids().to_vec(),
                 };
+                // Restored controls list choices in published order.
+                selected.sort_by_key(|option_id| option_id.parse::<usize>().unwrap_or(usize::MAX));
                 let value = match question.question.question_kind {
                     ElicitationQuestionKind::SingleSelect => {
-                        ControlValue::Single(selected.first().cloned())
+                        ControlValue::Single(selected.into_iter().next())
                     }
                     ElicitationQuestionKind::MultiSelect => ControlValue::Multi(selected),
-                    ElicitationQuestionKind::FreeText => ControlValue::Text(
-                        answer.and_then(Value::as_str).unwrap_or_default().into(),
-                    ),
+                    ElicitationQuestionKind::FreeText => {
+                        ControlValue::Text(answer.text().unwrap_or_default().into())
+                    }
                 };
                 values.insert(question.selector_key.clone(), value);
                 if question.custom_answer_key.is_some() {
                     values.insert(
                         format!("{}_other", question.selector_key),
-                        ControlValue::Text(custom.unwrap_or_default().into()),
+                        ControlValue::Text(answer.custom_text().unwrap_or_default().into()),
                     );
                 }
             }
@@ -910,72 +903,36 @@ fn restore_terminal_values(
     }
 }
 
+fn delivery_fixed_form(delivery: &ImDelivery) -> Option<&RemoteElicitationForm> {
+    let ImDeliveryPayload::Intervention { reference, .. } = &delivery.payload else {
+        return None;
+    };
+    InterventionAllowedAction::fixed_form(&reference.allowed_actions)
+}
+
 fn submitted_answer_lines(
     delivery: &ImDelivery,
     submission: &Value,
     locale: ImLocale,
 ) -> Option<String> {
-    let ImDeliveryPayload::Intervention { reference, .. } = &delivery.payload else {
-        return None;
-    };
-    let form = reference
-        .allowed_actions
+    let form = delivery_fixed_form(delivery)?;
+    let lines = accepted_answers(form, submission)
         .iter()
-        .find_map(|action| match action {
-            InterventionAllowedAction::ElicitationFixedForm { form } => Some(form),
-            _ => None,
-        })?;
-    let mut lines = Vec::new();
-    for question in &form.questions {
-        let answered = if let Some(custom_key) = question.custom_answer_key.as_deref() {
-            submission
-                .get(custom_key)
-                .and_then(Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .map(|value| value.to_owned())
-        } else {
-            None
-        };
-        let display = answered.or_else(|| {
-            let value = submission.get(&question.question.field_name)?;
-            match question.question.question_kind {
-                ElicitationQuestionKind::FreeText => value.as_str().map(|value| value.to_owned()),
-                ElicitationQuestionKind::SingleSelect | ElicitationQuestionKind::MultiSelect => {
-                    select_value_label(value, &question.question.options)
-                }
-            }
-        });
-        lines.push(format!(
-            "- {}: {}",
-            question.question.title,
-            display.unwrap_or_else(|| localized(locale, "im.feishu.result.empty").to_owned())
-        ));
-    }
+        .map(|answer| {
+            format!(
+                "- {}: {}",
+                answer.question.question.title,
+                answer
+                    .display(locale)
+                    .unwrap_or_else(|| { localized(locale, "im.feishu.result.empty").to_owned() })
+            )
+        })
+        .collect::<Vec<_>>();
     Some(format!(
         "**{}**\n\n{}",
         localized(locale, "im.feishu.result.submission"),
         lines.join("\n")
     ))
-}
-
-fn select_value_label(
-    value: &Value,
-    options: &[crate::app::intervention::ElicitationQuestionOption],
-) -> Option<String> {
-    let selected = match value {
-        Value::Array(values) => values.to_vec(),
-        other => vec![other.clone()],
-    };
-    let labels = selected
-        .iter()
-        .map(|value| {
-            options
-                .iter()
-                .find(|option| option.value == *value)
-                .map(|option| option.label.clone())
-        })
-        .collect::<Option<Vec<_>>>()?;
-    Some(labels.join("、"))
 }
 
 fn outcome_copy(
@@ -1011,9 +968,7 @@ fn outcome_copy(
         ImResolutionOutcome::ElicitationDeclined => {
             localized(locale, "im.action.decline").to_owned()
         }
-        ImResolutionOutcome::ElicitationCancelled => {
-            localized(locale, "im.elicitation.cancelled").to_owned()
-        }
+        ImResolutionOutcome::Cancelled => localized(locale, "im.intervention.cancelled").to_owned(),
         ImResolutionOutcome::ManualCheck {
             outcome: NodeOutcome::Success,
         } => localized(locale, "im.action.success").to_owned(),
@@ -1867,14 +1822,26 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn late_click_without_a_settled_result_does_not_erase_the_card() {
+    fn late_click_on_a_settled_request_without_its_result_disables_the_card() {
         let mut response = submitted_single_select_response();
         response.state = ImActionResponseState::AlreadyHandled;
         response.outcome = None;
         response.resolved_by = None;
         let reply = action_reply(&response, ImLocale::ZhCn, &codec());
-        assert!(reply.get("toast").is_some());
-        assert!(reply.get("card").is_none());
+        assert_eq!(reply["toast"]["content"], "已处理");
+        let card = &reply["card"]["data"];
+        assert_eq!(card["header"]["title"]["content"], "已处理");
+        let controls = card["body"]["elements"][1]["elements"]
+            .as_array()
+            .expect("the original controls stay visible");
+        assert!(!controls.is_empty());
+        assert!(
+            controls
+                .iter()
+                .filter(|control| control.get("disabled").is_some())
+                .all(|control| control["disabled"] == true),
+            "a settled request can no longer be answered from this card"
+        );
     }
 
     #[test]
@@ -1924,7 +1891,7 @@ pub(super) mod tests {
             (ImLocale::En, "Cancelled", "Decline"),
         ] {
             let mut response = submitted_single_select_response();
-            response.outcome = Some(ImResolutionOutcome::ElicitationCancelled);
+            response.outcome = Some(ImResolutionOutcome::Cancelled);
             let reply = action_reply(&response, locale, &codec());
             let body = reply["card"]["data"]["body"].to_string();
             assert!(body.contains(cancelled), "missing cancellation: {body}");
@@ -2031,6 +1998,78 @@ pub(super) mod tests {
             id < node && node < task && task < workspace && workspace < body,
             "context fields must sit directly under the id: {content}"
         );
+    }
+
+    #[test]
+    fn cancelled_resolution_is_not_rendered_as_a_decline_or_a_handled_answer() {
+        let source = delivery(
+            ImNotificationKind::Elicitation,
+            vec![
+                InterventionAllowedAction::ElicitationAccept,
+                InterventionAllowedAction::ElicitationDecline,
+            ],
+        );
+        let resolution = |outcome| ImDeliveryPayload::InterventionResolution {
+            version: crate::im::IM_PAYLOAD_VERSION,
+            resolution: crate::im::InterventionResolutionNotification {
+                canonical_event_id: crate::im::resolution_event_id("event-1"),
+                source_event_id: "event-1".into(),
+                notification_kind: ImNotificationKind::Elicitation,
+                locator: crate::im::ImNavigationLocator {
+                    project_id: "p".into(),
+                    task_id: None,
+                    run_id: None,
+                    round_id: None,
+                    node_id: None,
+                    attempt_id: None,
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                    scheduled_occurrence_id: None,
+                },
+                display_ref: Some(12),
+                resolved_by: ImResolvedBy::Desktop,
+                outcome,
+            },
+        };
+        for (locale, cancelled, declined, handled, source_label) in [
+            (ImLocale::ZhCn, "已取消", "拒绝", "已处理", "处理端"),
+            (
+                ImLocale::En,
+                "Cancelled",
+                "Decline",
+                "Handled",
+                "Handled on",
+            ),
+        ] {
+            for source in [Some(&source), None] {
+                let content = resolution_payload_card_content(
+                    &resolution(ImResolutionOutcome::Cancelled),
+                    locale,
+                    source,
+                    &codec(),
+                );
+                let card: Value = serde_json::from_str(&content).unwrap();
+                assert_eq!(card["header"]["title"]["content"], cancelled, "{content}");
+                assert!(content.contains(cancelled), "{content}");
+                assert!(!content.contains(&format!(": {declined}")), "{content}");
+                assert!(!content.contains(handled), "{content}");
+                assert!(
+                    !content.contains(source_label),
+                    "nobody handled a cancelled request: {content}"
+                );
+
+                let declined_content = resolution_payload_card_content(
+                    &resolution(ImResolutionOutcome::ElicitationDeclined),
+                    locale,
+                    source,
+                    &codec(),
+                );
+                let card: Value = serde_json::from_str(&declined_content).unwrap();
+                assert_eq!(card["header"]["title"]["content"], handled);
+                assert!(declined_content.contains(&format!(": {declined}")));
+                assert!(declined_content.contains(source_label));
+            }
+        }
     }
 
     #[test]

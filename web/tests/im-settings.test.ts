@@ -71,7 +71,7 @@ describe('IM settings boundary', () => {
   it('configures Feishu through its own scan session without exposing credentials', async () => {
     await browserApi.deleteImChannel('feishu');
     const sessionId = crypto.randomUUID();
-    const authorization = await browserApi.startFeishuScanAuthorization(sessionId, false);
+    const authorization = await browserApi.startFeishuScanAuthorization(sessionId, 'selectOrCreate');
     expect(authorization).toMatchObject({ sessionId });
     expect(authorization.qrUrl).toBeTruthy();
     const settings = await browserApi.completeFeishuScanAuthorization(sessionId);
@@ -91,7 +91,7 @@ describe('IM settings boundary', () => {
 
   it('keeps the browser capability limits aligned with each connector', async () => {
     const feishuSessionId = crypto.randomUUID();
-    await browserApi.startFeishuScanAuthorization(feishuSessionId, false);
+    await browserApi.startFeishuScanAuthorization(feishuSessionId, 'selectOrCreate');
     await browserApi.completeFeishuScanAuthorization(feishuSessionId);
     const sessionId = crypto.randomUUID();
     await browserApi.startWeComScanAuthorization(sessionId);
@@ -132,7 +132,7 @@ describe('IM settings boundary', () => {
       binding,
       connection: {
         ...channelFixture().connection!,
-        binding: { destinationId: 'user-1', conversationId: 'chat-1', actorId: 'user-1', isPrivate: true },
+        binding: { destinationId: 'user-1', conversationId: 'chat-1', actorId: 'user-1', isPrivate: true, displayName: null },
       },
     })).status).toBe('ready');
   });
@@ -183,7 +183,14 @@ describe('IM settings boundary', () => {
       binding: { destinationId: 'user-1', conversationId: 'chat-1', actorId: 'user-1', isPrivate: true },
     };
     const bound = mergeImChannelSnapshot(base, persistedBinding);
-    expect(bound.channels[0].binding).toMatchObject({ authorizedActorId: 'user-1' });
+    expect(bound.channels[0].binding).toMatchObject({ authorizedActorId: 'user-1', displayName: null });
+    const named = mergeImChannelSnapshot(base, {
+      ...persistedBinding,
+      binding: { ...persistedBinding.binding, displayName: 'Zhang San' },
+    });
+    expect(named.channels[0].binding?.displayName).toBe('Zhang San');
+    const keepsKnownName = mergeImChannelSnapshot(named, { ...persistedBinding, generation: 5 });
+    expect(keepsKnownName.channels[0].binding?.displayName).toBe('Zhang San');
     expect(imChannelDisplayModel(bound.channels[0]).status).toBe('ready');
 
     const current = mergeImChannelSnapshot(base, newer);
@@ -286,4 +293,28 @@ describe('IM settings boundary', () => {
     expect(app).toContain('prefetchImSettings');
     expect(app).toContain('prefetchScheduledRuntimeSettings');
   });
+
+  it('adopts the platform account name immediately and preserves it when unavailable', () => {
+    const base: ImSettingsVm = { channels: [channelFixture()] };
+    const snapshot = {
+      ...base.channels[0].connection!,
+      generation: 10,
+      binding: {
+        destinationId: 'user-1', conversationId: 'chat-1', actorId: 'user-1',
+        isPrivate: true, displayName: 'Zhang San',
+      },
+    };
+    const named = mergeImChannelSnapshot(base, snapshot);
+    expect(named.channels[0].binding?.displayName).toBe('Zhang San');
+    const unavailable = mergeImChannelSnapshot(named, {
+      ...snapshot, generation: 11, binding: { ...snapshot.binding, displayName: null },
+    });
+    expect(unavailable.channels[0].binding?.displayName).toBe('Zhang San');
+    const changedOwner = mergeImChannelSnapshot(unavailable, {
+      ...snapshot, generation: 12,
+      binding: { ...snapshot.binding, actorId: 'other-user', displayName: null },
+    });
+    expect(changedOwner.channels[0].binding?.displayName).toBeNull();
+  });
+
 });

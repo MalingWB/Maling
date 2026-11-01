@@ -3212,12 +3212,14 @@ mod tests {
         // export completed：payload 承载角色正文（交换文档 wire 形态：name=slug、is_builtin snake）。
         let export = RuntimeAssetsInstallReport {
             status: "completed",
-            payload: Some(RuntimeAssetPayload::Role(gold_band::app::MulticaRoleExchange {
-                name: "pf-my-role".into(),
-                description: "一句话".into(),
-                content: "---\nname: pf-my-role\n---\nbody".into(),
-                is_builtin: false,
-            })),
+            payload: Some(RuntimeAssetPayload::Role(
+                gold_band::app::MulticaRoleExchange {
+                    name: "pf-my-role".into(),
+                    description: "一句话".into(),
+                    content: "---\nname: pf-my-role\n---\nbody".into(),
+                    is_builtin: false,
+                },
+            )),
             result: None,
             error: None,
         };

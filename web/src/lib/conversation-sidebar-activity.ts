@@ -8,6 +8,7 @@ import type {
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm } from '@/api/client';
 import { parseTimestamp } from '@/lib/datetime';
 import { findConversationTask } from '@/lib/conversation-task-state';
+import { promoteConversationLocatedTask } from '@/lib/conversation-sidebar-loading';
 import { isDirectBackgroundActive, useDirectBackgroundActive } from '@/lib/acp-background-control';
 
 export type ConversationSidebarRunStateRefreshTarget =
@@ -22,7 +23,9 @@ export function conversationSidebarRunStateRefreshTarget(
   if (!event.taskUuid) return null;
   const task = findConversationTask(sidebar, event.projectId, event.taskId);
   if (!task) {
-    return event.projectId === activeProjectId
+    const pageStatus = sidebar.workspaceTaskPages?.[event.projectId]?.status;
+    const workspaceLoaded = pageStatus != null && pageStatus !== 'not-loaded';
+    return event.projectId === activeProjectId || workspaceLoaded
       ? { kind: 'workspace-tasks', projectId: event.projectId }
       : null;
   }
@@ -162,7 +165,7 @@ function projectConversationSidebarTask(
   const workspaceChanged = nextWorkspaceTasks.some((task, index) => task !== workspaceTasks[index]);
   if (!pinnedChanged && !workspaceChanged) return sidebar;
 
-  return {
+  const next = {
     ...sidebar,
     pinnedTasks: pinnedChanged ? pinnedTasks : sidebar.pinnedTasks,
     tasksByWorkspace: workspaceChanged
@@ -172,6 +175,8 @@ function projectConversationSidebarTask(
         }
       : sidebar.tasksByWorkspace,
   };
+  const activatedTask = shouldMoveToFront ? nextWorkspaceTasks[0] : null;
+  return activatedTask ? promoteConversationLocatedTask(next, activatedTask) : next;
 }
 
 function sameTerminalResult(

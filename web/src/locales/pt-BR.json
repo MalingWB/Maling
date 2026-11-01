@@ -633,6 +633,8 @@
       "switchToTreeView": "Alternar para árvore de pastas",
       "copyAbsolutePath": "Copiar caminho absoluto",
       "copyRelativePath": "Copiar caminho relativo",
+      "relativeToRunDirectory": "Relativo ao diretório de execução",
+      "relativeToAttachmentDirectory": "Relativo ao diretório de anexos", "relativeToSourceWorkspace": "Relativo ao diretório de trabalho de origem",
       "openWorkspaceFile": "Abrir arquivo do espaço de trabalho",
       "referenceToConversation": "Referenciar na conversa",
       "removeWorkspaceReference": "Remover referência ao arquivo",
@@ -932,6 +934,7 @@
       "composer-history-query-failed": "Não foi possível carregar o histórico de entrada. Tente novamente.",
       "turn-execution-failed": "Esta mensagem não pôde ser processada. Tente novamente.",
       "session-request-failed": "A sessão não pôde ser preparada. Tente novamente.",
+      "session-restore-reference-missing": "Esta sessão ACP não tem uma referência de sessão do Provider, portanto a sessão original não pode ser retomada. Inicie uma nova sessão e envie a mensagem novamente.",
       "missing-provider": "O nó atual não tem configuração de provider.",
       "subagent-protocol-upgrade-required": "Atualize o Claude ACP para {{minimumVersion}} ou posterior e tente novamente.",
       "session-config-value-unavailable": "A configuração de sessão selecionada não está mais disponível. Escolha outro valor da lista mais recente.",
@@ -995,7 +998,10 @@
         "folder-not-found": "A pasta selecionada não foi encontrada",
         "folder-not-directory": "O caminho selecionado não é uma pasta",
         "folder-read-failed": "A pasta selecionada não pôde ser lida completamente",
-        "no-markdown-files": "Nenhum arquivo Markdown encontrado na pasta selecionada"
+        "no-markdown-files": "Nenhum arquivo Markdown encontrado na pasta selecionada",
+        "file-not-found": "O arquivo selecionado não foi encontrado",
+        "file-not-markdown": "O arquivo selecionado não é um arquivo Markdown",
+        "no-files": "Nenhum arquivo selecionado"
       }
     },
     "manual-check": {
@@ -1032,7 +1038,6 @@
       "workspace-file-read-failed": "Não foi possível ler as informações do arquivo referenciado. Tente novamente.",
       "workspace-file-count-exceeded": "O contexto pode conter no máximo {{max}} referências e anexos.",
       "session-restore-unsupported": "Este Agent não pode restaurar uma sessão existente.",
-      "session-restore-reference-missing": "Esta sessão não tem referência de sessão do Provider.",
       "history-sync-unsupported": "Este Agent não pode sincronizar o histórico completo de uma sessão existente.",
       "prompt-empty": "Digite uma mensagem para enviar.",
       "prompt-quote-invalid": "O texto citado é inválido. Remova-o e cite a mensagem novamente.",
@@ -1050,11 +1055,18 @@
       "prompt-queue-empty": "A fila pendente está vazia.",
       "prompt-queue-revision-conflict": "A ordem pendente mudou. Tente novamente após a lista atualizar.",
       "prompt-queue-invalid-order": "A ordem pendente é inválida. Tente novamente.",
+      "prompt-queue-invalid-mode": "O modo de envio é inválido.",
       "prompt-queue-session-busy": "Pare a sessão ativa antes de usar manualmente um item da fila.",
+      "prompt-queue-interrupt-timeout": "A resposta atual ainda está sendo interrompida. A mensagem permanece na fila; tente novamente em instantes.",
+      "prompt-queue-dispatch-settling": "A resposta anterior ainda não terminou completamente. A mensagem foi devolvida à fila; tente novamente em instantes.",
       "prompt-session-busy": "A mensagem anterior ainda está sendo processada. Aguarde ou pare a resposta atual primeiro.",
       "prompt-submission-conflict": "Este identificador de mensagem já está associado a conteúdo diferente. Envie novamente.",
       "prompt-submission-missing": "O conteúdo da mensagem aceita não pôde ser lido. Envie novamente.",
       "prompt-queue-storage-failed": "A fila pendente não pôde ser salva. Tente novamente.",
+      "composer-draft-empty": "Não há nada para salvar.",
+      "composer-draft-full": "Os rascunhos estão cheios. Você pode manter até {{max}}.",
+      "composer-draft-not-found": "Este rascunho não existe mais.",
+      "composer-draft-storage-failed": "Não foi possível acessar os rascunhos. Tente novamente.",
       "execution-plan": {
         "not-found": "Este Run ainda não tem um plano de execução.",
         "revision-conflict": "O plano de execução mudou. Recarregue e tente novamente.",
@@ -1328,7 +1340,6 @@
     "builtInSectionDescription": "Papéis fixos que podem ser abertos como rascunhos e salvos como novos papéis personalizados.",
     "customSectionTitle": "Papéis personalizados",
     "customSectionDescription": "Seus papéis de usuário são paginados aqui.",
-    "customProfilesPageRange": "Papéis personalizados {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "Papéis integrados não podem ser salvos diretamente. Salve-os como um novo papel.",
     "emptyContent": "Nenhum conteúdo de papel ainda",
     "profileRequired": "Nome e resumo são obrigatórios.",
@@ -1461,10 +1472,12 @@
       }
     },
     "importProfile": "Importar papéis",
-    "importSettingsDescription": "Importação em lote de arquivos Markdown de papéis de uma pasta. Nomes e resumos ausentes são preenchidos automaticamente.",
+    "importSettingsDescription": "Importe em lote de uma pasta ou selecione arquivos Markdown de papéis diretamente. Nomes e resumos ausentes são preenchidos automaticamente.",
     "importDynamicTemplateDescription": "Quando habilitado, todos os papéis importados são tratados como templates dinâmicos; corpos inválidos são rebaixados para estáticos.",
     "importPickFolder": "Escolher pasta e importar",
     "importPickFolderTitle": "Escolha uma pasta contendo arquivos Markdown de papéis",
+    "importPickFiles": "Escolher arquivos e importar",
+    "importPickFilesTitle": "Escolha arquivos Markdown de papéis",
     "importResultTitle": "Resultados da importação",
     "importResultSummary": "Varridos {{total}} arquivo(s), {{success}} com sucesso, {{failed}} falharam.",
     "importResultImported": "Importado",
@@ -2345,9 +2358,37 @@
       "editDraftOccupied": "Termine primeiro o rascunho atual do campo de entrada",
       "restoreDraftConflict": "O campo de entrada mudou e esta mensagem pendente não pode ser restaurada.",
       "reorder": "Reordenar mensagem na fila",
-      "use": "Usar",
+      "sendNow": "Enviar agora",
       "delete": "Excluir",
-      "enqueue": "Adicionar à fila"
+      "enqueue": "Adicionar à fila",
+      "autoSend": "Envio automático",
+      "modeTooltip": "Quando ativado, as mensagens pendentes são enviadas uma a uma ao fim de cada resposta. Quando desativado, elas ficam na fila até você escolher \"Enviar agora\".",
+      "paused": {
+        "stopped": "Pausado: sessão interrompida",
+        "failed": "Pausado: o último envio falhou"
+      },
+      "resume": "Retomar",
+      "resumeLabel": "Retomar envio automático",
+      "moreActions": "Mais ações",
+      "clear": "Limpar pendentes",
+      "clearConfirmTitle": "Limpar a fila de pendentes?",
+      "clearConfirmDescription": "{{count}} mensagens pendentes serão removidas. Isso não pode ser desfeito.",
+      "clearConfirmAction": "Limpar pendentes",
+      "interruptConfirmTitle": "Enviar esta mensagem agora?",
+      "interruptConfirmDescription": "A resposta atual será interrompida antes do envio desta mensagem.",
+      "interruptConfirmSkip": "Não perguntar novamente",
+      "interruptConfirmAction": "Interromper e enviar"
+    },
+    "composerDrafts": {
+      "title": "Rascunhos",
+      "titleWithCount": "Rascunhos ({{count}})",
+      "count": "{{count}}/{{max}}",
+      "save": "Salvar nos rascunhos",
+      "empty": "Nenhum rascunho ainda",
+      "take": "Mover para a entrada",
+      "takeOccupied": "Resolva primeiro o conteúdo atual da entrada",
+      "delete": "Excluir rascunho",
+      "takeConflict": "O campo de entrada contém conteúdo. O rascunho permanece na caixa de rascunhos."
     },
     "sending": "Enviando",
     "sendFailed": "Falha no envio",
@@ -2562,7 +2603,14 @@
     "im": {
       "title": "Intervenção remota e notificações de IM",
       "enabled": "Habilitado",
+      "channelEnabled": "Habilitar intervenção remota do {{channel}}",
+      "channelSubtitle": "Bot · Chat privado",
+      "expandChannel": "Expandir configurações do {{channel}}",
+      "collapseChannel": "Recolher configurações do {{channel}}",
+      "receiverAccount": "Conta destinatária",
+      "robotName": "Nome do bot",
       "privateBinding": "Chat privado: {{name}}",
+      "privateBindingUnnamed": "Chat privado vinculado",
       "notificationKinds": "Tipos de notificação",
       "notificationGroups": {
         "needsAction": "Precisa da sua ação",
@@ -2583,6 +2631,8 @@
         "notConfigured": "{{channel}} não está conectado. Conecte-o para configurar intervenção remota e notificações.",
         "connect": "Escanear para conectar",
         "reauthorize": "Autorizar novamente",
+        "changeApp": "Alterar aplicativo do Feishu",
+        "changeAppWarning": "Concluir a autorização substitui o aplicativo Feishu atual e remove a vinculação de chat privado existente. Vincule novamente com o novo bot.",
         "generating": "Gerando código QR…",
         "waiting": "Escaneie com {{channel}} e confirme a autorização",
         "expiresIn": "Código QR expira em {{countdown}}",
@@ -2595,10 +2645,12 @@
       "channels": {
         "weCom": {
           "title": "WeCom",
+          "identityLabel": "ID do bot",
           "identity": "ID do bot: {{id}}"
         },
         "feishu": {
           "title": "Feishu / Lark",
+          "identityLabel": "App ID",
           "identity": "App ID: {{id}}",
           "singleDeviceHint": "Conecte cada bot a apenas um dispositivo para evitar que ações cheguem a outro dispositivo.",
           "permissions": {
@@ -2606,6 +2658,7 @@
             "send": "Enviar mensagens para você",
             "receive": "Ler mensagens privadas que você envia ao bot",
             "update": "Atualizar cartões enviados pelo bot",
+            "profile": "Ler seu nome para mostrar a conta de recebimento",
             "confirm": "Concordar e gerar código QR"
           },
           "resetBinding": {
@@ -2863,6 +2916,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "Mostrar todos ({{count}})",
       "showLess": "Mostrar menos"
+    },
+    "promptQueue": {
+      "title": "Mensagens pendentes",
+      "description": "Enquanto uma resposta está em andamento, \"Enviar agora\" interrompe a resposta atual primeiro.",
+      "confirmInterrupt": "Confirmar antes de \"Enviar agora\" interromper uma resposta"
     }
   },
   "conversation": {

@@ -94,6 +94,8 @@ interface WorkspaceShellProps {
   activeWorkspaceId?: string | null;
   defaultExpandedWorkspaceId?: string | null;
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
+  onRetryReveal?: () => void;
+  onRevealHandled?: (requestId: number) => void;
   conversationTaskUuid?: string | null;
   workLocation?: SessionWorkLocationVm | null;
   conversationWorkspaceStore: ConversationWorkspaceStore;
@@ -337,6 +339,8 @@ function WorkspaceShellLayout({
   activeWorkspaceId: _activeWorkspaceId,
   defaultExpandedWorkspaceId,
   workspaceRevealRequest,
+  onRetryReveal,
+  onRevealHandled,
   children,
 }: WorkspaceShellProps) {
   const { t } = useTranslation();
@@ -779,6 +783,8 @@ function WorkspaceShellLayout({
               showRemoteTaskManagement={showRemoteTaskManagement}
               defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
               workspaceRevealRequest={workspaceRevealRequest}
+              onRetryReveal={onRetryReveal}
+              onRevealHandled={onRevealHandled}
               onSelect={onSelect}
               onNewConversation={onNewConversation}
               onSearch={onSearch}

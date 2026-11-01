@@ -633,6 +633,8 @@
       "switchToTreeView": "Switch to folder tree",
       "copyAbsolutePath": "Copy absolute path",
       "copyRelativePath": "Copy relative path",
+      "relativeToRunDirectory": "Relative to the run directory",
+      "relativeToAttachmentDirectory": "Relative to the attachment directory", "relativeToSourceWorkspace": "Relative to the source working directory",
       "openWorkspaceFile": "Open workspace file",
       "referenceToConversation": "Reference in conversation",
       "removeWorkspaceReference": "Remove file reference",
@@ -932,6 +934,7 @@
       "composer-history-query-failed": "Could not load input history. Please try again.",
       "turn-execution-failed": "This message could not be processed. Try again.",
       "session-request-failed": "The session could not be prepared. Try again.",
+      "session-restore-reference-missing": "This ACP session is missing its Provider session reference, so the original session cannot be resumed. Start a new session and send the message again.",
       "missing-provider": "The current node is missing provider configuration.",
       "subagent-protocol-upgrade-required": "Update Claude ACP to {{minimumVersion}} or later, then try again.",
       "session-config-value-unavailable": "The selected session configuration is no longer available. Choose another value from the latest list.",
@@ -995,7 +998,10 @@
         "folder-not-found": "Selected folder could not be found",
         "folder-not-directory": "Selected path is not a folder",
         "folder-read-failed": "Selected folder could not be read completely",
-        "no-markdown-files": "No Markdown files found in the selected folder"
+        "no-markdown-files": "No Markdown files found in the selected folder",
+        "file-not-found": "Selected file could not be found",
+        "file-not-markdown": "Selected file is not a Markdown file",
+        "no-files": "No files selected"
       }
     },
     "manual-check": {
@@ -1032,7 +1038,6 @@
       "workspace-file-read-failed": "Could not read the referenced file metadata. Try again.",
       "workspace-file-count-exceeded": "Context can contain at most {{max}} references and attachments.",
       "session-restore-unsupported": "This Agent cannot restore an existing session.",
-      "session-restore-reference-missing": "This session is missing its Provider session reference.",
       "history-sync-unsupported": "This Agent cannot synchronize the full history of an existing session.",
       "prompt-empty": "Enter a message to send.",
       "prompt-quote-invalid": "The quoted text is invalid. Remove it and quote the message again.",
@@ -1050,11 +1055,18 @@
       "prompt-queue-empty": "The pending queue is empty.",
       "prompt-queue-revision-conflict": "The pending order changed. Try again after the list updates.",
       "prompt-queue-invalid-order": "The pending order is invalid. Try again.",
+      "prompt-queue-invalid-mode": "The send mode is invalid.",
       "prompt-queue-session-busy": "Stop the active session before using a queued prompt manually.",
+      "prompt-queue-interrupt-timeout": "The current reply is still stopping. The message stays queued; try again shortly.",
+      "prompt-queue-dispatch-settling": "The previous reply has not fully finished. The message was returned to the queue; try again shortly.",
       "prompt-session-busy": "The previous message is still processing. Wait or stop the current response first.",
       "prompt-submission-conflict": "This message identifier is already associated with different content. Send it again.",
       "prompt-submission-missing": "The accepted message content could not be read. Send it again.",
       "prompt-queue-storage-failed": "The pending queue could not be saved. Try again.",
+      "composer-draft-empty": "There is nothing to save.",
+      "composer-draft-full": "Drafts are full. You can keep up to {{max}}.",
+      "composer-draft-not-found": "This draft no longer exists.",
+      "composer-draft-storage-failed": "Cannot access drafts. Try again.",
       "execution-plan": {
         "not-found": "This run has no execution plan.",
         "revision-conflict": "The execution plan changed. Reload and try again.",
@@ -1328,7 +1340,6 @@
     "builtInSectionDescription": "Fixed roles that can be opened as drafts and saved as new custom roles.",
     "customSectionTitle": "Custom Roles",
     "customSectionDescription": "Custom roles you created are listed here.",
-    "customProfilesPageRange": "Custom roles {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "Built-in roles cannot be saved directly. Save them as a new role instead.",
     "emptyContent": "No role content yet",
     "profileRequired": "Name and summary are required.",
@@ -1461,10 +1472,12 @@
       }
     },
     "importProfile": "Import Roles",
-    "importSettingsDescription": "Batch import role Markdown files from a folder. Missing names and summaries are filled automatically.",
+    "importSettingsDescription": "Batch import from a folder or select role Markdown files directly. Missing names and summaries are filled automatically.",
     "importDynamicTemplateDescription": "When enabled, all imported roles are treated as dynamic templates; invalid bodies are downgraded to static.",
     "importPickFolder": "Choose folder and import",
     "importPickFolderTitle": "Choose a folder containing role Markdown files",
+    "importPickFiles": "Choose files and import",
+    "importPickFilesTitle": "Choose role Markdown files",
     "importResultTitle": "Import Results",
     "importResultSummary": "Scanned {{total}} files: {{success}} succeeded, {{failed}} failed.",
     "importResultImported": "Imported",
@@ -2345,9 +2358,37 @@
       "editDraftOccupied": "Finish the current composer draft first",
       "restoreDraftConflict": "The composer changed before this queued message could be restored.",
       "reorder": "Reorder queue",
-      "use": "Use",
+      "sendNow": "Send now",
       "delete": "Delete",
-      "enqueue": "Add to queue"
+      "enqueue": "Add to queue",
+      "autoSend": "Auto send",
+      "modeTooltip": "When on, pending messages are sent one by one after each reply finishes. When off, they stay in the queue until you choose \"Send now\".",
+      "paused": {
+        "stopped": "Paused: session stopped",
+        "failed": "Paused: last send failed"
+      },
+      "resume": "Resume",
+      "resumeLabel": "Resume auto send",
+      "moreActions": "More actions",
+      "clear": "Clear pending",
+      "clearConfirmTitle": "Clear the pending queue?",
+      "clearConfirmDescription": "{{count}} pending messages will be removed. This cannot be undone.",
+      "clearConfirmAction": "Clear pending",
+      "interruptConfirmTitle": "Send this message now?",
+      "interruptConfirmDescription": "The current reply will be stopped before this message is sent.",
+      "interruptConfirmSkip": "Don't ask again",
+      "interruptConfirmAction": "Stop and send"
+    },
+    "composerDrafts": {
+      "title": "Drafts",
+      "titleWithCount": "Drafts ({{count}})",
+      "count": "{{count}}/{{max}}",
+      "save": "Save to drafts",
+      "empty": "No drafts yet",
+      "take": "Move to input",
+      "takeOccupied": "Handle the current input first",
+      "delete": "Delete draft",
+      "takeConflict": "The input is not empty. The draft remains in the draft box."
     },
     "sending": "Sending",
     "sendFailed": "Send failed",
@@ -2562,7 +2603,14 @@
     "im": {
       "title": "IM remote intervention and notifications",
       "enabled": "Enabled",
+      "channelEnabled": "Enable {{channel}} remote intervention",
+      "channelSubtitle": "Bot · Private chat",
+      "expandChannel": "Expand {{channel}} settings",
+      "collapseChannel": "Collapse {{channel}} settings",
+      "receiverAccount": "Recipient account",
+      "robotName": "Bot name",
       "privateBinding": "Private chat: {{name}}",
+      "privateBindingUnnamed": "Private chat bound",
       "notificationKinds": "Notification types",
       "notificationGroups": {
         "needsAction": "Needs your action",
@@ -2583,6 +2631,8 @@
         "notConfigured": "{{channel}} is not connected. Connect it to configure remote intervention and notifications.",
         "connect": "Scan to connect",
         "reauthorize": "Authorize again",
+        "changeApp": "Change Feishu app",
+        "changeAppWarning": "Completing authorization replaces the current Feishu app and clears the existing private-chat binding. Bind again with the new bot.",
         "generating": "Generating QR code…",
         "waiting": "Scan with {{channel}} and confirm authorization",
         "expiresIn": "QR code expires in {{countdown}}",
@@ -2595,10 +2645,12 @@
       "channels": {
         "weCom": {
           "title": "WeCom",
+          "identityLabel": "Bot ID",
           "identity": "Bot ID: {{id}}"
         },
         "feishu": {
           "title": "Feishu / Lark",
+          "identityLabel": "App ID",
           "identity": "App ID: {{id}}",
           "singleDeviceHint": "Connect each bot to only one device so actions do not reach another device.",
           "permissions": {
@@ -2606,6 +2658,7 @@
             "send": "Send you messages",
             "receive": "Read private messages you send to the bot",
             "update": "Update cards sent by the bot",
+            "profile": "Read your name to show the receiving account",
             "confirm": "Agree and generate QR code"
           },
           "resetBinding": {
@@ -2863,6 +2916,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "Show all {{count}}",
       "showLess": "Show less"
+    },
+    "promptQueue": {
+      "title": "Pending messages",
+      "description": "While a reply is in progress, \"Send now\" stops the current reply first.",
+      "confirmInterrupt": "Confirm before \"Send now\" interrupts a reply"
     }
   },
   "conversation": {

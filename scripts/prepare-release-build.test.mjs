@@ -1,3 +1,4 @@
+process.env.GOLD_BAND_WB_BASE_URL = 'https://example.invalid';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -47,6 +48,8 @@ test('release preparation uses WB identity and exact tag version without exposin
 });
 
 for (const [overrides, message] of [
+  [{ GOLD_BAND_WB_BASE_URL: '' }, /GOLD_BAND_WB_BASE_URL/],
+  [{ GOLD_BAND_WB_BASE_URL: 'https://example.invalid/path' }, /GOLD_BAND_WB_BASE_URL/],
   [{ TAURI_SIGNING_PRIVATE_KEY: '' }, /Missing TAURI_SIGNING_PRIVATE_KEY/],
   [{ TAURI_SIGNING_PRIVATE_KEY: '   ' }, /Missing TAURI_SIGNING_PRIVATE_KEY/],
   [{ GOLD_BAND_METRICS_API_KEY: '' }, /Missing required build secret GOLD_BAND_METRICS_API_KEY/],

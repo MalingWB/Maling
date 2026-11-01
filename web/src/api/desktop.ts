@@ -67,6 +67,8 @@ function withWallpaperBootstrapAssetUrls(bootstrap: AppBootstrapVm): AppBootstra
 }
 
 export const desktopApi: RuntimeApi = {
+  resolveRightWorkspaceFileTarget: (source) => invokeCommand('resolve_right_workspace_file_target', { source }),
+  revealRightWorkspaceFile: (source) => invokeCommand('reveal_right_workspace_file', { source }),
   reportSourceControlLoad: (report) => invokeCommand("record_source_control_load", { report }),
   reportSourceControlWatch: (report) => invokeCommand("record_source_control_watch", { report }),
   readProjectMemory: (projectId) => invokeCommand('read_project_memory', { projectId }),
@@ -356,6 +358,9 @@ export const desktopApi: RuntimeApi = {
   importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean) {
     return invokeCommand<ImportProfilesResult>('import_profiles_from_folder', { input: { folderPath, dynamicTemplate } });
   },
+  importProfilesFromFiles(filePaths: string[], dynamicTemplate: boolean) {
+    return invokeCommand<ImportProfilesResult>('import_profiles_from_files', { input: { filePaths, dynamicTemplate } });
+  },
   updateProfile(id: string, input: ProfileInput) {
     return invokeCommand('update_profile', { id, input });
   },
@@ -500,8 +505,35 @@ export const desktopApi: RuntimeApi = {
   deleteConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId) {
     return invokeCommand('delete_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId });
   },
-  useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId) {
-    return invokeCommand('use_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId });
+  useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, interruptActive, outerNodeId, outerAttemptId) {
+    return invokeCommand('use_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, interruptActive: interruptActive ?? false, outerNodeId, outerAttemptId });
+  },
+  setConversationPromptQueueMode(projectId, taskId, runId, roundId, nodeId, attemptId, mode, outerNodeId, outerAttemptId) {
+    return invokeCommand('set_conversation_prompt_queue_mode', { projectId, taskId, runId, roundId, nodeId, attemptId, mode, outerNodeId, outerAttemptId });
+  },
+  clearConversationQueuedPrompts(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
+    return invokeCommand('clear_conversation_queued_prompts', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  },
+  resumeConversationPromptQueue(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
+    return invokeCommand('resume_conversation_prompt_queue', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  },
+  listConversationComposerDrafts(projectId, taskId) {
+    return invokeCommand('list_conversation_composer_drafts', { projectId, taskId });
+  },
+  saveConversationComposerDraft(projectId, taskId, input, attachmentPaths) {
+    return invokeCommand('save_conversation_composer_draft', { projectId, taskId, input, attachmentPaths });
+  },
+  getConversationComposerDraft(projectId, taskId, draftId) {
+    return invokeCommand('get_conversation_composer_draft', { projectId, taskId, draftId });
+  },
+  deleteConversationComposerDraft(projectId, taskId, draftId) {
+    return invokeCommand('delete_conversation_composer_draft', { projectId, taskId, draftId });
+  },
+  getPromptQueueSettings() {
+    return invokeCommand('get_prompt_queue_settings');
+  },
+  savePromptQueueSettings(input) {
+    return invokeCommand('save_prompt_queue_settings', { input });
   },
   setAcpSessionModel(projectId, taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('set_acp_session_model', { projectId, taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId });
@@ -690,6 +722,9 @@ export const desktopApi: RuntimeApi = {
   getConversationTaskPage(projectId, cursor, limit) {
     return invokeCommand<ConversationTaskPageVm>('get_conversation_task_page', { projectId, cursor, limit });
   },
+  getConversationTaskSummary(projectId, taskId, taskUuid) {
+    return invokeCommand<ConversationTaskRowVm>('get_conversation_task_summary', { projectId, taskId, taskUuid });
+  },
   getConversationPinnedTaskPage(cursor, limit) {
     return invokeCommand<ConversationPinnedTaskPageVm>('get_conversation_pinned_task_page', { cursor, limit });
   },
@@ -729,8 +764,8 @@ export const desktopApi: RuntimeApi = {
   cancelWeComScanAuthorization(sessionId) {
     return invokeCommand('cancel_wecom_scan_authorization', { input: { sessionId } });
   },
-  startFeishuScanAuthorization(sessionId, reauthorize) {
-    return invokeCommand('start_feishu_scan_authorization', { input: { sessionId, reauthorize } });
+  startFeishuScanAuthorization(sessionId, mode) {
+    return invokeCommand('start_feishu_scan_authorization', { input: { sessionId, mode } });
   },
   completeFeishuScanAuthorization(sessionId) {
     return invokeCommand<ImSettingsVm>('complete_feishu_scan_authorization', { input: { sessionId } });

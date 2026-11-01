@@ -46,6 +46,7 @@ vi.mock('@/api', async () => {
     ...actual,
     getAcpSession: vi.fn().mockResolvedValue(null),
     getAgentCommandCatalog,
+    listConversationComposerDrafts: vi.fn().mockResolvedValue({ revision: 0, maxItems: 20, items: [] }),
   };
 });
 
@@ -857,7 +858,7 @@ it.each([
         );
       });
 
-      const banner = Array.from(container.querySelectorAll('span.font-semibold.text-destructive'))
+      const banner = Array.from(container.querySelectorAll('[role="alert"] .font-semibold.text-destructive'))
         .map((element) => element.textContent);
       expect(banner).toContain(expected);
       expect(banner).not.toContain(absent);

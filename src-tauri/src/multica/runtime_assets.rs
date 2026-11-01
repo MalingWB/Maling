@@ -109,9 +109,7 @@ pub(crate) fn classify_runtime_assets_request(
             match detail.asset_type.as_str() {
                 "" | ASSET_TYPE_ROLE => classify_role_install(payload, export),
                 ASSET_TYPE_WORKFLOW => classify_workflow_install(payload, export),
-                other => Err(format!(
-                    "unsupported runtime-assets asset type: {other}"
-                )),
+                other => Err(format!("unsupported runtime-assets asset type: {other}")),
             }
         }
         other => Err(format!("unsupported runtime-assets action: {other}")),
@@ -182,9 +180,7 @@ pub(crate) fn asset_summaries(profiles: &[ProfileEntry]) -> Vec<RuntimeAssetSumm
 /// builtin 正常上报带徽标——multaca 目录允许发布 builtin 副本，ADR-0008 D6）。
 ///
 /// description 恒空：本地模板没有描述字段（web 弹窗对空描述有展示容忍）。
-pub(crate) fn workflow_asset_summaries(
-    templates: &[WorkflowTemplate],
-) -> Vec<RuntimeAssetSummary> {
+pub(crate) fn workflow_asset_summaries(templates: &[WorkflowTemplate]) -> Vec<RuntimeAssetSummary> {
     templates
         .iter()
         .map(|template| RuntimeAssetSummary {
@@ -359,9 +355,9 @@ async fn handle_export<R: Runtime>(
             match read {
                 Ok(Ok(profile)) => RuntimeAssetsInstallReport {
                     status: "completed",
-                    payload: Some(RuntimeAssetPayload::Role(
-                        profile_to_multica_exchange(&profile),
-                    )),
+                    payload: Some(RuntimeAssetPayload::Role(profile_to_multica_exchange(
+                        &profile,
+                    ))),
                     result: None,
                     error: None,
                 },
@@ -407,12 +403,7 @@ async fn handle_push_install<R: Runtime>(
                 .await;
             match install {
                 Ok(Ok(entry)) => {
-                    emit_runtime_asset_installed(
-                        &app,
-                        &request_id,
-                        ASSET_TYPE_ROLE,
-                        &entry.name,
-                    );
+                    emit_runtime_asset_installed(&app, &request_id, ASSET_TYPE_ROLE, &entry.name);
                     RuntimeAssetsInstallReport {
                         status: "completed",
                         payload: None,
@@ -466,9 +457,9 @@ async fn handle_export_workflow<R: Runtime>(
                     result: None,
                     error: None,
                 },
-                Ok(Err(error)) => {
-                    failed_install_report(format!("workflow template `{asset_key}` read failed: {error}"))
-                }
+                Ok(Err(error)) => failed_install_report(format!(
+                    "workflow template `{asset_key}` read failed: {error}"
+                )),
                 Err(error) => {
                     failed_install_report(format!("workflow template read task failed: {error}"))
                 }
@@ -836,7 +827,7 @@ mod tests {
     }
 
     fn sample_workflow_dsl() -> gold_band::dsl::WorkflowDsl {
-        use gold_band::dsl::{EdgeDsl, EdgeOutcome, END_NODE, NodeDsl, WorkerNode};
+        use gold_band::dsl::{END_NODE, EdgeDsl, EdgeOutcome, NodeDsl, WorkerNode};
         gold_band::dsl::WorkflowDsl {
             version: "0.1".to_string(),
             id: "workflow-sample".to_string(),

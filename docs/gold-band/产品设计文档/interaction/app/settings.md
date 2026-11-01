@@ -250,7 +250,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 「高级」页中“记录详细日志”所在分组标题为「日志」（2026-10-03 起，原为与 tab 重名的「高级」）。
 - 设置页中的问号帮助入口（如“记录详细日志”“开启指标上报”）统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示说明文本；这些布尔开关统一采用“标题 + tips icon + switch”同一行布局，避免一部分开关右置、一部分行内导致对齐不一致；同时避免页面出现主题色 tooltip 与白底说明面板混用。
 - 2026-08-16 起高级设置移除“使用本地 Claude”开关及其本地探测请求；设置页保存偏好时固定提交 `useLocalClaude = false`，`RuntimeConfig` 加载入口同步固定为 `false`，历史设置中的 `true` 不再进入运行时。后端既有字段、接口与 ACP 本地解析能力保留，未来重新开放时只需恢复这一处配置投影和前端入口。
-- 更新能力使用 Tauri updater：`default` 渠道内置上游 GitHub Release `latest.json`，`wb` 渠道内置渠道配置中的内网地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key。2026-10-19 起本 fork 的 GitHub Release 自动发布及手工重建统一产出四个平台的 WB 包、签名和更新清单，品牌为 MALING，版本以 tag 为准；完整构建与密钥契约见 [overview.md](overview.md)。GitHub 上传位置与客户端更新来源独立：WB 客户端继续访问内网，不因发布到 GitHub 而切换更新地址。
+- 更新能力使用 Tauri updater：`default` 渠道内置上游 GitHub Release `latest.json`，`wb` 渠道内置渠道配置中的内网地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key。2026-10-19 起本 fork 的 GitHub Release 自动发布及手工重建统一产出四个平台的 WB 包、签名和更新清单，品牌为 MALING，版本以 tag 为准；完整构建与密钥契约见 [overview.md](overview.md)。GitHub 上传位置与客户端更新来源独立：`updaterEndpoint` 决定查询清单的地址，`releaseBaseUrl` 决定清单内安装包下载地址。WB 的 GitHub 构建同样使用渠道 `releaseBaseUrl` 生成 `latest.json` 和各语言清单中的下载 URL，客户端继续访问内网，不因发布到 GitHub 而切换更新地址。
 - `wb` 渠道本地执行 `npm run build:wb` 生成 `latest.json` 时，必须优先选择与本次 `--version` 精确匹配的签名安装包；即使 `release/wb` 或构建产物目录里残留旧包，也不能把下载 URL 指回历史安装包。收集签名安装包时必须使用 Cargo 解析后的 target 目录：优先 `cargo metadata` 的 `target_directory`（覆盖本机 `CARGO_TARGET_DIR`、`CARGO_BUILD_TARGET_DIR` 与用户/项目 `build.target-dir`），再回退环境变量和仓库内 `target/`、`src-tauri/target/`；不得写死某台机器的绝对路径。清理过期 bundle 与生成 `latest.json` 使用同一组候选目录。
 - 桌面端启动 20 秒后执行首次后台更新检查（避开启动恢复与 Agent 诊断高峰），此后每 240 分钟检查一次；同一轮检查只请求一次渠道 manifest，检查所得的完整更新对象同时用于状态投影和渠道更新策略，不得为判断静默更新再次请求 manifest。`default` 与 `wb` 渠道均启用静默更新：非关键更新只更新状态并在标题栏提示用户，不自动下载或安装；仅在 manifest 明确声明 `critical: true` 时静默预下载已签名更新包，不立即安装，并在应用退出或后续启动阶段安装。pending 更新按渠道 `appKey` 隔离在临时目录，先原子写入安装包、最后提交 `pending.json`（版本 + 签名）；安装前必须用渠道 public key 重新校验签名并确认版本仍高于运行版本，校验失败清理目录且不安装。用户仍可在高级页手动检查，有新版本时点击下载并安装；上次检查时间持久化为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
 - 2026-05-27 起更新提示增加三级红点：后台发现当前可更新版本后，左侧 `Settings`、设置页 `Advanced` tab、`Updates` 分组标题同时显示红点。用户进入设置页时只清除 `Settings` 红点；切到 `Advanced` tab 时只清除 `Advanced` 红点；`Updates` 红点不因进入页面消失，只有当前已无可更新版本时才自动消失。
@@ -264,7 +264,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 ## 9. 2026-06-12 指标上报地址展示
 
 - 设置页的指标上报区域只展示一个“上报服务地址”，不展示心跳与节点详情两个接口后缀。
-- `wb` 渠道默认服务地址为 `http://maling.weoa.com`，且随锁定开关一起禁止用户修改。
+- `wb` 渠道默认服务地址为 `WB 服务基础地址`，且随锁定开关一起禁止用户修改。
 - 实际上报接口由客户端统一拼接：心跳使用 `/api/client-report/heartbeat`，节点详情批量上报使用 `/api/client-report/metrics/batch`。
 - 保存设置时只持久化服务根地址 `metricsBaseUrl`，旧的心跳/节点完整接口地址配置不再读取。
 
@@ -288,6 +288,13 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 
 - 设置页「通用」是 IM 接入、私聊绑定和六类通知偏好的唯一可见入口；权威事实仍是后端 IM settings 与 connection generation。
 - 企业微信标题行只展示平台名和状态徽章，不展示“安装级目标”等实现注释；未接入时的操作说明使用“尚未接入企业微信…”。
+- 企业微信与飞书按单列小卡片展示，企业微信固定在飞书上方。卡片摘要始终展示渠道名称、连接状态、已配置渠道的启用开关和独立展开按钮；点击开关不得触发折叠。
+- 每次进入设置页面时，两张渠道卡片均默认折叠；折叠状态是页面会话内的临时 UI 状态，不跨页面或跨会话持久化。用户可独立展开任一渠道，页面会话内的数据刷新和 connection snapshot 更新不得重置用户当前展开状态。
+- 渠道展开后的信息顺序固定为：状态与恢复引导、授权/接收账号/配置管理、通知类型。配置管理必须位于通知类型上方；未配置渠道只展示扫码接入内容。折叠后不得隐藏渠道状态和已配置渠道的启用开关。
+- 配置管理入口必须使用带文字的“配置管理”按钮，不用无文字的溢出图标；低频与破坏性操作继续收纳在该按钮的下拉菜单中。
+- 渠道卡片使用有界内容宽度与紧凑间距，配置和通知内容不得在宽窗口下被拉到卡片两端。`可用` 状态使用主题 success 语义；正常可用时展示远程干预投递说明。
+- 通知偏好按“需要你处理”和“执行结果提醒”上下分组；每组内部三个通知选项横向排列并在窄宽度自然换行，不把两个分组并排。
+- Bot ID / App ID 使用单行截断，悬停查看完整值，并提供复制按钮；飞书机器人名称和单设备提醒以明确的次级信息展示。
 - 2026-09-17 起 IM 设置接入与定时任务相同的前端 stale-while-revalidate 缓存：App 启动后台预取一次填充模块级缓存，进入设置页与在「通用」标签页间切换时命中缓存立即渲染，不再出现「加载中…」闪烁。缓存命中后在新鲜期内不重复请求；过期后后台静默刷新，保存/启停/扫码/删除成功后写回缓存，connection snapshot 按 generation 单调合入。该缓存只是展示投影，不并入 `AppBootstrapVm`，也不是第二事实源。迟到 fetch 不得覆盖更新的保存结果，也不得用更低 generation 覆盖 live snapshot。已有可展示数据时刷新不得退回「加载中…」。
 
 ## 13. 多语言更新日志
@@ -313,3 +320,8 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 「高级」页的“受信任的图片域名”分组以自动换行的胶囊标签列出已信任的 host，标签内提供移除按钮，不设内部滚动和最大高度；超过 20 个时只显示前 20 个，末尾以同款胶囊显示被折叠数量「+N」（悬停提示「显示全部 N 个」），点击原地展开，展开后末尾「收起」；移除失败时标签标记为错误并提示重试；列表为空时显示空状态。不提供手动添加入口：信任应在看到图片时决定，避免凭空填写宽泛域名。
 - 数据：`state.json` 的 `remoteImageTrust { schemaVersion: 1, trustedHosts }`，经 `with_state` 事务读改写，多处同时信任不会丢更新。host 按 WHATWG URL 规则规范化（小写、IDN 转 punycode、默认端口省略、非默认端口保留），只做精确匹配，不支持子域名通配，也不区分 http/https。
 - 接口：启动 bootstrap 携带 `remoteImageTrust`；`trust_remote_image_hosts(hosts)` 批量信任，任一 host 非法时整体拒绝并返回 `remote-image.host-invalid`；`revoke_remote_image_host(host)` 移除。两者幂等，成功时返回最新的完整列表，前端 `remote-image-trust-store` 以最后一次写入的响应收敛，每张图片只订阅自己 host 是否受信任。
+
+## 15. 待发送
+
+- 「高级」页的“待发送”分组提供「立即发送前确认打断当前回复」开关，默认开启。开启时，会话回复进行中点击待发送队列的“立即发送”会先弹确认框；关闭后直接打断并发送。确认框中的“后续不再提示”与该开关写入同一偏好。
+- 偏好保存在用户级设置的 `confirmQueuedPromptInterrupt`，后端是唯一事实源；前端以单一 store 懒加载一次，写入以最后一次请求为准，加载完成前按默认值（确认）处理，避免慢加载跳过确认。

@@ -1,6 +1,16 @@
 use super::DesktopLanguage;
 
 impl DesktopLanguage {
+    pub const ALL: [Self; 7] = [
+        Self::ZhCn,
+        Self::ZhTw,
+        Self::En,
+        Self::JaJp,
+        Self::KoKr,
+        Self::PtBr,
+        Self::Es,
+    ];
+
     /// Map a BCP 47 tag onto the supported catalog. Unmatched tags become English.
     /// Explicit `Hans`/`Hant` scripts take precedence over Chinese regions.
     /// Without a script, Taiwan, Hong Kong, and Macau use Traditional Chinese;

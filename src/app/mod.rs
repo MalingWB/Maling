@@ -141,8 +141,8 @@ impl Drop for OwnedTaskDirectory {
 }
 use self::profiles::{
     DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
-    ensure_default_user_profiles, import_profiles_from_folder, list_profiles, show_profile,
-    update_profile,
+    ensure_default_user_profiles, import_profiles_from_files, import_profiles_from_folder,
+    list_profiles, show_profile, update_profile,
 };
 
 const ATTEMPT_RUNTIME_STATE_LOCK_SHARDS: usize = 64;
@@ -175,13 +175,11 @@ pub(crate) fn attempt_runtime_state_lock(
 const STATE_CONFIG_LOCK_SHARDS: usize = 32;
 static STATE_CONFIG_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 pub use self::profiles::{
-    ImportProfilesInput, ImportProfilesResult, MulticaRoleExchange, ProfileCommandError,
-    ProfileEntry, ProfileInput, ProfileList, ProfileScope, multica_exchange_to_profile_input,
-    profile_to_multica_exchange,
+    ImportProfileFilesInput, ImportProfilesInput, ImportProfilesResult, MulticaRoleExchange,
+    ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, ProfileScope,
+    multica_exchange_to_profile_input, profile_to_multica_exchange,
 };
-pub use self::workflow_share::{
-    MulticaWorkflowExchange, workflow_template_to_multica_exchange,
-};
+pub use self::workflow_share::{MulticaWorkflowExchange, workflow_template_to_multica_exchange};
 
 fn tail_text(text: &str, limit: usize) -> String {
     if limit == 0 {
@@ -3479,11 +3477,18 @@ impl App {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        crate::provider::prompt_workspace_roots(
+        let mut roots = crate::provider::prompt_workspace_roots(
             &self.paths.project_id,
             session_root.as_std_path(),
             &registered,
-        )
+        );
+        if let Some(root) = roots
+            .iter_mut()
+            .find(|root| root.project_id == self.paths.project_id)
+        {
+            root.paths = Some(self.paths.clone());
+        }
+        roots
     }
 
     pub fn attempt_session_workspace_dir(
@@ -3840,6 +3845,13 @@ impl App {
         input: ImportProfilesInput,
     ) -> Result<ImportProfilesResult> {
         import_profiles_from_folder(&self.paths, input)
+    }
+
+    pub fn import_profiles_from_files(
+        &self,
+        input: ImportProfileFilesInput,
+    ) -> Result<ImportProfilesResult> {
+        import_profiles_from_files(&self.paths, input)
     }
 
     pub fn update_profile(&self, id: &str, input: ProfileInput) -> Result<ProfileEntry> {
@@ -8005,10 +8017,7 @@ mod tests {
         assert!(!created.is_built_in);
         assert_ne!(created.workflow.id, "workflow-foreign-inner");
         assert_eq!(created.model_bindings.bindings.len(), 1);
-        assert_eq!(
-            created.model_bindings.bindings[0].agent_id,
-            "claude-acp"
-        );
+        assert_eq!(created.model_bindings.bindings[0].agent_id, "claude-acp");
         // 后台被动安装不动用户默认选中。
         let store = app.workflow_templates().unwrap();
         assert_eq!(store.last_used_template_id.as_deref(), Some("default"));
@@ -8022,7 +8031,10 @@ mod tests {
             .updated_at
             .clone();
         let skipped = app
-            .install_workflow_template_from_multica(&exchange_for("shared-pipeline", "改名也不覆盖"))
+            .install_workflow_template_from_multica(&exchange_for(
+                "shared-pipeline",
+                "改名也不覆盖",
+            ))
             .unwrap();
         assert_eq!(skipped.id, "shared-pipeline");
         assert_eq!(skipped.name, "共享流水线");
@@ -8090,14 +8102,19 @@ mod tests {
             app.save_workflow_template("依赖角色".to_string(), exchange.workflow.clone())
                 .is_err()
         );
-        let installed = app.install_workflow_template_from_multica(&exchange).unwrap();
+        let installed = app
+            .install_workflow_template_from_multica(&exchange)
+            .unwrap();
         assert_eq!(installed.id, "needs-roles");
 
         // 结构非法仍拒绝（entry 引用未声明节点 → 与 multica INVALID_TEMPLATE 同族校验）。
         // 用新 id：同 key 已存在时 skip 先于校验（幂等不覆盖，不重验旧 payload）。
         exchange.id = "needs-roles-invalid".to_string();
         exchange.workflow.entry = "ghost".to_string();
-        assert!(app.install_workflow_template_from_multica(&exchange).is_err());
+        assert!(
+            app.install_workflow_template_from_multica(&exchange)
+                .is_err()
+        );
 
         // 名字空白拒绝（envelope 名是落库名的唯一来源）。
         let mut blank = exchange.clone();

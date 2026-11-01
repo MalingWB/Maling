@@ -53,3 +53,8 @@ export function assertChannelBuildSecrets(channel, config, env) {
     );
   }
 }
+
+export function updaterGeneratorArgs(releaseDir, outputPath, baseUrl, version, critical) {
+  return ['scripts/generate-updater-json.mjs', releaseDir, outputPath, '--base-url', baseUrl, '--version', version,
+    ...(critical ? ['--critical'] : [])];
+}

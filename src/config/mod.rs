@@ -891,6 +891,9 @@ pub struct SettingsConfig {
     pub scheduled_keep_awake_enabled: Option<bool>,
     pub scheduled_completion_notifications_enabled: Option<bool>,
     pub scheduled_occurrence_retention_days: Option<u16>,
+    /// Whether "send now" on a queued prompt asks before interrupting the
+    /// running reply. Absent means the default (ask).
+    pub confirm_queued_prompt_interrupt: Option<bool>,
     #[serde(default)]
     pub im_integrations: crate::im::ImIntegrationSettings,
     #[serde(default)]
@@ -1472,8 +1475,7 @@ pub struct ImAppConfig {
 #[serde(rename_all = "camelCase")]
 pub struct FeishuScanAuthConfig {
     pub source: String,
-    pub app_name: String,
-    pub app_description: String,
+    pub app_description_suffix: String,
 }
 
 impl FeishuScanAuthConfig {
@@ -1484,9 +1486,9 @@ impl FeishuScanAuthConfig {
                 "Feishu scan auth source must be non-empty ASCII with at most 64 bytes"
             ));
         }
-        if self.app_name.trim().is_empty() || self.app_description.trim().is_empty() {
+        if self.app_description_suffix.trim().is_empty() {
             return Err(anyhow!(
-                "Feishu scan auth app name and description must be non-empty"
+                "Feishu scan auth app description suffix must be non-empty"
             ));
         }
         Ok(())
@@ -1903,6 +1905,7 @@ pub struct RuntimeConfig {
     pub scheduled_keep_awake_enabled: bool,
     pub scheduled_completion_notifications_enabled: bool,
     pub scheduled_occurrence_retention_days: u16,
+    pub confirm_queued_prompt_interrupt: bool,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
     pub workspace_layout: WorkspaceLayoutConfig,
     pub workspace_files: WorkspaceFilesConfig,
@@ -1977,6 +1980,7 @@ impl Default for RuntimeConfig {
             notification_auto_dismiss_target_secs: DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS,
             scheduled_keep_awake_enabled: false,
             scheduled_completion_notifications_enabled: true,
+            confirm_queued_prompt_interrupt: true,
             scheduled_occurrence_retention_days: DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS,
             permission_mode_mapping: BTreeMap::new(),
             workspace_layout: WorkspaceLayoutConfig::default(),
@@ -2069,6 +2073,9 @@ impl RuntimeConfig {
         {
             self.scheduled_completion_notifications_enabled =
                 scheduled_completion_notifications_enabled;
+        }
+        if let Some(confirm) = settings.confirm_queued_prompt_interrupt {
+            self.confirm_queued_prompt_interrupt = confirm;
         }
         if let Some(scheduled_occurrence_retention_days) =
             settings.scheduled_occurrence_retention_days
@@ -3176,9 +3183,13 @@ mod tests {
     }
 
     #[test]
-    fn embedded_app_config_defines_wecom_scan_source() {
+    fn embedded_app_config_defines_scan_sources_and_feishu_description_suffix() {
         assert_eq!(super::wecom_scan_auth_config().source, "maling");
         assert!(super::wecom_scan_auth_config().validate().is_ok());
+        assert_eq!(
+            super::feishu_scan_auth_config().app_description_suffix,
+            "remote intervention"
+        );
         assert!(super::feishu_scan_auth_config().validate().is_ok());
     }
 
@@ -3688,8 +3699,8 @@ mod tests {
     fn apply_settings_propagates_multica_fields_with_provider_fallback() {
         let config = RuntimeConfig::default().apply_settings(&SettingsConfig {
             desktop_multica_enabled: Some(true),
-            desktop_multica_base_url: Some("http://maling.weoa.com".to_string()),
-            desktop_multica_app_url: Some("http://maling.weoa.com".to_string()),
+            desktop_multica_base_url: Some("http://example.invalid".to_string()),
+            desktop_multica_app_url: Some("http://example.invalid".to_string()),
             desktop_multica_default_provider: None,
             desktop_multica_workspaces: Some(vec![RemoteWorkspaceRef {
                 id: "ws-1".to_string(),
@@ -3702,7 +3713,7 @@ mod tests {
         assert!(config.desktop_multica_enabled);
         assert_eq!(
             config.desktop_multica_base_url.as_deref(),
-            Some("http://maling.weoa.com")
+            Some("http://example.invalid")
         );
         // default_provider=None 时 fallback 到 claude-acp（与 Default 一致）。
         assert_eq!(config.desktop_multica_default_provider, "claude-acp");
@@ -3721,7 +3732,7 @@ mod tests {
     fn settings_config_multica_fields_roundtrip_json() {
         let settings = SettingsConfig {
             desktop_multica_enabled: Some(true),
-            desktop_multica_base_url: Some("http://maling.weoa.com".to_string()),
+            desktop_multica_base_url: Some("http://example.invalid".to_string()),
             desktop_multica_pat: Some("secret-token".to_string()),
             desktop_multica_daemon_id: Some("daemon-1".to_string()),
             desktop_multica_workspaces: Some(vec![RemoteWorkspaceRef {

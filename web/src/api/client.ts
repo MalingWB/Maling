@@ -72,6 +72,7 @@ import type {
   ImSettingsVm,
   SaveImNotificationPreferencesInputVm,
   SetImChannelEnabledInputVm,
+  FeishuScanMode,
   ImScanAuthorizationVm,
   MulticaSettingsVm,
   MulticaServerWorkspaceVm,
@@ -404,6 +405,8 @@ export interface BrowserBookmarkVm {
 }
 
 export interface RuntimeApi {
+  resolveRightWorkspaceFileTarget(source: import('../types').PromptWorkspaceFileRef): Promise<import('../types').RightWorkspaceFileTargetVm>;
+  revealRightWorkspaceFile(source: import('../types').PromptWorkspaceFileRef): Promise<void>;
   reportSourceControlLoad(report: import("@/lib/source-control-load-diagnostics").SourceControlLoadReport): Promise<void>;
   reportSourceControlWatch(report: import("@/lib/source-control-watch-diagnostics").SourceControlWatchReport): Promise<void>;
   readProjectMemory(projectId: string): Promise<import('@/lib/memory').MemorySnapshot>;
@@ -470,6 +473,7 @@ export interface RuntimeApi {
   getProfile(id: string): Promise<ProfileVm>;
   createProfile(input: ProfileInput): Promise<ProfileVm>;
   importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean): Promise<ImportProfilesResult>;
+  importProfilesFromFiles(filePaths: string[], dynamicTemplate: boolean): Promise<ImportProfilesResult>;
   updateProfile(id: string, input: ProfileInput): Promise<ProfileVm>;
   deleteProfile(id: string, force?: boolean): Promise<ProfileListVm>;
   chooseWorkspace(): Promise<AppBootstrapVm | null>;
@@ -526,8 +530,7 @@ export interface RuntimeApi {
   startWeComScanAuthorization(sessionId: string): Promise<ImScanAuthorizationVm>;
   completeWeComScanAuthorization(sessionId: string): Promise<ImSettingsVm>;
   cancelWeComScanAuthorization(sessionId: string): Promise<void>;
-  /** `reauthorize` reuses the configured app instead of creating a new one. */
-  startFeishuScanAuthorization(sessionId: string, reauthorize: boolean): Promise<ImScanAuthorizationVm>;
+  startFeishuScanAuthorization(sessionId: string, mode: FeishuScanMode): Promise<ImScanAuthorizationVm>;
   completeFeishuScanAuthorization(sessionId: string): Promise<ImSettingsVm>;
   cancelFeishuScanAuthorization(sessionId: string): Promise<void>;
   setImChannelEnabled(input: SetImChannelEnabledInputVm): Promise<ImSettingsVm>;
@@ -544,7 +547,16 @@ export interface RuntimeApi {
   reorderConversationQueuedPrompts(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number, orderedItemIds: string[], outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
   restoreConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueRestoreVm>;
   deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
-  useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
+  useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, interruptActive?: boolean, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
+  setConversationPromptQueueMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, mode: 'auto' | 'manual', outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
+  clearConversationQueuedPrompts(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
+  resumeConversationPromptQueue(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
+  listConversationComposerDrafts(projectId: string | null | undefined, taskId: string): Promise<import('../types').ConversationComposerDraftBoxVm>;
+  saveConversationComposerDraft(projectId: string | null | undefined, taskId: string, input: import('../types').ConversationPromptInput, attachmentPaths?: string[]): Promise<import('../types').ConversationComposerDraftBoxVm>;
+  getConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string): Promise<import('../types').ConversationComposerDraftReadVm>;
+  deleteConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string): Promise<import('../types').ConversationComposerDraftBoxVm>;
+  getPromptQueueSettings(): Promise<import('../types').PromptQueueSettingsVm>;
+  savePromptQueueSettings(input: import('../types').PromptQueueSettingsVm): Promise<import('../types').PromptQueueSettingsVm>;
   setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   setAcpSessionPermissionMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   setAcpSessionAutoAccept(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, autoAccept: boolean, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
@@ -618,6 +630,7 @@ export interface RuntimeApi {
   revokeRemoteImageHost(host: string): Promise<RemoteImageTrustVm>;
   getConversationSidebarBootstrap(): Promise<ConversationSidebarBootstrapVm>;
   getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number): Promise<ConversationTaskPageVm>;
+  getConversationTaskSummary(projectId: string, taskId: string, taskUuid?: string | null): Promise<ConversationTaskRowVm>;
   getConversationPinnedTaskPage(cursor?: string | null, limit?: number): Promise<ConversationPinnedTaskPageVm>;
   getConversationRunSummaryPage(projectId: string, taskId: string, cursor?: string | null, limit?: number): Promise<ConversationRunSummaryPageVm>;
   acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string): Promise<import('../types').ConversationTerminalResultAcknowledgementVm>;

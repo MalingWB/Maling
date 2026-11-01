@@ -78,7 +78,11 @@ for (const locale of LOCALES) {
   const outputPath = path.join(outputDir, `latest.${locale}.json`);
   const result = spawnSync(
     process.execPath,
-    [generatorPath, assetDir, outputPath, '--version', version, '--notes-file', notesPath, ...(critical ? ['--critical'] : [])],
+    [
+      generatorPath, assetDir, outputPath, '--version', version, '--notes-file', notesPath,
+      ...(channelConfig.releaseBaseUrl ? ['--base-url', channelConfig.releaseBaseUrl] : []),
+      ...(critical ? ['--critical'] : []),
+    ],
     {
       cwd: process.cwd(),
       env: { ...process.env, RELEASE_VERSION: version },

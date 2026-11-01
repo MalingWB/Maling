@@ -2115,7 +2115,7 @@ mod tests {
         let reference_path = fixture.app.paths.repo_root.join("src/context.ts");
         std::fs::create_dir_all(reference_path.parent().unwrap()).unwrap();
         std::fs::write(reference_path.as_std_path(), b"export {}").unwrap();
-        let valid_reference = gold_band::provider::PromptWorkspaceFileRef {
+        let valid_reference = gold_band::provider::PromptWorkspaceFileRef::Workspace {
             project_id: fixture.app.paths.project_id.clone(),
             relative_path: "src/context.ts".to_string(),
         };
@@ -2129,10 +2129,12 @@ mod tests {
         );
 
         let mut invalid_update = fixture.update_input(&created.definition, "updated");
-        invalid_update.workspace_files = Some(vec![gold_band::provider::PromptWorkspaceFileRef {
-            project_id: "other-project".to_string(),
-            relative_path: "src/context.ts".to_string(),
-        }]);
+        invalid_update.workspace_files = Some(vec![
+            gold_band::provider::PromptWorkspaceFileRef::Workspace {
+                project_id: "other-project".to_string(),
+                relative_path: "src/context.ts".to_string(),
+            },
+        ]);
         let error = fixture.service.update(invalid_update).unwrap_err();
         assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
         assert_eq!(
