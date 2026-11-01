@@ -120,14 +120,23 @@ export function createBrowserAddressSuggestionOverlayInput({
   searchLabel: string;
   removeLabel: string;
 }): BrowserAddressSuggestionOverlayInput {
+  // Physical pixels: the suggestion list lives in its own native child webview
+  // whose placement follows devicePixelRatio (system scale × interface zoom).
+  const ratio = window.devicePixelRatio || 1;
+  const overlayBounds = browserAddressSuggestionOverlayBounds(
+    anchor,
+    suggestions.length,
+    window.innerWidth,
+    window.innerHeight,
+  );
   return {
     revision,
-    bounds: browserAddressSuggestionOverlayBounds(
-      anchor,
-      suggestions.length,
-      window.innerWidth,
-      window.innerHeight,
-    ),
+    bounds: {
+      x: overlayBounds.x * ratio,
+      y: overlayBounds.y * ratio,
+      width: overlayBounds.width * ratio,
+      height: overlayBounds.height * ratio,
+    },
     activeIndex,
     items: browserAddressSuggestionOverlayItems(suggestions, searchLabel, removeLabel),
     theme: readBrowserAddressSuggestionTheme(),

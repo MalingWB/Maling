@@ -3003,6 +3003,8 @@
       "retryRecent": "Tentar novamente conversas recentes",
       "noRecent": "Nenhuma conversa recente",
       "loadMoreRecent": "Mostrar mais conversas recentes",
+      "allRecentShown": "Todas as conversas recentes exibidas",
+      "allConversationsShown": "Todas as conversas exibidas",
       "loadingRuns": "Carregando histórico de execuções…",
       "retryRuns": "Falha ao carregar histórico de execuções. Clique para tentar novamente",
       "loadMoreRuns": "Carregar mais execuções",

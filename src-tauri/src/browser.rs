@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use tauri::http::{Method, Response, StatusCode};
 use tauri::webview::Color as WebviewColor;
 use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder};
-use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, Window};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl, Window,
+};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use tracing::{info, warn};
@@ -184,6 +186,9 @@ pub struct BrowserBoundsInput {
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+/// Native child-webview bounds in **physical pixels**. The frontend converts
+/// CSS bounds with `devicePixelRatio` (system scale × interface zoom) so the
+/// child webview tracks its DOM slot at any interface zoom level.
 pub struct BrowserBoundsVm {
     pub x: f64,
     pub y: f64,
@@ -937,8 +942,8 @@ fn create_address_suggestion_webview(
     window
         .add_child(
             builder,
-            LogicalPosition::new(bounds.x.max(0.0), bounds.y.max(0.0)),
-            LogicalSize::new(bounds.width.max(1.0), bounds.height.max(1.0)),
+            PhysicalPosition::new(bounds.x.max(0.0), bounds.y.max(0.0)),
+            PhysicalSize::new(bounds.width.max(1.0), bounds.height.max(1.0)),
         )
         .map_err(|error| webview_error("browser.webview.create_failed", error))?;
     crate::window_chrome::raise_undecorated_edge_resize_for_app(app);
@@ -1411,8 +1416,8 @@ fn create_or_reuse_page(
 
     if let Err(error) = window.add_child(
         builder,
-        LogicalPosition::new(bounds.x.max(0.0), bounds.y.max(0.0)),
-        LogicalSize::new(bounds.width.max(1.0), bounds.height.max(1.0)),
+        PhysicalPosition::new(bounds.x.max(0.0), bounds.y.max(0.0)),
+        PhysicalSize::new(bounds.width.max(1.0), bounds.height.max(1.0)),
     ) {
         let _ = lock_host(host)?.remove_if_label(page_id, &label);
         return Err(webview_error("browser.webview.create_failed", error));
@@ -2048,9 +2053,9 @@ fn apply_bounds(app: &AppHandle, label: &str, bounds: BrowserBoundsVm) -> Comman
         .get_webview(label)
         .ok_or_else(|| webview_unavailable("set-bounds", None, Some(label)))?;
     webview
-        .set_position(LogicalPosition::new(bounds.x.max(0.0), bounds.y.max(0.0)))
+        .set_position(PhysicalPosition::new(bounds.x.max(0.0), bounds.y.max(0.0)))
         .and_then(|_| {
-            webview.set_size(LogicalSize::new(
+            webview.set_size(PhysicalSize::new(
                 bounds.width.max(1.0),
                 bounds.height.max(1.0),
             ))

@@ -3003,6 +3003,8 @@
       "retryRecent": "Retry recent conversations",
       "noRecent": "No recent conversations",
       "loadMoreRecent": "Show more recent conversations",
+      "allRecentShown": "All recent conversations shown",
+      "allConversationsShown": "All conversations shown",
       "loadingRuns": "Loading run history…",
       "retryRuns": "Run history failed to load. Click to retry",
       "loadMoreRuns": "Load more runs",

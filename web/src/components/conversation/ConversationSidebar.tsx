@@ -6,6 +6,7 @@ import { useStableCallbacks } from '@/hooks/use-stable-callbacks';
 import { useLoadMoreSentinel } from '@/hooks/use-load-more-sentinel';
 import type { ConversationPage, ConversationRecentTaskRowVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
 import { saveConversationPreference } from '../../api';
+import { CONVERSATION_TASK_PAGE_SIZE } from '@/lib/conversation-sidebar-loading';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
@@ -486,6 +487,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     {t('conversation.sidebar.loadMoreRecent')}
                   </Button>
                 ) : null}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && !vm.recentTaskPage?.nextCursor
+                  && (vm.recentTasks ?? []).length >= CONVERSATION_TASK_PAGE_SIZE ? (
+                  <div className="px-2 py-1 text-xs text-muted-foreground/70">{t('conversation.sidebar.allRecentShown')}</div>
+                ) : null}
                 <LoadMoreSentinel
                   marker="recent"
                   enabled={(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && Boolean(vm.recentTaskPage?.nextCursor)}
@@ -687,6 +692,11 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                       <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={() => onRequestWorkspaceTasks(ws.projectId, vm.workspaceTaskPages[ws.projectId]?.nextCursor)}>
                         {t('conversation.sidebar.loadMoreConversations')}
                       </Button>
+                    ) : null}
+                    {vm.workspaceTaskPages[ws.projectId]?.status === 'ready'
+                      && !vm.workspaceTaskPages[ws.projectId]?.nextCursor
+                      && (vm.tasksByWorkspace[ws.projectId] ?? []).length >= CONVERSATION_TASK_PAGE_SIZE ? (
+                      <div className="px-3 py-1 text-xs text-muted-foreground/70">{t('conversation.sidebar.allConversationsShown')}</div>
                     ) : null}
                     <LoadMoreSentinel
                       marker={`workspace:${ws.projectId}`}

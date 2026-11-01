@@ -84,6 +84,31 @@ describe('ConversationSidebar recent section', () => {
     }
   });
 
+  it('shows an end hint only when a paginated list is exhausted', () => {
+    // Exhausted with a full page of rows -> the end hint confirms "no more".
+    const paginated = recentSidebar(null);
+    paginated.recentTasks = Array.from({ length: 10 }, (_, index) => ({
+      ...paginated.recentTasks[0],
+      taskId: `task-${index}`,
+      taskUuid: `uuid-${index}`,
+    }));
+    const first = mount(paginated, () => {});
+    try {
+      expect(first.container.textContent).toContain('conversation.sidebar.allRecentShown');
+    } finally {
+      act(() => first.root.unmount());
+    }
+    // Exhausted with fewer rows than one page -> silent end, no noise.
+    const short = recentSidebar(null);
+    const second = mount(short, () => {});
+    try {
+      expect(second.container.textContent).not.toContain('conversation.sidebar.allRecentShown');
+      expect(second.container.textContent).not.toContain('conversation.sidebar.loadMoreRecent');
+    } finally {
+      act(() => second.root.unmount());
+    }
+  });
+
   it('shows the load-more button and sentinel only while more pages remain', () => {
     const more = recentSidebar('cursor-2');
     const exhausted = recentSidebar(null);

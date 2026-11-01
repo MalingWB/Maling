@@ -3003,6 +3003,8 @@
       "retryRecent": "최근 대화 다시 시도",
       "noRecent": "최근 대화가 없습니다",
       "loadMoreRecent": "최근 대화 더 보기",
+      "allRecentShown": "최근 대화를 모두 표시했습니다",
+      "allConversationsShown": "대화를 모두 표시했습니다",
       "loadingRuns": "실행 기록 불러오는 중…",
       "retryRuns": "실행 기록 불러오기 실패. 클릭하여 재시도",
       "loadMoreRuns": "실행 기록 더 불러오기",

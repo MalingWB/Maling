@@ -3003,6 +3003,8 @@
       "retryRecent": "最近の会話を再試行",
       "noRecent": "最近の会話はありません",
       "loadMoreRecent": "最近の会話をさらに表示",
+      "allRecentShown": "最近の会話をすべて表示しました",
+      "allConversationsShown": "会話をすべて表示しました",
       "loadingRuns": "実行履歴を読み込んでいます…",
       "retryRuns": "実行履歴の読み込みに失敗しました。クリックして再試行してください",
       "loadMoreRuns": "実行記録をさらに読み込む",

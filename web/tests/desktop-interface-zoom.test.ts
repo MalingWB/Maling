@@ -83,4 +83,23 @@ describe('interface zoom wiring contract', () => {
     const app = readFileSync(path.resolve(__dirname, '../src/App.tsx'), 'utf8');
     expect(app).toContain('useDesktopZoomShortcuts(');
   });
+
+  it('keeps native child webviews glued to their DOM slots at any zoom', () => {
+    // The in-app browser pages and the address suggestion list live in native
+    // child webviews placed in physical pixels; the frontend must convert CSS
+    // bounds with devicePixelRatio (system scale × interface zoom) and the
+    // backend must consume them as physical units.
+    const host = readFileSync(path.resolve(__dirname, '../src/components/workspace/browser/browser-webview-host.ts'), 'utf8');
+    expect(host).toContain('function toPhysicalBrowserBounds');
+    expect(host).toContain('toPhysicalBrowserBounds(roundBounds(bounds))');
+    expect(host).toContain('toPhysicalBrowserBounds(target)');
+
+    const overlay = readFileSync(path.resolve(__dirname, '../src/components/workspace/browser/browser-address-overlay.ts'), 'utf8');
+    expect(overlay).toContain('window.devicePixelRatio || 1');
+
+    const browserRs = readFileSync(path.resolve(__dirname, '../../src-tauri/src/browser.rs'), 'utf8');
+    expect(browserRs).toContain('PhysicalPosition::new');
+    expect(browserRs).toContain('PhysicalSize::new');
+    expect(browserRs).not.toContain('LogicalPosition');
+  });
 });

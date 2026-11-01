@@ -3003,6 +3003,8 @@
       "retryRecent": "重试近期会话",
       "noRecent": "暂无近期会话",
       "loadMoreRecent": "显示更多近期会话",
+      "allRecentShown": "已显示全部近期会话",
+      "allConversationsShown": "已显示全部会话",
       "loadingRuns": "正在加载运行历史…",
       "retryRuns": "运行历史加载失败，点击重试",
       "loadMoreRuns": "加载更多运行记录",
