@@ -3190,6 +3190,7 @@
         "dev": "Dev",
         "test": "Test"
       },
+      "searchPlaceholder": "Search task name…",
       "readiness": {
         "ready": "Ready",
         "readyHint": "The matching dev task is done; this test task can start now"

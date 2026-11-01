@@ -1,7 +1,7 @@
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, ExternalLink, Folders, Globe, ListFilter, Loader2, Plus, RotateCw, Settings, Trash2, User, Wifi, WifiOff } from 'lucide-react';
+import { ChevronDown, ExternalLink, Folders, Globe, ListFilter, Loader2, Plus, RotateCw, Search, Settings, Trash2, User, Wifi, WifiOff } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -20,6 +20,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -79,6 +80,17 @@ export function filterTasksByIssueKind(tasks: RemoteTaskVm[], filter: IssueKindF
   return tasks.filter((task) => task.kind === filter);
 }
 
+/// 纯函数：按任务名过滤（任务多了之后的检索入口）——大小写不敏感子串匹配，query trim 后
+/// 为空 = 不过滤（原样引用返回，与 `filterTasksByIssueKind` 的 `all` 同约定）。
+/// 纯客户端过滤已加载列表（O(n·m)，n = 单工作空间任务数：pending 随 backlog 增长 + 终态
+/// 硬上限 50 + running 个位数；人频按键单次执行），无新请求。退化兜底：pending 行 title
+/// 缺失时后端已回退为 remote_task_id，退化标题仍可被搜索。导出供单测固化匹配语义。
+export function filterTasksByTitle(tasks: RemoteTaskVm[], query: string): RemoteTaskVm[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return tasks;
+  return tasks.filter((task) => task.title.toLowerCase().includes(needle));
+}
+
 interface RemoteTaskManagementPageProps {
   /// 直达指定远程/本地 run 的会话页（复用本地侧栏 onSelectRun 同路径）。
   onSelectRun: (projectId: string, taskId: string, runId: string) => void;
@@ -116,6 +128,9 @@ export function RemoteTaskManagementPage({
   const [refreshing, setRefreshing] = useState(false);
   const [source, setSource] = useState<RemoteTaskSource>('multica');
   const [issueKindFilter, setIssueKindFilter] = useState<IssueKindFilter>('all');
+  // 任务名搜索（列表检索增强）：与类型筛选同层的纯客户端过滤，见 `filterTasksByTitle`。
+  // 瞬时 UI 状态（useState），不持久化（ui-interaction §7：不记忆临时业务输入）。
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('');
   const [addWorkspaceOpen, setAddWorkspaceOpen] = useState(false);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
@@ -223,13 +238,13 @@ export function RemoteTaskManagementPage({
     return () => window.clearInterval(timer);
   }, [source, connected, hasWorkspaces]);
   const workspaceTasks = vm?.tasksByWorkspace[effectiveWorkspaceId] ?? [];
-  // 投影 = 类型过滤 ∩ 未移出：两级都是纯客户端过滤，不触碰数据源。
+  // 投影 = 类型过滤 ∩ 标题过滤 ∩ 未移出：三级都是纯客户端过滤，不触碰数据源。
   const selectedTasks = useMemo(
     () =>
-      filterTasksByIssueKind(workspaceTasks, issueKindFilter).filter(
+      filterTasksByTitle(filterTasksByIssueKind(workspaceTasks, issueKindFilter), searchQuery).filter(
         (task) => !removedTaskIds.has(task.id),
       ),
-    [workspaceTasks, issueKindFilter, removedTaskIds],
+    [workspaceTasks, issueKindFilter, searchQuery, removedTaskIds],
   );
   const activeWorkspaceName = workspaces.find((w) => w.id === effectiveWorkspaceId)?.name ?? '';
 
@@ -535,6 +550,21 @@ export function RemoteTaskManagementPage({
                     ))}
                   </SelectContent>
                 </Select>
+              )}
+
+              {/* 任务名搜索（列表检索增强）：纯客户端大小写不敏感子串过滤，瞬时状态不持久化。 */}
+              {hasWorkspaces && (
+                <div className="relative w-[180px]">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    className="h-8 pl-8"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder={t('remote.taskManagement.searchPlaceholder')}
+                    aria-label={t('remote.taskManagement.searchPlaceholder')}
+                    data-testid="task-search-input"
+                  />
+                </div>
               )}
             </div>
 

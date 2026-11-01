@@ -3212,6 +3212,7 @@
         "label": "類型",
         "test": "測試"
       },
+      "searchPlaceholder": "搜尋任務名稱…",
       "readiness": {
         "ready": "已就緒",
         "readyHint": "對應開發任務已完成，可以開始執行"

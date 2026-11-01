@@ -3212,6 +3212,7 @@
         "label": "Tipo",
         "test": "Teste"
       },
+      "searchPlaceholder": "Pesquisar nome da tarefa…",
       "readiness": {
         "ready": "Pronto",
         "readyHint": "A tarefa de desenvolvimento correspondente foi concluída; esta tarefa pode começar"

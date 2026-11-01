@@ -3105,6 +3105,16 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 3. lib `install_workflow_template_from_multica` 补 skip/新增两条 INFO 日志——skip（同 key 已存在跳过）是 spec §4.4 预期语义，排查时要能区分「装了新模板」vs「同 key 跳过」。
 4. 验证：web 契约测试 `runtime-asset-installed-event.test.ts` 2 例（事件名 + 载荷形状）与 Rust `installed_event_serializes_camel_case_wire`（wire 键名）双侧锁跨端契约；tsc 改动文件零错。端到端（multica 网页安装 → 运行中码灵列表即时出现）待内网打包验收——本地无法产生 daemon 工单（依赖 multica server 下发），按 bug-fix-verification §3 例外以跨端契约测试 + INFO 日志为可审计证据。
 
+### 12.89 改动八十七：需求管理页任务名搜索框（M5-cs，2026-11-01）
+
+**背景**：需求管理页此前仅类型过滤（M5-ba 引入）。任务量增长后（pending 随 backlog 增长 + 终态本地历史上限 50 + running 个位数，单工作空间现实几十条、极端低百级），在四列看板中定位具体任务变难，需要按任务名检索。
+
+**方案**：与类型过滤同层的纯客户端过滤，零新增请求/状态源/组件文件。① 纯函数 `filterTasksByTitle(tasks, query)`（`RemoteTaskManagementPage.tsx` 导出）：query `trim().toLowerCase()` 后为空 = 原样引用返回（同 `filterTasksByIssueKind` 的 `all` 约定），非空对 `title` 做大小写不敏感子串匹配（`RemoteTaskVm.title` 恒非空——pending 行标题缺失时后端已回退 remote_task_id，退化标题仍可搜）；② 投影链扩为 类型 ∩ 标题 ∩ 未移出（沿用既有 `selectedTasks` useMemo，看板仍收「选定工作空间的过滤后列表」不变）；③ footer 工具条类型过滤旁渲染搜索框（shadcn `Input` + Search 前缀图标，`h-8` 对齐 sm 控件，ContextManagementPage 同款模式），门控同类型过滤（`hasWorkspaces`）；瞬时 useState 不持久化（ui-interaction §7）；④ i18n `remote.taskManagement.searchPlaceholder` 7 语言同步（placeholder 兼作 aria-label）。
+
+**方案自评审**：过度设计——无（一个纯函数 + 一个 state + 一个输入框，复用既有投影链、组件与 i18n 模式；不引 debounce/虚拟滚动/卡片 memo——数据上限明确 + 人频按键单次 O(n·m) 微秒级，加了属掩盖式复杂度）。性能——无（按键重渲染页面壳（轻量控件）+ 看板（投影消费者，属预期更新）；卡片按 `task.id` key 复用 DOM 不重挂；全程零网络请求；multica 无需服务端过滤——列表已全量在手，类型过滤时已确认同口径）。
+
+**验证结果**：`remote-task-management-page` 33/33（新增 5：容器 1——CJK/拉丁大小写跨列过滤、与类型筛选组合交集、清空恢复、纯客户端零额外拉取；纯函数 4——空/空白查询恒等、大小写不敏感、trim、无匹配空集）+ i18n 契约（i18n-loading / locale-remote-parity）全绿；`tsc -p web/tsconfig.build.json` 零错。浏览器实测（vite dev + browser 桩临时种 connected 样例，验证后已还原；deep link `/chat/remote-tasks`）：『支付』跨列命中待办 + 进行中、大写 `PAYMENT` 命中 test 任务、类型=开发 ∩ PAYMENT 全空、清空恢复 dev 全量；浅色截图 + 深色计算样式（body rgb(15,15,15)、输入框深底浅字，全部语义 token）双主题确认。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

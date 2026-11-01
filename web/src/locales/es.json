@@ -3212,6 +3212,7 @@
         "label": "Tipo",
         "test": "Prueba"
       },
+      "searchPlaceholder": "Buscar nombre de tarea…",
       "readiness": {
         "ready": "Listo",
         "readyHint": "La tarea de desarrollo correspondiente ha terminado; esta tarea puede comenzar"

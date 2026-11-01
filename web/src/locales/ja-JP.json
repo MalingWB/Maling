@@ -3212,6 +3212,7 @@
         "label": "種類",
         "test": "テスト"
       },
+      "searchPlaceholder": "タスク名を検索…",
       "readiness": {
         "ready": "準備完了",
         "readyHint": "対応する開発タスクが完了しました。実行を開始できます"

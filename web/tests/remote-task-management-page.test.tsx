@@ -23,6 +23,7 @@ vi.mock('lucide-react', () => ({
   Loader2: () => null,
   Plus: () => null,
   RotateCw: () => null,
+  Search: () => null,
   Settings: () => null,
   Trash2: () => null,
   User: () => null,
@@ -192,7 +193,7 @@ vi.mock('@/api', () => ({
   subscribeRemoteSourceSettingsUpdates: mocks.subscribeRemoteSourceSettingsUpdates,
 }));
 
-import { RemoteTaskManagementPage, filterTasksByIssueKind } from '@/pages/RemoteTaskManagementPage';
+import { RemoteTaskManagementPage, filterTasksByIssueKind, filterTasksByTitle } from '@/pages/RemoteTaskManagementPage';
 import type { RemoteConversationSidebarVm, RemoteTaskVm } from '@/types';
 
 const noopUnlisten = () => {};
@@ -693,6 +694,66 @@ describe('RemoteTaskManagementPage (container)', () => {
     expect(filterSelect).toBeUndefined();
   });
 
+  // 任务名搜索（列表检索增强）：纯客户端过滤 + 与类型筛选可组合；清空恢复全量。
+  it('filters the board by task title search (case-insensitive), composes with the kind filter and restores on clear', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {
+        'ws-004': [
+          { id: 'rt-1', workspaceId: 'ws-004', title: '支付模块重构', status: 'queued', kind: 'dev' },
+          { id: 'rt-2', workspaceId: 'ws-004', title: 'PAYMENT regression test', status: 'queued', kind: 'test', readiness: false },
+          { id: 'rt-3', workspaceId: 'ws-004', title: '登录页修复', status: 'queued', kind: 'bug' },
+        ] as RemoteTaskVm[],
+      },
+    }));
+    const { container } = await renderPage();
+
+    const searchInput = container.querySelector('[data-testid="task-search-input"]') as HTMLInputElement;
+    expect(searchInput).toBeTruthy();
+
+    // 受控 input 赋值走原生 setter（绕过 React value tracker，仓库既有测试模式）。
+    const type = async (value: string) => {
+      await act(async () => {
+        const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+        valueSetter.call(searchInput, value);
+        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    };
+
+    // 大小写不敏感子串（拉丁）：'payment' 命中 'PAYMENT regression test'（rt-2）。
+    await type('payment');
+    expect(container.querySelector('[data-testid="task-rt-1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-rt-2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="task-rt-3"]')).toBeNull();
+
+    // 中文子串：'支付' 只命中 rt-1。
+    await type('支付');
+    expect(container.querySelector('[data-testid="task-rt-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="task-rt-2"]')).toBeNull();
+
+    // 与类型筛选组合（类型 ∩ 标题）：搜索 'payment' + 类型 dev → 空板（rt-2 是 test）。
+    const filterSelect = Array.from(container.querySelectorAll('select')).find(
+      (s) => Array.from(s.options).map((o) => o.value).join(',') === 'all,dev,test',
+    ) as HTMLSelectElement;
+    await type('payment');
+    await act(async () => {
+      filterSelect.value = 'dev';
+      filterSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="task-rt-1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-rt-2"]')).toBeNull();
+
+    // 清空搜索：恢复类型筛选下的全量 dev 列表（搜索不清类型筛选，两者独立）。
+    await type('');
+    expect(container.querySelector('[data-testid="task-rt-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="task-rt-2"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-rt-3"]')).toBeNull();
+
+    // 纯客户端过滤：全程不产生额外拉取。
+    expect(getRemoteTasks).toHaveBeenCalledTimes(1);
+  });
+
   // 移出列表（终态行真删除本地历史；pending/running 行纯视图过滤——按行数据源分派）。
   it('removes a terminal row by deleting the local completed-history entry (real delete, not view filter)', async () => {
     mocks.removeRemoteCompletedTask.mockResolvedValue(undefined);
@@ -789,5 +850,35 @@ describe('filterTasksByIssueKind', () => {
 
   it('handles the empty list', () => {
     expect(filterTasksByIssueKind([], 'dev')).toEqual([]);
+  });
+});
+
+// 任务名搜索纯函数：接口层不变量（空/空白查询恒等 + 大小写不敏感子串 + 组合语义由容器测试覆盖）。
+describe('filterTasksByTitle', () => {
+  const tasks = [
+    { id: '1', title: '支付模块重构' },
+    { id: '2', title: 'PAYMENT regression test' },
+    { id: '3', title: '登录页修复' },
+  ] as RemoteTaskVm[];
+
+  it('returns the same list reference for an empty or whitespace-only query', () => {
+    expect(filterTasksByTitle(tasks, '')).toBe(tasks);
+    expect(filterTasksByTitle(tasks, '   ')).toBe(tasks);
+  });
+
+  it('matches case-insensitively as a substring across CJK and Latin titles', () => {
+    expect(filterTasksByTitle(tasks, 'payment')).toEqual([tasks[1]]);
+    expect(filterTasksByTitle(tasks, 'PAYMENT')).toEqual([tasks[1]]);
+    expect(filterTasksByTitle(tasks, '支付')).toEqual([tasks[0]]);
+    expect(filterTasksByTitle(tasks, 'regression')).toEqual([tasks[1]]);
+  });
+
+  it('trims the query before matching', () => {
+    expect(filterTasksByTitle(tasks, '  登录  ')).toEqual([tasks[2]]);
+  });
+
+  it('returns an empty list when nothing matches', () => {
+    expect(filterTasksByTitle(tasks, '不存在的任务')).toEqual([]);
+    expect(filterTasksByTitle([], 'x')).toEqual([]);
   });
 });

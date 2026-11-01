@@ -3190,6 +3190,7 @@
         "dev": "开发",
         "test": "测试"
       },
+      "searchPlaceholder": "搜索任务名…",
       "readiness": {
         "ready": "已就绪",
         "readyHint": "对应开发任务已完成，可以开始执行"
