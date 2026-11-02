@@ -1457,9 +1457,11 @@ pub fn get_conversation_run_mode(
                 serde_json::json!({ "projectId": project_id }),
             )
         })?;
+    let initial = app.config.default_execution_profile.as_ref().map(|profile| profile.initial_run_mode());
     Ok(state
         .conversation_run_modes
         .get(&resolved_project_id)
+        .or(initial.as_ref())
         .map(
             |entry| crate::view_models_conversation::ConversationRunModeVm {
                 mode: entry.mode.as_str().to_string(),

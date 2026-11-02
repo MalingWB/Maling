@@ -193,6 +193,7 @@ pub struct ManagedAgentVm {
     pub agent_type: String,
     pub display_name: String,
     pub command: String,
+    pub executable_path: Option<String>,
     pub args: Vec<String>,
     pub env: Vec<AgentEnvEntryVm>,
     pub icon_key: String,
@@ -1475,6 +1476,7 @@ pub(crate) fn managed_agent_vm(
         agent_type: agent_id.as_str().to_string(),
         display_name: config.adapter.display_name.clone(),
         command: config.adapter.command.clone(),
+        executable_path: config.executable_path.clone(),
         args: config.adapter.args.clone(),
         env: config
             .adapter

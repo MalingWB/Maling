@@ -533,6 +533,8 @@ impl FromStr for DesktopLanguage {
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentConfig {
     pub adapter: AcpAdapterConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable_path: Option<String>,
     /// 用户实例自己的图标引用；新建后不再跟随 Catalog 更新。
     #[serde(default = "default_agent_icon")]
     pub icon: String,
@@ -588,6 +590,7 @@ impl ManagedAgentConfig {
     ) -> Self {
         Self {
             adapter,
+            executable_path: None,
             icon: default_agent_icon(),
             primary_agent_dir: Some(primary_agent_dir.into()),
             project_primary_agent_dir: None,
@@ -600,6 +603,7 @@ impl ManagedAgentConfig {
 
     pub fn from_catalog(entry: &crate::agent_catalog::AgentCatalogEntry) -> Self {
         Self {
+            executable_path: None,
             adapter: AcpAdapterConfig {
                 command: entry.command.clone(),
                 args: entry.args.clone(),
@@ -622,6 +626,32 @@ impl ManagedAgentConfig {
 
     pub fn supports_system_prompt(&self) -> bool {
         self.system_prompt_delivery != SystemPromptDelivery::None
+    }
+
+    /// Catalog owns npm and local ACP arguments; the instance can override executable location.
+    pub fn executable_adapter(&self, agent_id: &ManagedAgentId) -> Result<AcpAdapterConfig> {
+        let mut adapter = self.adapter.clone();
+        adapter.apply_catalog_launch(agent_id);
+        if let Some(path) = &self.executable_path {
+            let path = std::path::Path::new(path);
+            if !path.is_absolute() || !path.is_file() {
+                return Err(crate::onboarding::model::SetupError::new("setup.executable-path-invalid").into());
+            }
+            adapter.command = dunce::canonicalize(path)?.to_str()
+                .ok_or_else(|| crate::onboarding::model::SetupError::new("setup.executable-path-invalid"))?.to_string();
+        } else if let Some(local) = crate::agent_catalog::builtin_agent(agent_id.as_str())
+            .and_then(|entry| entry.local_launch.as_ref())
+        {
+            let path = crate::process::resolved_child_path(adapter.env.get("PATH").map(std::ffi::OsStr::new));
+            if let Some(executable) = crate::process::find_executable_in_paths(&local.command, path.as_deref()) {
+                adapter.command = executable.to_string_lossy().into_owned();
+                adapter.args = local.args.clone();
+                if let Some(path) = path {
+                    adapter.env.insert("PATH".into(), path.to_string_lossy().into_owned());
+                }
+            }
+        }
+        Ok(adapter)
     }
 
     pub fn skill_directory_policy(&self) -> AgentSkillDirectoryPolicy {
@@ -870,6 +900,12 @@ fn browser_preference_enabled() -> bool {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsConfig {
+    #[serde(skip)]
+    pub storage_revision: crate::storage::configuration::FileRevision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onboarding: Option<crate::onboarding::model::OnboardingState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_execution_profile: Option<crate::onboarding::model::DefaultExecutionProfile>,
     #[serde(default)]
     pub settings_schema_version: SettingsSchemaVersion,
     pub log_level: Option<RuntimeLogLevel>,
@@ -1847,6 +1883,8 @@ fn default_diagnostic_error_params() -> serde_json::Value {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderDiagnosticSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_fingerprint: Option<String>,
     pub available: bool,
     #[serde(default)]
     pub error: Option<DiagnosticError>,
@@ -1856,6 +1894,10 @@ pub struct ProviderDiagnosticSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
+    #[serde(default)]
+    pub onboarding: Option<crate::onboarding::model::OnboardingState>,
+    #[serde(default)]
+    pub default_execution_profile: Option<crate::onboarding::model::DefaultExecutionProfile>,
     pub log_level: RuntimeLogLevel,
     #[serde(default)]
     pub interaction_mode: InteractionMode,
@@ -1934,6 +1976,8 @@ impl Default for RuntimeConfig {
                 .expect("Claude is present in the built-in Agent catalog"),
         );
         let base = Self {
+            onboarding: None,
+            default_execution_profile: None,
             log_level: RuntimeLogLevel::Info,
             interaction_mode: InteractionMode::Interactive,
             log_prompts: false,
@@ -2001,6 +2045,8 @@ impl Default for RuntimeConfig {
 
 impl RuntimeConfig {
     pub fn apply_settings(mut self, settings: &SettingsConfig) -> Self {
+        self.onboarding = settings.onboarding.clone();
+        self.default_execution_profile = settings.default_execution_profile.clone();
         if let Some(log_level) = settings.log_level {
             self.log_level = log_level;
         }

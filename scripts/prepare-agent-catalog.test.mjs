@@ -116,3 +116,19 @@ test('fails rather than silently publishing an incomplete catalog', () => {
     /missing required agents/,
   );
 });
+
+test('catalog describes installed ACP commands independently of npm launchers', () => {
+  const catalog = buildAgentCatalog(registryFixture(), 'fixed');
+  for (const [id, command] of [
+    ['claude-acp', 'claude-agent-acp'], ['codex-acp', 'codex-acp'],
+    ['gemini', 'gemini'], ['codebuddy-code', 'codebuddy'],
+    ['qwen-code', 'qwen'], ['pi-acp', 'pi-acp'],
+  ]) {
+    const agent = catalog.agents.find((entry) => entry.id === id);
+    assert.deepEqual(agent.localLaunch, { command, args: ['--acp'] });
+  }
+  assert.equal(catalog.agents.find((entry) => entry.id === 'claude-acp').installedCommand, 'claude');
+  assert.equal(catalog.agents.find((entry) => entry.id === 'codex-acp').installedCommand, 'codex');
+  assert.equal(catalog.agents.find((entry) => entry.id === 'pi-acp').installedCommand, 'pi');
+  assert.equal(catalog.agents.find((entry) => entry.id === 'cursor').localLaunch, null);
+});

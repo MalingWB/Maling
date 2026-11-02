@@ -3197,5 +3197,117 @@
         "notReadyHint": "해당 개발 작업이 아직 완료되지 않았습니다. 완료될 때까지 기다려 보세요"
       }
     }
+  },
+  "onboarding": {
+    "loading": "불러오는 중",
+    "loadFailed": "시작 설정을 읽을 수 없습니다. 다시 시도하세요.",
+    "retry": "다시 시도",
+    "language": "언어",
+    "theme": "테마 전환",
+    "exit": "설정 종료",
+    "progress": "설정 진행 상황",
+    "checking": "환경 확인 중…",
+    "runtimeVersion": "권장 Node.js {{version}}; 지원 {{ranges}}",
+    "recheck": "다시 확인",
+    "installGuide": "공식 설치 안내",
+    "discovering": "로컬 Agent 확인 중…",
+    "discovered": "사용 가능한 Agent {{count}}개 감지됨",
+    "noAgents": "사용 가능한 Agent를 찾지 못했습니다. Agent 설치 또는 로그인을 완료한 후 다시 확인하세요.",
+    "defaultAgent": "기본 Agent",
+    "chooseAgent": "사용 가능한 Agent 선택",
+    "defaultModel": "기본 모델",
+    "chooseModel": "모델 선택",
+    "providerDefault": "이 Agent는 공급자의 기본 모델을 사용합니다.",
+    "checkingModel": "모델 설정 읽는 중…",
+    "permission": "권한 모드",
+    "choosePermission": "권한 모드 선택",
+    "preview": "변경 검토",
+    "previewSummary": "기본 워크플로 {{count}}개의 실행 설정 {{slots}}개를 업데이트합니다.",
+    "slots": "설정 {{count}}개",
+    "loadMore": "더 불러오기",
+    "back": "이전",
+    "help": "도움말",
+    "skipGit": "Git 건너뛰기",
+    "next": "다음",
+    "apply": "적용 및 완료",
+    "review": "변경 미리 보기",
+    "repairHint": "공급자 안내에 따라 설치하거나 로그인한 후 다시 확인하세요.",
+    "settingsTitle": "최초 설정 및 기본 워크플로",
+    "rerun": "설정 다시 실행",
+    "steps": {
+      "git": "Git",
+      "runtime": "실행 환경",
+      "agent": "Agent"
+    },
+    "titles": {
+      "git": "Git 준비",
+      "runtime": "Node.js 실행 환경 확인",
+      "agent": "Agent 연결 및 기본 모델 선택"
+    },
+    "descriptions": {
+      "git": "Git은 버전 관리에 사용됩니다. 나중에 설치할 수 있습니다.",
+      "runtime": "Node.js, npm, npx 모두 확인을 통과해야 합니다. 설치 후 다시 확인하세요.",
+      "agent": "사용 가능한 Agent는 자동 저장됩니다. 기본 모델을 선택하고 모든 기본 워크플로에 적용할 변경을 확인하세요."
+    },
+    "status": {
+      "ready": "준비됨",
+      "missing": "미설치",
+      "unsupported": "지원하지 않는 버전",
+      "incompatible": "환경 불일치",
+      "failed": "확인 실패",
+      "timeout": "시간 초과",
+      "cancelled": "취소됨",
+      "skipped": "건너뜀",
+      "pending": "검사 전",
+      "checking": "검사 중"
+    },
+    "errors": {
+      "setup": {
+        "agent-preparation-required": "공급자 안내에 따라 설치하거나 로그인한 후 다시 확인하세요.",
+        "probe-failed": "검사에 실패했습니다. 다시 검사하세요.",
+        "probe-cancelled": "확인이 취소되었습니다. 계속하려면 다시 확인하세요.",
+        "runtime-incompatible": "Node.js, npm 또는 npx가 요구 사항을 충족하지 않습니다. 실행 환경을 확인하세요.",
+        "environment-check-required": "먼저 실행 환경 확인을 완료하세요.",
+        "configuration-conflict": "다른 곳에서 설정이 변경되었습니다. Agent를 다시 확인하고 최신 변경 사항을 미리 보세요.",
+        "preview-stale": "선택한 모델 또는 기본 Workflow가 변경되었습니다. 다시 미리 보세요.",
+        "agent-unavailable": "이 Agent를 더 이상 사용할 수 없습니다. 다시 확인하거나 다른 Agent를 선택하세요.",
+        "model-config-invalid": "모델 옵션이 유효하지 않습니다. 모델을 다시 선택하세요.",
+        "model-selection-required": "먼저 모델을 선택하세요.",
+        "permission-selection-required": "먼저 권한 모드를 선택하세요.",
+        "git-decision-required": "지원되는 Git을 설치하거나 Git 건너뛰기를 선택하세요.",
+        "recovery-required": "이전 저장을 복구하지 못했습니다. 설정 폴더 접근 권한을 복원하고 다시 시작하세요.",
+        "executable-path-invalid": "기존 실행 파일의 전체 경로를 선택하세요.",
+        "commit-failed": "저장하지 못했습니다. 폴더 권한과 디스크 여유 공간을 확인한 후 다시 시도하세요.",
+        "operation-id-invalid": "저장 요청이 유효하지 않습니다. 다시 미리 보세요.",
+        "templates-initialization-required": "기본 Workflow가 초기화되지 않았습니다. Agent를 다시 확인하세요."
+      }
+    },
+    "applyBuiltins": "기본 Workflow에 적용",
+    "gitVersion": "Git {{version}} 이상이 필요합니다.",
+    "previousBindings": "교체할 현재 설정",
+    "previousBinding": "{{slot}}: {{agent}} / {{model}}",
+    "defaultModelLabel": "공급자 기본 모델",
+    "runtimeBlocked": "실행 환경 검사를 통과하지 못했습니다",
+    "detectionFailed": "Agent 감지에 실패했습니다. 다시 시도하세요.",
+    "recheckRuntime": "실행 환경 다시 검사",
+    "viewRuntime": "실행 환경 보기",
+    "environmentHelp": {
+      "missing": "이 도구를 찾을 수 없습니다. 공식 안내에 따라 설치한 후 다시 검사하세요.",
+      "unsupported": "공식 안내에 따라 지원되는 버전을 설치한 후 다시 검사하세요.",
+      "incompatible": "감지된 실행 환경 조합이 호환되지 않습니다. 설치 경로를 확인한 후 다시 시도하세요.",
+      "failed": "검사를 완료할 수 없습니다. 실행 파일 경로, 접근 권한 및 설치 상태를 확인한 후 다시 시도하세요.",
+      "timeout": "검사 시간이 초과되었습니다. 다시 시도하고, 계속되면 이 도구가 정상적으로 실행되는지 확인하세요.",
+      "cancelled": "검사가 취소되었습니다. 다시 검사하세요."
+    },
+    "environmentReasons": {
+      "probe-unavailable": "실제로 사용된 실행 환경을 확인할 수 없습니다. 설치 상태를 확인하고 다시 시도하세요.",
+      "node-mismatch": "다른 Node.js 설치가 사용되었습니다. 예상: {{expectedNodePath}}; 실제: {{actualNodePath}}.",
+      "node-version-mismatch": "Node.js 버전이 다릅니다. 예상: {{expectedVersion}}; 실제: {{actualVersion}}.",
+      "node-path-mismatch": "Node.js 실행 경로가 다릅니다. 예상: {{expectedNodePath}}; 실제: {{actualNodePath}}.",
+      "npm-metadata-missing": "npm 설치 정보를 확인할 수 없습니다. Node.js/npm 설치를 복구한 후 다시 검사하세요.",
+      "npm-engines-incompatible": "이 npm은 현재 Node.js를 지원하지 않습니다. 요구 사항: {{nodeRange}}.",
+      "npm-version-mismatch": "npm 버전 정보가 다릅니다. 출력: {{expectedVersion}}; 패키지: {{actualVersion}}.",
+      "npm-package-mismatch": "npm과 npx가 서로 다른 설치에 속합니다. npm: {{expectedNpmRoot}}; 현재 도구: {{actualNpmRoot}}."
+    }
   }
 }

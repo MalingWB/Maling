@@ -314,6 +314,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
         </TabsList>
 
         <TabsContent value="general" className="m-0">
+          <div className="flex items-center justify-between gap-4 py-4"><span className="text-sm">{t('onboarding.settingsTitle')}</span><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => { window.location.hash = '/onboarding'; }}>{t('onboarding.rerun')}</Button><Button variant="outline" onClick={() => { window.location.hash = '/onboarding/defaults'; }}>{t('onboarding.applyBuiltins')}</Button></div></div>
           <AppCard className="gap-0 overflow-hidden py-0">
             <SettingsSection title={t('settings.language')}>
               <Select value={language} onValueChange={(value) => chooseLanguage(value as DesktopLanguage)}>

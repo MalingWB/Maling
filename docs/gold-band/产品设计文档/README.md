@@ -6,6 +6,7 @@ Gold Band 当前文档按目录式结构整理为 6 个主板块：
 - [产品概览](product/overview.md)
 
 ## 2. 交互层
+- [首次启动引导技术方案（主流程已实现，发布矩阵待验收）](interaction/app/first-run-onboarding.md)
 - [交互层概览](interaction/cli/overview.md)
 - [定时任务交互设计](interaction/app/scheduled-task-management.md)
 - [CLI 规范](interaction/cli/cli.md)

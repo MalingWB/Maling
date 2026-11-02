@@ -3,7 +3,7 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-10-17T03:12:21.041Z"
+    "fetchedAt": "2026-11-02T07:31:11.737Z"
   },
   "agents": [
     {
@@ -20,6 +20,11 @@
         "-y",
         "@agentclientprotocol/claude-agent-acp@0.87.0"
       ],
+      "localLaunch": {
+        "command": "claude-agent-acp",
+        "args": []
+      },
+      "installedCommand": "claude",
       "env": {},
       "primaryAgentDir": ".claude",
       "projectPrimaryAgentDir": null,
@@ -41,6 +46,11 @@
         "-y",
         "@agentclientprotocol/codex-acp@2.1.1"
       ],
+      "localLaunch": {
+        "command": "codex-acp",
+        "args": []
+      },
+      "installedCommand": "codex",
       "env": {},
       "primaryAgentDir": ".codex",
       "projectPrimaryAgentDir": null,
@@ -53,7 +63,7 @@
     {
       "id": "cursor",
       "label": "Cursor",
-      "version": "2026.10.14",
+      "version": "2026.10.22",
       "description": "Cursor's coding agent",
       "repository": null,
       "website": "https://cursor.com/docs/cli/acp",
@@ -63,6 +73,8 @@
       "args": [
         "acp"
       ],
+      "localLaunch": null,
+      "installedCommand": null,
       "env": {},
       "primaryAgentDir": ".cursor",
       "projectPrimaryAgentDir": null,
@@ -75,7 +87,7 @@
     {
       "id": "gemini",
       "label": "Gemini",
-      "version": "0.64.0",
+      "version": "0.66.0",
       "description": "Google's official CLI for Gemini",
       "repository": "https://github.com/google-gemini/gemini-cli",
       "website": "https://geminicli.com",
@@ -84,9 +96,16 @@
       "command": "npx",
       "args": [
         "-y",
-        "@google/gemini-cli@0.64.0",
+        "@google/gemini-cli@0.66.0",
         "--acp"
       ],
+      "localLaunch": {
+        "command": "gemini",
+        "args": [
+          "--acp"
+        ]
+      },
+      "installedCommand": null,
       "env": {},
       "primaryAgentDir": ".gemini",
       "projectPrimaryAgentDir": null,
@@ -99,7 +118,7 @@
     {
       "id": "codebuddy-code",
       "label": "CodeBuddy",
-      "version": "2.168.2",
+      "version": "2.179.2",
       "description": "Tencent Cloud's official intelligent coding tool",
       "repository": null,
       "website": "https://www.codebuddy.cn/cli/",
@@ -108,9 +127,16 @@
       "command": "npx",
       "args": [
         "-y",
-        "@tencent-ai/codebuddy-code@2.168.2",
+        "@tencent-ai/codebuddy-code@2.179.2",
         "--acp"
       ],
+      "localLaunch": {
+        "command": "codebuddy",
+        "args": [
+          "--acp"
+        ]
+      },
+      "installedCommand": null,
       "env": {},
       "primaryAgentDir": ".codebuddy",
       "projectPrimaryAgentDir": null,
@@ -121,7 +147,7 @@
     {
       "id": "goose",
       "label": "Goose",
-      "version": "1.55.0",
+      "version": "1.57.0",
       "description": "A local, extensible, open source AI agent that automates engineering tasks",
       "repository": "https://github.com/block/goose",
       "website": "https://block.github.io/goose/",
@@ -131,6 +157,8 @@
       "args": [
         "acp"
       ],
+      "localLaunch": null,
+      "installedCommand": null,
       "env": {},
       "primaryAgentDir": ".goose",
       "projectPrimaryAgentDir": null,
@@ -141,7 +169,7 @@
     {
       "id": "qwen-code",
       "label": "Qwen Code",
-      "version": "0.25.2",
+      "version": "0.26.5",
       "description": "Alibaba's Qwen coding assistant",
       "repository": "https://github.com/QwenLM/qwen-code",
       "website": "https://qwenlm.github.io/qwen-code-docs/en/users/overview",
@@ -150,10 +178,18 @@
       "command": "npx",
       "args": [
         "-y",
-        "@qwen-code/qwen-code@0.25.2",
+        "@qwen-code/qwen-code@0.26.5",
         "--acp",
         "--experimental-skills"
       ],
+      "localLaunch": {
+        "command": "qwen",
+        "args": [
+          "--acp",
+          "--experimental-skills"
+        ]
+      },
+      "installedCommand": null,
       "env": {},
       "primaryAgentDir": ".qwen",
       "projectPrimaryAgentDir": null,
@@ -164,7 +200,7 @@
     {
       "id": "opencode",
       "label": "OpenCode",
-      "version": "1.19.3",
+      "version": "2.2.5",
       "description": "The open source coding agent",
       "repository": "https://github.com/anomalyco/opencode",
       "website": "https://opencode.ai",
@@ -174,6 +210,8 @@
       "args": [
         "acp"
       ],
+      "localLaunch": null,
+      "installedCommand": null,
       "env": {},
       "primaryAgentDir": ".opencode",
       "projectPrimaryAgentDir": null,
@@ -196,6 +234,8 @@
       "args": [
         "acp"
       ],
+      "localLaunch": null,
+      "installedCommand": null,
       "env": {},
       "primaryAgentDir": ".kimi-code",
       "projectPrimaryAgentDir": null,
@@ -208,7 +248,7 @@
     {
       "id": "amp-acp",
       "label": "Amp",
-      "version": "0.10.0",
+      "version": "0.12.0",
       "description": "ACP wrapper for Amp - the frontier coding agent",
       "repository": "https://github.com/tao12345666333/amp-acp",
       "website": null,
@@ -216,6 +256,8 @@
       "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/amp-acp.svg",
       "command": "amp-acp",
       "args": [],
+      "localLaunch": null,
+      "installedCommand": null,
       "env": {},
       "primaryAgentDir": ".agents",
       "projectPrimaryAgentDir": null,
@@ -239,6 +281,11 @@
         "-y",
         "pi-acp@0.0.34"
       ],
+      "localLaunch": {
+        "command": "pi-acp",
+        "args": []
+      },
+      "installedCommand": "pi",
       "env": {},
       "primaryAgentDir": ".pi/agent",
       "projectPrimaryAgentDir": ".pi",

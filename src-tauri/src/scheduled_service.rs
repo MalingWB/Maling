@@ -1559,6 +1559,7 @@ mod tests {
             let config = RuntimeConfig::default().with_provider_diagnostics(BTreeMap::from([(
                 "claude-acp".to_string(),
                 ProviderDiagnosticSnapshot {
+                    config_fingerprint: None,
                     available: true,
                     error: None,
                     checked_at: "2026-08-14T00:00:00Z".to_string(),

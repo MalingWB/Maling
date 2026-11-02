@@ -284,7 +284,7 @@ fn default_workflow_template(
             label_key: "conversation.home.includeInterview".to_string(),
             default_enabled: true,
         }),
-        workflow: default_workflow_dsl("claude-acp", profiles, language),
+        workflow: default_workflow_dsl(profiles, language),
         model_bindings: WorkflowModelBindings::default(),
         created_at: now.clone(),
         updated_at: now,
@@ -305,7 +305,7 @@ fn default_lightweight_workflow_template(
             label_key: "conversation.home.includeGrill".to_string(),
             default_enabled: true,
         }),
-        workflow: default_lightweight_workflow_dsl("claude-acp", profiles, language),
+        workflow: default_lightweight_workflow_dsl(profiles, language),
         model_bindings: WorkflowModelBindings::default(),
         created_at: now.clone(),
         updated_at: now,
@@ -494,13 +494,8 @@ fn wb_cicd_workflow_template(
     template
 }
 
-fn default_workflow_dsl(
-    provider: &str,
-    profiles: &DefaultProfileIds,
-    language: DesktopLanguage,
-) -> WorkflowDsl {
+fn default_workflow_dsl(profiles: &DefaultProfileIds, language: DesktopLanguage) -> WorkflowDsl {
     fn worker(
-        _provider: &str,
         profiles: &DefaultProfileIds,
         id: &str,
         role_key: &str,
@@ -550,7 +545,6 @@ fn default_workflow_dsl(
         },
         nodes: vec![
             worker(
-                provider,
                 profiles,
                 "interview",
                 "interview",
@@ -559,7 +553,6 @@ fn default_workflow_dsl(
                 true,
             ),
             worker(
-                provider,
                 profiles,
                 "plan",
                 "plan",
@@ -568,7 +561,6 @@ fn default_workflow_dsl(
                 true,
             ),
             worker(
-                provider,
                 profiles,
                 "dev",
                 "dev",
@@ -577,7 +569,6 @@ fn default_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "review",
                 "review",
@@ -586,7 +577,6 @@ fn default_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "test",
                 "test",
@@ -595,7 +585,6 @@ fn default_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "accept",
                 "accept",
@@ -604,7 +593,6 @@ fn default_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "cleanup",
                 "cleanup",
@@ -689,12 +677,10 @@ fn default_workflow_dsl(
 }
 
 fn default_lightweight_workflow_dsl(
-    provider: &str,
     profiles: &DefaultProfileIds,
     language: DesktopLanguage,
 ) -> WorkflowDsl {
     fn worker(
-        _provider: &str,
         profiles: &DefaultProfileIds,
         id: &str,
         role_key: &str,
@@ -744,7 +730,6 @@ fn default_lightweight_workflow_dsl(
         },
         nodes: vec![
             worker(
-                provider,
                 profiles,
                 "grill",
                 "grill",
@@ -753,7 +738,6 @@ fn default_lightweight_workflow_dsl(
                 true,
             ),
             worker(
-                provider,
                 profiles,
                 "dev-test",
                 "dev-test",
@@ -762,7 +746,6 @@ fn default_lightweight_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "accept",
                 "accept",
@@ -847,6 +830,7 @@ fn upsert_built_in_workflow_template(
         .position(|template| template.id == built_in.id)
     {
         let mut next = built_in;
+        next.created_at = templates[current_index].created_at.clone();
         let persisted = TaskAuthoringWorkflow {
             workflow: templates[current_index].workflow.clone(),
             model_bindings: templates[current_index].model_bindings.clone(),
@@ -858,6 +842,11 @@ fn upsert_built_in_workflow_template(
             Some(&persisted),
             Some(&next.id),
         )?;
+        if serde_json::to_value(&next.workflow)? == serde_json::to_value(&persisted.workflow)?
+            && next.model_bindings == persisted.model_bindings
+        {
+            next.updated_at = templates[current_index].updated_at.clone();
+        }
         templates[current_index] = next;
         if current_index != index {
             let template = templates.remove(current_index);
@@ -970,6 +959,8 @@ pub struct CreateTaskInput {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowTemplateStore {
+    #[serde(skip)]
+    pub storage_revision: crate::storage::configuration::FileRevision,
     pub version: String,
     #[serde(alias = "last_used_template_id")]
     pub last_used_template_id: Option<String>,
@@ -3376,7 +3367,8 @@ impl App {
     }
 
     pub fn save_settings(&self, settings: &SettingsConfig) -> Result<()> {
-        write_json(&self.paths.user_settings_file(), settings)
+        crate::storage::save_settings_file(&self.paths.user_settings_file(), settings)
+            .map(|_| ())
     }
 
     /// 读取全局 `state.json`（只读路径，任意调用）。
@@ -3619,15 +3611,28 @@ impl App {
         agent_id: ManagedAgentId,
         config: ManagedAgentConfig,
     ) -> Result<SettingsConfig> {
-        let mut agents = self.config.agents.clone();
-        agents.insert(agent_id, config);
-        self.set_user_agents(agents)
+        config.executable_adapter(&agent_id)?;
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            let mut settings = self.load_settings()?;
+            settings
+                .agents
+                .get_or_insert_with(|| self.config.agents.clone())
+                .insert(agent_id, config);
+            self.save_settings(&settings)?;
+            self.load_settings()
+        })
     }
 
     pub fn remove_managed_agent(&self, agent_id: &ManagedAgentId) -> Result<SettingsConfig> {
-        let mut agents = self.config.agents.clone();
-        agents.remove(agent_id);
-        self.set_user_agents(agents)
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            let mut settings = self.load_settings()?;
+            settings
+                .agents
+                .get_or_insert_with(|| self.config.agents.clone())
+                .remove(agent_id);
+            self.save_settings(&settings)?;
+            self.load_settings()
+        })
     }
 
     // ── MCP (委托给 McpManager，对标 Zed ContextServerStore) ──
@@ -3754,6 +3759,31 @@ impl App {
 
     pub fn workflow_templates(&self) -> Result<WorkflowTemplateStore> {
         self.load_workflow_template_store()
+    }
+
+    /// Snapshot read for preview/application; never seeds, migrates or repairs templates.
+    pub fn read_workflow_templates(&self) -> Result<WorkflowTemplateStore> {
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            let path = self.paths.workflow_templates_file();
+            let mut store: WorkflowTemplateStore = read_json(&path)?;
+            store.storage_revision = crate::storage::configuration::revision(&path)?;
+            Ok(store)
+        })
+    }
+
+    pub fn initialize_workflow_templates(&self) -> Result<()> {
+        self.load_workflow_template_store().map(|_| ())
+    }
+
+    pub fn built_in_workflow_template_ids(&self) -> Vec<&'static str> {
+        let mut ids = vec![
+            DEFAULT_WORKFLOW_TEMPLATE_ID,
+            DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID,
+        ];
+        if crate::memory::is_wb() {
+            ids.push(WB_CICD_WORKFLOW_TEMPLATE_ID);
+        }
+        ids
     }
 
     pub fn auto_templates(&self) -> Result<AutoTemplateStore> {
@@ -4119,6 +4149,12 @@ impl App {
     }
 
     fn load_workflow_template_store(&self) -> Result<WorkflowTemplateStore> {
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            self.initialize_workflow_template_store_unlocked()
+        })
+    }
+
+    fn initialize_workflow_template_store_unlocked(&self) -> Result<WorkflowTemplateStore> {
         let default_profiles = ensure_default_user_profiles(&self.paths)?;
         let default_template =
             default_workflow_template(&default_profiles, self.config.desktop_language);
@@ -4135,7 +4171,26 @@ impl App {
             }
         }
         if path.exists() {
-            let mut store: WorkflowTemplateStore = read_json(&path)?;
+            let mut store = self.read_workflow_templates()?;
+            let before = serde_json::to_value(&store)?;
+            let previous_slots = store
+                .templates
+                .iter()
+                .map(|template| {
+                    (
+                        template.id.clone(),
+                        template
+                            .workflow
+                            .nodes
+                            .iter()
+                            .filter_map(|node| match node {
+                                NodeDsl::Worker(worker) => worker.execution_slot_id.clone(),
+                                _ => None,
+                            })
+                            .collect::<std::collections::BTreeSet<_>>(),
+                    )
+                })
+                .collect::<std::collections::BTreeMap<_, _>>();
             for template in &mut store.templates {
                 migrate_authoring_workflow(
                     &mut template.workflow,
@@ -4160,10 +4215,14 @@ impl App {
                 let mut ignored = WorkflowModelBindings::default();
                 migrate_authoring_workflow(workflow, &mut ignored, None)?;
             }
-            self.save_workflow_template_store(&store)?;
-            return Ok(store);
+            self.initialize_default_bindings(&mut store, &previous_slots);
+            if serde_json::to_value(&store)? != before {
+                self.save_workflow_template_store(&store)?;
+            }
+            return self.read_workflow_templates();
         }
         let mut store = WorkflowTemplateStore {
+            storage_revision: crate::storage::configuration::FileRevision::Missing,
             version: VERSION.to_string(),
             last_used_template_id: Some("default".to_string()),
             last_created_workflow: None,
@@ -4182,13 +4241,85 @@ impl App {
                 template.is_built_in.then_some(template.id.as_str()),
             )?;
         }
+        self.initialize_default_bindings(&mut store, &Default::default());
         self.save_workflow_template_store(&store)?;
-        Ok(store)
+        self.read_workflow_templates()
+    }
+
+    fn initialize_default_bindings(
+        &self,
+        store: &mut WorkflowTemplateStore,
+        prior: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    ) {
+        let Some(profile) = &self.config.default_execution_profile else {
+            return;
+        };
+        let ids = self.built_in_workflow_template_ids();
+        for template in &mut store.templates {
+            if !template.is_built_in || !ids.contains(&template.id.as_str()) {
+                continue;
+            }
+            let before = template.model_bindings.bindings.clone();
+            for slot in template
+                .workflow
+                .nodes
+                .iter()
+                .filter_map(|node| match node {
+                    NodeDsl::Worker(worker) => worker.execution_slot_id.as_ref(),
+                    _ => None,
+                })
+            {
+                if prior
+                    .get(&template.id)
+                    .is_some_and(|slots| slots.contains(slot))
+                {
+                    continue;
+                }
+                if let Some(binding) = template
+                    .model_bindings
+                    .bindings
+                    .iter_mut()
+                    .find(|binding| &binding.execution_slot_id == slot)
+                {
+                    binding.agent_id = profile.agent_id.as_str().into();
+                    binding.model_id = profile.model_selection.model_id().map(str::to_owned);
+                    binding.config_options = profile.config_options.clone();
+                    binding.model_bound_overrides = profile.model_bound_overrides.clone();
+                    binding.permission_mode_id = None;
+                    binding.auto_accept = false;
+                } else {
+                    template.model_bindings.bindings.push(
+                        crate::workflow_model_binding::WorkerModelBinding {
+                            execution_slot_id: slot.clone(),
+                            agent_id: profile.agent_id.as_str().into(),
+                            model_id: profile.model_selection.model_id().map(str::to_owned),
+                            config_options: profile.config_options.clone(),
+                            model_bound_overrides: profile.model_bound_overrides.clone(),
+                            permission_mode_id: None,
+                            auto_accept: false,
+                        },
+                    );
+                }
+            }
+            template
+                .model_bindings
+                .bindings
+                .sort_by(|left, right| left.execution_slot_id.cmp(&right.execution_slot_id));
+            if before != template.model_bindings.bindings {
+                template.model_bindings.binding_revision =
+                    template.model_bindings.binding_revision.saturating_add(1);
+            }
+        }
     }
 
     fn save_workflow_template_store(&self, store: &WorkflowTemplateStore) -> Result<()> {
-        fs::create_dir_all(self.paths.user_context_dir().as_std_path())?;
-        write_json(&self.paths.workflow_templates_file(), store)
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            crate::storage::configuration::verify_revision(
+                &self.paths.workflow_templates_file(),
+                &store.storage_revision,
+            )?;
+            write_json(&self.paths.workflow_templates_file(), store)
+        })
     }
 
     pub fn task_authoring_workflow(&self, task_id: &str) -> Result<TaskAuthoringWorkflow> {
@@ -4335,7 +4466,7 @@ impl App {
         let (agent_id, config) = self.managed_agent(provider)?;
         match acp_client::doctor_with_deadline(
             &agent_id,
-            &config.adapter,
+            &config.executable_adapter(&agent_id)?,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
@@ -4364,7 +4495,7 @@ impl App {
         let (agent_id, config) = self.managed_agent(provider)?;
         acp_client::probe_model_config(
             &agent_id,
-            &config.adapter,
+            &config.executable_adapter(&agent_id)?,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
@@ -6573,9 +6704,9 @@ mod tests {
     };
     use crate::acp::elicitation::{pending_elicitation_file, pending_elicitation_state};
     use crate::config::{
-        AppearancePreference, ColorSchemePreference, DesktopLanguage,
-        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, RemoteCompletedTask,
-        PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel,
+        AppearancePreference, ColorSchemePreference, DesktopLanguage, DesktopUpdateBadgeState,
+        FontSizePreference, FontStackPreference, PersonalizationPreference,
+        ProviderDiagnosticSnapshot, RemoteCompletedTask, RuntimeConfig, RuntimeLogLevel,
         StateConfig, catalog_agent_default_config,
     };
     use crate::domain::{
@@ -7177,6 +7308,7 @@ mod tests {
             config.with_provider_diagnostics(std::collections::BTreeMap::from([(
                 provider.to_string(),
                 ProviderDiagnosticSnapshot {
+                    config_fingerprint: None,
                     available: true,
                     error: None,
                     checked_at: "2026-06-24T00:00:00Z".to_string(),
@@ -7453,6 +7585,7 @@ mod tests {
             &std::collections::BTreeMap::from([(
                 "claude-acp".to_string(),
                 ProviderDiagnosticSnapshot {
+                    config_fingerprint: None,
                     available: true,
                     error: None,
                     checked_at: "2026-06-24T00:00:00Z".to_string(),
@@ -7736,6 +7869,7 @@ mod tests {
             control: WorkflowControl::default(),
         };
         let store = WorkflowTemplateStore {
+            storage_revision: Default::default(),
             version: VERSION.to_string(),
             last_used_template_id: Some("custom".to_string()),
             last_created_workflow: Some(stale_workflow.clone()),
@@ -9917,7 +10051,7 @@ mod tests {
         let paths =
             crate::storage::GoldBandPaths::new(Utf8PathBuf::from("/tmp/interview-default-success"));
         let profiles = super::ensure_default_user_profiles(&paths).unwrap();
-        let workflow = super::default_workflow_dsl("claude-acp", &profiles, DesktopLanguage::ZhCn);
+        let workflow = super::default_workflow_dsl(&profiles, DesktopLanguage::ZhCn);
 
         let interview = workflow
             .nodes
@@ -10011,8 +10145,7 @@ mod tests {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root);
         let mut seed = StateConfig::default();
-        seed.remote_completed_tasks
-            .push(completed_entry("rt-seed"));
+        seed.remote_completed_tasks.push(completed_entry("rt-seed"));
         app.save_state(&seed).unwrap();
 
         let mut seen = None;

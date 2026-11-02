@@ -1,9 +1,11 @@
 # Gold Band Provider 概览
 
 ## 1. 核心判断
-Gold Band 以 provider 为核心抽象，当前默认 provider 已切换为 `claude-acp`：通过 ACP-compatible adapter 调用 agent，并使用 ACP 统一后的 session events 作为会话详情可视化输入。
+Gold Band 以 provider 为核心抽象，ACP provider 使用稳定 ManagedAgentId，首次引导由用户选择默认 Agent 与模型；既有 `claude-acp` 接入通过 ACP-compatible adapter 调用 agent，并使用 ACP 统一后的 session events 作为会话详情可视化输入。
 
 Claude Code direct CLI / stream-json 不再作为新运行路径的 fallback；历史 run 中的 legacy 文件仅作为日志/诊断材料读取。
+
+首次启动引导复用现有 Catalog 与 ACP Doctor。候选只有通过诊断且正式配置与匹配诊断均保存后才进入健康列表；全部成功实例均登记。引导不自动下载全部 npm 适配器，也不发送付费推理 prompt；当前登录通过供应商外部指引完成。`DefaultExecutionProfile` 提供新配置初值，已有显式配置及 Run snapshot 保持原语义，详见[首次启动引导](../interaction/app/first-run-onboarding.md)。
 
 ## 2. provider 层职责
 provider adapter 负责：

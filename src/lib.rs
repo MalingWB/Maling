@@ -18,6 +18,7 @@ pub mod mcp;
 pub mod memory;
 pub mod npx_cache;
 pub mod observability;
+pub mod onboarding;
 pub mod personal_analytics;
 pub mod process;
 pub mod prompts;

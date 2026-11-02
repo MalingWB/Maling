@@ -527,6 +527,7 @@ export interface ManagedAgentVm {
   agentType: string;
   displayName: string;
   command: string;
+  executablePath?: string | null;
   args: string[];
   env: AgentEnvEntryVm[];
   iconKey: string;
@@ -631,6 +632,7 @@ export interface ManagedAgentInput {
   displayName: string;
   icon: string;
   command: string;
+  executablePath?: string | null;
   args: string[];
   env: Record<string, string>;
   primaryAgentDir: string;

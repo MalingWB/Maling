@@ -3197,5 +3197,117 @@
         "notReadyHint": "La tarea de desarrollo correspondiente aún no está terminada; considere esperarla"
       }
     }
+  },
+  "onboarding": {
+    "loading": "Cargando",
+    "loadFailed": "No se pudo leer la configuración inicial. Inténtalo de nuevo.",
+    "retry": "Reintentar",
+    "language": "Idioma",
+    "theme": "Cambiar tema",
+    "exit": "Salir de la configuración",
+    "progress": "Progreso",
+    "checking": "Comprobando el entorno…",
+    "runtimeVersion": "Node.js recomendado: {{version}}; compatible: {{ranges}}",
+    "recheck": "Comprobar de nuevo",
+    "installGuide": "Guía oficial de instalación",
+    "discovering": "Comprobando Agents locales…",
+    "discovered": "{{count}} Agents disponibles detectados",
+    "noAgents": "No se detectó ningún Agent disponible. Instala un Agent o inicia sesión y vuelve a comprobarlo.",
+    "defaultAgent": "Agent predeterminado",
+    "chooseAgent": "Elige un Agent disponible",
+    "defaultModel": "Modelo predeterminado",
+    "chooseModel": "Elige un modelo",
+    "providerDefault": "Este Agent utiliza el modelo predeterminado del proveedor.",
+    "checkingModel": "Leyendo la configuración del modelo…",
+    "permission": "Modo de permisos",
+    "choosePermission": "Elige un modo de permisos",
+    "preview": "Revisar cambios",
+    "previewSummary": "Actualizar {{slots}} configuraciones de ejecución en {{count}} workflows integrados.",
+    "slots": "{{count}} configuraciones",
+    "loadMore": "Cargar más",
+    "back": "Atrás",
+    "help": "Ayuda",
+    "skipGit": "Omitir Git por ahora",
+    "next": "Siguiente",
+    "apply": "Aplicar y finalizar",
+    "review": "Vista previa",
+    "repairHint": "Sigue la guía del proveedor para instalar o iniciar sesión y comprueba de nuevo.",
+    "settingsTitle": "Configuración inicial y workflows predeterminados",
+    "rerun": "Repetir configuración",
+    "steps": {
+      "git": "Git",
+      "runtime": "Entorno",
+      "agent": "Agent"
+    },
+    "titles": {
+      "git": "Preparar Git",
+      "runtime": "Comprobar el entorno Node.js",
+      "agent": "Conecta un Agent y elige el modelo predeterminado"
+    },
+    "descriptions": {
+      "git": "Git proporciona control de versiones. Puedes instalarlo más tarde.",
+      "runtime": "Node.js, npm y npx deben superar la comprobación. Comprueba de nuevo tras instalar.",
+      "agent": "Los Agents disponibles se guardan automáticamente. Elige el modelo predeterminado, revisa y aplícalo a los workflows integrados."
+    },
+    "status": {
+      "ready": "Listo",
+      "missing": "No instalado",
+      "unsupported": "Versión no compatible",
+      "incompatible": "Entorno inconsistente",
+      "failed": "Error de comprobación",
+      "timeout": "Tiempo agotado",
+      "cancelled": "Cancelado",
+      "skipped": "Omitido",
+      "pending": "Sin comprobar",
+      "checking": "Comprobando"
+    },
+    "errors": {
+      "setup": {
+        "agent-preparation-required": "Sigue la guía del proveedor para instalar o iniciar sesión y comprueba de nuevo.",
+        "probe-failed": "La comprobación falló. Vuelve a comprobar.",
+        "probe-cancelled": "Se canceló la comprobación. Vuelve a comprobar para continuar.",
+        "runtime-incompatible": "Node.js, npm o npx no cumple los requisitos. Comprueba el entorno de ejecución.",
+        "environment-check-required": "Completa primero la comprobación del entorno de ejecución.",
+        "configuration-conflict": "La configuración cambió en otro lugar. Comprueba los Agents y revisa los cambios actuales.",
+        "preview-stale": "El modelo seleccionado o los Workflows integrados cambiaron. Vuelve a previsualizar los cambios.",
+        "agent-unavailable": "Este Agent ya no está disponible. Compruébalo de nuevo o elige otro Agent.",
+        "model-config-invalid": "Las opciones del modelo ya no son válidas. Selecciona el modelo de nuevo.",
+        "model-selection-required": "Selecciona un modelo antes de continuar.",
+        "permission-selection-required": "Selecciona un modo de permisos antes de continuar.",
+        "git-decision-required": "Instala una versión compatible de Git o elige omitir Git.",
+        "recovery-required": "No se pudo recuperar el guardado anterior. Restaura el acceso a la carpeta de ajustes y reinicia.",
+        "executable-path-invalid": "Selecciona un ejecutable existente con su ruta completa.",
+        "commit-failed": "No se pudo guardar. Comprueba los permisos y el espacio libre, y reintenta.",
+        "operation-id-invalid": "La solicitud de guardado no es válida. Vuelve a previsualizar los cambios.",
+        "templates-initialization-required": "Los Workflows integrados no están inicializados. Comprueba los Agents de nuevo."
+      }
+    },
+    "applyBuiltins": "Aplicar a los Workflows integrados",
+    "gitVersion": "Se requiere Git {{version}} o posterior.",
+    "previousBindings": "Configuraciones actuales que se reemplazarán",
+    "previousBinding": "{{slot}}: {{agent}} / {{model}}",
+    "defaultModelLabel": "Predeterminado del proveedor",
+    "runtimeBlocked": "La comprobación del entorno no se superó",
+    "detectionFailed": "Falló la detección de Agent. Vuelve a intentarlo.",
+    "recheckRuntime": "Comprobar el entorno de nuevo",
+    "viewRuntime": "Ver entorno",
+    "environmentHelp": {
+      "missing": "No se encontró esta herramienta. Sigue la guía oficial de instalación y vuelve a comprobar.",
+      "unsupported": "Instala una versión compatible siguiendo la guía oficial y vuelve a comprobar.",
+      "incompatible": "La combinación de entorno detectada es incompatible. Revisa las rutas de instalación y vuelve a intentarlo.",
+      "failed": "No se pudo completar la comprobación. Revisa la ruta del ejecutable, los permisos de acceso y la instalación y vuelve a intentarlo.",
+      "timeout": "Se agotó el tiempo de comprobación. Reintenta; si persiste, comprueba si la herramienta se inicia correctamente.",
+      "cancelled": "Se canceló la comprobación. Vuelve a comprobar para continuar."
+    },
+    "environmentReasons": {
+      "probe-unavailable": "No se pudo confirmar el entorno realmente utilizado. Revisa la instalación y vuelve a intentarlo.",
+      "node-mismatch": "Se utilizó otra instalación de Node.js. Esperada: {{expectedNodePath}}; actual: {{actualNodePath}}.",
+      "node-version-mismatch": "Las versiones de Node.js difieren. Esperada: {{expectedVersion}}; actual: {{actualVersion}}.",
+      "node-path-mismatch": "La ruta de inicio de Node.js difiere. Esperada: {{expectedNodePath}}; actual: {{actualNodePath}}.",
+      "npm-metadata-missing": "No se pudieron confirmar los metadatos de instalación de npm. Repara la instalación de Node.js/npm y vuelve a comprobar.",
+      "npm-engines-incompatible": "Este npm no admite el Node.js actual. Requisito: {{nodeRange}}.",
+      "npm-version-mismatch": "La información de versión de npm difiere. Salida: {{expectedVersion}}; paquete: {{actualVersion}}.",
+      "npm-package-mismatch": "npm y npx pertenecen a instalaciones distintas. npm: {{expectedNpmRoot}}; esta herramienta: {{actualNpmRoot}}."
+    }
   }
 }
