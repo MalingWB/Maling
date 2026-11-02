@@ -3232,7 +3232,12 @@
     "apply": "应用并完成",
     "review": "预览更改",
     "repairHint": "请按照供应商指引完成安装或登录，然后重新检测。",
-    "settingsTitle": "首次启动引导与默认工作流",
+    "settingsTitle": "引导与工作流",
+    "rerunTitle": "首次启动引导",
+    "rerunDescription": "重新检查 Git、运行环境和本机 Agent。",
+    "defaultsTitle": "默认工作流",
+    "defaultsDescription": "统一设置内置工作流的 Agent、模型和权限，不影响自定义工作流。",
+    "configureDefaults": "配置默认项",
     "rerun": "重新运行引导",
     "steps": {
       "git": "Git",
@@ -3282,7 +3287,6 @@
         "templates-initialization-required": "内置工作流尚未初始化，请重新检测 Agent。"
       }
     },
-    "applyBuiltins": "应用到内置工作流",
     "gitVersion": "需要 Git {{version}} 或更新版本。",
     "previousBindings": "将替换的当前配置",
     "previousBinding": "{{slot}}：{{agent}} / {{model}}",

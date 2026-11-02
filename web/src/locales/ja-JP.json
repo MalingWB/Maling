@@ -3232,7 +3232,12 @@
     "apply": "適用して完了",
     "review": "変更をプレビュー",
     "repairHint": "プロバイダーのガイドに従ってインストールまたはログインし、再確認してください。",
-    "settingsTitle": "初回セットアップと既定ワークフロー",
+    "settingsTitle": "セットアップとワークフロー",
+    "rerunTitle": "初回セットアップ",
+    "rerunDescription": "Git、実行環境、この PC の Agent を再確認します。",
+    "defaultsTitle": "既定のワークフロー",
+    "defaultsDescription": "組み込みワークフローの Agent、モデル、権限をまとめて設定します。カスタムワークフローは変更しません。",
+    "configureDefaults": "既定値を設定",
     "rerun": "セットアップを再実行",
     "steps": {
       "git": "Git",
@@ -3282,7 +3287,6 @@
         "templates-initialization-required": "組み込み Workflow が初期化されていません。Agent を再確認してください。"
       }
     },
-    "applyBuiltins": "組み込み Workflow に適用",
     "gitVersion": "Git {{version}} 以降が必要です。",
     "previousBindings": "置き換える現在の設定",
     "previousBinding": "{{slot}}: {{agent}} / {{model}}",

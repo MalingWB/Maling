@@ -3232,7 +3232,12 @@
     "apply": "套用並完成",
     "review": "預覽變更",
     "repairHint": "請依供應商指引完成安裝或登入，再重新偵測。",
-    "settingsTitle": "首次啟動引導與預設工作流程",
+    "settingsTitle": "引導與工作流程",
+    "rerunTitle": "首次啟動引導",
+    "rerunDescription": "重新檢查 Git、執行環境和本機 Agent。",
+    "defaultsTitle": "預設工作流程",
+    "defaultsDescription": "統一設定內建工作流程的 Agent、模型和權限，不影響自訂工作流程。",
+    "configureDefaults": "設定預設值",
     "rerun": "重新執行引導",
     "steps": {
       "git": "Git",
@@ -3282,7 +3287,6 @@
         "templates-initialization-required": "內建工作流程尚未初始化，請重新檢測 Agent。"
       }
     },
-    "applyBuiltins": "套用至內建工作流程",
     "gitVersion": "需要 Git {{version}} 或更新版本。",
     "previousBindings": "即將取代的目前設定",
     "previousBinding": "{{slot}}：{{agent}} / {{model}}",

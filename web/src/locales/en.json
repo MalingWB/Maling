@@ -3232,7 +3232,12 @@
     "apply": "Apply and finish",
     "review": "Preview changes",
     "repairHint": "Follow the provider’s installation or sign-in guide, then check again.",
-    "settingsTitle": "First-run setup and default workflows",
+    "settingsTitle": "Setup and workflows",
+    "rerunTitle": "First-run setup",
+    "rerunDescription": "Check Git, the runtime, and local Agent availability again.",
+    "defaultsTitle": "Default workflows",
+    "defaultsDescription": "Set the Agent, model, and permissions for built-in workflows. Custom workflows stay unchanged.",
+    "configureDefaults": "Configure defaults",
     "rerun": "Run setup again",
     "steps": {
       "git": "Git",
@@ -3282,7 +3287,6 @@
         "templates-initialization-required": "Built-in workflows are not initialized. Check Agents again."
       }
     },
-    "applyBuiltins": "Apply to built-in workflows",
     "gitVersion": "Git {{version}} or later is required.",
     "previousBindings": "Current bindings to replace",
     "previousBinding": "{{slot}}: {{agent}} / {{model}}",

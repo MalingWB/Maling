@@ -3232,7 +3232,12 @@
     "apply": "Aplicar e concluir",
     "review": "Visualizar alterações",
     "repairHint": "Siga o guia do provedor para instalar ou entrar e verifique novamente.",
-    "settingsTitle": "Configuração inicial e workflows padrão",
+    "settingsTitle": "Configuração e fluxos de trabalho",
+    "rerunTitle": "Configuração inicial",
+    "rerunDescription": "Verifique novamente o Git, o ambiente de execução e os Agent disponíveis neste computador.",
+    "defaultsTitle": "Fluxos de trabalho padrão",
+    "defaultsDescription": "Defina o Agent, o modelo e as permissões dos fluxos de trabalho integrados, sem alterar os personalizados.",
+    "configureDefaults": "Configurar padrões",
     "rerun": "Executar configuração novamente",
     "steps": {
       "git": "Git",
@@ -3282,7 +3287,6 @@
         "templates-initialization-required": "Os Workflows integrados não foram inicializados. Verifique os Agents novamente."
       }
     },
-    "applyBuiltins": "Aplicar aos Workflows integrados",
     "gitVersion": "É necessário Git {{version}} ou superior.",
     "previousBindings": "Configurações atuais a substituir",
     "previousBinding": "{{slot}}: {{agent}} / {{model}}",
