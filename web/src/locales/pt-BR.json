@@ -1140,6 +1140,8 @@
       "runtime-offline": "O runtime ainda não está pronto. Tente novamente em breve.",
       "session-resume-failed": "Falha ao retomar sessão. Uma nova execução será iniciada.",
       "task-not-found": "Esta tarefa multica não foi encontrada.",
+      "upstream-pull-invalid-decision": "Escolha inválida. Verifique e tente novamente.",
+      "upstream-pull-not-pending": "Esta busca já foi concluída; nenhuma escolha é necessária.",
       "workspace-already-bound": "Este espaço de trabalho já está vinculado.",
       "workspace-not-found": "Esta vinculação de espaço de trabalho não foi encontrada."
     },
@@ -3027,7 +3029,9 @@
         "emptyTitle": "Não conectado a {{source}}",
         "removeTask": "Remover da lista",
         "removeTaskHint": "Removido apenas da lista deste lado; ao atualizar, ele volta a aparecer",
-        "removeTaskTerminalHint": "Remove o registro local de conclusão; ele não volta a aparecer ao atualizar"
+        "removeTaskTerminalHint": "Remove o registro local de conclusão; ele não volta a aparecer ao atualizar",
+        "rerunTask": "Reexecutar",
+        "rerunBadge": "Reexecutar"
       },
       "keepResident": "Manter sessão ativa",
       "releaseResident": "Permitir encerramento da sessão",
@@ -3242,6 +3246,7 @@
       "account": {
         "connected": "Conectado"
       },
+      "openPlatform": "Abrir a plataforma {{source}}",
       "column": {
         "empty": "Nenhuma tarefa"
       },
@@ -3266,10 +3271,31 @@
         "label": "Tipo",
         "test": "Teste"
       },
+      "searchPlaceholder": "Pesquisar nome da tarefa…",
       "readiness": {
-        "notReady": "Não pronto",
-        "notReadyHint": "A tarefa de desenvolvimento correspondente ainda não foi concluída; considere aguardá-la"
+        "ready": "Pronto",
+        "readyHint": "A tarefa de desenvolvimento correspondente foi concluída; esta tarefa pode começar"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "Esta tarefa precisa criar uma demanda no DPMS e reportar o vínculo; o selo desaparece após o reporte"
+      },
+      "issueStatus": {
+        "todo": "A fazer",
+        "backlog": "Backlog"
       }
+    },
+    "upstreamPull": {
+      "title": "Entrega do upstream ainda não obtida",
+      "description": "O nó {{node}} de \"{{task}}\" ainda não obteve a entrega do item de trabalho upstream {{issue}}.",
+      "fallbackNote": "Sem escolha em 60 segundos, a busca automática continua.",
+      "retry": "Continuar aguardando",
+      "manual": "Fornecer manualmente",
+      "skip": "Pular busca",
+      "manualLabel": "Entrega",
+      "manualPlaceholder": "Informações essenciais como artefatos construídos e ambientes de implantação…",
+      "manualSubmit": "Continuar com isto",
+      "waitingNote": "Ainda aguardando a atualização da nota de entrega upstream. Você pode fornecê-la manualmente ou pular a qualquer momento."
     }
   }
 }

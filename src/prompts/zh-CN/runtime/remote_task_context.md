@@ -4,4 +4,6 @@
 {% endif %}{% if test_user %}- 测试负责人: {{ test_user }}
 {% endif %}{% if business_story_id %}- 业务需求 ID: {{ business_story_id }}
 {% endif %}{% if origin_url %}- 需求链接: {{ origin_url }}
+{% endif %}{% if dpms_product_id %}- 产品 ID（任务指定）: {{ dpms_product_id }}
+{% endif %}{% if system_story_id %}- 已创建 DPMS 需求 ID: {{ system_story_id }}
 {% endif %}

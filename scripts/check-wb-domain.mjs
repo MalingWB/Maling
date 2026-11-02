@@ -24,16 +24,28 @@ export function scanTrackedFiles(root, hostname) {
   return matches;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+function hostnameFromEnv(name) {
+  const value = process.env[name];
   try {
-    const value = process.env.GOLD_BAND_WB_BASE_URL;
     const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) throw new Error();
-    const matches = scanTrackedFiles(process.cwd(), url.hostname);
+    return url.hostname;
+  } catch {
+    throw new Error(`Missing or invalid ${name}.`);
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const hostnames = new Set([
+      hostnameFromEnv('GOLD_BAND_WB_BASE_URL'),
+      hostnameFromEnv('GOLD_BAND_WB_MULTICA_URL'),
+    ]);
+    const matches = [...new Set([...hostnames].flatMap((hostname) => scanTrackedFiles(process.cwd(), hostname)))];
     if (matches.length) throw new Error(`WB service domain is present in repository files:\n${matches.join('\n')}`);
-    console.log('WB service domain is absent from repository files.');
+    console.log('WB service domains are absent from repository files.');
   } catch (error) {
-    console.error(error.message || 'Invalid GOLD_BAND_WB_BASE_URL.');
+    console.error(error.message || 'Invalid WB service origin.');
     process.exitCode = 1;
   }
 }

@@ -60,6 +60,7 @@ import {
   subscribeConversationRunStateUpdates,
   subscribeConversationTerminalResultUpdates,
   subscribeRemoteTaskUpdates,
+  subscribeRuntimeAssetInstalled,
   updateNotificationAttention,
   recordActivity,
 } from './api';
@@ -1364,6 +1365,33 @@ export function App() {
     loadProfiles().catch(() => setProfiles([]));
     getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
   }, [conversationShellReady, loadProfiles]);
+
+  // multica 被动安装（runtime-assets push-install）在后台落库：上方两份列表只在会话壳就绪时
+  // 拉一次，装完不重拉会「列表里找不到刚装的资产」（M5-cr 内网反馈）。按 assetType 只重拉
+  // 对应领域（data-loading §6 最小作用域）；best-effort 吞错，与首拉同约定。
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void subscribeRuntimeAssetInstalled((event) => {
+      if (!active) return;
+      if (event.assetType === 'workflow') {
+        getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
+      } else if (event.assetType === 'role') {
+        // best-effort 吞错（data-loading §3/§6）：后台重拉失败不得清空已加载的基础数据。
+        loadProfiles().catch(() => {});
+      }
+    }).then((dispose) => {
+      if (active) {
+        unlisten = dispose;
+      } else {
+        dispose();
+      }
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [loadProfiles]);
 
   useEffect(() => {
     if (!conversationShellReady || !defaultProjectId) return;

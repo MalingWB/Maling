@@ -19,11 +19,10 @@
   "metricsToggleLocked": true,
   "metricsBaseUrl": "${GOLD_BAND_WB_BASE_URL}",
   "metricsApiKey": "",
-  "multicaPort": 5005,
   "multicaEnabled": true,
   "multicaToggleLocked": true,
-  "multicaBaseUrl": "${WB_MULTICA_URL}",
-  "multicaAppUrl": "${WB_MULTICA_URL}",
+  "multicaBaseUrl": "${GOLD_BAND_WB_MULTICA_URL}",
+  "multicaAppUrl": "${GOLD_BAND_WB_MULTICA_URL}",
   "builtinMcpServers": [
     {
       "id": "maling-code-graph",

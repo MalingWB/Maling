@@ -1,4 +1,5 @@
 process.env.GOLD_BAND_WB_BASE_URL = 'https://example.invalid';
+process.env.GOLD_BAND_WB_MULTICA_URL = 'https://multica.example.invalid';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';

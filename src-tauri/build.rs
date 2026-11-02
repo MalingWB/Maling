@@ -40,6 +40,7 @@ struct ChannelConfig {
 fn main() {
     println!("cargo:rerun-if-env-changed=GOLD_BAND_RELEASE_CHANNEL");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_WB_BASE_URL");
+    println!("cargo:rerun-if-env-changed=GOLD_BAND_WB_MULTICA_URL");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_METRICS_API_KEY");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_METRICS_BASE_URL");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_MULTICA_ENABLED");
@@ -72,7 +73,7 @@ fn main() {
             )
         });
     let wb_urls = if channel == "wb" {
-        Some(build_channel_config::wb_urls(&config_value).unwrap_or_else(|error| panic!("{error}")))
+        Some(build_channel_config::wb_urls().unwrap_or_else(|error| panic!("{error}")))
     } else {
         None
     };
