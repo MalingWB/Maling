@@ -325,7 +325,7 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
 ```jsonc
 {
   "desktop_multica_enabled": false,
-  "desktop_multica_base_url": "",             // multica server API 根地址（daemon/业务接口）。空 = 渠道编译期默认（default: localhost:8080 / wb: maling:5005）；**运行期可由远程任务管理页设置弹窗覆盖（M5-ay），单一「连接地址」输入、保存即两值同址**
+  "desktop_multica_base_url": "",             // multica server API 根地址（daemon/业务接口）。空 = 渠道编译期默认（default: localhost:8080 / wb: GOLD_BAND_WB_MULTICA_URL 注入的独立 origin，见 M5-cv）；**运行期可由远程任务管理页设置弹窗覆盖（M5-ay），单一「连接地址」输入、保存即两值同址**
   "desktop_multica_app_url": "",              // multica Web 前端地址（浏览器登录页 cli_callback 用；常与 base_url 同源，分离配置便于 API/Web 分部署）。与 base_url 同生命周期：**分端口形态（API 8080 / 登录页 3000）只由渠道编译期默认产生，运行期保存一律两值同址**
   "desktop_multica_pat": "",                  // 明文 PAT，永不回显，只暴露 pat_set: bool
   "desktop_multica_daemon_id": "",            // 本机持久 UUID v7，首次启动生成
@@ -386,7 +386,7 @@ multica.session-resume-failed   // 保留在码表但 M4-d 起不 emit（resume 
 `gold-band://multica-task-updated`、`gold-band://multica-runtime-status`。
 
 **channel config**（`configs/channels/*.json`，参考 metrics 四字段模式）：
-新增 `multicaBaseUrl`（API 地址，default 预填 `http://localhost:8080` 本地联调 / wb 预填 `WB Multica 服务地址`，nginx 统一入口）、`multicaAppUrl`（Web 前端地址，浏览器登录用，default 预填 `http://localhost:3000` / wb 同 `WB Multica 服务地址`，前后端同源）、`multicaEnabled` 默认开关（default/wb 均 `true`，零配置直连前提）。
+新增 `multicaBaseUrl`（API 地址，default 预填 `http://localhost:8080` 本地联调 / wb 引用 `${GOLD_BAND_WB_MULTICA_URL}`，由独立构建期变量注入）、`multicaAppUrl`（Web 前端地址，浏览器登录用，default 预填 `http://localhost:3000` / wb 同 `${GOLD_BAND_WB_MULTICA_URL}`，前后端同源）、`multicaEnabled` 默认开关（default/wb 均 `true`，零配置直连前提）。**M5-cv 起 Multica 地址不再从 `GOLD_BAND_WB_BASE_URL` 派生端口**，`multicaPort` 已删除。
 
 #### 3.2.6 登录、PAT 获取与 workspace 选择（首启链路）
 
@@ -1071,7 +1071,7 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **错误码表订正**：删 `multica.workspace-empty`；`multica.session-resume-failed` 标注「保留码表但不 emit」。
   - **验证**：`cargo check` multica 零 warning（仅 main 既有 9 条非 multica）；`cargo test multica::` 83 过；tsc 零错；vitest 1124/1124。
 
-- [x] **M5-ar**（本轮）wb 渠道 multica 地址修正——默认端口 80 → nginx 统一入口 `:5005`（开发设计 §12.30）：
+- [x] **M5-ar**（本轮）wb 渠道 multica 地址修正——默认端口 80 → nginx 统一入口 `:5005`（开发设计 §12.30）。**地址派生方式已被 M5-cv 取代**（迁独立子域、去 `multicaPort`），本条「用编译期渠道配置而非运行期旁路」的判断仍有效：
   - **背景 / 根因**：跨机器部署连远程 multica（172.21.18.88，nginx 对外统一 `WB Multica 服务地址`，前后端同源）。核查发现 `wb.json` 的 `multicaBaseUrl`/`multicaAppUrl` 仍是 `WB 服务基础地址`（默认 80，过时）——渠道配置链路正确（json→build.rs 编译期 env→channel.rs），仅值滞后于服务端 nginx 端口；运行期不可改（connect 不收 URL、设置页区块已删、`save_multica_settings` 已删），须修正编译期值而非加运行期旁路。**（M5-ay 注记：「运行期不可改」结论已被 M5-ay 取代——连接地址现为运行期可配置，渠道值退为默认兜底；wb 渠道修正本身不变。）**
   - **方案（修正过时值）**：wb 渠道本属 maling 生态（appName MALING、updater/metrics/内置 MCP 均指向 WB 服务域名），multica 地址同生态，直接把 `multicaBaseUrl`/`multicaAppUrl` 改为 `WB Multica 服务地址`（前后端同入口，消除前端 API 地址硬编码 localhost 隐患、无 CORS）；`browser_login` 的 `cli_callback` 仍走 Gold-Band 本机 127.0.0.1，nginx 透传 multica 后端登录成功的 302，跨机器 connect 不受影响（§3.2.6）。服务端 nginx 入口已由用户确认就绪。
   - **验证**：`GOLD_BAND_RELEASE_CHANNEL=wb cargo check -p gold-band-desktop` 绿——build.rs 正确解析 wb.json 新值、编译期 env 生效 `WB 服务域名:5005`；default 渠道无回归。纯渠道配置值修正，无运行时逻辑变化、无性能影响。
@@ -1373,6 +1373,12 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **设计判断**：不是 M5-cn 回退。DPMS 查询按产品隔离（跨产品详情返回 status -5），story id 单独不可寻址，(产品 ID, 需求 ID) 才是 multica 拉取字段的完整 join key；该事实只有创建方持有（claim 行的 `dpms_product_id` 是推荐值，用户确认后可能切产品）。产品 ID 与 story ID 同属「本任务创建出的哪个需求」的关联事实，不是字段镜像。
   - **实现**：① wire 增可选 `dpms_product_id`（skip-if-none；缺省 body 与 M5-cn 逐字节等价，旧 server 忽略未知字段）；② 组装读任务记忆 `dpms.productId`（trim + 正整数，缺失/非法 → 只回传 story id，不阻断关联）；③ 去重复用 `last_dpms_report` 整体比较（产品晚到补齐会自然补发一次）；④ 门提示词 zh/en 扩为两键，明确写确认后实际使用的数字产品 ID；⑤ 角色定义 `dpms.productId` 契约显式要求数字 ID。
   - **验证**：desktop `multica::` **260/260**（两种 body 精确形态 + 产品键边界 + 既有字面量同步）、lib `prompts::` **19/19**（门模板双语两键契约）；改动文件 clippy 零新增告警。**待 multica 部署接收新字段**；端到端随打包联调验收。
+- [x] **M5-cv**（2026-11-02）Multica 地址解耦为独立构建期注入（Rust 构建脚本 + CI + 文档，开发设计 §12.92 改动九十）：
+  - **需求（用户/运维）**：multica 对外入口从「码灵 WB 服务域名 + 5005 端口」整体替换为独立子域（同协议、无端口），客户端编译期默认地址须同步。
+  - **设计判断（根因修复，非改常量）**：旧链路在构建期把 multica 与码灵服务域耦合成「同 origin + `multicaPort`」，新部署是独立子域且无端口，原模板无法表达；继续保留 `multicaPort` 派生会把两个独立服务重新绑死。故 multica 地址升级为独立构建期事实源 `GOLD_BAND_WB_MULTICA_URL`（模板令牌 `${GOLD_BAND_WB_MULTICA_URL}`），删除 `multicaPort` 与同源派生逻辑；运行期「settings 覆盖 → 渠道兜底」解析链与地址变更作废语义不变。
+  - **实现**：① `configs/channels/wb.json` 改双令牌、删 `multicaPort`；② `scripts/channel-config.mjs` 抽 `readOrigin(env, name)` 分别校验两个 HTTP(S) origin，错误只回显变量名；③ `src-tauri/build_channel_config.rs` 双 origin 校验/替换（错误不回显值），`build.rs` 增加 `rerun-if-env-changed`；④ 两条 release workflow 注入同名 Secret；⑤ `check-wb-domain.mjs` 同时扫描两个域名，防泄漏。default 渠道保持 localhost 不变。
+  - **部署前置（非本仓库代码）**：GitHub Actions 需新增 Secret `GOLD_BAND_WB_MULTICA_URL`；内网 multica 的 nginx `server_name`/端口、桌面端 `apiUrl`、`MULTICA_APP_URL`/CORS/OAuth 回调、CLI 默认 self-host 地址须由内网团队同步（本地 multica fork 仅参考，不作为内网契约）。
+  - **验证**：`node --test` channel-config / wb-base-url / check-wb-domain / prepare-release-build / release-please-config / generate-release-assets / dev-channel 全过；`GOLD_BAND_RELEASE_CHANNEL=wb` + 双变量 `cargo check -p gold-band-desktop` 走通 build.rs 实际解析；default 渠道 check 无回归。仅构建期配置，无运行时逻辑、算法或 I/O 变化。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

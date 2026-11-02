@@ -381,8 +381,8 @@ channel 字段是**编译期常量**（option_env!，参考 metrics 字段 chann
 
 | 字段 | DesktopChannelConfig（channel.rs:4-22） | default.json | wb.json |
 |---|---|---|---|
-| `multica_base_url` | `&'static str` | `http://localhost:8080` | `WB Multica 服务地址`（nginx 统一入口，见 §12.30） |
-| `multica_app_url` | `&'static str` | `http://localhost:3000` | `WB Multica 服务地址`（前后端同源同入口） |
+| `multica_base_url` | `&'static str` | `http://localhost:8080` | `${GOLD_BAND_WB_MULTICA_URL}` 注入的独立 origin（不再从 WB 服务地址派生端口，见 §12.92） |
+| `multica_app_url` | `&'static str` | `http://localhost:3000` | 同 `${GOLD_BAND_WB_MULTICA_URL}`（前后端同源同入口） |
 | `multica_enabled` | `bool` | `true` | `true` |
 | `multica_toggle_locked` | `bool` | `false` | `true` |
 
@@ -1848,6 +1848,8 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ### 12.30 改动二十八：wb 渠道 multica 地址修正——默认端口 80 → nginx 统一入口 `:5005`（M5-ar，2026-08-13）
 
+> **已被改动九十（§12.92）取代**：multica 已迁至独立子域（无端口），地址不再从 WB 服务域派生 `:5005`，改由 `GOLD_BAND_WB_MULTICA_URL` 单独注入。本条的「改用编译期渠道配置而非运行期旁路」判断仍然有效。
+
 **背景（跨机器部署）**：将 MALING 客户端打包到非开发机运行、连远程 multica（部署在 172.21.18.88，经 nginx 统一转发，对外入口 `WB Multica 服务地址`，前端 `/login` 与后端 `/api/*` 同源同端口）。核查发现 `configs/channels/wb.json` 的 `multicaBaseUrl`/`multicaAppUrl` 仍是 `WB 服务基础地址`（默认 80 端口，过时）——与服务端实际 nginx 入口不符，连不上。
 
 **根因（好设计、值过时）**：渠道配置链路本身正确（`configs/channels/wb.json` → `build.rs` 编译期 env → `channel.rs option_env!` → `config.rs multica_base_url/app_url`，且 `build.rs:146-157` 支持 env 覆盖 json），仅 multica 地址值滞后于服务端 nginx 端口调整。运行期不可改（`connect_multica` 不收 URL、设置页 multica 区块已移除、`save_multica_settings` 已删，见 §12.22/接入方案 §3.2.5），故必须修正编译期配置值而非加运行期旁路。
@@ -3161,6 +3163,29 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证结果**：desktop `multica::` **260 passed / 0 failed**（client：缺省形态逐字节等价 + 带产品两字段精确 body + socket 断言更新 + 409 语义不变；bridge：storyId+productId 双解析、产品键缺失/非法省略不阻断、storyId 非法整体不回写；vm/bridge 既有 body 字面量同步）；lib `prompts::` **19 passed / 0 failed**（门模板双语两键契约 + `dpms.productId` 实际值锚点）。改动文件 clippy 零新增告警。**待 multica 侧部署接收 `dpms_product_id`**；端到端（创建→关联回传→multica 按产品拉字段）随打包联调验收。
 
+### 12.92 改动九十：wb 渠道 multica 地址解耦为独立构建期注入（M5-cv，2026-11-02）
+
+**背景**：multica 对外入口从「码灵 WB 服务域名 + `:5005`」整体替换为独立子域（与 WB 服务域不同、无端口），客户端编译期默认地址须同步。
+
+**根因（构建期耦合，非地址值过时）**：§12.30 把 multica 地址建模为「WB 服务 origin + `multicaPort`」派生，模板只能用 `${GOLD_BAND_WB_BASE_URL}` 换 origin 再拼端口，只能表达同 origin 换端口。新部署是两个独立 origin，旧模板无法表达；若改为硬编码新域名，又违反「仓库不落真实服务域名」（`check-wb-domain` 强制）。故把 multica 地址升级为独立构建期事实源，而非改常量或加运行期旁路。
+
+**实现**：
+
+- ① `configs/channels/wb.json`：`multicaBaseUrl`/`multicaAppUrl` 改 `${GOLD_BAND_WB_MULTICA_URL}`，删除 `multicaPort` 与端口派生。
+- ② `scripts/channel-config.mjs`：`readOrigin(env, name)` 分别校验两个 HTTP(S) origin（拒绝凭据/路径/查询/片段），`resolveWbConfig` 递归替换两个令牌；错误只回显变量名，不回显值。
+- ③ `src-tauri/build_channel_config.rs`：`WbUrls::new(base, multica)` 双 origin 校验，`resolve()` 各自替换对应令牌（multica 地址不会被误用于基础地址）；`wb_urls()` 分别读取两个变量；`build.rs` 补 `rerun-if-env-changed=GOLD_BAND_WB_MULTICA_URL`。
+- ④ 两条 release workflow（`release.yml`/`release-please.yml`）的 preflight、build、updater-json 三处注入 Secret `GOLD_BAND_WB_MULTICA_URL`。
+- ⑤ `scripts/check-wb-domain.mjs` 同时扫描两个域名，防止新域名被硬编码进仓库。
+- 运行期解析链（`desktop_multica_base_url` 覆盖 → 渠道兜底）与地址变更作废语义（`save_multica_connection_address` 改动地址清 PAT/绑定）不变；default 渠道保持 localhost。
+
+**部署前置（非本仓库代码）**：GitHub Actions 新增 Secret `GOLD_BAND_WB_MULTICA_URL`；内网 multica 侧须同步 nginx `server_name`/端口、桌面端 `apiUrl`、`MULTICA_APP_URL`/`FRONTEND_ORIGIN`/`CORS_ALLOWED_ORIGINS`/OAuth 回调与 CLI 默认 self-host 地址（本地 multica fork 仅参考源码，不作为内网契约）。过渡期旧入口需保持可解析，供已安装客户端升级使用；用户若曾保存运行期连接地址覆盖，需在设置中改为新地址（地址变更会清 PAT 并要求重新登录）。
+
+**方案自评审**：过度设计——仅新增一个构建期变量与令牌并删除 `multicaPort` 派生，无新状态、缓存、队列或运行期分支。性能——构建期字符串替换，运行期零变化。
+
+**验证结果**：`node --test`（channel-config / wb-base-url / check-wb-domain / prepare-release-build / release-please-config / generate-release-assets / dev-channel / dev-static-channel / build-channel-options）**70 passed / 0 failed**（新增 multica origin 独立解析、非法 origin 拒绝、源码令牌断言、release workflow Secret 断言）；`GOLD_BAND_RELEASE_CHANNEL=wb` + 双变量 `cargo check -p gold-band-desktop` 走通 build.rs 实际解析；default 渠道 check 无回归。仅构建期配置，无运行时逻辑、算法或 I/O 变化。
+
+**文件**：`configs/channels/wb.json`、`scripts/channel-config.mjs`(+test)、`scripts/wb-base-url.test.mjs`、`scripts/check-wb-domain.mjs`、`scripts/prepare-release-build.test.mjs`、`scripts/release-please-config.test.mjs`、`scripts/generate-release-assets.test.mjs`、`src-tauri/build_channel_config.rs`、`src-tauri/build.rs`、`.github/workflows/{release,release-please}.yml`；文档 `interaction/app/overview.md`、`接入方案.md`、本文件 §2.2.4/§12.30/§12.92。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检
@@ -3179,4 +3204,4 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ### WB 服务地址构建注入
 
-WB 渠道以 `GOLD_BAND_WB_BASE_URL` 为服务地址的构建期事实源，配置模板使用 `${GOLD_BAND_WB_BASE_URL}` 引用该地址。本地开发和构建须设置该变量，正式发布由同名 GitHub Actions Secret 注入；缺失或不是不含路径、凭据、查询和片段的 HTTP(S) origin 时构建失败。更新、发布资源、指标、MCP、帮助信息和官网书签从基础地址派生；Multica 使用渠道配置的端口。地址会进入客户端和发布产物，注入不提供运行时保密性。默认渠道不要求该变量。
+WB 渠道以 `GOLD_BAND_WB_BASE_URL` 为服务地址、`GOLD_BAND_WB_MULTICA_URL` 为 Multica 地址的构建期事实源，配置模板分别使用 `${GOLD_BAND_WB_BASE_URL}` 与 `${GOLD_BAND_WB_MULTICA_URL}` 引用。本地开发和构建须同时设置这两个变量，正式发布由同名 GitHub Actions Secret 注入；缺失或不是不含路径、凭据、查询和片段的 HTTP(S) origin 时构建失败。更新、发布资源、指标、MCP、帮助信息和官网书签从基础地址派生；Multica 使用独立注入的地址，不再从基础地址派生端口。地址会进入客户端和发布产物，注入不提供运行时保密性。默认渠道不要求这两个变量。
