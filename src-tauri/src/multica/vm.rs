@@ -1920,6 +1920,7 @@ mod tests {
         assert!(RemoteTaskVm::from_active_run("remote-9", &run, "proj-1").dpms_link_pending);
         run.last_dpms_report = Some(ReportDpmsStoryRequest {
             dpms_story_id: 889001,
+            dpms_product_id: None,
         });
         assert!(
             !RemoteTaskVm::from_active_run("remote-9", &run, "proj-1").dpms_link_pending,

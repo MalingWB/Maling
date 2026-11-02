@@ -120,18 +120,24 @@ pub struct ActiveRemoteRun {
     /// claim 后已种进任务记忆），终态不再回写；None = 未链接。
     pub claim_system_story_id: Option<i64>,
     /// 最近一次已发送（成功或 409）的 DPMS 回写 body（M5-cm 早回写去重的事实源）：与新组装
-    /// body 相同 → 跳过（服务端已持有）；不同（M5-cn 后 body 只含 story id，即 run 内创建了
-    /// 新 story）→ 再发。发送网络失败不写（下一节点/turn/终态边界自然重试）。仅内存，随 run
+    /// body 相同 → 跳过（服务端已持有）；不同（run 内创建了新 story，或 M5-cu 后产品 ID 晚到
+    /// 补齐）→ 再发。发送网络失败不写（下一节点/turn/终态边界自然重试）。仅内存，随 run
     /// 生命周期清理。
     pub last_dpms_report: Option<crate::multica::client::ReportDpmsStoryRequest>,
 }
 
 /// 任务记忆中 DPMS story 身份的键名（M5-cl 回传对接）。角色创建成功后写入（`storyId`，与
 /// CICD 角色/DPMS 角色定义的共享参数记忆契约一致）；claim 播种与终态回写读同一键——单一
-/// 事实源，键名集中定义避免两处字符串漂移。M5-cn 契约定版后这是回写读取的**唯一** DPMS
-/// 记忆键（body 只回传 story id 关联；字段镜像由 multica 从 DPMS 拉取，其余 `dpms.*` 键
-/// 是角色自身预填/展示用，码灵不消费）。
+/// 事实源，键名集中定义避免两处字符串漂移。M5-cu 起回写读取**两个** DPMS 记忆键：本键
+/// （story id）与 [`DPMS_PRODUCT_MEMORY_KEY`]（创建所用产品 id，join key 的另一半）；
+/// 其余 `dpms.*` 键仍是角色自身预填/展示用，码灵不消费。
 pub const DPMS_STORY_MEMORY_KEY: &str = "storyId";
+
+/// 任务记忆中 DPMS 创建所用产品 id 的键名（`dpms.productId`，M5-cu）。角色创建成功后写入
+/// 数字产品 ID（与角色定义的共享参数记忆契约一致）；回写时作为 join key 与 story id 一并
+/// 上送——DPMS 查询按产品隔离，multica 需要它才能从 DPMS 拉取字段。键缺省/非正 → 回写只带
+/// story id（旧角色灰度兼容）。
+pub const DPMS_PRODUCT_MEMORY_KEY: &str = "dpms.productId";
 
 /// 门控命中的 run 模式字面量（`ConversationCreateInputVm.run_mode` 的 "direct" 值，
 /// 见 `view_models_conversation.rs` / `scheduled_content_snapshot` 的模式映射）。

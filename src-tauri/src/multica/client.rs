@@ -482,17 +482,24 @@ struct UpdateIssueCompletionOutputRequest {
     completion_output: String,
 }
 
-/// DPMS 需求回写请求（M5-cl 建立；M5-cm 一度扩展为 7 字段载荷，M5-cn 收缩回单字段）。
+/// DPMS 需求回写请求（M5-cl 建立；M5-cm 一度扩展为 7 字段载荷，M5-cn 收缩回单字段；
+/// M5-cu 补回产品 ID 作为 join key）。
 ///
-/// 码灵作为中介持 PAT 回写（角色只写任务记忆，不发 HTTP）。契约（multica 2026-10-31 定版）：
-/// body 只带 `dpms_story_id` ——码灵只回传**关联**（本任务创建出的 story 是哪一个），
-/// 字段镜像（链接/负责人/发布计划/产品等）全部由 multica 从 DPMS 拉取，码灵不搬运值
-/// （搬运时刻 ≠ 查看时刻，值在 DPMS 后续会变，推送注定陈旧）。幂等：同 id 重放 200；
+/// 码灵作为中介持 PAT 回写（角色只写任务记忆，不发 HTTP）。契约：body 带 `dpms_story_id`
+/// （本任务创建出的 story 是哪一个）与可选的 `dpms_product_id`（在哪个产品下创建）——
+/// DPMS 查询按产品隔离，二者共同构成 multica 从 DPMS 拉取字段所需的 join key；其余字段
+/// 镜像（链接/负责人/发布计划等）仍由 multica 从 DPMS 拉取，码灵不搬运值（搬运时刻 ≠
+/// 查看时刻，值在 DPMS 后续会变，推送注定陈旧）。`dpms_product_id` 缺省时 body 与 M5-cn
+/// 单字段契约逐字节等价（旧角色未写记忆键时的灰度兼容）。幂等：同 id 重放 200；
 /// 异 id 409（issue 已链接不同 story，不落任何字段）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ReportDpmsStoryRequest {
     /// 必填：创建的 DPMS 系统需求 id（任务记忆 `storyId`）。
     pub dpms_story_id: i64,
+    /// 选填：本次创建所用产品的 id（任务记忆 `dpms.productId`）。DPMS 侧按产品隔离查询，
+    /// 服务端需要它把 story id 解析到具体产品；缺失（旧角色/记忆未写）时只回传 story id。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dpms_product_id: Option<i64>,
 }
 
 // ===== skill 同步 wire 类型（设计 `.claude/design/multica_skill/` §3-§5）=====
@@ -1699,11 +1706,12 @@ impl MulticaClient {
     }
 
     /// `POST /api/daemon/issues/{issue_id}/dpms-story` —— DPMS 需求回写（M5-cl 建立；M5-cn 契约
-    /// 定版为单字段关联回传）。
+    /// 定版为关联回传；M5-cu 补产品 ID 作为 join key）。
     ///
     /// 调用方（bridge `report_dpms_story_if_changed`：早回写节点/turn 边界 + 终态兜底）在 claim 快照
     /// 命中回写条件（`dpms_required=true` 且 `system_story_id` 空）且任务记忆 `storyId` 可解析为
-    /// 正整数时，把 story id 回传 issue（字段镜像由 multica 从 DPMS 拉取，码灵不回传确认字段）。
+    /// 正整数时，把 story id（及可选的 `dpms.productId`）回传 issue——二者是 multica 从 DPMS
+    /// 拉取字段所需的 join key（DPMS 查询按产品隔离）；其余字段镜像由 multica 拉取，码灵不回传。
     /// 鉴权与其余 `/api/daemon/*` 相同（PAT bearer + `X-Workspace-ID`，服务端按
     /// issue 所属 ws 做 `requireDaemonWorkspaceAccess` 范围校验）。响应体不消费（只关心 HTTP 状态）。
     ///
@@ -2364,13 +2372,27 @@ mod tests {
 
     #[test]
     fn report_dpms_story_request_serializes_story_id_only() {
-        // M5-cn 契约定版：body 恰为 {"dpms_story_id": <正整数>}——码灵只回传关联，
-        // 字段镜像由 multica 从 DPMS 拉取。
+        // M5-cn 单字段契约；M5-cu 保持缺省形态逐字节等价（旧角色/记忆未写产品 ID）。
         let body = serde_json::to_value(ReportDpmsStoryRequest {
             dpms_story_id: 889001,
+            dpms_product_id: None,
         })
         .unwrap();
         assert_eq!(body, serde_json::json!({"dpms_story_id": 889001}));
+    }
+
+    #[test]
+    fn report_dpms_story_request_serializes_product_id_when_present() {
+        // M5-cu：带产品 ID 时两字段同体上送（(产品, 需求) 是 multica 拉取 DPMS 的 join key）。
+        let body = serde_json::to_value(ReportDpmsStoryRequest {
+            dpms_story_id: 889001,
+            dpms_product_id: Some(889121),
+        })
+        .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"dpms_story_id": 889001, "dpms_product_id": 889121})
+        );
     }
 
     #[tokio::test]
@@ -2388,6 +2410,7 @@ mod tests {
                 "iss-1",
                 &ReportDpmsStoryRequest {
                     dpms_story_id: 889001,
+                    dpms_product_id: Some(889121),
                 },
             )
             .await
@@ -2400,7 +2423,7 @@ mod tests {
         assert!(request.contains("x-workspace-id: ws-1"));
         assert_eq!(
             request.split("\r\n\r\n").nth(1).map(str::trim),
-            Some(r#"{"dpms_story_id":889001}"#)
+            Some(r#"{"dpms_story_id":889001,"dpms_product_id":889121}"#)
         );
     }
 
@@ -2419,6 +2442,7 @@ mod tests {
                 "iss-1",
                 &ReportDpmsStoryRequest {
                     dpms_story_id: 777001,
+                    dpms_product_id: None,
                 },
             )
             .await

@@ -3143,6 +3143,24 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证结果**：desktop `multica::` 259 通过（新增 `apply_observed_rerun_retirements_removes_only_observed_local_rows`、`gate_terminal_completion_output_strips_block_from_undesignated_node`、`lock_degraded_returns_none_on_poison_instead_of_panicking`、error codes 契约扩展、wire `outcome` 断言）；lib `multica` 13 + `profiles` 42（conflict/复用测试扩 outcome 断言）+ workflow install 2（Created/ReusedExisting 断言）+ `orchestrator` 动态令牌 2（注入追加隐式区段并 strip、continue 只 strip 不再解析）+ `upstream` 冻结判据改写全绿；web i18n 契约 7 通过（invalid-decision 7 语言）；tsc / clippy 触碰文件零告警。③④⑥ 的端到端链路依赖 multica server / 真实工作流，待内网打包验收（本地以单测 + wire 契约锁定，bug-fix-verification §3 例外）。
 
+### 12.91 改动八十九：DPMS 回写载荷补产品 ID 作为 join key（M5-cu，2026-11-02）
+
+**背景**：multica 侧提出回写 body 从 `{"dpms_story_id": N}` 扩展为 `{"dpms_story_id": N, "dpms_product_id": M}`——创建需求时产品 ID 本就已知（不选定产品无法创建），码灵补一个字段即可。
+
+**设计判断（不是 M5-cn 的回退）**：M5-cn 收缩的依据是「值所有权在 DPMS，搬运注定陈旧」；产品 ID 不属字段镜像，原因是 **DPMS 查询按产品隔离**（跨产品 `story detail --id` 返回 `status: -5`）。multica 拿到 story id 后要自行拉取字段，必须知道该需求所在产品——story id 单独不可全局寻址，**(产品 ID, 需求 ID) 才是完整 join key**。该事实只有创建方持有：claim 载荷的 `dpms_product_id` 是 issue 行溯源推荐值，用户确认后角色可能切产品创建，不能替代实际值；DPMS 不认识 multica issue，multica 无法反查。故产品 ID 与 story ID 同属「本任务创建出的哪个需求」这一关联事实，与 M5-cn 原则一致。
+
+**实现**：
+
+- ① **wire**（`client.rs`）：`ReportDpmsStoryRequest` 增 `dpms_product_id: Option<i64>`（`skip_serializing_if = "Option::is_none"`）。带产品时 body = `{"dpms_story_id":N,"dpms_product_id":M}`；缺省时与 M5-cn 单字段契约**逐字节等价**（旧角色未写记忆键的灰度兼容；旧 server 未知字段忽略）。
+- ② **组装**（`bridge.rs` `dpms_report_body_from_snapshot`）：同口径读取任务记忆 `dpms.productId`（trim + 正整数），**可选**——缺失/非法 → 只回传 story id，不阻断关联；`state.rs` 新增键常量 `DPMS_PRODUCT_MEMORY_KEY`，与 `DPMS_STORY_MEMORY_KEY` 同排（键名以角色定义为写入方）。
+- ③ **去重骨架不动**：`last_dpms_report` 比较整个 body——若产品 ID 晚到补齐，下一边界自然重发一次，不新增状态。
+- ④ **门提示词**（`remote_task_dpms_gate.md` zh/en）：运行时契约由 `storyId` 单键扩为两键；明确 `dpms.productId` 必须写确认后**实际使用**的数字产品 ID（不能照抄推荐值），其余锚点不动。
+- ⑤ **角色定义**（`.claude/design/dpms_cli/`）：`dpms.productId` 记忆契约显式要求数字 ID（runtime 消费键，写名称会静默缺失）。
+
+**方案自评审**：过度设计——单 Option 字段 + 一个键常量，去重复用既有 body 比较，无新状态/队列/缓存。性能——同一次记忆快照多一次线性 key 查找（任务记忆键个位数），body 多一个小整数，无新增 I/O、请求或热路径变化。
+
+**验证结果**：desktop `multica::` **260 passed / 0 failed**（client：缺省形态逐字节等价 + 带产品两字段精确 body + socket 断言更新 + 409 语义不变；bridge：storyId+productId 双解析、产品键缺失/非法省略不阻断、storyId 非法整体不回写；vm/bridge 既有 body 字面量同步）；lib `prompts::` **19 passed / 0 failed**（门模板双语两键契约 + `dpms.productId` 实际值锚点）。改动文件 clippy 零新增告警。**待 multica 侧部署接收 `dpms_product_id`**；端到端（创建→关联回传→multica 按产品拉字段）随打包联调验收。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

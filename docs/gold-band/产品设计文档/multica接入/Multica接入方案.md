@@ -1368,6 +1368,11 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **方案自评审**：全量复用 M5-cq 框架与 loop 分发器，安装复用 `save_workflow_template` 同一落库管线，无平行写入路径，无过度设计。性能：心跳零增量；list 只传摘要（正文仅 export/install 传输，单 artifact ≤8MB）；模板读写 spawn_blocking；本地模板数与角色同级。
   - **验证**：lib `app::workflow_share` 3 例（envelope 无 modelBindings/optionalEntryStage/时间戳、wire 往返 + 键名锁定、缺正文拒绝）+ install 2 例（skip 幂等/builtin 副本/payload id 保留/inner id 重生成/缺失角色容忍）；desktop `multica::runtime_assets` 新增 3 例（workflow 工单路由、未知 asset_type 拒绝 + 空=role 容忍、摘要映射）+ client 上报 body 扩展；回归 lib `app::` **371/371**、desktop `multica::` **254/254**；clippy 改动文件零新告警。内网网页端到端（spec §7 用例）待打包联调；multica 侧需放开 workflow 安装入口（§8 role gate）。
   - **修正记录（M5-cr，2026-11-01，内网反馈）**：multica 安装显示成功但码灵运行中列表看不到新模板——`workflows.json` 落库正常，根因是被动通道缺本地反馈闭环（前端模板/角色列表只在会话壳就绪拉一次，后台落库无事件重拉；成功路径零日志）。修复：push-install 成功后 emit `gold-band://runtime-asset-installed`（`{assetType, installedDisplayName}`），前端按 assetType 最小作用域重拉（workflow→模板列表、role→角色列表）+ 成功/跳过 INFO 日志；跨端契约双侧测试锁定（开发设计 §12.88 修正记录）。
+- [x] **M5-cu**（2026-11-02）DPMS 回写载荷补产品 ID 作为 join key（Rust + 提示词 + 角色定义，开发设计 §12.91 改动八十九）：
+  - **需求（multica）**：回写 body 由 `{"dpms_story_id": N}` 扩为 `{"dpms_story_id": N, "dpms_product_id": M}`——创建需求时产品 ID 本就已知，补一个字段即可。
+  - **设计判断**：不是 M5-cn 回退。DPMS 查询按产品隔离（跨产品详情返回 status -5），story id 单独不可寻址，(产品 ID, 需求 ID) 才是 multica 拉取字段的完整 join key；该事实只有创建方持有（claim 行的 `dpms_product_id` 是推荐值，用户确认后可能切产品）。产品 ID 与 story ID 同属「本任务创建出的哪个需求」的关联事实，不是字段镜像。
+  - **实现**：① wire 增可选 `dpms_product_id`（skip-if-none；缺省 body 与 M5-cn 逐字节等价，旧 server 忽略未知字段）；② 组装读任务记忆 `dpms.productId`（trim + 正整数，缺失/非法 → 只回传 story id，不阻断关联）；③ 去重复用 `last_dpms_report` 整体比较（产品晚到补齐会自然补发一次）；④ 门提示词 zh/en 扩为两键，明确写确认后实际使用的数字产品 ID；⑤ 角色定义 `dpms.productId` 契约显式要求数字 ID。
+  - **验证**：desktop `multica::` **260/260**（两种 body 精确形态 + 产品键边界 + 既有字面量同步）、lib `prompts::` **19/19**（门模板双语两键契约）；改动文件 clippy 零新增告警。**待 multica 部署接收新字段**；端到端随打包联调验收。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

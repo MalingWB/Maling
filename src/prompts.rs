@@ -550,15 +550,18 @@ mod tests {
 
     #[test]
     fn remote_task_dpms_gate_templates_render_creation_contract() {
-        // DPMS 创建门块（M5-cl 建立；M5-cn 契约收缩为单字段关联）：恒定文案无变量（空上下文
-        // 渲染即原文）；锁定关键语义——runtime 只回传 `storyId` 关联（字段镜像由工作项平台从
+        // DPMS 创建门块（M5-cl 建立；M5-cn 契约收缩为关联；M5-cu 补产品 ID）：恒定文案无变量
+        // （空上下文渲染即原文）；锁定关键语义——runtime 回传 `storyId` + `dpms.productId`
+        // 两项关联（productId 是 join key 的另一半，必须写实际使用值；其余字段由工作项平台从
         // DPMS 拉取）、其余信息键按角色定义写、已有 storyId 先核实复用不重复创建、溯源值是
         // 推荐值仍需用户确认、回写由 runtime 承担（不调工作项平台接口，职责铁律）。
         let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_DPMS_GATE_ZH_CN, json!({}));
         assert!(zh.contains("DPMS 系统需求创建环节"));
         assert!(zh.contains("`storyId`"));
-        assert!(zh.contains("只回传这一关联"));
-        assert!(zh.contains("`storyName`、`dpms.*`"));
+        assert!(zh.contains("`dpms.productId`"));
+        assert!(zh.contains("只回传这两项关联"));
+        assert!(zh.contains("不能照抄推荐值"));
+        assert!(zh.contains("`storyName` 等其余信息键"));
         assert!(zh.contains("不重复创建"));
         assert!(zh.contains("推荐值"));
         assert!(zh.contains("不要调用工作项平台接口"));
@@ -566,8 +569,10 @@ mod tests {
         let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_DPMS_GATE_EN, json!({}));
         assert!(en.contains("DPMS system story creation"));
         assert!(en.contains("`storyId`"));
-        assert!(en.contains("reports only this linkage"));
-        assert!(en.contains("`storyName` and `dpms.*`"));
+        assert!(en.contains("`dpms.productId`"));
+        assert!(en.contains("reports only these two linkage values"));
+        assert!(en.contains("not a copy of the recommendation"));
+        assert!(en.contains("`storyName`"));
         assert!(en.contains("reuse it instead of creating again"));
         assert!(en.contains("prefilled recommendations"));
         assert!(en.contains("do not call work-item platform APIs"));

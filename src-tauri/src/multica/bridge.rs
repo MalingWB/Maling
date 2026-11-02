@@ -45,7 +45,8 @@ use crate::multica::client::{MULTICA_ISSUE_DONE_STATUS, MulticaClient, ReportDpm
 use crate::multica::config::{get_pat, multica_base_url, multica_settings};
 use crate::multica::handoff;
 use crate::multica::state::{
-    ActiveRemoteRun, DPMS_STORY_MEMORY_KEY, MulticaRuntimeState, SharedMulticaState,
+    ActiveRemoteRun, DPMS_PRODUCT_MEMORY_KEY, DPMS_STORY_MEMORY_KEY, MulticaRuntimeState,
+    SharedMulticaState,
 };
 use crate::remote::{REMOTE_SOURCE_SETTINGS_UPDATED_EVENT, REMOTE_TASKS_UPDATED_EVENT};
 use crate::state::{DesktopContext, DesktopState};
@@ -720,15 +721,17 @@ async fn complete_with_issue_done(
     }
 }
 
-// ── DPMS 需求回写（M5-cl 建立；M5-cm 早回写时机前移；M5-cn 载荷收缩为单字段关联）──
+// ── DPMS 需求回写（M5-cl 建立；M5-cm 早回写时机前移；M5-cn 载荷收缩为关联；M5-cu 补产品 ID）──
 //
 // 分工铁律：角色会话只写任务记忆（`storyId` 等），HTTP 回写由 daemon 侧（码灵中介，
 // 自身 PAT）执行。触发条件取 claim 快照（领取即定版）：dpms_required=true 且当时未链接
 // system_story_id。时机（M5-cm）：**早回写**——workflow/auto 节点成功边界、direct turn 边界
 // 即回写（产出后平台立即可见，不等终态）；终态路径（complete×3 / fail / cancel）保留为兜底，
 // 覆盖「最后一轮才创建」「中途发送网络失败」与「失败/取消前已创建」。
-// 载荷（M5-cn 契约定版）：只回传 `dpms_story_id` 关联——字段镜像（链接/负责人/发布计划/
-// 产品）由 multica 从 DPMS 拉取，码灵不搬运值（搬运时刻 ≠ 查看时刻，推送注定陈旧）。
+// 载荷（M5-cn 定版 + M5-cu 补键）：回传 `dpms_story_id` 与可选的 `dpms_product_id`——
+// 二者共同构成 multica 从 DPMS 拉取的 join key（DPMS 查询按产品隔离，story id 单独不可
+// 寻址）；其余字段镜像（链接/负责人/发布计划）仍由 multica 拉取，码灵不搬运值（搬运时刻
+// ≠ 查看时刻，推送注定陈旧）。
 
 /// 回写触发判定（纯函数）：claim 快照 `dpms_required` 且当时未链接（`claim_system_story_id`
 /// 为 None）且 issue 关联。缺键/false（旧 server 灰度）/ 非 issue 任务 → 不触发，全程无 DPMS 语义。
@@ -759,13 +762,14 @@ fn dpms_report_skip_reason(run: &ActiveRemoteRun) -> Option<&'static str> {
     }
 }
 
-/// 任务记忆快照 → 回写 body（纯函数，M5-cn 契约定版）：`storyId` 解析为正整数才可回写
-/// （键缺失/非数字/非正 → None 不回写，不做启发式修复）。body 只含 story id——码灵只回传
-/// **关联**，字段镜像（链接/负责人/发布计划/产品）由 multica 从 DPMS 拉取，码灵不搬运值。
+/// 任务记忆快照 → 回写 body（纯函数，M5-cn 定版 + M5-cu 补产品 ID）：`storyId` 解析为正整数
+/// 才可回写（键缺失/非数字/非正 → None 不回写，不做启发式修复）。`dpms.productId` 同口径
+/// 解析但**可选**：缺失/非法 → 只回传 story id，不阻断关联（旧角色未写该键时行为与 M5-cn
+/// 完全一致）；合法时与 story id 一并上送，作为 multica 拉取 DPMS 字段的 join key。
 fn dpms_report_body_from_snapshot(
     snapshot: &gold_band::memory::Snapshot,
 ) -> Option<ReportDpmsStoryRequest> {
-    let story_id = |key: &str| {
+    let positive_id = |key: &str| {
         snapshot
             .task
             .iter()
@@ -775,7 +779,8 @@ fn dpms_report_body_from_snapshot(
             .filter(|id| *id > 0)
     };
     Some(ReportDpmsStoryRequest {
-        dpms_story_id: story_id(DPMS_STORY_MEMORY_KEY)?,
+        dpms_story_id: positive_id(DPMS_STORY_MEMORY_KEY)?,
+        dpms_product_id: positive_id(DPMS_PRODUCT_MEMORY_KEY),
     })
 }
 
@@ -1902,9 +1907,10 @@ mod tests {
 
     #[test]
     fn dpms_report_body_from_snapshot_maps_memory_keys_and_guards() {
-        // M5-cn 载荷组装：storyId 解析为正整数才可回写（键缺失/非数字/非正 → None 整体不回写，
-        // 不做启发式修复，服务端 dpms_story_missing 对账告警兜底）；body 只含 story id——
-        // 其余 dpms.* 记忆键是角色自身预填/展示用，码灵不消费（字段镜像由 multica 从 DPMS 拉取）。
+        // M5-cn 载荷组装 + M5-cu 产品 ID：storyId 解析为正整数才可回写（键缺失/非数字/非正 →
+        // None 整体不回写，不做启发式修复，服务端 dpms_story_missing 对账告警兜底）；
+        // dpms.productId 合法时随行上送（DPMS 按产品隔离，组成 join key），缺失/非法 →
+        // 只回传 story id（旧角色灰度兼容）；其余 dpms.* 键仍是角色自身预填/展示用，不消费。
         let snapshot = |records: Vec<Record>| Snapshot {
             project_id: "proj-1".into(),
             task_id: Some("local-task-1".into()),
@@ -1924,24 +1930,51 @@ mod tests {
             revision: "r1".into(),
         };
 
-        // storyId → dpms_story_id，两端 trim；记忆中的其他 DPMS 键（角色预填用）不进 wire body。
+        // storyId / dpms.productId 两端 trim 后解析；记忆中的其他 DPMS 键（角色预填用）不进 body。
         assert_eq!(
             dpms_report_body_from_snapshot(&snapshot(vec![
                 record("storyId", " 889001 "),
                 record("storyName", "登录修复"),
                 record("dpms.devUser", "张三"),
-                record("dpms.productId", "889121"),
+                record("dpms.productId", " 889121 "),
+                record("dpms.productName", "码灵"),
             ])),
             Some(ReportDpmsStoryRequest {
                 dpms_story_id: 889001,
+                dpms_product_id: Some(889121),
             })
         );
+        // 产品键缺失 → 只回传 story id（旧角色灰度兼容，body 与 M5-cn 单字段契约等价）。
+        assert_eq!(
+            dpms_report_body_from_snapshot(&snapshot(vec![record("storyId", "889001")])),
+            Some(ReportDpmsStoryRequest {
+                dpms_story_id: 889001,
+                dpms_product_id: None,
+            })
+        );
+        // 产品键非法（非数字/零/负数/空）→ 省略产品字段，但 story 关联照常回传。
+        for bad in ["abc", "88.5", "0", "-5", ""] {
+            assert_eq!(
+                dpms_report_body_from_snapshot(&snapshot(vec![
+                    record("storyId", "889001"),
+                    record("dpms.productId", bad),
+                ])),
+                Some(ReportDpmsStoryRequest {
+                    dpms_story_id: 889001,
+                    dpms_product_id: None,
+                }),
+                "产品值 {bad:?} 必须判不可上送但不阻断 story 关联"
+            );
+        }
         // storyId 非数字 / 零 / 负数 / 键缺失 → 整体 None（不回写）。
         for bad in ["abc", "88.5", "0", "-5", ""] {
             assert_eq!(
-                dpms_report_body_from_snapshot(&snapshot(vec![record("storyId", bad)])),
+                dpms_report_body_from_snapshot(&snapshot(vec![
+                    record("storyId", bad),
+                    record("dpms.productId", "889121"),
+                ])),
                 None,
-                "值 {bad:?} 必须判不可回写"
+                "storyId 值 {bad:?} 必须判不可回写"
             );
         }
         assert_eq!(
@@ -2114,6 +2147,7 @@ mod tests {
 
         run.last_dpms_report = Some(ReportDpmsStoryRequest {
             dpms_story_id: 889001,
+            dpms_product_id: None,
         });
         let reported =
             completed_task_from_run("rt-2", &run, "completed", "2026-10-31T00:01:00Z".into());
@@ -2142,11 +2176,13 @@ mod tests {
         // live 已回传、快照仍 None（回写发生在快照克隆之后）→ 取 live。
         let live = ReportDpmsStoryRequest {
             dpms_story_id: 889001,
+            dpms_product_id: Some(889121),
         };
         assert_eq!(
             resolve_terminal_dpms_report(Some(&live), &snapshot),
             Some(ReportDpmsStoryRequest {
-                dpms_story_id: 889001
+                dpms_story_id: 889001,
+                dpms_product_id: Some(889121),
             }),
             "live 已回传必须覆盖旧快照，否则终态行徽标常驻"
         );
@@ -2154,11 +2190,13 @@ mod tests {
         // live 未记（映射已被他方收尾清除的防御路径）→ 回退快照值。
         snapshot.last_dpms_report = Some(ReportDpmsStoryRequest {
             dpms_story_id: 889002,
+            dpms_product_id: None,
         });
         assert_eq!(
             resolve_terminal_dpms_report(None, &snapshot),
             Some(ReportDpmsStoryRequest {
-                dpms_story_id: 889002
+                dpms_story_id: 889002,
+                dpms_product_id: None,
             })
         );
 
