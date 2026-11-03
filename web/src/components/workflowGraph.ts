@@ -307,10 +307,12 @@ export function buildElkGraph(spec: WorkflowLayoutSpec): ElkNode {
       id: edge.id,
       sources: [outPortId(source, edge.outcome)],
       targets: [inPortId(edge.to)],
-      labels: edge.labelWidth
-        // ELK ignores labels without text; the text is only an identity, size comes from width.
-        ? [{ id: `${edge.id}::label`, text: edge.id, width: edge.labelWidth, height: WORKFLOW_EDGE_LABEL_HEIGHT, layoutOptions: { 'elk.edgeLabels.inline': 'true' } }]
-        : [],
+      // Edge labels are NOT attached to ELK: the inline label dummy rarely
+      // lands on the port line, and the orthogonal router then detours every
+      // edge through it — an S-shaped 5px jog that reads as squiggly lines.
+      // Labels are placed by the app at the route's half-length point instead
+      // (readElkLayout); `labelWidth` stays on the spec only for size hints.
+      labels: [],
       layoutOptions: {
         // Keep the success spine straight; failure / retry edges may bend.
         'elk.layered.priority.straightness': priority,

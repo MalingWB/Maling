@@ -109,7 +109,10 @@ describe('ELK workflow layout', () => {
     expect(new Set(spine.map((rect) => Math.round(rect.y))).size).toBe(1);
     for (const id of ['plan-dev-0', 'dev-review-1', 'review-test-2', 'test-accept-4', 'accept-cleanup-6', `cleanup-${END_NODE}-8`]) {
       const route = layout.edges.get(id)!;
-      expect(route.points.length, id).toBeLessThanOrEqual(6);
+      // At most one orthogonal corner: a port or node-width mismatch absorbs
+      // as a single clean step; no label-dummy detours (labels ride the
+      // half-length point of the route).
+      expect(route.points.length, id).toBeLessThanOrEqual(4);
       // The route stays inside the spine's row band — no detours around the graph.
       const rowTop = spine[0].y;
       const rowBottom = spine[0].y + NODE_HEIGHT;
@@ -117,6 +120,11 @@ describe('ELK workflow layout', () => {
         expect(point.y, id).toBeGreaterThanOrEqual(rowTop - WORKFLOW_EDGE_LABEL_HEIGHT);
         expect(point.y, id).toBeLessThanOrEqual(rowBottom + WORKFLOW_EDGE_LABEL_HEIGHT);
       }
+    }
+    // Port-matched success hops (split→split, 34%→34%) must be perfectly
+    // straight — the exact regression the squiggly inline labels caused.
+    for (const id of ['plan-dev-0', 'dev-review-1', 'review-test-2', 'test-accept-4']) {
+      expect(layout.edges.get(id)!.points, id).toHaveLength(2);
     }
   });
 
