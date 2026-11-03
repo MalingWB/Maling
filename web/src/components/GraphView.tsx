@@ -429,8 +429,12 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
         mode === 'interactive' && 'cursor-pointer hover:border-primary/45 hover:shadow-md',
       )}
     >
-      <Handle type="target" position={handlePositions.target} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
-      <Handle type="source" position={handlePositions.source} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
+      {/* Handle dots ride the success lane (the same fraction as the ELK
+          ports, workflowTargetHandleRatio): mixed split/single chains keep
+          node columns, straight edges, and dots on one track. Failure edges
+          leave at 66% per the layout routes; the dot marks the primary lane. */}
+      <Handle type="target" position={handlePositions.target} className="!size-2 !border-2 !border-card !bg-muted-foreground" style={direction === 'DOWN' ? { left: '34%' } : { top: '34%' }} />
+      <Handle type="source" position={handlePositions.source} className="!size-2 !border-2 !border-card !bg-muted-foreground" style={direction === 'DOWN' ? { left: '34%' } : { top: '34%' }} />
       <div className="pointer-events-none absolute left-3 right-3 top-2 z-10 flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           {iconKey ? <img src={agentIconSrc(iconKey)} alt="" className={agentIconClass(iconKey, 'size-4 shrink-0 rounded-sm')} /> : null}

@@ -144,7 +144,10 @@ const WORKFLOW_EDITOR_MAX_ZOOM = 1.4;
 const WORKFLOW_EDITOR_FIT_MAX_ZOOM = 0.92;
 const WORKFLOW_EDITOR_FIT_PADDING = 0.22;
 const WORKFLOW_EDITOR_DRAFT_DELAY_MS = 180;
-const WORKFLOW_NODE_SINGLE_OUTCOME_TOP = '50%';
+// Single-outcome exits share the split success lane (34%) so mixed chains
+// stay visually on one track: node columns, straight edges, and handle dots
+// all align on the same fraction (workflowTargetHandleRatio).
+const WORKFLOW_NODE_SINGLE_OUTCOME_TOP = '34%';
 const WORKFLOW_NODE_SPLIT_OUTCOME_TOP = { success: '34%', failure: '66%' } as const;
 
 export type WorkflowEditorHistory = { past: WorkflowDsl[]; future: WorkflowDsl[] };
@@ -345,13 +348,19 @@ function AgentSelectItemContent({ agent, unavailableLabel }: { agent: ManagedAge
 
 function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
   const updateNodeInternals = useUpdateNodeInternals();
+  // Handle offsets run along the node's cross axis: vertical flows mirror the
+  // outcome ratios from `top` percentages to `left` percentages.
+  const vertical = data.sourcePosition === Position.Bottom;
   useEffect(() => {
     updateNodeInternals(id);
   }, [data.sourcePosition, data.supportsFailureOutcome, data.targetPosition, id, updateNodeInternals]);
   if (data.terminal) {
+    const terminalHandleStyle = vertical
+      ? { left: WORKFLOW_NODE_SINGLE_OUTCOME_TOP }
+      : { top: WORKFLOW_NODE_SINGLE_OUTCOME_TOP };
     return (
       <div data-theme-role="workflow-node" className="flex size-full items-center justify-center rounded-full border border-dashed border-border/80 bg-muted/20 px-3 text-xs tracking-wide text-muted-foreground">
-        <Handle type="target" position={data.targetPosition ?? Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
+        <Handle type="target" position={data.targetPosition ?? Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" style={terminalHandleStyle} />
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="min-w-0 truncate">{data.label}</span>
@@ -361,9 +370,6 @@ function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
       </div>
     );
   }
-  // Handle offsets run along the node's cross axis: vertical flows mirror the
-  // outcome ratios from `top` percentages to `left` percentages.
-  const vertical = data.sourcePosition === Position.Bottom;
   const successHandleOffset = data.supportsFailureOutcome ? WORKFLOW_NODE_SPLIT_OUTCOME_TOP.success : WORKFLOW_NODE_SINGLE_OUTCOME_TOP;
   const successHandleStyle = vertical ? { left: successHandleOffset } : { top: successHandleOffset };
   const failureHandleStyle = vertical ? { left: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure } : { top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure };

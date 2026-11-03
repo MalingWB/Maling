@@ -65,6 +65,24 @@ describe('workflow graph layout direction', () => {
     expect(graph.layoutOptions?.['elk.direction']).toBe('RIGHT');
   });
 
+  it('puts every main-chain port on the shared success lane', () => {
+    // Mixed split/single chains must produce straight hops: single-outcome
+    // sources and terminal entries share the split success fraction instead
+    // of centering at 50%, which used to bend every mixed edge and drift
+    // the columns.
+    const graph = buildElkGraph(spec('DOWN'));
+    const portAt = (id: string) => graph.children!.find((node) => node.id === id)!.ports!;
+    const build = portAt('dev');
+    expect(build.find((port) => port.id === 'dev::success')!.x).toBeCloseTo(NODE_WIDTH * 0.34);
+    // $end is a single-width terminal whose entry joins the same lane.
+    const end = portAt('$end');
+    expect(end[0].x).toBeCloseTo(140 * 0.34);
+    // $new-round is pinned below dev and accepts backward edges on its
+    // downstream side, still on the lane.
+    const newRound = portAt('$new-round');
+    expect(newRound[0].x).toBeCloseTo(140 * 0.34);
+  });
+
   it('builds a vertical ELK graph with mirrored ports and pinned position', () => {
     const graph = buildElkGraph(spec('DOWN'));
     expect(graph.layoutOptions?.['elk.direction']).toBe('DOWN');

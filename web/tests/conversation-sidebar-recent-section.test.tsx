@@ -95,6 +95,13 @@ describe('ConversationSidebar recent section', () => {
       const recentRegion = container.querySelector('[data-conversation-sidebar-region="recent"]')!;
       expect(scrollRegion.contains(recentHeading)).toBe(false);
       expect(recentRegion.contains(recentHeading)).toBe(true);
+      // The bounded scroller carries both a cap and a floor: long lists cap
+      // at ~40vh with internal scrolling, empty or single-item lists keep a
+      // visible section (heading plus roughly three rows) instead of
+      // collapsing to a single line.
+      const scroller = recentRegion.querySelector('.gold-themed-scrollbar')!;
+      expect(scroller.className).toContain('max-h-[min(40vh,20rem)]');
+      expect(scroller.className).toContain('min-h-[9.5rem]');
       // No pinned section: only the workspaces|recent boundary carries one.
       expect(container.querySelectorAll('[data-conversation-sidebar-separator]').length).toBe(1);
     } finally {

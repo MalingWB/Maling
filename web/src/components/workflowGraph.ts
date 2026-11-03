@@ -196,19 +196,19 @@ function outPortId(node: WorkflowLayoutNodeSpec, outcome: WorkflowLayoutOutcome)
 }
 
 /**
- * The target handle shares the height of the primary (success) source handle, so a
- * success chain of split nodes keeps port-matched (straight) hops. The chain's
- * row/column alignment itself comes from INTERACTIVE node placement, which
- * absorbs the 34%↔50% port mismatches of mixed split/single chains as small
- * label-side jogs instead of drifting the nodes.
+ * Every main-chain port — targets, single-outcome sources, and terminal
+ * entries — shares the split success lane so mixed split/single chains get
+ * node columns, straight edges, and handle dots all on one fraction. INTERACTIVE
+ * placement keeps the columns; matching ports keep the hops straight without
+ * any label-side jogs.
  */
-export function workflowTargetHandleRatio(sourceHandles: WorkflowLayoutNodeSpec['sourceHandles']): number {
-  return sourceHandles === 'split' ? WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.success : 0.5;
+export function workflowTargetHandleRatio(): number {
+  return WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.success;
 }
 
 function elkNode(node: WorkflowLayoutNodeSpec, pinAnchor: boolean, direction: WorkflowLayoutDirection): ElkNode {
   const vertical = direction === 'DOWN';
-  const inRatio = workflowTargetHandleRatio(node.sourceHandles);
+  const inRatio = workflowTargetHandleRatio();
   const inX = node.width * inRatio;
   const inY = node.height * inRatio;
   // Ports mirror across the flow axis: RIGHT flows WEST→EAST, DOWN flows NORTH→SOUTH.
@@ -234,8 +234,8 @@ function elkNode(node: WorkflowLayoutNodeSpec, pinAnchor: boolean, direction: Wo
   } else if (node.sourceHandles === 'single') {
     ports.push(
       vertical
-        ? port(`${node.id}::out`, node.width / 2, node.height, 'SOUTH')
-        : port(`${node.id}::out`, node.width, node.height / 2, 'EAST'),
+        ? port(`${node.id}::out`, node.width * WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.success, node.height, 'SOUTH')
+        : port(`${node.id}::out`, node.width, node.height * WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.success, 'EAST'),
     );
   }
   return {

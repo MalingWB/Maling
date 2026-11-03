@@ -313,7 +313,9 @@ describe('workflow editor interaction contracts', () => {
   });
 
   it('centers a single outcome handle and splits validation outcomes symmetrically', () => {
-    expect(editorSource).toContain("const WORKFLOW_NODE_SINGLE_OUTCOME_TOP = '50%';");
+    // Single-outcome exits share the split success lane (34%) so mixed
+    // chains stay on one visual track with straight hops.
+    expect(editorSource).toContain("const WORKFLOW_NODE_SINGLE_OUTCOME_TOP = '34%';");
     expect(editorSource).toContain("const WORKFLOW_NODE_SPLIT_OUTCOME_TOP = { success: '34%', failure: '66%' } as const;");
     expect(editorSource).toContain('data.supportsFailureOutcome ? WORKFLOW_NODE_SPLIT_OUTCOME_TOP.success : WORKFLOW_NODE_SINGLE_OUTCOME_TOP');
     expect(editorSource).toContain('const failureHandleStyle = vertical ? { left: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure } : { top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure };');

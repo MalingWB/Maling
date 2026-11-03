@@ -22,7 +22,12 @@ export function GraphFullscreenDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="flex h-screen w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none border-0 p-0 sm:max-w-none [&>button]:z-10"
+        // The graph fullscreen is an opaque work surface, not a floating
+        // card: the dialog material recipe (translucent surface + backdrop
+        // blur) would otherwise blend the dark overlay behind this
+        // viewport-sized layer and wash out the graph text. Override the
+        // recipe background with the solid app background.
+        className="flex h-screen w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none border-0 !bg-none p-0 !bg-background sm:max-w-none [&>button]:z-10"
         aria-describedby={undefined}
       >
         <DialogHeader className="sr-only">
