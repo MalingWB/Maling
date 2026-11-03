@@ -393,7 +393,7 @@ pub async fn get_conversation_pinned_task_page(
                 &sources,
                 cursor.as_deref(),
                 limit.unwrap_or(
-                    crate::view_models_conversation::CONVERSATION_TASK_PAGE_DEFAULT_LIMIT,
+                    crate::view_models_conversation::CONVERSATION_PINNED_TASK_PAGE_DEFAULT_LIMIT,
                 ),
             ),
         )

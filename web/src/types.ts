@@ -30,7 +30,7 @@ export interface PersonalizationPreference {
     agent: { image: AvatarPreference; shape: AvatarShapePreference };
     user: { image: AvatarPreference; shape: AvatarShapePreference };
   };
-  /** Interface zoom percent applied to the main webview (70–200, default 100). */
+  /** Interface zoom percent applied to the app webviews (50–250, default 100). */
   interfaceZoomPercent: number;
   /** Workflow graph layout direction preference; `auto` follows container aspect. */
   workflowGraphDirection: WorkflowGraphDirectionPreference;

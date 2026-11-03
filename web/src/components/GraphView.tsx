@@ -119,11 +119,15 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   const layoutSpec = useMemo(() => runtimeGraphLayoutSpec(graph, (value) => displayStatus(t, value), layoutDirection), [graph, layoutDirection, t]);
   const layoutState = useWorkflowLayout(layoutSpec);
   const graphLayout = layoutState.layout;
-  const { nodes, edges } = useMemo(() => createLayoutedGraph(graph, graphLayout, selectedNodeId, activeNodeId, mode, layoutDirection, t), [activeNodeId, graph, graphLayout, layoutDirection, mode, selectedNodeId, t]);
+  // The rendered direction follows the finished layout, never the pending
+  // target: a flip must not swap handles and anchors while node positions
+  // still come from the previous direction's layout (WorkflowEditor contract).
+  const renderDirection = graphLayout?.direction ?? layoutDirection;
+  const { nodes, edges } = useMemo(() => createLayoutedGraph(graph, graphLayout, selectedNodeId, activeNodeId, mode, renderDirection, t), [activeNodeId, graph, graphLayout, mode, renderDirection, selectedNodeId, t]);
   const fitViewOptions = useMemo(() => ({ padding: variant === 'workflow' ? 0.2 : 0.22, maxZoom: variant === 'workflow' ? WORKFLOW_FIT_MAX_ZOOM : ACTUAL_FIT_MAX_ZOOM }), [variant]);
   // `actual` anchors the entry side of the graph: left for a RIGHT flow, top for a DOWN flow.
-  const viewportHorizontalAnchor = variant === 'actual' ? (layoutDirection === 'DOWN' ? 0.5 : 0.40) : 0.5;
-  const viewportVerticalAnchor = variant === 'actual' ? (layoutDirection === 'DOWN' ? 0.32 : 0.5) : 0.5;
+  const viewportHorizontalAnchor = variant === 'actual' ? (renderDirection === 'DOWN' ? 0.5 : 0.40) : 0.5;
+  const viewportVerticalAnchor = variant === 'actual' ? (renderDirection === 'DOWN' ? 0.32 : 0.5) : 0.5;
   const graphBounds = graphLayout?.bounds ?? null;
   const centeredViewport = useMemo(() => {
     if (viewportSize.width === 0 || viewportSize.height === 0 || !graphBounds) return null;

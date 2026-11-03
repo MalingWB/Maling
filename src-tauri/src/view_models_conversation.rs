@@ -1407,10 +1407,15 @@ pub fn conversation_task_row_vm(
     ))
 }
 
-/// Sidebar pages default to the documented 10-row page (docs:
-/// conversational-home.md 渐进加载契约). Callers may pass an explicit limit.
+/// Sidebar task pages default to the documented 10-row page (docs:
+/// conversational-home.md 渐进加载契约; plan 需求 3.1). Callers may pass an
+/// explicit limit.
 pub const CONVERSATION_TASK_PAGE_DEFAULT_LIMIT: usize = 10;
-pub const CONVERSATION_RUN_PAGE_DEFAULT_LIMIT: usize = 20;
+/// Run history pages moved to the same documented 10-row page (plan 需求 3.1:
+/// Task/Run 分页 24/20 统一降为 10).
+pub const CONVERSATION_RUN_PAGE_DEFAULT_LIMIT: usize = 10;
+/// The pinned section keeps its original 24-row page (plan 需求 3.1: 置顶区不变).
+pub const CONVERSATION_PINNED_TASK_PAGE_DEFAULT_LIMIT: usize = 24;
 pub const CONVERSATION_SIDEBAR_PAGE_MAX_LIMIT: usize = 100;
 
 fn entity_sequence(id: &str, prefix: &str) -> Option<u32> {
@@ -1828,18 +1833,26 @@ pub fn conversation_recent_task_page_vm(
         .collect();
     let has_more = page.len() > limit;
     page.truncate(limit);
+    // The page is consumed by the projection loop below; capture the page-end
+    // cursor first so `next_cursor` still has a row to point after.
+    let page_end_cursor = has_more
+        .then(|| page.last().map(|(_, key)| key.clone()))
+        .flatten();
     let mut tasks = Vec::with_capacity(page.len());
-    let mut unread_by_source: Vec<Option<HashMap<String, ConversationTerminalResultVm>>> =
+    // Outer `Some` marks an attempt; a failed read stays `Some(None)` so a
+    // broken source is not re-queried once per row of the page.
+    let mut unread_by_source: Vec<Option<Option<HashMap<String, ConversationTerminalResultVm>>>> =
         (0..sources.len()).map(|_| None).collect();
     for (index, key) in page {
         let source = &sources[index];
         match source.app.task_show(&key.task_id) {
             Ok(task) => {
                 if unread_by_source[index].is_none() {
-                    unread_by_source[index] = unread_terminal_results(&source.app).ok();
+                    unread_by_source[index] = Some(unread_terminal_results(&source.app).ok());
                 }
                 let unread = unread_by_source[index]
                     .as_ref()
+                    .and_then(|unread| unread.as_ref())
                     .and_then(|unread| unread.get(&key.task_id));
                 tasks.push(ConversationRecentTaskRowVm {
                     task: conversation_task_summary_vm_from_task(
@@ -1862,10 +1875,8 @@ pub fn conversation_recent_task_page_vm(
             }),
         }
     }
-    let next_cursor = has_more
-        .then(|| page.last())
-        .flatten()
-        .map(|(_, key)| serde_json::to_string(key))
+    let next_cursor = page_end_cursor
+        .map(|key| serde_json::to_string(&key))
         .transpose()
         .ok()
         .flatten();
@@ -4990,16 +5001,17 @@ mod tests {
         ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationSessionLocator,
         ConversationTaskActivityVm, ConversationWorkLocationVm, ConversationWorkspaceSource,
         ConversationWorkspaceVm, PromptActivity, attempt_control_mode, attempt_control_projection,
-        auto_config_from_vm, conversation_attempt_lifecycle_vm, conversation_run_summary_page_vm,
-        conversation_run_vm, conversation_session_successors_from_state,
-        conversation_sidebar_bootstrap_vm, conversation_sidebar_vm_from_sources,
-        conversation_status_from_session, conversation_task_activity, conversation_task_page_vm,
-        conversation_task_row_vm, conversation_workspace_vms, create_conversation_run_vm,
-        create_conversation_task_vm, derive_conversation_attempt_lifecycle,
-        derive_conversation_attempt_lifecycle_with_facets, find_leaf_by_key, lifecycle_is_active,
-        paged_task_ids_by_activity, rerun_conversation_task_vm, scheduled_content_snapshot,
-        scheduled_task_vms_from_sources, touch_conversation_activity_at, update_task_metadata_vm,
-        validate_conversation_create_vm, workflow_binding_missing_item,
+        auto_config_from_vm, conversation_attempt_lifecycle_vm, conversation_recent_task_page_vm,
+        conversation_run_summary_page_vm, conversation_run_vm,
+        conversation_session_successors_from_state, conversation_sidebar_bootstrap_vm,
+        conversation_sidebar_vm_from_sources, conversation_status_from_session,
+        conversation_task_activity, conversation_task_page_vm, conversation_task_row_vm,
+        conversation_workspace_vms, create_conversation_run_vm, create_conversation_task_vm,
+        derive_conversation_attempt_lifecycle, derive_conversation_attempt_lifecycle_with_facets,
+        find_leaf_by_key, lifecycle_is_active, paged_task_ids_by_activity,
+        rerun_conversation_task_vm, scheduled_content_snapshot, scheduled_task_vms_from_sources,
+        touch_conversation_activity_at, update_task_metadata_vm, validate_conversation_create_vm,
+        workflow_binding_missing_item,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
@@ -7587,7 +7599,7 @@ mod tests {
         ConversationWorkspaceSource {
             workspace: ConversationWorkspaceVm {
                 project_id: project_id.to_string(),
-                workspace_path: repo.clone(),
+                workspace_path: repo.to_string(),
                 name: name.to_string(),
             },
             app: App::new(repo),

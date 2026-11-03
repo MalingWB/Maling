@@ -410,4 +410,12 @@ describe('workflow editor interaction contracts', () => {
     expect(stylesSource).toContain('.workflow-edge-flow .react-flow__edge-path');
     expect(stylesSource).toContain('animation: workflow-edge-flow 3.6s linear infinite;');
   });
+
+  it('seeds the canvas layout direction from a locked preference before the first layout', () => {
+    // A vertical preference must not pay a wasted horizontal first layout plus
+    // a refit; the seed mirrors GraphView's immediate-preference contract.
+    expect(editorSource).toContain("useState<WorkflowLayoutDirection>(() =>");
+    expect(editorSource).toContain("directionPreference === 'vertical' ? 'DOWN' : 'RIGHT')");
+    expect(editorSource).toContain('useRef<WorkflowLayoutDirection>(layoutDirection)');
+  });
 });

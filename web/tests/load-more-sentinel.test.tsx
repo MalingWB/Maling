@@ -43,6 +43,29 @@ function mountSentinel(enabled: boolean, onLoadMore: () => unknown) {
   return { container, root };
 }
 
+function mountSwitchableSentinel(initialEnabled: boolean, onLoadMore: () => unknown) {
+  let setEnabled: ((next: boolean) => void) | null = null;
+  function Harness() {
+    const [enabled, updateEnabled] = React.useState(initialEnabled);
+    setEnabled = updateEnabled;
+    // The element stays mounted so a stale scheduled re-check can still find
+    // it connected — exactly the race the latest `enabled` value must close.
+    const setSentinel = useLoadMoreSentinel(enabled, onLoadMore);
+    return <div ref={setSentinel} data-sentinel="true" />;
+  }
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root: Root = createRoot(container);
+  act(() => {
+    root.render(<Harness />);
+  });
+  return {
+    container,
+    root,
+    setEnabled: (next: boolean) => act(() => setEnabled?.(next)),
+  };
+}
+
 function stubElementVisible(visible: boolean) {
   // jsdom lays out with zero rects; make visibility deterministic for the hook.
   Element.prototype.getBoundingClientRect = () => ({
@@ -111,6 +134,34 @@ describe('useLoadMoreSentinel', () => {
         await settle();
       });
       expect(calls).toBe(2);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('stops a scheduled re-check that lands after the sentinel was disabled', async () => {
+    stubElementVisible(true);
+    let resolveLoad: (() => void) | null = null;
+    const onLoadMore = vi.fn(() => new Promise<void>((resolve) => {
+      resolveLoad = resolve;
+    }));
+    const { root, setEnabled } = mountSwitchableSentinel(true, onLoadMore);
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+    try {
+      await act(async () => {
+        StubIntersectionObserver.callback?.([{ isIntersecting: true }]);
+      });
+      expect(onLoadMore).toHaveBeenCalledTimes(1);
+      // The load is still pending when the page flips to error and the section
+      // disables auto-load; the element itself is still connected.
+      setEnabled(false);
+      await act(async () => {
+        resolveLoad?.();
+        await settle();
+      });
+      // A stale scheduled re-check must consult the latest enabled value, not
+      // the one captured when the load started.
+      expect(onLoadMore).toHaveBeenCalledTimes(1);
     } finally {
       act(() => root.unmount());
     }

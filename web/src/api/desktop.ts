@@ -555,6 +555,9 @@ export const desktopApi: RuntimeApi = {
   applyDesktopZoom(percent: number) {
     return invokeCommand<number>('apply_desktop_zoom', { percent });
   },
+  saveInterfaceZoomPercent(percent: number) {
+    return invokeCommand<PreferencesVm>('save_interface_zoom_percent', { input: { percent } }).then(withWallpaperAssetUrls);
+  },
   saveDesktopAvatar(input) {
     return invokeCommand<PreferencesVm>('save_desktop_avatar', { input }).then(withWallpaperAssetUrls);
   },

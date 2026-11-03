@@ -201,6 +201,41 @@ function sameTerminalResult(
     && left.occurredAt === right.occurredAt;
 }
 
+// Projects one task-row transform into the pinned, workspace, and recent
+// lists. Run-status facts are list-agnostic, so the three projections always
+// move together; a missed list is a bug, not an option.
+function projectConversationSidebarRunRows(
+  sidebar: ConversationSidebarVm,
+  projectId: string,
+  updateTask: (task: ConversationTaskRowVm) => ConversationTaskRowVm,
+): ConversationSidebarVm {
+  const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
+  const currentWorkspaceTasks = sidebar.tasksByWorkspace[projectId] ?? [];
+  const workspaceTasks = currentWorkspaceTasks.map(updateTask);
+  const priorRecentTasks = sidebar.recentTasks ?? [];
+  const recentTasks = mapConversationRecentTasks(priorRecentTasks, updateTask);
+  const pinnedTasksChanged = pinnedTasks.some(
+    (task, index) => task !== sidebar.pinnedTasks[index],
+  );
+  const workspaceTasksChanged = workspaceTasks.some(
+    (task, index) => task !== currentWorkspaceTasks[index],
+  );
+  if (!pinnedTasksChanged && !workspaceTasksChanged && recentTasks === priorRecentTasks) {
+    return sidebar;
+  }
+  return {
+    ...sidebar,
+    pinnedTasks: pinnedTasksChanged ? pinnedTasks : sidebar.pinnedTasks,
+    recentTasks,
+    tasksByWorkspace: workspaceTasksChanged
+      ? {
+          ...sidebar.tasksByWorkspace,
+          [projectId]: workspaceTasks,
+        }
+      : sidebar.tasksByWorkspace,
+  };
+}
+
 function applyConversationSidebarTaskTerminalResult(
   sidebar: ConversationSidebarVm,
   projectId: string,
@@ -277,26 +312,7 @@ export function applyConversationSidebarRunLifecycle(
     if (!runsChanged && latestRun === task.latestRun) return task;
     return { ...task, runs, latestRun };
   };
-  const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
-  const currentWorkspaceTasks = sidebar.tasksByWorkspace[projectId] ?? [];
-  const workspaceTasks = currentWorkspaceTasks.map(updateTask);
-  const pinnedTasksChanged = pinnedTasks.some(
-    (task, index) => task !== sidebar.pinnedTasks[index],
-  );
-  const workspaceTasksChanged = workspaceTasks.some(
-    (task, index) => task !== currentWorkspaceTasks[index],
-  );
-  if (!pinnedTasksChanged && !workspaceTasksChanged) return sidebar;
-  return {
-    ...sidebar,
-    pinnedTasks: pinnedTasksChanged ? pinnedTasks : sidebar.pinnedTasks,
-    tasksByWorkspace: workspaceTasksChanged
-      ? {
-          ...sidebar.tasksByWorkspace,
-          [projectId]: workspaceTasks,
-        }
-      : sidebar.tasksByWorkspace,
-  };
+  return projectConversationSidebarRunRows(sidebar, projectId, updateTask);
 }
 
 export function applyConversationSidebarRunStateUpdate(
@@ -325,24 +341,5 @@ export function applyConversationSidebarRunStateUpdate(
     return { ...task, runs, latestRun };
   };
 
-  const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
-  const workspaceTasks = sidebar.tasksByWorkspace[event.projectId] ?? [];
-  const nextWorkspaceTasks = workspaceTasks.map(updateTask);
-  const priorRecentTasks = sidebar.recentTasks ?? [];
-  const recentTasks = mapConversationRecentTasks(priorRecentTasks, updateTask);
-  const pinnedChanged = pinnedTasks.some((task, index) => task !== sidebar.pinnedTasks[index]);
-  const workspaceChanged = nextWorkspaceTasks.some((task, index) => task !== workspaceTasks[index]);
-  if (!pinnedChanged && !workspaceChanged && recentTasks === priorRecentTasks) return sidebar;
-
-  return {
-    ...sidebar,
-    pinnedTasks: pinnedChanged ? pinnedTasks : sidebar.pinnedTasks,
-    recentTasks,
-    tasksByWorkspace: workspaceChanged
-      ? {
-          ...sidebar.tasksByWorkspace,
-          [event.projectId]: nextWorkspaceTasks,
-        }
-      : sidebar.tasksByWorkspace,
-  };
+  return projectConversationSidebarRunRows(sidebar, event.projectId, updateTask);
 }

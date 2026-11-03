@@ -25,6 +25,13 @@ import { ResidentPin } from '@/components/conversation/ResidentPin';
 
 export const conversationSidebarActivityIconClass = 'animate-pulse';
 
+// Manual retry/load-more buttons already render the section's error state; the
+// request rejection exists for the auto-load sentinel, so manual requests
+// swallow it instead of surfacing unhandled rejections.
+function requestSidebarPage(request: () => unknown) {
+  Promise.resolve(request()).catch(() => {});
+}
+
 export function conversationSidebarTerminalResultDotClass(
   kind: NonNullable<ConversationTaskRowVm['unreadTerminalResult']>['kind'],
 ) {
@@ -90,9 +97,10 @@ interface ConversationSidebarProps {
   onOpenProjectMemory?: (workspace: { projectId: string; name: string }) => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
   onRetryBootstrap: () => void;
-  onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void;
+  /** Rejects on failure so the auto-load sentinel can stop its chain. */
+  onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void | Promise<unknown>;
   onRequestPinnedTasks: (cursor?: string | null) => void;
-  onRequestRecentTasks: (cursor?: string | null) => void;
+  onRequestRecentTasks: (cursor?: string | null) => void | Promise<unknown>;
   onRequestTaskRuns: (task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>, cursor?: string | null) => void;
 }
 
@@ -262,7 +270,9 @@ export const ConversationSidebar = memo(function ConversationSidebar({
       const expanding = !prev[projectId];
       if (expanding) {
         const status = vm.workspaceTaskPages[projectId]?.status ?? 'not-loaded';
-        if (status === 'not-loaded' || status === 'error') onRequestWorkspaceTasks(projectId);
+        if (status === 'not-loaded' || status === 'error') {
+          requestSidebarPage(() => onRequestWorkspaceTasks(projectId));
+        }
       }
       return { ...prev, [projectId]: expanding };
     });
@@ -475,15 +485,15 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                   </div>
                 ) : null}
                 {(vm.recentTaskPage?.status ?? 'not-loaded') === 'error' ? (
-                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => onRequestRecentTasks()}>
+                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestRecentTasks())}>
                     {t('conversation.sidebar.retryRecent')}
                   </Button>
                 ) : null}
-                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && (vm.recentTasks ?? []).length === 0 ? (
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && (vm.recentTasks ?? []).length === 0 && !vm.recentTaskPage?.nextCursor ? (
                   <div className="px-2 py-1 text-xs text-muted-foreground">{t('conversation.sidebar.noRecent')}</div>
                 ) : null}
                 {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && vm.recentTaskPage?.nextCursor ? (
-                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => onRequestRecentTasks(vm.recentTaskPage?.nextCursor)}>
+                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestRecentTasks(vm.recentTaskPage?.nextCursor))}>
                     {t('conversation.sidebar.loadMoreRecent')}
                   </Button>
                 ) : null}
@@ -677,7 +687,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                       </div>
                     ) : null}
                     {vm.workspaceTaskPages[ws.projectId]?.status === 'error' ? (
-                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={() => onRequestWorkspaceTasks(ws.projectId)}>
+                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestWorkspaceTasks(ws.projectId))}>
                         {t('conversation.sidebar.retryConversations')}
                       </Button>
                     ) : null}
@@ -689,7 +699,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     ) : null}
                     {(vm.workspaceTaskPages[ws.projectId]?.status === 'ready' && vm.workspaceTaskPages[ws.projectId]?.nextCursor)
                       || ((vm.workspaceTaskPages[ws.projectId]?.status ?? 'not-loaded') === 'not-loaded' && vm.tasksByWorkspace[ws.projectId]?.length) ? (
-                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={() => onRequestWorkspaceTasks(ws.projectId, vm.workspaceTaskPages[ws.projectId]?.nextCursor)}>
+                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestWorkspaceTasks(ws.projectId, vm.workspaceTaskPages[ws.projectId]?.nextCursor))}>
                         {t('conversation.sidebar.loadMoreConversations')}
                       </Button>
                     ) : null}

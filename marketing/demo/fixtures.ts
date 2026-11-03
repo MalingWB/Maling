@@ -243,6 +243,7 @@ export function demoSidebar(language: DesktopLanguage): ConversationSidebarVm {
   return {
     loadStatus: 'ready', workspaces: [{ projectId: DEMO_PROJECT_ID, workspacePath: '/default', name: 'Gold Band' }],
     pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready' },
+    recentTasks: [], recentTaskPage: { status: 'not-loaded' },
     tasksByWorkspace: { [DEMO_PROJECT_ID]: tasks }, workspaceTaskPages: { [DEMO_PROJECT_ID]: { status: 'ready' } },
     lastActiveWorkspaceId: DEMO_PROJECT_ID, preferences: {},
   };

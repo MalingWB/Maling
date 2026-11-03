@@ -12,6 +12,8 @@ import { parseTimestamp } from '@/lib/datetime';
 
 export const CONVERSATION_TASK_PAGE_SIZE = 10;
 export const CONVERSATION_RUN_PAGE_SIZE = 10;
+/** The pinned section keeps its original 24-row page (plan 需求 3.1: 置顶区不变). */
+export const CONVERSATION_PINNED_TASK_PAGE_SIZE = 24;
 export const CONVERSATION_SIDEBAR_TASK_WINDOW = 120;
 export const CONVERSATION_SIDEBAR_RUN_WINDOW = 100;
 
@@ -433,6 +435,29 @@ type SidebarFlight = {
   promise: Promise<unknown>;
   refresh?: () => Promise<unknown>;
 };
+
+/**
+ * Flight keys whose in-flight page loads are premise-void once a bootstrap
+ * identity set lands: workspace pages, the pinned page, and the merged recent
+ * page all paginate a workspace set that just changed. Invalidating them makes
+ * their results no-op (generation check) and lets the bootstrap's own follow-up
+ * loads start fresh instead of being deduped onto the stale flights.
+ */
+export function conversationSidebarBootstrapInvalidationKeys(
+  sidebar: ConversationSidebarVm,
+  bootstrap: ConversationSidebarBootstrapVm,
+): string[] {
+  const projectIds = new Set([
+    ...sidebar.workspaces.map((workspace) => workspace.projectId),
+    ...bootstrap.workspaces.map((workspace) => workspace.projectId),
+    ...Object.keys(sidebar.tasksByWorkspace),
+  ]);
+  return [
+    ...[...projectIds].map((projectId) => `workspace:${projectId}`),
+    'pinned',
+    'recent',
+  ];
+}
 
 export class ConversationSidebarSingleFlight {
   private readonly flights = new Map<string, SidebarFlight>();

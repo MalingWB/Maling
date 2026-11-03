@@ -37,6 +37,7 @@ import {
   rerunConversationTask,
   removeRecentWorkspace,
   saveDesktopPreferences,
+  saveInterfaceZoomPercent,
   saveDesktopAvatar,
   saveDesktopAvatarShape,
   saveDesktopWallpaperOpacity,
@@ -221,6 +222,7 @@ import {
   findConversationTask,
 } from '@/lib/conversation-task-state';
 import {
+  CONVERSATION_PINNED_TASK_PAGE_SIZE,
   CONVERSATION_RUN_PAGE_SIZE,
   CONVERSATION_TASK_PAGE_SIZE,
   ConversationSidebarSingleFlight,
@@ -230,6 +232,7 @@ import {
   applyConversationRecentTaskPage,
   beginConversationRecentTaskLoad,
   failConversationRecentTaskLoad,
+  conversationSidebarBootstrapInvalidationKeys,
   applyConversationRunSummaryPage,
   applyConversationSidebarBootstrap as mergeConversationSidebarBootstrap,
   applyConversationTaskPage,
@@ -665,6 +668,12 @@ export function App() {
   }, [workspaceRevealRequest, revealConversationSidebarTask]);
 
   const applyConversationSidebarBootstrap = useCallback((bootstrap: ConversationSidebarBootstrapVm, projectId?: string | null) => {
+    // The workspace identity set changed: every in-flight page load (workspace,
+    // pinned, recent) paginates a voided premise and must no-op, and the
+    // bootstrap's own follow-up loads must not be deduped onto those flights.
+    for (const key of conversationSidebarBootstrapInvalidationKeys(conversationSidebarRef.current, bootstrap)) {
+      conversationSidebarFlights.invalidate(key);
+    }
     setConversationSidebar((current) => {
       const merged = mergeConversationSidebarBootstrap(current, bootstrap);
       const activeProjectId = projectId ?? activeWorkspaceIdRef.current ?? merged.lastActiveWorkspaceId ?? null;
@@ -672,7 +681,7 @@ export function App() {
       conversationSidebarRef.current = next;
       return next;
     });
-  }, []);
+  }, [conversationSidebarFlights]);
 
   const loadConversationWorkspaceTasks = useCallback((projectId: string, cursor?: string | null, refresh = false) => {
     const append = Boolean(cursor);
@@ -716,7 +725,7 @@ export function App() {
         return next;
       });
       try {
-        const page = await getConversationPinnedTaskPage(cursor, CONVERSATION_TASK_PAGE_SIZE);
+        const page = await getConversationPinnedTaskPage(cursor, CONVERSATION_PINNED_TASK_PAGE_SIZE);
         if (!conversationSidebarFlights.isCurrent(flightKey, generation)) return page;
         setConversationSidebar((current) => {
           const next = applyConversationPinnedTaskPage(current, page, append);
@@ -1075,15 +1084,8 @@ export function App() {
   }, []);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
-  useDesktopZoomShortcuts(preferences, (nextPersonalization) => {
-    onSavePreferences(
-      preferences.appearance,
-      nextPersonalization,
-      preferences.language,
-      preferences.useLocalClaude,
-      preferences.verboseLogging,
-      preferences.browser,
-    );
+  useDesktopZoomShortcuts(preferences, (percent) => {
+    onSaveInterfaceZoomPercent(percent);
   });
   const updaterSettings = bootstrap?.updaterSettings ?? defaultUpdaterSettings;
   const metricsSettings = bootstrap?.metricsSettings ?? null;
@@ -2160,6 +2162,26 @@ export function App() {
       preferences.browser,
     );
   };
+
+  // Shortcut zoom commits persist exactly one field through the same serialized
+  // queue as full preference saves: the canonical personalization is read
+  // server-side, so startup defaults still live in the frontend (bootstrap IPC
+  // in flight) can never round-trip into storage. A background gesture must
+  // not flip the busy UI.
+  const onSaveInterfaceZoomPercent = (percent: number) => {
+    const generation = ++preferenceSaveGenerationRef.current;
+    const save = preferenceSaveQueueRef.current
+      .catch(() => undefined)
+      .then(() => saveInterfaceZoomPercent(percent))
+      .then((saved) => {
+        if (generation !== preferenceSaveGenerationRef.current) return;
+        applySavedPreferences(saved);
+      })
+      .catch((err) => {
+        if (generation === preferenceSaveGenerationRef.current) setError(displayAppError(t, err));
+      });
+    preferenceSaveQueueRef.current = save;
+  };
   // Latest-ref keeps the context value stable so graph surfaces do not re-render
   // on unrelated App state changes.
   const saveWorkflowGraphDirectionRef = useRef(onSaveWorkflowGraphDirection);
@@ -2497,15 +2519,16 @@ export function App() {
     onConversationSearch: () => setConversationSearchOpen(true),
     onConversationRetrySidebar: () => { void loadConversationSidebarBootstrap().catch(() => {}); },
     onConversationRequestWorkspaceTasks: (projectId, cursor) => {
-      // Return the load promise (already error-contained) so the sidebar
-      // auto-load sentinel can await completion and stop its chain on failure.
-      return loadConversationWorkspaceTasks(projectId, cursor).catch(() => undefined);
+      // The raw rejection reaches the auto-load sentinel (which stops its
+      // chain on failure); the failure state itself is already contained in
+      // the sidebar page status, and manual sidebar buttons swallow it.
+      return loadConversationWorkspaceTasks(projectId, cursor);
     },
     onConversationRequestPinnedTasks: (cursor) => {
       void loadConversationPinnedTasks(cursor).catch(() => undefined);
     },
     onConversationRequestRecentTasks: (cursor) => {
-      return loadConversationRecentTasks(cursor).catch(() => undefined);
+      return loadConversationRecentTasks(cursor);
     },
     onConversationRequestTaskRuns: (task, cursor) => {
       void loadConversationRunHistory(task, cursor).catch(() => {});
@@ -2523,6 +2546,7 @@ export function App() {
       invalidateConversationSidebarLoad(`workspace:${projectId}`);
       invalidateConversationSidebarLoad(`runs:${projectId}:${taskUuid ?? taskId}`);
       invalidateConversationSidebarLoad('pinned');
+      invalidateConversationSidebarLoad('recent');
       invalidateConversationSidebarLoad('bootstrap');
       if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
         conversationNavigationRequestRef.current += 1;

@@ -128,6 +128,29 @@ describe('ConversationSidebar recent section', () => {
     }
   });
 
+  it('does not claim an empty recent list while more pages remain', () => {
+    // A page whose every slot failed server-side yields zero rows but still a
+    // cursor: the section keeps loading instead of declaring "no recent".
+    const emptyWithCursor = recentSidebar('cursor-2');
+    emptyWithCursor.recentTasks = [];
+    const first = mount(emptyWithCursor, () => {});
+    try {
+      expect(first.container.textContent).not.toContain('conversation.sidebar.noRecent');
+      expect(first.container.querySelector('[data-load-more-sentinel="recent"]')).toBeTruthy();
+    } finally {
+      act(() => first.root.unmount());
+    }
+    // Genuinely exhausted and empty -> the empty state shows.
+    const emptyExhausted = recentSidebar(null);
+    emptyExhausted.recentTasks = [];
+    const second = mount(emptyExhausted, () => {});
+    try {
+      expect(second.container.textContent).toContain('conversation.sidebar.noRecent');
+    } finally {
+      act(() => second.root.unmount());
+    }
+  });
+
   it('navigates with the full locator and tolerates rows without a run', () => {
     const onSelect = vi.fn();
     const { container, root } = mount(recentSidebar(null), onSelect);

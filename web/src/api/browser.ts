@@ -2609,6 +2609,16 @@ export const browserApi: RuntimeApi = {
     // Browser preview has no webview zoom; echo the clamped value back.
     return Promise.resolve(Math.min(250, Math.max(50, Math.round(percent))));
   },
+  saveInterfaceZoomPercent(percent: number) {
+    // Browser preview has no webview zoom; record the percent on the preview
+    // preferences instead.
+    const current = browserPreviewState.getPreferences();
+    const preferences = browserPreviewState.setPreferences({
+      ...current,
+      personalization: { ...current.personalization, interfaceZoomPercent: Math.min(250, Math.max(50, Math.round(percent))) },
+    });
+    return Promise.resolve(preferences);
+  },
   saveDesktopAvatar(input) {
     const current = browserPreviewState.getPreferences();
     const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto

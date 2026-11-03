@@ -571,6 +571,8 @@ export interface RuntimeApi {
   saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean, browser: import('../types').BrowserPreferences): Promise<PreferencesVm>;
   /** Applies a zoom percent to the main webview without persisting it. */
   applyDesktopZoom(percent: number): Promise<number>;
+  /** Persists exactly the interface zoom percent on the canonical personalization. */
+  saveInterfaceZoomPercent(percent: number): Promise<PreferencesVm>;
   saveDesktopAvatar(input: SaveDesktopAvatarInput): Promise<PreferencesVm>;
   selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<PreferencesVm>;
   saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape | null): Promise<PreferencesVm>;

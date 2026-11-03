@@ -1,15 +1,22 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import type { ConversationSidebarVm } from '@/types';
+
 import {
+  CONVERSATION_PINNED_TASK_PAGE_SIZE,
   CONVERSATION_SIDEBAR_RECENT_WINDOW,
+  CONVERSATION_TASK_PAGE_SIZE,
   applyConversationRecentTaskPage,
   applyConversationSidebarBootstrap,
   beginConversationRecentTaskLoad,
+  conversationSidebarBootstrapInvalidationKeys,
   createEmptyConversationSidebar,
   failConversationRecentTaskLoad,
 } from '@/lib/conversation-sidebar-loading';
 import { applyConversationTaskSnapshot } from '@/lib/conversation-task-state';
-import { applyConversationSidebarRunStateUpdate, applyConversationSidebarTaskActivity } from '@/lib/conversation-sidebar-activity';
+import { applyConversationSidebarRunLifecycle, applyConversationSidebarRunStateUpdate, applyConversationSidebarTaskActivity } from '@/lib/conversation-sidebar-activity';
 import { removeConversationSidebarTask } from '@/lib/conversation-sidebar-loading';
 
 function recentRow(overrides: Partial<Parameters<typeof applyConversationRecentTaskPage>[1]['tasks'][number]> = {}) {
@@ -67,7 +74,7 @@ describe('conversation sidebar recent tasks', () => {
   });
 
   it('restarts the recent page when the workspace set changes', () => {
-    let sidebar = sidebarWithRecent([recentRow()]);
+    let sidebar: ConversationSidebarVm = sidebarWithRecent([recentRow()]);
     sidebar = applyConversationSidebarBootstrap(sidebar, {
       workspaces: [{ projectId: 'b', name: 'Workspace B', workspacePath: '/b' }],
       pinRefs: [],
@@ -99,6 +106,25 @@ describe('conversation sidebar recent tasks', () => {
     expect(updated.recentTasks[0].workspaceName).toBe('Workspace A');
   });
 
+  it('projects an active run lifecycle into recent rows of unloaded workspaces', () => {
+    // The task lives only in the cross-workspace recent list: its workspace page
+    // is not loaded, so the lifecycle event is the only projection available.
+    const row = recentRow({
+      runMode: 'workflow',
+      taskId: 'task-1',
+      latestRun: { runId: 'run-1', status: 'queued', outcome: null, updatedAt: '2026-01-01T00:00:00Z', resumable: true } as never,
+      runs: [{ runId: 'run-1', status: 'queued', outcome: null, updatedAt: '2026-01-01T00:00:00Z', resumable: true } as never],
+    });
+    const sidebar = sidebarWithRecent([row]);
+    const updated = applyConversationSidebarRunLifecycle(sidebar, 'a', 'task-1', 'run-1', {
+      runtime: { active: true, phase: 'runtime-active' },
+      acp: { liveTurnActivity: 'idle', stopping: false },
+    } as never);
+    expect(updated.recentTasks[0].latestRun?.status).toBe('running');
+    expect(updated.recentTasks[0].latestRun?.resumable).toBe(false);
+    expect(updated.recentTasks[0].workspaceName).toBe('Workspace A');
+  });
+
   it('upserts task snapshots into recent rows and adds new tasks to the front', () => {
     const existing = recentRow({ taskId: 'task-1', lastActivityAt: '2026-01-01T00:00:00Z' });
     let sidebar = sidebarWithRecent([existing]);
@@ -116,6 +142,21 @@ describe('conversation sidebar recent tasks', () => {
     } as never);
     expect(created.recentTasks[0].taskId).toBe('task-9');
     expect(created.recentTasks[0].workspaceName).toBe('Workspace B');
+  });
+
+  it('keeps recent row identity when a snapshot carries no visible change', () => {
+    const existing = recentRow({ taskId: 'task-1', taskUuid: 'uuid-1', lastActivityAt: '2026-01-01T00:00:00Z' });
+    const sidebar = sidebarWithRecent([existing]);
+
+    // Identical authoritative snapshots arrive as fresh objects on every task
+    // refresh; the memoized RecentTaskRow must not re-render for them.
+    const unchanged = applyConversationTaskSnapshot(sidebar, { ...existing, workspaceName: undefined } as never);
+    expect(unchanged.recentTasks).toBe(sidebar.recentTasks);
+
+    // A visible change still rebuilds the row in place.
+    const changed = applyConversationTaskSnapshot(sidebar, { ...existing, title: 'Renamed', workspaceName: undefined } as never);
+    expect(changed.recentTasks).not.toBe(sidebar.recentTasks);
+    expect(changed.recentTasks[0].title).toBe('Renamed');
   });
 
   it('inserts the very first conversation into a loaded-but-empty recent page', () => {
@@ -137,5 +178,46 @@ describe('conversation sidebar recent tasks', () => {
     ]);
     const next = removeConversationSidebarTask(sidebar, 'a', 'task-1');
     expect(next.recentTasks.map((task) => task.taskId)).toEqual(['task-2']);
+  });
+
+  it('invalidates every page flight when the bootstrap identity set lands', () => {
+    // Workspaces known only to the old sidebar state, only to the incoming
+    // bootstrap, and to both — every page flight paginates a workspace set
+    // that just changed, so all of their premises are void.
+    let sidebar = sidebarWithRecent([recentRow()]);
+    sidebar = {
+      ...sidebar,
+      tasksByWorkspace: { ...sidebar.tasksByWorkspace, 'gone-ws': [], 'kept-ws': [] },
+    };
+    const keys = conversationSidebarBootstrapInvalidationKeys(sidebar, {
+      workspaces: [
+        { projectId: 'kept-ws', name: 'Kept', workspacePath: '/kept' },
+        { projectId: 'new-ws', name: 'New', workspacePath: '/new' },
+      ],
+      pinRefs: [],
+      lastActiveWorkspaceId: 'new-ws',
+      preferences: {},
+    });
+    expect(new Set(keys)).toEqual(new Set([
+      'workspace:gone-ws',
+      'workspace:kept-ws',
+      'workspace:new-ws',
+      'workspace:a',
+      'workspace:b',
+      'pinned',
+      'recent',
+    ]));
+  });
+
+  it('keeps the documented page sizes: task/run 10, pinned unchanged at 24', () => {
+    expect(CONVERSATION_TASK_PAGE_SIZE).toBe(10);
+    expect(CONVERSATION_PINNED_TASK_PAGE_SIZE).toBe(24);
+    const app = readFileSync(path.resolve(__dirname, '../src/App.tsx'), 'utf8');
+    expect(app).toContain('getConversationPinnedTaskPage(cursor, CONVERSATION_PINNED_TASK_PAGE_SIZE)');
+    expect(app).toContain('getConversationTaskPage(projectId, cursor, CONVERSATION_TASK_PAGE_SIZE)');
+    // The backend fallbacks must not disagree with the documented defaults.
+    const viewModels = readFileSync(path.resolve(__dirname, '../../src-tauri/src/view_models_conversation.rs'), 'utf8');
+    expect(viewModels).toContain('pub const CONVERSATION_RUN_PAGE_DEFAULT_LIMIT: usize = 10;');
+    expect(viewModels).toContain('pub const CONVERSATION_PINNED_TASK_PAGE_DEFAULT_LIMIT: usize = 24;');
   });
 });

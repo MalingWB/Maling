@@ -72,17 +72,18 @@ use commands::{
     resolve_turn_attachment_file, respond_acp_permission, respond_elicitation,
     restore_conversation_queued_prompt, restore_theme_desktop_wallpaper, retry_run,
     save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
-    save_desktop_wallpaper_opacity, save_metrics_settings, save_multica_connection_address,
-    save_task_workflow, save_updater_settings, save_workflow_template, search_acp_prompts,
-    search_acp_sessions, search_tasks, select_recent_desktop_avatar,
-    select_recent_desktop_wallpaper, select_recent_workspace, set_acp_session_auto_accept,
-    set_acp_session_config_option, set_acp_session_model, set_acp_session_permission_mode,
-    show_artifact, show_attachment, show_worker_ref, start_git_operation, start_git_state_monitor,
-    start_github_login, start_github_pull_request_create, start_run, start_update_install,
-    stop_active_session, stop_git_state_monitor, submit_conversation_prompt, submit_manual_check,
-    toggle_mcp_server, update_agent, update_auto_template, update_mcp_server,
-    update_notification_attention, update_profile, update_skill_sync_targets,
-    update_workflow_template, use_conversation_queued_prompt, write_skill,
+    save_desktop_wallpaper_opacity, save_interface_zoom_percent, save_metrics_settings,
+    save_multica_connection_address, save_task_workflow, save_updater_settings,
+    save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
+    select_recent_desktop_avatar, select_recent_desktop_wallpaper, select_recent_workspace,
+    set_acp_session_auto_accept, set_acp_session_config_option, set_acp_session_model,
+    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref,
+    start_git_operation, start_git_state_monitor, start_github_login,
+    start_github_pull_request_create, start_run, start_update_install, stop_active_session,
+    stop_git_state_monitor, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
+    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
+    update_profile, update_skill_sync_targets, update_workflow_template,
+    use_conversation_queued_prompt, write_skill,
 };
 use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
@@ -262,7 +263,7 @@ fn run() -> anyhow::Result<()> {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
             if let Ok(ctx) = state.context() {
-                let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
+                let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root.clone());
                 touch_log_file_best_effort(&paths);
                 if let Some(runtime_log_guard) = init_tracing(&paths, &ctx.config, true) {
                     let _ = app.manage(runtime_log_guard);
@@ -276,7 +277,7 @@ fn run() -> anyhow::Result<()> {
                     .and_then(|settings| settings.personalization)
                     .map(|personalization| personalization.interface_zoom_percent)
                     .unwrap_or(gold_band::config::DEFAULT_INTERFACE_ZOOM_PERCENT);
-                commands::apply_interface_zoom_to_main_window(app.handle(), zoom_percent);
+                commands::apply_interface_zoom_to_app_webviews(app.handle(), zoom_percent);
             }
             state.install_scheduled_service(std::sync::Arc::new(
                 scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
@@ -582,6 +583,7 @@ fn run() -> anyhow::Result<()> {
             show_attachment,
             show_worker_ref,
             apply_desktop_zoom,
+            save_interface_zoom_percent,
             save_desktop_preferences,
             save_desktop_avatar,
             select_recent_desktop_avatar,

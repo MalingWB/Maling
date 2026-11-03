@@ -47,9 +47,10 @@ export interface ShellProps {
   onConversationAddWorkspace?: () => void;
   onConversationRemoveWorkspace?: (projectId: string) => Promise<void>;
   onConversationRetrySidebar: () => void;
-  onConversationRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void;
+  /** Rejects on failure so the auto-load sentinel can stop its chain. */
+  onConversationRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void | Promise<unknown>;
   onConversationRequestPinnedTasks: (cursor?: string | null) => void;
-  onConversationRequestRecentTasks: (cursor?: string | null) => void;
+  onConversationRequestRecentTasks: (cursor?: string | null) => void | Promise<unknown>;
   onConversationRequestTaskRuns: (task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>, cursor?: string | null) => void;
   activeWorkspaceId?: string | null;
   defaultExpandedWorkspaceId?: string | null;

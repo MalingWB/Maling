@@ -47,7 +47,12 @@ describe('interface zoom preference', () => {
         ui: { fontStack: { source: 'theme' }, fontSize: { source: 'theme' } },
         editor: { fontStack: { source: 'theme' }, fontSize: { source: 'theme' } },
       },
-      wallpaper: { byColorScheme: {} },
+      wallpaper: {
+        byColorScheme: {
+          light: { image: { source: 'theme' }, opacityPercent: 60 },
+          dark: { image: { source: 'theme' }, opacityPercent: 60 },
+        },
+      },
       avatars: { agent: { image: { source: 'theme' }, shape: { source: 'theme' } }, user: { image: { source: 'theme' }, shape: { source: 'theme' } } },
       interfaceZoomPercent: 100,
       workflowGraphDirection: 'auto',
@@ -71,12 +76,23 @@ describe('interface zoom wiring contract', () => {
 
   it('applies the persisted zoom at startup and persists through the shared save path', () => {
     const mainRs = readFileSync(path.resolve(__dirname, '../../src-tauri/src/main.rs'), 'utf8');
-    expect(mainRs).toContain('commands::apply_interface_zoom_to_main_window');
+    expect(mainRs).toContain('commands::apply_interface_zoom_to_app_webviews');
 
     const commandsRs = readFileSync(path.resolve(__dirname, '../../src-tauri/src/commands.rs'), 'utf8');
     expect(commandsRs).toContain('pub fn apply_desktop_zoom');
     // The full preference save path applies the persisted zoom after saving.
-    expect(commandsRs.indexOf('apply_interface_zoom_to_main_window(&app_handle, personalization.interface_zoom_percent)')).toBeGreaterThan(0);
+    expect(commandsRs.indexOf('apply_interface_zoom_to_app_webviews(&app_handle, personalization.interface_zoom_percent)')).toBeGreaterThan(0);
+  });
+
+  it('persists shortcut zoom steps through the single-field zoom save', () => {
+    // Startup defaults can still be live while the bootstrap IPC is in flight;
+    // a shortcut step must never round-trip a full preference object built from
+    // them. The backend changes exactly one field of the canonical fact.
+    const mainRs = readFileSync(path.resolve(__dirname, '../../src-tauri/src/main.rs'), 'utf8');
+    expect(mainRs).toContain('save_interface_zoom_percent,');
+
+    const app = readFileSync(path.resolve(__dirname, '../src/App.tsx'), 'utf8');
+    expect(app).toContain('saveInterfaceZoomPercent(percent)');
   });
 
   it('installs the shortcut driver bridge in the app shell', () => {
@@ -90,16 +106,35 @@ describe('interface zoom wiring contract', () => {
     // bounds with devicePixelRatio (system scale × interface zoom) and the
     // backend must consume them as physical units.
     const host = readFileSync(path.resolve(__dirname, '../src/components/workspace/browser/browser-webview-host.ts'), 'utf8');
-    expect(host).toContain('function toPhysicalBrowserBounds');
+    expect(host).toContain('export function toPhysicalBrowserBounds');
     expect(host).toContain('toPhysicalBrowserBounds(roundBounds(bounds))');
     expect(host).toContain('toPhysicalBrowserBounds(target)');
 
+    // The conversion lives in exactly one place; the overlay reuses it instead
+    // of keeping a drifting inline copy.
     const overlay = readFileSync(path.resolve(__dirname, '../src/components/workspace/browser/browser-address-overlay.ts'), 'utf8');
-    expect(overlay).toContain('window.devicePixelRatio || 1');
+    expect(overlay).toContain('bounds: toPhysicalBrowserBounds(overlayBounds)');
+    expect(overlay).not.toContain('window.devicePixelRatio');
 
     const browserRs = readFileSync(path.resolve(__dirname, '../../src-tauri/src/browser.rs'), 'utf8');
     expect(browserRs).toContain('PhysicalPosition::new');
     expect(browserRs).toContain('PhysicalSize::new');
     expect(browserRs).not.toContain('LogicalPosition');
+  });
+
+  it('mirrors the interface zoom onto the address-suggestion overlay webview', () => {
+    // The suggestion overlay renders app-styled rows at fixed CSS sizes inside
+    // dpr-scaled bounds; without the same page zoom its box and content diverge
+    // by exactly the zoom factor. Browser pages serve arbitrary remote content
+    // and are out of scope.
+    const browserRs = readFileSync(path.resolve(__dirname, '../../src-tauri/src/browser.rs'), 'utf8');
+    expect(browserRs).toContain('pub(crate) fn apply_interface_zoom_to_address_suggestions');
+    // Creation reads the persisted zoom once so a first-show overlay matches.
+    expect(browserRs).toContain('apply_interface_zoom_to_address_suggestions(app, persisted_interface_zoom_percent(app));');
+
+    // Every later zoom change (startup, settings commit, live preview) reaches
+    // the live overlay through the shared webview zoom applier.
+    const commandsRs = readFileSync(path.resolve(__dirname, '../../src-tauri/src/commands.rs'), 'utf8');
+    expect(commandsRs).toContain('crate::browser::apply_interface_zoom_to_address_suggestions(app_handle, percent);');
   });
 });

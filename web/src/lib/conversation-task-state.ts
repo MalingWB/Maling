@@ -71,6 +71,29 @@ export function applyConversationTaskSnapshot(
 }
 
 /**
+ * Fields the memoized `RecentTaskRow` renders. Snapshots arrive as fresh
+ * objects on every task refresh, so identity alone cannot detect "no visible
+ * change"; only these fields justify rebuilding the row (and the list).
+ */
+function sameConversationRecentTaskRow(
+  left: ConversationRecentTaskRowVm,
+  right: ConversationRecentTaskRowVm,
+) {
+  return left.projectId === right.projectId
+    && left.taskId === right.taskId
+    && left.taskUuid === right.taskUuid
+    && left.title === right.title
+    && left.runMode === right.runMode
+    && left.lastActivityAt === right.lastActivityAt
+    && left.workspaceName === right.workspaceName
+    && left.latestRun?.runId === right.latestRun?.runId
+    && left.latestRun?.status === right.latestRun?.status
+    && left.latestRun?.outcome === right.latestRun?.outcome
+    && left.agentIdentity?.iconKey === right.agentIdentity?.iconKey
+    && left.agentIdentity?.displayName === right.agentIdentity?.displayName;
+}
+
+/**
  * Keeps the merged recent list in sync with one authoritative task snapshot:
  * an already-listed row is updated in place; a brand-new task joins the front
  * so a conversation created in this client is immediately visible. Rows from
@@ -85,7 +108,7 @@ function upsertConversationRecentTask(
   if (index >= 0) {
     const current = recentTasks[index];
     const updated: ConversationRecentTaskRowVm = { ...task, workspaceName: current.workspaceName };
-    if (updated === current) return recentTasks;
+    if (sameConversationRecentTaskRow(current, updated)) return recentTasks;
     const next = [...recentTasks];
     next[index] = updated;
     return next;

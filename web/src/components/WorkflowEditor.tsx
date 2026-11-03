@@ -484,8 +484,12 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const [viewportRevision, setViewportRevision] = useState(0);
   const [historyRevision, setHistoryRevision] = useState(0);
   const { preference: directionPreference, setPreference: setDirectionPreference } = useWorkflowGraphDirectionPreference();
-  const [layoutDirection, setLayoutDirection] = useState<WorkflowLayoutDirection>('RIGHT');
-  const layoutDirectionRef = useRef<WorkflowLayoutDirection>('RIGHT');
+  // Locked preferences seed the direction immediately so a vertical graph never
+  // pays a wasted horizontal first layout plus a refit (GraphView seeding
+  // contract); `auto` resolves once the canvas is measured by the effect below.
+  const [layoutDirection, setLayoutDirection] = useState<WorkflowLayoutDirection>(() =>
+    directionPreference === 'vertical' ? 'DOWN' : 'RIGHT');
+  const layoutDirectionRef = useRef<WorkflowLayoutDirection>(layoutDirection);
   const [terminalMenu, setTerminalMenu] = useState<TerminalMenu | null>(null);
   const [validationDialogOpen, setValidationDialogOpen] = useState(false);
   const [pendingValidation, setPendingValidation] = useState<WorkflowValidationResult | null>(null);

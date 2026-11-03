@@ -36,15 +36,15 @@ function preferencesWith(zoom: number): PreferencesVm {
   };
 }
 
-function mountHarness(zoom: number, onPersist: (next: PersonalizationPreference) => void) {
+function mountHarness(zoom: number, onPersistZoom: (percent: number) => void) {
   const container = document.createElement('div');
   document.body.append(container);
   const root: Root = createRoot(container);
   const render = (nextZoom: number) => act(() => {
-    root.render(<Harness zoom={nextZoom} onPersist={onPersist} />);
+    root.render(<Harness zoom={nextZoom} onPersistZoom={onPersistZoom} />);
   });
-  function Harness({ zoom, onPersist: persist }: { zoom: number; onPersist: (next: PersonalizationPreference) => void }) {
-    useDesktopZoomShortcuts(preferencesWith(zoom), persist);
+  function Harness({ zoom, onPersistZoom: persistZoom }: { zoom: number; onPersistZoom: (percent: number) => void }) {
+    useDesktopZoomShortcuts(preferencesWith(zoom), persistZoom);
     return null;
   }
   render(zoom);
@@ -65,8 +65,8 @@ afterEach(() => {
 
 describe('useDesktopZoomShortcuts', () => {
   it('applies each step immediately and debounces persistence to the final value', async () => {
-    const onPersist = vi.fn();
-    const { root, driver } = mountHarness(100, onPersist);
+    const onPersistZoom = vi.fn();
+    const { root, driver } = mountHarness(100, onPersistZoom);
     try {
       await act(async () => {
         driver().adjust(5);
@@ -75,20 +75,23 @@ describe('useDesktopZoomShortcuts', () => {
       });
       expect(applyDesktopZoom).toHaveBeenCalledTimes(3);
       expect(applyDesktopZoom).toHaveBeenCalledWith(115);
-      expect(onPersist).not.toHaveBeenCalled();
+      expect(onPersistZoom).not.toHaveBeenCalled();
       await act(async () => {
         vi.advanceTimersByTime(700);
       });
-      expect(onPersist).toHaveBeenCalledTimes(1);
-      expect(onPersist.mock.calls[0][0].interfaceZoomPercent).toBe(115);
+      // Persistence reports the single zoom percent; the owner persists it
+      // through the single-field save so startup defaults can never round-trip
+      // a full preference object.
+      expect(onPersistZoom).toHaveBeenCalledTimes(1);
+      expect(onPersistZoom).toHaveBeenCalledWith(115);
     } finally {
       act(() => root.unmount());
     }
   });
 
   it('cancels a pending step persist when a newer zoom is committed externally', async () => {
-    const onPersist = vi.fn();
-    const { root, render, driver } = mountHarness(100, onPersist);
+    const onPersistZoom = vi.fn();
+    const { root, render, driver } = mountHarness(100, onPersistZoom);
     try {
       await act(async () => {
         driver().adjust(5); // schedules persist(105) in 600ms
@@ -100,30 +103,71 @@ describe('useDesktopZoomShortcuts', () => {
       await act(async () => {
         vi.advanceTimersByTime(800);
       });
-      expect(onPersist).not.toHaveBeenCalled();
+      expect(onPersistZoom).not.toHaveBeenCalled();
 
       // Later steps continue from the externally committed value.
       await act(async () => {
         driver().adjust(5);
         vi.advanceTimersByTime(700);
       });
-      expect(onPersist).toHaveBeenCalledTimes(1);
-      expect(onPersist.mock.calls[0][0].interfaceZoomPercent).toBe(155);
+      expect(onPersistZoom).toHaveBeenCalledTimes(1);
+      expect(onPersistZoom).toHaveBeenCalledWith(155);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('re-applies an adopted zoom that a pending shortcut step previewed away from', async () => {
+    const onPersist = vi.fn();
+    // Startup defaults (100) are live before the preferences bootstrap lands.
+    const { root, render, driver } = mountHarness(100, onPersist);
+    try {
+      await act(async () => {
+        driver().adjust(5); // webview previews 105; persist(105) scheduled
+      });
+      // Bootstrap lands with the persisted 180 while that step is pending.
+      await act(async () => {
+        render(180);
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(800);
+      });
+      expect(onPersist).not.toHaveBeenCalled();
+      // The adopted percent must win visually too, not only in the preference.
+      expect(applyDesktopZoom).toHaveBeenCalledWith(180);
+
+      // Later steps continue from the adopted value.
+      await act(async () => {
+        driver().adjust(5);
+      });
+      expect(applyDesktopZoom).toHaveBeenLastCalledWith(185);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('does not touch the webview when preferences first mount', async () => {
+    const onPersist = vi.fn();
+    const { root } = mountHarness(100, onPersist);
+    try {
+      // The backend already applied the persisted zoom before the first paint;
+      // adopting startup defaults must not clobber it with a 100% preview.
+      expect(applyDesktopZoom).not.toHaveBeenCalled();
     } finally {
       act(() => root.unmount());
     }
   });
 
   it('resets to the default immediately and persists right away', async () => {
-    const onPersist = vi.fn();
-    const { root, driver } = mountHarness(180, onPersist);
+    const onPersistZoom = vi.fn();
+    const { root, driver } = mountHarness(180, onPersistZoom);
     try {
       await act(async () => {
         driver().reset();
       });
       expect(applyDesktopZoom).toHaveBeenCalledWith(100);
-      expect(onPersist).toHaveBeenCalledTimes(1);
-      expect(onPersist.mock.calls[0][0].interfaceZoomPercent).toBe(100);
+      expect(onPersistZoom).toHaveBeenCalledTimes(1);
+      expect(onPersistZoom).toHaveBeenCalledWith(100);
     } finally {
       act(() => root.unmount());
     }

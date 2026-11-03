@@ -95,12 +95,13 @@ function isRightWorkspaceExempt(element: Element): boolean {
 }
 
 /**
- * Converts CSS-pixel bounds to physical pixels for the native child webview.
- * `devicePixelRatio` includes the interface zoom (WebView2/WKWebView page
- * zoom), so the child webview stays glued to its DOM slot at any zoom level;
- * logical units alone would only track the system scale factor.
+ * Converts CSS-pixel bounds to physical pixels for a native child webview
+ * (browser pages and the address-suggestion overlay). `devicePixelRatio`
+ * includes the interface zoom (WebView2/WKWebView page zoom), so the child
+ * webview stays glued to its DOM slot at any zoom level; logical units alone
+ * would only track the system scale factor.
  */
-function toPhysicalBrowserBounds(bounds: BrowserBounds): BrowserBounds {
+export function toPhysicalBrowserBounds(bounds: BrowserBounds): BrowserBounds {
   const ratio = window.devicePixelRatio || 1;
   return {
     x: bounds.x * ratio,

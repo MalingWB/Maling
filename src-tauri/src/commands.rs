@@ -9709,7 +9709,7 @@ pub fn save_desktop_preferences(
         .map_err(command_error)?;
     let log_level = settings.log_level.unwrap_or(context.config.log_level);
     set_runtime_log_level(log_level);
-    apply_interface_zoom_to_main_window(&app_handle, personalization.interface_zoom_percent);
+    apply_interface_zoom_to_app_webviews(&app_handle, personalization.interface_zoom_percent);
     Ok(preferences_vm(
         appearance,
         personalization.clone(),
@@ -9723,27 +9723,63 @@ pub fn save_desktop_preferences(
     ))
 }
 
-/// Applies an interface zoom percent to the main window webview. The zoom is a
-/// pure display projection of the persisted preference; failures only log and
-/// never fail the surrounding preference command.
-pub(crate) fn apply_interface_zoom_to_main_window(app_handle: &AppHandle, percent: u16) {
-    let Some(window) = app_handle.get_webview_window("main") else {
-        return;
-    };
+/// Applies an interface zoom percent to every app-owned webview: the main
+/// window and the address-suggestion overlay. The zoom is a pure display
+/// projection of the persisted preference; failures only log and never fail
+/// the surrounding preference command.
+pub(crate) fn apply_interface_zoom_to_app_webviews(app_handle: &AppHandle, percent: u16) {
     let factor = f64::from(percent) / 100.0;
-    if let Err(error) = window.set_zoom(factor) {
-        warn!(%error, percent, "failed to apply interface zoom to main window");
+    if let Some(window) = app_handle.get_webview_window("main") {
+        if let Err(error) = window.set_zoom(factor) {
+            warn!(%error, percent, "failed to apply interface zoom to main window");
+        }
     }
+    crate::browser::apply_interface_zoom_to_address_suggestions(app_handle, percent);
 }
 
 /// Live zoom preview used by the settings slider and the Ctrl+wheel / Ctrl+`+/-/0`
-/// shortcuts. Applies the clamped percent to the webview without persisting;
-/// persistence always flows through `save_desktop_preferences`.
+/// shortcuts. Applies the clamped percent to the webview without persisting.
 #[tauri::command]
 pub fn apply_desktop_zoom(app_handle: AppHandle, percent: u16) -> CommandResult<u16> {
     let percent = percent.clamp(MIN_INTERFACE_ZOOM_PERCENT, MAX_INTERFACE_ZOOM_PERCENT);
-    apply_interface_zoom_to_main_window(&app_handle, percent);
+    apply_interface_zoom_to_app_webviews(&app_handle, percent);
     Ok(percent)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveInterfaceZoomPercentInput {
+    pub percent: u16,
+}
+
+/// Persists exactly the interface zoom percent.
+///
+/// Shortcut-driven saves may fire while the frontend still holds startup
+/// default preferences (the bootstrap IPC can be in flight), so — like
+/// `save_desktop_wallpaper_opacity` — this reads the canonical personalization
+/// server-side and changes one field instead of round-tripping a possibly
+/// stale full preference object through `save_desktop_preferences`.
+#[tauri::command]
+pub fn save_interface_zoom_percent(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    input: SaveInterfaceZoomPercentInput,
+) -> CommandResult<PreferencesVm> {
+    if !(MIN_INTERFACE_ZOOM_PERCENT..=MAX_INTERFACE_ZOOM_PERCENT).contains(&input.percent) {
+        return Err(CommandErrorVm::new(
+            "personalization.interface-zoom-invalid",
+            serde_json::json!({
+                "min": MIN_INTERFACE_ZOOM_PERCENT,
+                "max": MAX_INTERFACE_ZOOM_PERCENT,
+            }),
+        ));
+    }
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization.interface_zoom_percent = input.percent;
+    let saved = persist_desktop_personalization(&state, &context, personalization)?;
+    apply_interface_zoom_to_app_webviews(&app_handle, input.percent);
+    Ok(saved)
 }
 
 fn normalize_personalization_preference(

@@ -14,10 +14,14 @@ export function useLoadMoreSentinel(enabled: boolean, onLoadMore: () => unknown)
   const elementRef = useRef<HTMLElement | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadingRef = useRef(false);
+  // A scheduled re-check can fire before the disabled state commits; it must
+  // read the latest value, not the one captured when its load started.
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
 
   const check = useCallback(() => {
     const element = elementRef.current;
-    if (!element || !enabled || loadingRef.current) return;
+    if (!element || !enabledRef.current || loadingRef.current) return;
     loadingRef.current = true;
     let failed = false;
     try {
@@ -44,7 +48,7 @@ export function useLoadMoreSentinel(enabled: boolean, onLoadMore: () => unknown)
     if (!failed && element.isConnected && isVisible(element)) {
       window.setTimeout(() => check(), 0);
     }
-  }, [enabled]);
+  }, []);
 
   const setSentinelElement = useCallback((element: HTMLElement | null) => {
     observerRef.current?.disconnect();

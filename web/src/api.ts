@@ -619,6 +619,10 @@ export function saveDesktopPreferences(appearance: Parameters<ReturnType<typeof 
   return getRuntimeApi().saveDesktopPreferences(appearance, personalization, language, useLocalClaude, verboseLogging, browser);
 }
 
+export function saveInterfaceZoomPercent(percent: number) {
+  return getRuntimeApi().saveInterfaceZoomPercent(percent);
+}
+
 export function saveDesktopAvatar(input: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopAvatar']>[0]) {
   return getRuntimeApi().saveDesktopAvatar(input);
 }

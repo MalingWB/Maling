@@ -875,6 +875,44 @@ pub async fn browser_discard_all(
     Ok(())
 }
 
+/// Reads the persisted interface zoom for a freshly created overlay webview.
+///
+/// Every preference change flows through
+/// `commands::apply_interface_zoom_to_app_webviews`, which also updates an
+/// already-live overlay; creation reads the same persisted fact once so a
+/// first-show overlay matches even before any preference event arrives.
+fn persisted_interface_zoom_percent(app: &AppHandle) -> u16 {
+    app.try_state::<DesktopState>()
+        .and_then(|state| state.context().ok())
+        .and_then(|context| context.app().load_settings().ok())
+        .and_then(|settings| settings.personalization)
+        .map(|personalization| personalization.interface_zoom_percent)
+        .unwrap_or(gold_band::config::DEFAULT_INTERFACE_ZOOM_PERCENT)
+}
+
+/// Applies the interface zoom percent to the address-suggestion overlay webview.
+///
+/// Unlike browsing pages (arbitrary remote content that just fills its slot),
+/// the overlay renders app-styled rows at fixed CSS sizes while the frontend
+/// scales its native bounds by `devicePixelRatio` (system scale × interface
+/// zoom); without the same page zoom the box and its content diverge by exactly
+/// the zoom factor.
+pub(crate) fn apply_interface_zoom_to_address_suggestions(app: &AppHandle, percent: u16) {
+    let Some(webview) = app.get_webview(BROWSER_ADDRESS_SUGGESTION_WEBVIEW_LABEL) else {
+        return;
+    };
+    let factor = f64::from(percent) / 100.0;
+    if let Err(error) = webview.set_zoom(factor) {
+        warn!(
+            target: "gold_band::browser",
+            operation = "address-suggestions-zoom",
+            %error,
+            percent,
+            "failed to apply interface zoom to address suggestion webview"
+        );
+    }
+}
+
 fn create_address_suggestion_webview(
     app: &AppHandle,
     state: &BrowserAddressSuggestionOverlayInput,
@@ -960,6 +998,7 @@ fn create_address_suggestion_webview(
     // handler owns the first reveal and there is no window where an uninitialized overlay
     // could flash.
     hide_label(app, None, BROWSER_ADDRESS_SUGGESTION_WEBVIEW_LABEL)?;
+    apply_interface_zoom_to_address_suggestions(app, persisted_interface_zoom_percent(app));
     let document_url = webview.url().ok();
     info!(
         target: "gold_band::browser",

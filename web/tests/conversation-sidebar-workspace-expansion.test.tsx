@@ -35,6 +35,7 @@ const callbacks = {
   onRetryBootstrap: () => {},
   onRequestWorkspaceTasks: () => {},
   onRequestPinnedTasks: () => {},
+  onRequestRecentTasks: () => {},
   onRequestTaskRuns: () => {},
 };
 
@@ -48,6 +49,8 @@ function sidebarVm(): ConversationSidebarVm {
     pinRefs: [],
     pinnedTasks: [],
     pinnedTaskPage: { status: 'ready', nextCursor: null },
+    recentTasks: [],
+    recentTaskPage: { status: 'not-loaded', nextCursor: null },
     tasksByWorkspace: { 'workspace-a': [], 'workspace-b': [] },
     workspaceTaskPages: {
       'workspace-a': { status: 'ready', nextCursor: null },

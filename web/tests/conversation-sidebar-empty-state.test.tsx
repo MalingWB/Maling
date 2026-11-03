@@ -42,6 +42,7 @@ const callbacks = {
   onRetryBootstrap: () => {},
   onRequestWorkspaceTasks: () => {},
   onRequestPinnedTasks: () => {},
+  onRequestRecentTasks: () => {},
   onRequestTaskRuns: () => {},
 };
 
@@ -57,6 +58,7 @@ function task(taskId: string): ConversationTaskRowVm {
     runs: [],
     runHistoryStatus: 'not-loaded',
     runsNextCursor: null,
+    pinned: false,
   };
 }
 

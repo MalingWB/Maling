@@ -4,6 +4,7 @@ import type {
   BrowserAddressSuggestionOverlayThemeVm,
 } from '@/api/client';
 import { displayBrowserVisitUrl, type BrowserAddressSuggestion } from './browser-history';
+import { toPhysicalBrowserBounds } from './browser-webview-host';
 
 export { BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT } from '@/api/client';
 export const BROWSER_ADDRESS_SUGGESTION_WEBVIEW_LABEL = 'gb-browser-address-suggestions';
@@ -122,7 +123,6 @@ export function createBrowserAddressSuggestionOverlayInput({
 }): BrowserAddressSuggestionOverlayInput {
   // Physical pixels: the suggestion list lives in its own native child webview
   // whose placement follows devicePixelRatio (system scale × interface zoom).
-  const ratio = window.devicePixelRatio || 1;
   const overlayBounds = browserAddressSuggestionOverlayBounds(
     anchor,
     suggestions.length,
@@ -131,12 +131,7 @@ export function createBrowserAddressSuggestionOverlayInput({
   );
   return {
     revision,
-    bounds: {
-      x: overlayBounds.x * ratio,
-      y: overlayBounds.y * ratio,
-      width: overlayBounds.width * ratio,
-      height: overlayBounds.height * ratio,
-    },
+    bounds: toPhysicalBrowserBounds(overlayBounds),
     activeIndex,
     items: browserAddressSuggestionOverlayItems(suggestions, searchLabel, removeLabel),
     theme: readBrowserAddressSuggestionTheme(),
