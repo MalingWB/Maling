@@ -250,6 +250,13 @@ impl NodeDsl {
         }
     }
 
+    pub fn goal(&self) -> Option<&str> {
+        match self {
+            Self::Worker(node) => node.goal.as_deref(),
+            Self::AiDynamic(_) => None,
+        }
+    }
+
     pub fn manual_check_enabled(&self) -> bool {
         match self {
             Self::Worker(node) => node.manual_check.unwrap_or(false),

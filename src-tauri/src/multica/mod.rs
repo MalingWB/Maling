@@ -4,9 +4,11 @@
 //! - [`client`]: reqwest HTTP client + 指数退避重试 + 全部 multica API 调用
 //! - [`config`]: 配置 VM + pat/daemon_id getter + `multica_settings` 聚合 + base_url 容错
 //! - [`error`]:  `MulticaError` → `CommandErrorVm` 映射（code 前缀 `multica.*`）
+//! - [`markdown_source`]: 需求正文 markdown 转义解码（tiptap 序列化源码 → 纯文本，M5-bx）
 //!
 //! 后续里程碑追加：
 //! - `loop_`（M2）：启动全量 register / 常驻 15s 心跳（连接后即持续）/ recover-orphans / 取消检测
+//! - `runtime_assets`（M5-cq）：角色共享通道 B 工单（list 盘点 / export 提取 / push-install 安装）
 //! - `state`（M2+）：运行期内存状态（runtime_id 映射、在飞任务映射）
 //! - `vm`（M3）：远程任务展示 VM（RemoteTaskVm / RemoteConversationSidebarVm）
 //! - `commands`（M3）：远程任务命令（get_remote_tasks / get_remote_task_requirement /
@@ -24,7 +26,10 @@ pub mod error;
 pub mod handoff;
 pub mod local_skills;
 pub mod loop_;
+pub mod markdown_source;
+pub mod runtime_assets;
 pub mod state;
+pub mod upstream;
 pub mod vm;
 
 pub use client::MulticaClient;

@@ -1140,6 +1140,8 @@
       "runtime-offline": "ランタイムの準備ができていません。しばらくしてからもう一度お試しください。",
       "session-resume-failed": "セッションの再開に失敗しました。新たな実行が開始されます。",
       "task-not-found": "この Multica タスクが見つかりませんでした。",
+      "upstream-pull-invalid-decision": "選択が無効です。確認してもう一度お試しください。",
+      "upstream-pull-not-pending": "この取得はすでに終了しました。選択は不要です。",
       "workspace-already-bound": "このワークスペースはすでにバインドされています。",
       "workspace-not-found": "このワークスペース バインディングが見つかりませんでした。"
     },
@@ -3044,7 +3046,9 @@
         "emptyTitle": "{{source}}に接続されていません",
         "removeTask": "リストから削除",
         "removeTaskHint": "この側のリストから削除されるだけです。更新すると復元されます",
-        "removeTaskTerminalHint": "ローカルの完了記録を削除します。更新しても再表示されません"
+        "removeTaskTerminalHint": "ローカルの完了記録を削除します。更新しても再表示されません",
+        "rerunTask": "再実行",
+        "rerunBadge": "再実行"
       },
       "keepResident": "セッションを常駐",
       "releaseResident": "常駐を解除",
@@ -3259,6 +3263,7 @@
       "account": {
         "connected": "接続済み"
       },
+      "openPlatform": "{{source}} プラットフォームを開く",
       "column": {
         "empty": "タスクがありません"
       },
@@ -3283,10 +3288,31 @@
         "label": "種類",
         "test": "テスト"
       },
+      "searchPlaceholder": "タスク名を検索…",
       "readiness": {
-        "notReady": "準備未完了",
-        "notReadyHint": "対応する開発タスクがまだ完了していません。完了を待ってからの実行をご検討ください"
+        "ready": "準備完了",
+        "readyHint": "対応する開発タスクが完了しました。実行を開始できます"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "このタスクは DPMS 要求の作成と関連付けの報告が必要です。報告が完了するとこのラベルは自動的に消えます"
+      },
+      "issueStatus": {
+        "todo": "未着手",
+        "backlog": "バックログ"
       }
+    },
+    "upstreamPull": {
+      "title": "上流の成果物説明を未取得",
+      "description": "「{{task}}」の {{node}} ノードは、上流ワークアイテム {{issue}} の成果物説明をまだ取得していません。",
+      "fallbackNote": "60 秒以内に選択しない場合、自動的にポーリングを再開します。",
+      "retry": "取得を待機",
+      "manual": "手動で入力",
+      "skip": "取得をスキップ",
+      "manualLabel": "成果物説明",
+      "manualPlaceholder": "ビルド成果物やデプロイ環境などの重要情報…",
+      "manualSubmit": "この内容で続行",
+      "waitingNote": "上流の成果物メモの更新を待機しています。待機中はいつでも手動で入力またはスキップできます。"
     }
   }
 }
