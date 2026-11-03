@@ -2523,6 +2523,7 @@
     "directionHorizontal": "横方向",
     "directionVertical": "縦方向",
     "fullscreen": "全画面表示",
+    "exitFullscreen": "全画面を終了",
     "viewNodeDetail": "ノードの詳細を表示する",
     "viewSession": "セッションを見る",
     "viewLog": "ログを表示する",

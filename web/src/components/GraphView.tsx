@@ -237,6 +237,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
           onFitView={() => { if (centeredViewport) setViewport(centeredViewport); }}
           direction={{ preference: directionPreference, onChange: setDirectionPreference }}
           onFullscreen={allowFullscreen ? () => setFullscreen(true) : undefined}
+          fullscreenActive={fullscreen}
         />
       </ReactFlow>
       {allowFullscreen ? (

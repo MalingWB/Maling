@@ -418,4 +418,16 @@ describe('workflow editor interaction contracts', () => {
     expect(editorSource).toContain("directionPreference === 'vertical' ? 'DOWN' : 'RIGHT')");
     expect(editorSource).toContain('useRef<WorkflowLayoutDirection>(layoutDirection)');
   });
+
+  it('offers fullscreen editing through the element-level Fullscreen API', () => {
+    // The editor is a stateful work surface: fullscreen drives the editor
+    // container itself (toolbars, inspector and drafts travel along) instead
+    // of duplicating a second editor instance inside a dialog.
+    expect(editorSource).toContain('const toggleEditorFullscreen = useCallback(() => {');
+    expect(editorSource).toContain('element.requestFullscreen()');
+    expect(editorSource).toContain('document.exitFullscreen()');
+    expect(editorSource).toContain("document.addEventListener('fullscreenchange', sync)");
+    expect(editorSource).toContain('onFullscreen={toggleEditorFullscreen}');
+    expect(editorSource).toContain('fullscreenActive={editorFullscreen}');
+  });
 });

@@ -91,4 +91,22 @@ describe('GraphControls direction and fullscreen entries', () => {
       cleanup();
     }
   });
+
+  it('flips the fullscreen toggle into its exit affordance while active', () => {
+    const onFullscreen = vi.fn();
+    const { container, cleanup } = renderControls({ onFullscreen, fullscreenActive: true });
+    try {
+      // The active state relabels the button to the exit action so screen
+      // readers and tooltips both announce what clicking will do.
+      expect(container.querySelector('[aria-label="graph.exitFullscreen"]')).toBeTruthy();
+      expect(container.querySelector('[aria-label="graph.fullscreen"]')).toBeNull();
+      const button = container.querySelector('[aria-label="graph.exitFullscreen"]') as HTMLElement;
+      act(() => {
+        button.click();
+      });
+      expect(onFullscreen).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup();
+    }
+  });
 });

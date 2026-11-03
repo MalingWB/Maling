@@ -1,5 +1,5 @@
 import { ControlButton, Controls } from '@xyflow/react';
-import { Expand, Maximize2, MoveDown, MoveRight, Shuffle, ZoomIn, ZoomOut } from 'lucide-react';
+import { Expand, Maximize2, Minimize, MoveDown, MoveRight, Shuffle, ZoomIn, ZoomOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   DropdownMenu,
@@ -22,6 +22,7 @@ export function GraphControls({
   onFitView,
   direction,
   onFullscreen,
+  fullscreenActive = false,
 }: {
   disabled?: boolean;
   onZoomIn: () => void;
@@ -31,6 +32,8 @@ export function GraphControls({
   direction?: GraphDirectionControlProps;
   /** When present, renders the fullscreen toggle. */
   onFullscreen?: () => void;
+  /** Flips the toggle into its "leave fullscreen" affordance. */
+  fullscreenActive?: boolean;
 }) {
   const { t } = useTranslation();
   const directionIcon = direction?.preference === 'vertical'
@@ -38,14 +41,17 @@ export function GraphControls({
     : direction?.preference === 'horizontal'
       ? <MoveRight />
       : <Shuffle />;
+  const fullscreenLabel = fullscreenActive ? t('graph.exitFullscreen') : t('graph.fullscreen');
   return (
     <Controls showZoom={false} showFitView={false} showInteractive={false} position="bottom-right">
       {onFullscreen ? (
         <Tooltip>
           <TooltipTrigger asChild>
-            <ControlButton disabled={disabled} aria-label={t('graph.fullscreen')} onClick={onFullscreen}><Expand /></ControlButton>
+            <ControlButton disabled={disabled} aria-label={fullscreenLabel} onClick={onFullscreen}>
+              {fullscreenActive ? <Minimize /> : <Expand />}
+            </ControlButton>
           </TooltipTrigger>
-          <TooltipContent side="left">{t('graph.fullscreen')}</TooltipContent>
+          <TooltipContent side="left">{fullscreenLabel}</TooltipContent>
         </Tooltip>
       ) : null}
       {direction ? (

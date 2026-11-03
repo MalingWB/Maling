@@ -490,6 +490,26 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const [layoutDirection, setLayoutDirection] = useState<WorkflowLayoutDirection>(() =>
     directionPreference === 'vertical' ? 'DOWN' : 'RIGHT');
   const layoutDirectionRef = useRef<WorkflowLayoutDirection>(layoutDirection);
+  // Fullscreen editing drives the element-level Fullscreen API on the editor
+  // container: tabs, canvas toolbars, and inspector all travel into fullscreen
+  // together, and the live editing state is never duplicated into a second
+  // editor instance (the runtime graphs use a dialog because they are
+  // stateless views).
+  const [editorFullscreen, setEditorFullscreen] = useState(false);
+  useEffect(() => {
+    const sync = () => setEditorFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', sync);
+    return () => document.removeEventListener('fullscreenchange', sync);
+  }, []);
+  const toggleEditorFullscreen = useCallback(() => {
+    const element = editorContainerRef.current;
+    if (!element) return;
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => {});
+      return;
+    }
+    void element.requestFullscreen().catch(() => {});
+  }, []);
   const [terminalMenu, setTerminalMenu] = useState<TerminalMenu | null>(null);
   const [validationDialogOpen, setValidationDialogOpen] = useState(false);
   const [pendingValidation, setPendingValidation] = useState<WorkflowValidationResult | null>(null);
@@ -1219,6 +1239,8 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
                 onZoomOut={() => { void flowInstance?.zoomOut(); }}
                 onFitView={() => { fitLayoutViewport(); }}
                 direction={{ preference: directionPreference, onChange: setDirectionPreference }}
+                onFullscreen={toggleEditorFullscreen}
+                fullscreenActive={editorFullscreen}
               />
             </ReactFlow>
             <WorkflowLayoutStatus state={layoutState} />

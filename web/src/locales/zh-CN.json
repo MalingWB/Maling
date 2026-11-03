@@ -2523,6 +2523,7 @@
     "directionHorizontal": "横向",
     "directionVertical": "纵向",
     "fullscreen": "全屏查看",
+    "exitFullscreen": "退出全屏",
     "viewNodeDetail": "查看节点详情",
     "viewSession": "查看会话",
     "viewLog": "查看日志",
