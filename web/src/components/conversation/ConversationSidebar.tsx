@@ -693,7 +693,11 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             mirrors that workspace's recent tasks. */}
         <div data-conversation-sidebar-region="recent" className="shrink-0">
           <Separator data-conversation-sidebar-separator className="mx-1 my-1.5 opacity-45" />
-          <ScrollArea className="max-h-[min(40vh,20rem)]">
+          {/* Plain overflow container, not ScrollArea: the radix viewport is
+              percentage-sized and collapses under a max-height-only parent
+              (the sidebar's main list works because its flex column grants a
+              definite height). Content sizes naturally up to the cap. */}
+          <div className="gold-themed-scrollbar max-h-[min(40vh,20rem)] overflow-y-auto px-0.5 pb-1 pt-2">
             <button
               type="button"
               data-conversation-sidebar-heading="recent"
@@ -744,7 +748,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 />
               </div>
             ) : null}
-          </ScrollArea>
+          </div>
         </div>
 
 
