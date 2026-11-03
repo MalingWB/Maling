@@ -70,8 +70,7 @@ fn invalid_origin(name: &str) -> String {
 
 pub fn wb_urls() -> Result<WbUrls, String> {
     let base = std::env::var(WB_BASE_URL).map_err(|_| format!("missing {WB_BASE_URL}"))?;
-    let multica =
-        std::env::var(WB_MULTICA_URL).map_err(|_| format!("missing {WB_MULTICA_URL}"))?;
+    let multica = std::env::var(WB_MULTICA_URL).map_err(|_| format!("missing {WB_MULTICA_URL}"))?;
     WbUrls::new(&base, &multica)
 }
 
@@ -102,10 +101,7 @@ mod tests {
         );
         assert_eq!(config["metricsBaseUrl"], "https://example.invalid");
         // multica 是独立注入的 origin，不再从服务基础地址派生端口。
-        assert_eq!(
-            config["multicaBaseUrl"],
-            "https://multica.example.invalid"
-        );
+        assert_eq!(config["multicaBaseUrl"], "https://multica.example.invalid");
         assert_eq!(config["multicaAppUrl"], "https://multica.example.invalid");
         assert_eq!(
             config["builtinMcpServers"][0]["transport"]["url"],

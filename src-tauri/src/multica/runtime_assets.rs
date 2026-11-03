@@ -385,7 +385,8 @@ async fn handle_push_install<R: Runtime>(
     let report = match home_app(&app) {
         None => failed_install_report("app state unavailable".to_string()),
         Some(home) => {
-            let install = tauri::async_runtime::spawn_blocking(move || -> Result<(ProfileEntry, gold_band::app::MulticaInstallOutcome), String> {
+            let install = tauri::async_runtime::spawn_blocking(
+                move || -> Result<(ProfileEntry, gold_band::app::MulticaInstallOutcome), String> {
                     let existing = home
                         .profiles()
                         .map_err(|error| format!("profile scan failed: {error}"))?;
@@ -399,8 +400,9 @@ async fn handle_push_install<R: Runtime>(
                     home.create_profile(input)
                         .map(|entry| (entry, outcome))
                         .map_err(|error| format!("create profile failed: {error}"))
-                })
-                .await;
+                },
+            )
+            .await;
             match install {
                 Ok(Ok((entry, outcome))) => {
                     emit_runtime_asset_installed(&app, &request_id, ASSET_TYPE_ROLE, &entry.name);
