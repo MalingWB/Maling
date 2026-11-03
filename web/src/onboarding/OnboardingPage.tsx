@@ -24,7 +24,7 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
   const { t } = useTranslation();
   const [step, setStep] = useState(initialStep);
   const [detection, dispatch] = useReducer(setupDetectionReducer, initialDetectionState);
-  const { environment: environmentState, agents, pending, generation, nextCursor } = detection;
+  const { environment: environmentState, agents, repairs, pending, generation, nextCursor } = detection;
   const { report: environment, progress: environmentProgress } = environmentState;
   const checking = environmentState.phase === 'checking';
   const runtimeReady = environmentState.phase === 'ready' && environment?.runtimeReady;
@@ -42,6 +42,7 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
   const [language, setLanguage] = useState(status.language);
   const [appearance, setAppearance] = useState(status.appearance);
   const [preferencesBusy, setPreferencesBusy] = useState(false);
+  const [repairBusyId, setRepairBusyId] = useState('');
   const sequence = useRef(0);
   const modelSequence = useRef(0);
   const activeGeneration = useRef('');
@@ -117,6 +118,21 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
   }, [step, runtimeReady, start, stop]);
   useEffect(() => { const leave = () => stop(); window.addEventListener('pagehide', leave); return () => window.removeEventListener('pagehide', leave); }, [stop]);
 
+  const repairAgent = async (agentId: string, chooseExecutable: boolean) => {
+    if (!generation || repairBusyId) return;
+    setRepairBusyId(agentId);
+    setError(null);
+    try {
+      const executablePath = chooseExecutable ? await api.pickExecutable() : null;
+      if (chooseExecutable && !executablePath) return;
+      await api.retry(generation, agentId, receiver.current, executablePath ?? undefined);
+    } catch (failure) {
+      reportError(failure);
+    } finally {
+      setRepairBusyId('');
+    }
+  };
+
   const selected = agents[selectedId];
   const models = selected?.supportedModels ?? [];
   const modes = selected?.supportedModes ?? [];
@@ -172,7 +188,8 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
   const tools: EnvironmentCheck['tool'][] = step === 0 ? ['git'] : ['node', 'npm', 'npx'];
   const message = (failure: string | AppErrorVm) => t(`onboarding.errors.${typeof failure === 'string' ? failure : failure.code}`, { ...(typeof failure === 'string' ? {} : failure.params), defaultValue: t('onboarding.repairHint') });
   const agentStatus = checking ? 'onboarding.checking' : runtimeBlocked ? 'onboarding.runtimeBlocked' : detection.phase === 'failed' ? 'onboarding.detectionFailed' : detecting || Object.keys(pending).length ? 'onboarding.discovering' : Object.keys(agents).length ? 'onboarding.discovered' : detection.phase === 'completed' ? 'onboarding.noAgents' : 'onboarding.discovering';
-  const stepStates = [gitSkipped ? 'skipped' : gitReady ? 'ready' : checking ? 'checking' : environmentState.phase === 'idle' ? 'pending' : 'failed', runtimeReady ? 'ready' : checking ? 'checking' : environmentState.phase === 'idle' ? 'pending' : 'failed', canSelect ? 'ready' : detecting ? 'checking' : detection.phase === 'failed' ? 'failed' : 'pending'];
+  const agentStepState = detecting ? 'checking' : detection.phase === 'failed' || runtimeBlocked ? 'failed' : detection.phase === 'completed' ? (Object.keys(agents).length ? 'ready' : 'failed') : 'pending';
+  const stepStates = [gitSkipped ? 'skipped' : gitReady ? 'ready' : checking ? 'checking' : environmentState.phase === 'idle' ? 'pending' : 'failed', runtimeReady ? 'ready' : checking ? 'checking' : environmentState.phase === 'idle' ? 'pending' : 'failed', agentStepState];
 
   return <div className="flex h-dvh min-h-0 flex-col bg-background text-foreground">
     <header data-tauri-drag-region className="flex shrink-0 items-center justify-between gap-3 border-b px-5 py-3">
@@ -203,6 +220,24 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
           <div className="mt-6 flex flex-wrap gap-2"><Button variant="outline" disabled={checking} onClick={() => void checkEnvironment()}><RefreshCw className="size-4" />{t('onboarding.recheck')}</Button><Button variant="ghost" onClick={() => void openExternalUrl(step === 0 ? status.environmentPolicy.gitHelpUrl : status.environmentPolicy.node.helpUrl)}><ExternalLink className="size-4" />{t('onboarding.installGuide')}</Button></div>
         </> : <>
           <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">{(checking || detecting) && <Loader2 className="size-4 animate-spin" />}{t(agentStatus, { count: Object.keys(agents).length })}</p><Button size="sm" variant={runtimeBlocked ? 'outline' : 'ghost'} disabled={busy || detecting || checking} onClick={() => void (runtimeBlocked ? checkEnvironment() : start())}><RefreshCw className="size-4" />{t(runtimeBlocked || checking ? 'onboarding.recheckRuntime' : 'onboarding.recheck')}</Button></div>
+          {!runtimeBlocked && Object.values(repairs).length > 0 && <section className="mb-6 border-t pt-4" aria-label={t('onboarding.agentRepairs')}>
+            <h2 className="text-sm font-medium">{t('onboarding.agentRepairs')}</h2>
+            <ul className="mt-3 divide-y">
+              {Object.values(repairs).map((repair) => <li key={repair.agentId} className="py-3 first:pt-0 last:pb-0">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="break-words text-sm font-medium">{repair.label}</div>
+                    <p className="mt-1 break-words text-xs text-muted-foreground">{message(repair.code)}</p>
+                  </div>
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    <Button size="sm" variant="outline" disabled={busy || detecting || Boolean(repairBusyId)} onClick={() => void repairAgent(repair.agentId, false)}>{repairBusyId === repair.agentId && <Loader2 className="size-4 animate-spin" />}{t('onboarding.retryAgent')}</Button>
+                    <Button size="sm" variant="ghost" disabled={busy || detecting || Boolean(repairBusyId)} onClick={() => void repairAgent(repair.agentId, true)}>{t('onboarding.chooseProgram')}</Button>
+                    {repair.helpUrl && <Button size="icon" variant="ghost" className="size-8" aria-label={t('onboarding.installGuide')} onClick={() => void openExternalUrl(repair.helpUrl!)}><ExternalLink className="size-4" /></Button>}
+                  </div>
+                </div>
+              </li>)}
+            </ul>
+          </section>}
           {runtimeBlocked && <section role="alert" className="mb-6" aria-label={t('onboarding.runtimeBlocked')}><div className="divide-y">{environment?.checks.filter((check) => check.tool !== 'git' && check.status !== 'ready').map((check) => <EnvironmentCheckResult key={check.tool} tool={check.tool} check={check} />)}</div><Button variant="ghost" size="sm" className="mt-2" onClick={() => setStep(1)}>{t('onboarding.viewRuntime')}<ArrowRight className="size-4" /></Button></section>}
           <div className="space-y-5">
             <label className="block space-y-2 text-sm"><span>{t('onboarding.defaultAgent')}</span><Select value={selected ? selectedId : ''} disabled={busy || !runtimeReady || !Object.keys(agents).length} onValueChange={selectAgent}><SelectTrigger aria-label={t('onboarding.defaultAgent')}><SelectValue placeholder={t('onboarding.chooseAgent')} /></SelectTrigger><SelectContent>{Object.values(agents).map((agent) => <SelectItem key={agent.agentType} value={agent.agentType}><AgentIdentityLabel iconKey={agent.iconKey ?? DEFAULT_AGENT_ICON_KEY} name={agent.displayName} /></SelectItem>)}</SelectContent></Select></label>

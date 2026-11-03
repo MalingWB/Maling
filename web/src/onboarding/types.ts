@@ -1,4 +1,4 @@
-import type { AcpModeVm, AcpSelectConfigOptionVm, AppErrorVm, AppearancePreference, DesktopLanguage, DesktopPlatform, ManagedAgentInput, WorkerModelBinding } from '@/types';
+import type { AcpModeVm, AcpSelectConfigOptionVm, AppErrorVm, AppearancePreference, DesktopLanguage, DesktopPlatform, WorkerModelBinding } from '@/types';
 
 export interface DefaultExecutionProfile {
   agentId: string;
@@ -46,7 +46,7 @@ export interface SetupApi {
   start(onEvent: (event: SetupEvent) => void, after?: string): Promise<string>;
   cancel(generation: string): Promise<void>;
   retry(generation: string, agentId: string, onEvent: (event: SetupEvent) => void, executablePath?: string): Promise<void>;
-  custom(generation: string, agentId: string, input: ManagedAgentInput, onEvent: (event: SetupEvent) => void): Promise<void>;
+  pickExecutable(): Promise<string | null>;
   probeModel(generation: string, agentId: string, modelId: string): Promise<SetupAgent>;
   preview(selection: SetupSelection): Promise<SetupPreview>;
   apply(request: SetupApply): Promise<void>;

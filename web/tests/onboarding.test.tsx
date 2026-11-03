@@ -251,11 +251,32 @@ it('shows an empty result only after Agent detection completes normally', async 
   expect(host.textContent).toContain(emptyMessage);
 });
 
+it('marks Agent detection complete before model and permission choices are filled', async () => {
+  await thirdStep();
+  await ready();
+  await act(async () => receive({ type: 'finished', generation: 'generation-1', nextCursor: null }));
+  expect(host.querySelectorAll('ol li')[2]?.getAttribute('data-state')).toBe('ready');
+  expect(button('Preview changes').disabled).toBe(true);
+});
+
+it('shows failed Agents with retry and executable-path repair actions', async () => {
+  const retry = vi.spyOn(api, 'retry');
+  const pickExecutable = vi.spyOn(api, 'pickExecutable').mockResolvedValue('C:\\Tools\\broken-agent.exe');
+  await thirdStep();
+  await act(async () => receive({ type: 'repair', generation: 'generation-1', agentId: 'broken', label: 'Broken Agent', code: 'setup.agent-preparation-required', helpUrl: null }));
+  await act(async () => receive({ type: 'finished', generation: 'generation-1', nextCursor: null }));
+  expect(host.textContent).toContain('Broken Agent');
+  await click('Choose program');
+  expect(pickExecutable).toHaveBeenCalledTimes(1);
+  expect(retry).toHaveBeenCalledWith('generation-1', 'broken', expect.any(Function), 'C:\\Tools\\broken-agent.exe');
+});
+
 it('streams only saved healthy Agents into the selector and applies a reviewed request', async () => {
   await thirdStep();
   await act(async () => receive({ type: 'repair', generation: 'generation-1', agentId: 'broken', label: 'Broken Agent', code: 'setup.agent-preparation-required', helpUrl: null }));
   expect(host.querySelectorAll('select')[1].options.length).toBe(1);
-  expect(host.textContent).not.toContain('Broken Agent');
+  expect(Array.from(host.querySelectorAll('select')[1].options).some((option) => option.textContent?.includes('Broken Agent'))).toBe(false);
+  expect(host.textContent).toContain('Broken Agent');
   expect(host.querySelector('details')).toBeNull();
   await ready(); await select(1, 'local-agent');
   await click('Preview changes');
@@ -399,7 +420,6 @@ it('invalidates a selected failed Agent without silently choosing another', asyn
 });
 
 it('counts detected Agents before choosing a default and retains them when loading another batch', async () => {
-  const custom = vi.spyOn(api, 'custom');
   await thirdStep();
   await ready('opencode'); await ready('kimi');
   await act(async () => receive({ type: 'finished', generation: 'generation-1', nextCursor: 'next-batch' }));
@@ -412,7 +432,6 @@ it('counts detected Agents before choosing a default and retains them when loadi
   await ready('third-agent');
   await act(async () => receive({ type: 'finished', generation: 'generation-1', nextCursor: null }));
   expect(host.querySelector('[role="status"]')?.textContent).toContain('3 available Agents detected');
-  expect(custom).not.toHaveBeenCalled();
 });
 
 it('ignores old detection results after leaving the Agent step', async () => {

@@ -951,6 +951,76 @@ fn setup_installed_agents_acceptance() {
 }
 
 #[test]
+fn clean_setup_preview_builds_templates_in_memory_without_writing_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = camino::Utf8PathBuf::from_path_buf(temp.path().to_owned()).unwrap();
+    let paths = crate::storage::GoldBandPaths::new_with_path_config(root.clone(), PATH_CONFIG);
+    let settings = initialization::initialize(&paths).unwrap();
+    initialization::skip_git(&paths).unwrap();
+    let app = App::with_config_and_path_config(
+        root.clone(),
+        RuntimeConfig::default().apply_settings(&settings),
+        PATH_CONFIG,
+    );
+    let candidate = SetupCandidate {
+        id: "claude-acp".parse().unwrap(),
+        config: ManagedAgentConfig::from_catalog(
+            crate::agent_catalog::builtin_agent("claude-acp").unwrap(),
+        ),
+        expected_fingerprint: None,
+    };
+    let settings = register_success(
+        &app.paths,
+        &candidate,
+        &diagnostic(&candidate),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let app = App::with_config_and_path_config(
+        root,
+        RuntimeConfig::default().apply_settings(&settings),
+        PATH_CONFIG,
+    );
+    let settings_before = std::fs::read(app.paths.user_settings_file()).unwrap();
+    let templates = app.paths.workflow_templates_file();
+    let profiles = app.paths.user_profiles_dir();
+    assert!(!templates.exists());
+    assert!(!profiles.exists());
+
+    let selection = DefaultSetupSelection {
+        profile: DefaultExecutionProfile {
+            agent_id: candidate.id,
+            model_selection: ModelSelection::Explicit {
+                model_id: "test-model".into(),
+            },
+            config_options: BTreeMap::new(),
+            model_bound_overrides: BTreeMap::new(),
+        },
+        permission_mode_id: Some("default".into()),
+    };
+    let preview = preview(&app, &selection).unwrap();
+
+    assert_eq!(
+        preview.templates.len(),
+        app.built_in_workflow_template_ids().len()
+    );
+    assert!(!templates.exists());
+    assert!(!profiles.exists());
+    assert_eq!(
+        settings_before,
+        std::fs::read(app.paths.user_settings_file()).unwrap()
+    );
+
+    let request = request(&app, selection);
+    apply(&app, &request, &ready()).unwrap();
+    assert!(templates.exists());
+    assert!(matches!(
+        app.load_settings().unwrap().onboarding,
+        Some(OnboardingState::Completed { .. })
+    ));
+}
+
+#[test]
 #[ignore = "production-build workload: run with --release --ignored --nocapture"]
 fn setup_large_template_storage_budget() {
     let (_temp, app, _, selection) = fixture();

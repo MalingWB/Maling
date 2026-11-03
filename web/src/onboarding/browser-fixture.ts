@@ -56,8 +56,8 @@ export function createBrowserSetupApi(): SetupApi {
       return generation;
     },
     cancel: async (generation) => { clearTimeout(timers.get(generation)); timers.delete(generation); },
+    pickExecutable: async () => null,
     retry: async (generation, id, receive) => { receive({ type: 'ready', generation, agent: { ...agent, agentType: id, displayName: 'Another Agent' } }); },
-    custom: async (generation, id, input, receive) => { receive({ type: 'ready', generation, agent: { ...agent, agentType: id, displayName: input.displayName } }); },
     probeModel: async () => {
       if (fixture === 'legacy-models') throw { code: 'acp.model-config-unavailable', params: {} };
       return agent;

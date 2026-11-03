@@ -460,7 +460,6 @@ fn run() -> anyhow::Result<()> {
             onboarding::start_setup_agent_detection,
             onboarding::cancel_setup_detection,
             onboarding::retry_setup_agent,
-            onboarding::prepare_setup_custom_agent,
             onboarding::probe_setup_model,
             onboarding::preview_default_setup,
             onboarding::apply_default_setup,

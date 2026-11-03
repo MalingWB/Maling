@@ -652,7 +652,6 @@ pub fn start_setup_agent_detection(
                     return Ok(());
                 }
                 let app = state.app()?;
-                app.initialize_workflow_templates()?;
                 let (batch, next_cursor) = candidates(&app.load_settings()?, after.as_deref())?;
                 let batch: BTreeMap<_, _> = batch
                     .into_iter()
@@ -755,57 +754,6 @@ pub async fn retry_setup_agent(
         if executable_path.is_some() {
             candidate.config.executable_path = executable_path;
         }
-        if let Err(error) = probe_candidate(&handle, &run, &candidate, &on_event) {
-            report_candidate_error(&run, &candidate, error, &on_event);
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|error| command_error(error.into()))?
-}
-
-#[tauri::command]
-pub async fn prepare_setup_custom_agent(
-    handle: AppHandle,
-    generation: String,
-    agent_id: String,
-    input: crate::commands::ManagedAgentInput,
-    on_event: Channel<SetupEvent>,
-) -> CommandResult<()> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let run = handle
-            .state::<SetupController>()
-            .current(&generation)
-            .map_err(command_error)?;
-        let id: ManagedAgentId = agent_id.parse().map_err(command_error)?;
-        let state = handle.state::<DesktopState>();
-        let app = state.app().map_err(command_error)?;
-        if gold_band::agent_catalog::builtin_agent(id.as_str()).is_some()
-            || app
-                .load_settings()
-                .map_err(command_error)?
-                .agents
-                .as_ref()
-                .is_some_and(|agents| agents.contains_key(&id))
-        {
-            return Err(command_error(
-                SetupError::new("setup.configuration-conflict").into(),
-            ));
-        }
-        let config = input.into_config_for_agent(
-            &id,
-            Default::default(),
-            crate::commands::default_icon_for_agent(&id).as_str(),
-        )?;
-        let candidate = SetupCandidate {
-            id: id.clone(),
-            config,
-            expected_fingerprint: None,
-        };
-        run.candidates
-            .lock()
-            .map_err(|_| command_error(SetupError::new("setup.probe-failed").into()))?
-            .insert(id, candidate.clone());
         if let Err(error) = probe_candidate(&handle, &run, &candidate, &on_event) {
             report_candidate_error(&run, &candidate, error, &on_event);
         }

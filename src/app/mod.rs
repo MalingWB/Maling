@@ -4304,90 +4304,76 @@ impl App {
 
     fn load_workflow_template_store(&self) -> Result<WorkflowTemplateStore> {
         crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
-            self.initialize_workflow_template_store_unlocked()
+            let (store, changed) = self.prepare_workflow_template_store_unlocked(true)?;
+            if changed {
+                self.save_workflow_template_store(&store)?;
+            }
+            Ok(store)
         })
     }
 
-    fn initialize_workflow_template_store_unlocked(&self) -> Result<WorkflowTemplateStore> {
+    /// Returns the setup-time template projection without creating, migrating or
+    /// repairing files. The onboarding preview and apply paths share this snapshot.
+    pub fn prepared_workflow_templates(&self) -> Result<WorkflowTemplateStore> {
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            self.prepare_workflow_template_store_unlocked(false)
+                .map(|(store, _)| store)
+        })
+    }
+
+    fn prepare_workflow_template_store_unlocked(
+        &self,
+        track_changes: bool,
+    ) -> Result<(WorkflowTemplateStore, bool)> {
         let default_profiles = ensure_default_user_profiles(&self.paths)?;
         let default_template =
             default_workflow_template(&default_profiles, self.config.desktop_language);
         let lightweight_template =
             default_lightweight_workflow_template(&default_profiles, self.config.desktop_language);
         let path = self.paths.workflow_templates_file();
-        if !path.exists() {
-            let legacy_path = self.paths.legacy_project_workflow_templates_file();
-            if legacy_path.exists() {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent.as_std_path())?;
-                }
-                fs::copy(legacy_path.as_std_path(), path.as_std_path())?;
-            }
-        }
-        if path.exists() {
-            let mut store = self.read_workflow_templates()?;
-            let before = serde_json::to_value(&store)?;
-            let previous_slots = store
-                .templates
-                .iter()
-                .map(|template| {
-                    (
-                        template.id.clone(),
-                        template
-                            .workflow
-                            .nodes
-                            .iter()
-                            .filter_map(|node| match node {
-                                NodeDsl::Worker(worker) => worker.execution_slot_id.clone(),
-                                _ => None,
-                            })
-                            .collect::<std::collections::BTreeSet<_>>(),
-                    )
-                })
-                .collect::<std::collections::BTreeMap<_, _>>();
-            for template in &mut store.templates {
-                migrate_authoring_workflow(
-                    &mut template.workflow,
-                    &mut template.model_bindings,
-                    template.is_built_in.then_some(template.id.as_str()),
-                )?;
-            }
-            upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0)?;
-            upsert_built_in_workflow_template(&mut store.templates, default_template, 0)?;
-            if crate::memory::is_wb() {
-                upsert_built_in_workflow_template(
-                    &mut store.templates,
-                    wb_cicd_workflow_template(&default_profiles, self.config.desktop_language),
-                    2,
-                )?;
-            } else {
-                store
-                    .templates
-                    .retain(|template| template.id != WB_CICD_WORKFLOW_TEMPLATE_ID);
-            }
-            if let Some(workflow) = store.last_created_workflow.as_mut() {
-                let mut ignored = WorkflowModelBindings::default();
-                migrate_authoring_workflow(workflow, &mut ignored, None)?;
-            }
-            self.initialize_default_bindings(&mut store, &previous_slots);
-            if serde_json::to_value(&store)? != before {
-                self.save_workflow_template_store(&store)?;
-            }
-            return self.read_workflow_templates();
-        }
-        let mut store = WorkflowTemplateStore {
-            storage_revision: crate::storage::configuration::FileRevision::Missing,
-            version: VERSION.to_string(),
-            last_used_template_id: Some("default".to_string()),
-            last_created_workflow: None,
-            templates: vec![default_template, lightweight_template],
+        let legacy_path = self.paths.legacy_project_workflow_templates_file();
+        let source = if path.exists() {
+            Some(path.clone())
+        } else {
+            legacy_path.exists().then_some(legacy_path)
         };
-        if crate::memory::is_wb() {
-            store.templates.push(wb_cicd_workflow_template(
-                &default_profiles,
-                self.config.desktop_language,
-            ));
-        }
+        let needs_canonical_copy = source.as_ref().is_some_and(|source| source != &path);
+        let (mut store, created) = if let Some(source) = source {
+            (read_json::<WorkflowTemplateStore>(&source)?, false)
+        } else {
+            (
+                WorkflowTemplateStore {
+                    storage_revision: crate::storage::configuration::FileRevision::Missing,
+                    version: VERSION.to_string(),
+                    last_used_template_id: Some("default".to_string()),
+                    last_created_workflow: None,
+                    templates: vec![default_template.clone(), lightweight_template.clone()],
+                },
+                true,
+            )
+        };
+        store.storage_revision = crate::storage::configuration::revision(&path)?;
+        let before = track_changes
+            .then(|| serde_json::to_value(&store))
+            .transpose()?;
+        let previous_slots = store
+            .templates
+            .iter()
+            .map(|template| {
+                (
+                    template.id.clone(),
+                    template
+                        .workflow
+                        .nodes
+                        .iter()
+                        .filter_map(|node| match node {
+                            NodeDsl::Worker(worker) => worker.execution_slot_id.clone(),
+                            _ => None,
+                        })
+                        .collect::<std::collections::BTreeSet<_>>(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
         for template in &mut store.templates {
             migrate_authoring_workflow(
                 &mut template.workflow,
@@ -4395,9 +4381,29 @@ impl App {
                 template.is_built_in.then_some(template.id.as_str()),
             )?;
         }
-        self.initialize_default_bindings(&mut store, &Default::default());
-        self.save_workflow_template_store(&store)?;
-        self.read_workflow_templates()
+        upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0)?;
+        upsert_built_in_workflow_template(&mut store.templates, default_template, 0)?;
+        if crate::memory::is_wb() {
+            upsert_built_in_workflow_template(
+                &mut store.templates,
+                wb_cicd_workflow_template(&default_profiles, self.config.desktop_language),
+                2,
+            )?;
+        } else {
+            store
+                .templates
+                .retain(|template| template.id != WB_CICD_WORKFLOW_TEMPLATE_ID);
+        }
+        if let Some(workflow) = store.last_created_workflow.as_mut() {
+            let mut ignored = WorkflowModelBindings::default();
+            migrate_authoring_workflow(workflow, &mut ignored, None)?;
+        }
+        self.initialize_default_bindings(&mut store, &previous_slots);
+        let changed = track_changes
+            && (created
+                || needs_canonical_copy
+                || serde_json::to_value(&store)? != before.expect("tracked baseline"));
+        Ok((store, changed))
     }
 
     fn initialize_default_bindings(

@@ -287,7 +287,7 @@ pub fn preview(app: &App, selection: &DefaultSetupSelection) -> Result<DefaultSe
         project(
             app,
             &app.load_settings()?,
-            &app.read_workflow_templates()?,
+            &app.prepared_workflow_templates()?,
             selection,
         )
         .map(|(preview, _)| preview)
@@ -349,7 +349,7 @@ pub fn apply(
         let (preview, store) = project(
             app,
             &settings,
-            &app.read_workflow_templates()?,
+            &app.prepared_workflow_templates()?,
             &request.selection,
         )?;
         if preview.fingerprint != request.preview_fingerprint {
