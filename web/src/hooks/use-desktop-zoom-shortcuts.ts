@@ -2,9 +2,11 @@ import { useEffect, useRef } from 'react';
 import { setDesktopPageZoomDriver } from '@/lib/desktop-page-zoom';
 import {
   INTERFACE_ZOOM_DEFAULT,
+  clampInterfaceZoomPercent,
   normalizeInterfaceZoomPercent,
   previewInterfaceZoomPercent,
 } from '@/lib/desktop-zoom';
+import { getRuntimeApi } from '@/api/client';
 import type { PreferencesVm } from '@/types';
 
 /** Ctrl+wheel fires many events per second; persist at most this often. */
@@ -43,7 +45,10 @@ export function useDesktopZoomShortcuts(
     if (pendingStepTimer !== null) {
       window.clearTimeout(pendingStepTimer);
       persistTimerRef.current = null;
-      void previewInterfaceZoomPercent(next);
+      // Clamp-only re-apply: a manually committed percent keeps its exact
+      // integer (the manual-input contract); step snapping here would desync
+      // the webview from the persisted preference by one step.
+      void getRuntimeApi().applyDesktopZoom(clampInterfaceZoomPercent(next));
     }
   }, [preferences.personalization.interfaceZoomPercent]);
 

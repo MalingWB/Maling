@@ -146,6 +146,26 @@ describe('useDesktopZoomShortcuts', () => {
     }
   });
 
+  it('re-applies an adopted manual zoom percent without step snapping', async () => {
+    const onPersistZoom = vi.fn();
+    const { root, render, driver } = mountHarness(100, onPersistZoom);
+    try {
+      await act(async () => {
+        driver().adjust(5); // pending step debounce exists
+      });
+      // A manually typed 153 commits externally (clamp-only, exact integer).
+      await act(async () => {
+        render(153);
+      });
+      // The re-apply must honor the exact percent: the manual input contract
+      // keeps the typed integer, so stepping it to 155 would desync the
+      // webview from the persisted preference.
+      expect(applyDesktopZoom).toHaveBeenLastCalledWith(153);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
   it('does not touch the webview when preferences first mount', async () => {
     const onPersist = vi.fn();
     const { root } = mountHarness(100, onPersist);

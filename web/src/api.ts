@@ -623,6 +623,10 @@ export function saveInterfaceZoomPercent(percent: number) {
   return getRuntimeApi().saveInterfaceZoomPercent(percent);
 }
 
+export function saveWorkflowGraphDirection(direction: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowGraphDirection']>[0]) {
+  return getRuntimeApi().saveWorkflowGraphDirection(direction);
+}
+
 export function saveDesktopAvatar(input: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopAvatar']>[0]) {
   return getRuntimeApi().saveDesktopAvatar(input);
 }

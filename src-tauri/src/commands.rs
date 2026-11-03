@@ -9781,6 +9781,31 @@ pub fn save_interface_zoom_percent(
     Ok(saved)
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveWorkflowGraphDirectionInput {
+    pub direction: gold_band::config::WorkflowGraphDirectionPreference,
+}
+
+/// Persists exactly the workflow graph direction preference.
+///
+/// Graph-control toggles are background gestures like the zoom shortcuts: a
+/// full `save_desktop_preferences` round-trip would capture the frontend's
+/// possibly stale personalization (e.g. a just-persisted shortcut zoom that
+/// has not re-rendered yet) and silently revert it, so — like
+/// `save_interface_zoom_percent` — this changes one field of the canonical
+/// server-side fact.
+#[tauri::command]
+pub fn save_workflow_graph_direction(
+    state: State<'_, DesktopState>,
+    input: SaveWorkflowGraphDirectionInput,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization.workflow_graph_direction = input.direction;
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
 fn normalize_personalization_preference(
     mut preference: PersonalizationPreference,
 ) -> CommandResult<PersonalizationPreference> {

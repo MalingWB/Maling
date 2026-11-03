@@ -577,6 +577,8 @@ export interface RuntimeApi {
   applyDesktopZoom(percent: number): Promise<number>;
   /** Persists exactly the interface zoom percent on the canonical personalization. */
   saveInterfaceZoomPercent(percent: number): Promise<PreferencesVm>;
+  /** Persists exactly the workflow graph direction on the canonical personalization. */
+  saveWorkflowGraphDirection(direction: import('../types').WorkflowGraphDirectionPreference): Promise<PreferencesVm>;
   saveDesktopAvatar(input: SaveDesktopAvatarInput): Promise<PreferencesVm>;
   selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<PreferencesVm>;
   saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape | null): Promise<PreferencesVm>;

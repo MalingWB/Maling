@@ -70,7 +70,28 @@ export function useLoadMoreSentinel(enabled: boolean, onLoadMore: () => unknown)
   return setSentinelElement;
 }
 
+/**
+ * Window-visibility with ancestor clipping: sections like the recent list
+ * scroll inside their own bounded overflow containers, and a sentinel whose
+ * raw rect is inside the window but clipped by such a container is not
+ * visible — the auto-load chain must stop there instead of fetching pages
+ * the user cannot see.
+ */
 function isVisible(element: HTMLElement) {
-  const rect = element.getBoundingClientRect();
+  let rect = element.getBoundingClientRect();
+  let node: HTMLElement | null = element.parentElement;
+  while (node && node !== document.body && node !== document.documentElement) {
+    const { overflowY, overflow } = getComputedStyle(node);
+    if (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'hidden' || overflow === 'hidden') {
+      const clip = node.getBoundingClientRect();
+      const top = Math.max(rect.top, clip.top);
+      const bottom = Math.min(rect.bottom, clip.bottom);
+      const left = Math.max(rect.left, clip.left);
+      const right = Math.min(rect.right, clip.right);
+      if (bottom <= top || right <= left) return false;
+      rect = { top, bottom, left, right } as DOMRect;
+    }
+    node = node.parentElement;
+  }
   return rect.bottom > 0 && rect.top < window.innerHeight;
 }

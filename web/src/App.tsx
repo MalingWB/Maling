@@ -38,6 +38,7 @@ import {
   removeRecentWorkspace,
   saveDesktopPreferences,
   saveInterfaceZoomPercent,
+  saveWorkflowGraphDirection,
   saveDesktopAvatar,
   saveDesktopAvatarShape,
   saveDesktopWallpaperOpacity,
@@ -2180,15 +2181,24 @@ export function App() {
     preferenceSaveQueueRef.current = save;
   };
 
+  // Graph-control direction toggles are background gestures like the zoom
+  // shortcuts: a full preference round-trip could capture a stale
+  // personalization (e.g. a just-persisted shortcut zoom whose re-render has
+  // not landed) and silently revert it, so this persists exactly one field
+  // through the same serialized queue.
   const onSaveWorkflowGraphDirection = (next: WorkflowGraphDirectionPreference) => {
-    onSavePreferences(
-      preferences.appearance,
-      { ...preferences.personalization, workflowGraphDirection: next },
-      preferences.language,
-      preferences.useLocalClaude,
-      preferences.verboseLogging,
-      preferences.browser,
-    );
+    const generation = ++preferenceSaveGenerationRef.current;
+    const save = preferenceSaveQueueRef.current
+      .catch(() => undefined)
+      .then(() => saveWorkflowGraphDirection(next))
+      .then((saved) => {
+        if (generation !== preferenceSaveGenerationRef.current) return;
+        applySavedPreferences(saved);
+      })
+      .catch((err) => {
+        if (generation === preferenceSaveGenerationRef.current) setError(displayAppError(t, err));
+      });
+    preferenceSaveQueueRef.current = save;
   };
 
   // Shortcut zoom commits persist exactly one field through the same serialized

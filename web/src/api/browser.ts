@@ -3,6 +3,7 @@ import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversa
 import type { AcpSessionUpdatedEventVm, ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm, ImChannelCapabilitiesVm } from '../types';
 import { browserPreviewState } from './browserState';
+import { clampInterfaceZoomPercent } from '@/lib/desktop-zoom';
 import { localTimestamp, toRoundSelectionInput } from './shared';
 import { scheduledScheduleSpecFromInput } from '@/lib/scheduled-task-authoring';
 import { normalizeFontCatalogFamilies } from '@/lib/font-families';
@@ -2607,7 +2608,7 @@ export const browserApi: RuntimeApi = {
   },
   applyDesktopZoom(percent: number) {
     // Browser preview has no webview zoom; echo the clamped value back.
-    return Promise.resolve(Math.min(250, Math.max(50, Math.round(percent))));
+    return Promise.resolve(clampInterfaceZoomPercent(percent));
   },
   saveInterfaceZoomPercent(percent: number) {
     // Browser preview has no webview zoom; record the percent on the preview
@@ -2615,7 +2616,16 @@ export const browserApi: RuntimeApi = {
     const current = browserPreviewState.getPreferences();
     const preferences = browserPreviewState.setPreferences({
       ...current,
-      personalization: { ...current.personalization, interfaceZoomPercent: Math.min(250, Math.max(50, Math.round(percent))) },
+      personalization: { ...current.personalization, interfaceZoomPercent: clampInterfaceZoomPercent(percent) },
+    });
+    return Promise.resolve(preferences);
+  },
+  saveWorkflowGraphDirection(direction: import('../types').WorkflowGraphDirectionPreference) {
+    // Browser preview records the direction on the preview preferences.
+    const current = browserPreviewState.getPreferences();
+    const preferences = browserPreviewState.setPreferences({
+      ...current,
+      personalization: { ...current.personalization, workflowGraphDirection: direction },
     });
     return Promise.resolve(preferences);
   },
@@ -3039,7 +3049,7 @@ export const browserApi: RuntimeApi = {
       errors: [],
     });
   },
-  getConversationRunSummaryPage(projectId, taskId, cursor, limit = 20) {
+  getConversationRunSummaryPage(projectId, taskId, cursor, limit = 10) {
     const task = browserConversationTasks.get(taskId);
     const start = cursor ? Math.max(0, (task?.runs ?? []).findIndex((run) => run.runId === cursor) + 1) : 0;
     const runs = (task?.runs ?? []).slice(start, start + limit);

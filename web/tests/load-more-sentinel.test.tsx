@@ -68,11 +68,18 @@ function mountSwitchableSentinel(initialEnabled: boolean, onLoadMore: () => unkn
 
 function stubElementVisible(visible: boolean) {
   // jsdom lays out with zero rects; make visibility deterministic for the hook.
-  Element.prototype.getBoundingClientRect = () => ({
-    top: visible ? 10 : 2000,
-    bottom: visible ? 20 : 2010,
-    left: 0, right: 10, width: 10, height: 10, x: 0, y: 0, toJSON: () => ({}),
-  } as DOMRect);
+  Element.prototype.getBoundingClientRect = function getBoundingClientRect() {
+    if (this instanceof HTMLElement && this.dataset.scrollContainer === 'clipping') {
+      return {
+        top: 0, bottom: 300, left: 0, right: 400, width: 400, height: 300, x: 0, y: 0, toJSON: () => ({}),
+      } as DOMRect;
+    }
+    return {
+      top: visible ? 10 : 2000,
+      bottom: visible ? 20 : 2010,
+      left: 0, right: 10, width: 10, height: 10, x: 0, y: 0, toJSON: () => ({}),
+    } as DOMRect;
+  };
 }
 
 beforeEach(() => {
@@ -136,6 +143,63 @@ describe('useLoadMoreSentinel', () => {
       expect(calls).toBe(2);
     } finally {
       act(() => root.unmount());
+    }
+  });
+
+  it('stops the auto-load chain when an overflow ancestor clips the sentinel', async () => {
+    // The recent section scrolls in its own bounded overflow container; a
+    // sentinel whose raw rect is inside the window but clipped by that
+    // container is NOT visible, and the chain must stop there instead of
+    // fetching pages the user cannot see.
+    Element.prototype.getBoundingClientRect = function getBoundingClientRect() {
+      if (this instanceof HTMLElement && this.dataset.scrollContainer === 'clipping') {
+        return { top: 0, bottom: 300, left: 0, right: 400, width: 400, height: 300, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      }
+      if (this instanceof HTMLElement && this.dataset.sentinel === 'true') {
+        // Inside the window (jsdom innerHeight 768) but below the container's
+        // 300px clip — exactly the state raw-rect checks misread as visible.
+        return { top: 350, bottom: 360, left: 0, right: 10, width: 10, height: 10, x: 0, y: 350, toJSON: () => ({}) } as DOMRect;
+      }
+      return { top: 10, bottom: 20, left: 0, right: 10, width: 10, height: 10, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    };
+    const onLoadMore = vi.fn(() => Promise.resolve());
+    const container = document.createElement('div');
+    // Inline style: jsdom's computed style resolves it, matching how the app
+    // marks its scroll containers via classes at runtime.
+    container.style.overflowY = 'auto';
+    container.dataset.scrollContainer = 'clipping';
+    document.body.append(container);
+    const root: Root = createRoot(container);
+    act(() => {
+      root.render(
+        <div>
+          {/* tall spacer pushes the sentinel past the container's 300px clip */}
+          <div style={{ height: 1000 }} />
+          <Harness />
+        </div>,
+      );
+    });
+    function Harness() {
+      const setSentinel = useLoadMoreSentinel(true, onLoadMore);
+      return <div ref={setSentinel} data-sentinel="true" />;
+    }
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+    try {
+      await act(async () => {
+        StubIntersectionObserver.callback?.([{ isIntersecting: true }]);
+        await settle();
+      });
+      // The intersection fired once before clipping applies; after that load
+      // the clip-aware re-check must not keep the chain going.
+      const callsAfterFirst = onLoadMore.mock.calls.length;
+      await act(async () => {
+        await settle();
+        await settle();
+      });
+      expect(onLoadMore.mock.calls.length).toBe(callsAfterFirst);
+    } finally {
+      act(() => root.unmount());
+      document.body.replaceChildren();
     }
   });
 

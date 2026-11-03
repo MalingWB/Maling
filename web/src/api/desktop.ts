@@ -583,6 +583,9 @@ export const desktopApi: RuntimeApi = {
   saveInterfaceZoomPercent(percent: number) {
     return invokeCommand<PreferencesVm>('save_interface_zoom_percent', { input: { percent } }).then(withWallpaperAssetUrls);
   },
+  saveWorkflowGraphDirection(direction: import('../types').WorkflowGraphDirectionPreference) {
+    return invokeCommand<PreferencesVm>('save_workflow_graph_direction', { input: { direction } }).then(withWallpaperAssetUrls);
+  },
   saveDesktopAvatar(input) {
     return invokeCommand<PreferencesVm>('save_desktop_avatar', { input }).then(withWallpaperAssetUrls);
   },

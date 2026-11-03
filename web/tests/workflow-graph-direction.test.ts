@@ -176,11 +176,26 @@ describe('workflow direction preference persistence', () => {
   it('wires the preference into the personalization schema through the app shell', () => {
     const app = readFileSync(path.resolve(__dirname, '../src/App.tsx'), 'utf8');
     expect(app).toContain('WorkflowGraphDirectionProvider');
-    expect(app).toContain('workflowGraphDirection: next');
+    expect(app).toContain('saveWorkflowGraphDirection(next)');
 
     const types = readFileSync(path.resolve(__dirname, '../src/types.ts'), 'utf8');
     expect(types).toContain("schemaVersion: 5;");
     expect(types).toContain('interfaceZoomPercent: number;');
     expect(types).toContain("workflowGraphDirection: WorkflowGraphDirectionPreference;");
+  });
+
+  it('persists direction toggles through the single-field save, not a full round-trip', () => {
+    // A graph-control toggle is a background gesture: the full-save path
+    // captures the frontend personalization at click time and can revert a
+    // just-persisted shortcut zoom that has not re-rendered yet.
+    const app = readFileSync(path.resolve(__dirname, '../src/App.tsx'), 'utf8');
+    expect(app).toContain('.then(() => saveWorkflowGraphDirection(next))');
+    expect(app).not.toContain('{ ...preferences.personalization, workflowGraphDirection: next }');
+
+    const commandsRs = readFileSync(path.resolve(__dirname, '../../src-tauri/src/commands.rs'), 'utf8');
+    expect(commandsRs).toContain('pub fn save_workflow_graph_direction(');
+    expect(commandsRs).toContain('personalization.workflow_graph_direction = input.direction;');
+    const mainRs = readFileSync(path.resolve(__dirname, '../../src-tauri/src/main.rs'), 'utf8');
+    expect(mainRs).toContain('save_workflow_graph_direction,');
   });
 });
