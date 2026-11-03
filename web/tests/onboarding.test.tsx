@@ -294,6 +294,41 @@ it('uses the workflow model, thought and permission controls without unrelated p
   expect(api.apply).toHaveBeenCalledWith(expect.objectContaining({ selection }));
 });
 
+it.each([undefined, [{ id: 'output', options: [{ value: 'text', name: 'Text' }] }]])('finishes with the provider default when legacy diagnostics expose no standard model selector (%j)', async (configOptions) => {
+  vi.spyOn(api, 'probeModel').mockRejectedValue({ code: 'acp.model-config-unavailable', params: {} });
+  await thirdStep();
+  await act(async () => receive({ type: 'ready', generation: 'generation-1', agent: {
+    agentType: 'local-agent', displayName: 'Legacy Agent',
+    supportedModels: null, supportedModes: [{ id: 'default', name: 'Default' }], configOptions,
+  } }));
+  await select(1, 'local-agent'); await selectNamed('permission', 'default');
+  expect(host.textContent).toContain(i18n.t('onboarding.providerDefault'));
+  expect(button('Preview changes').disabled).toBe(false);
+  expect(api.probeModel).not.toHaveBeenCalled();
+  const selection = { profile: { agentId: 'local-agent', modelSelection: { type: 'provider-default' }, configOptions: {}, modelBoundOverrides: {} }, permissionModeId: 'default' };
+  await click('Preview changes');
+  expect(api.preview).toHaveBeenCalledWith(selection);
+  await click('Apply and finish');
+  expect(api.apply).toHaveBeenCalledWith(expect.objectContaining({ selection }));
+  expect(done).toHaveBeenCalledOnce();
+});
+
+it.each([{ id: 'model', category: 'model' }, { id: 'provider/model', category: 'model' }])('still blocks a failed standard model probe for selector %j', async (selector) => {
+  vi.spyOn(api, 'probeModel').mockRejectedValue({ code: 'acp.model-config-unavailable', params: {} });
+  await thirdStep();
+  await act(async () => receive({ type: 'ready', generation: 'generation-1', agent: {
+    agentType: 'local-agent', displayName: 'Standard Agent',
+    supportedModels: [{ id: 'standard', name: 'Standard' }], supportedModes: [],
+    configOptions: [{ ...selector, options: [{ value: 'standard', name: 'Standard' }] }],
+  } }));
+  await select(1, 'local-agent'); await selectNamed('model', 'standard');
+  expect(api.probeModel).toHaveBeenCalledWith('generation-1', 'local-agent', 'standard');
+  expect(host.querySelector<HTMLSelectElement>('[aria-label="model"]')!.value).toBe('');
+  expect(button('Preview changes').disabled).toBe(true);
+  expect(api.preview).not.toHaveBeenCalled();
+  expect(done).not.toHaveBeenCalled();
+});
+
 it('restores model-specific thought choices when switching models, as the workflow editor does', async () => {
   const agent: SetupAgent = {
     agentType: 'local-agent', displayName: 'Local Agent',

@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { WindowCloseCoordinator } from '@/components/WindowCloseCoordinator';
 import { loadI18nLanguage } from '@/i18n';
 import { applyAppearance } from '@/theme';
 import { isTauriRuntime } from '@/api/shared';
@@ -39,14 +40,18 @@ export function OnboardingGate() {
     return () => { live = false; };
   }, [attempt, onboardingRoute]);
   const loading = <div className="flex h-dvh items-center justify-center" role="status"><Loader2 className="size-5 animate-spin" aria-label={t('onboarding.loading')} /></div>;
-  if (!loaded || loaded.onboardingRoute !== onboardingRoute) return failure ? <div className="flex h-dvh flex-col items-center justify-center gap-4"><p role="alert">{t('onboarding.loadFailed')}</p><Button onClick={() => setAttempt((v) => v + 1)}>{t('onboarding.retry')}</Button></div> : loading;
-  if (loaded.api && loaded.status && (loaded.status.state.status === 'pending' || onboardingRoute)) {
-    return <OnboardingPage key={route} api={loaded.api} status={loaded.status} initialStep={loaded.status.state.status !== 'pending' && route === '#/onboarding/defaults' ? 2 : 0} onDone={async () => {
+  let content: ReactNode;
+  if (!loaded || loaded.onboardingRoute !== onboardingRoute) {
+    content = failure ? <div className="flex h-dvh flex-col items-center justify-center gap-4"><p role="alert">{t('onboarding.loadFailed')}</p><Button onClick={() => setAttempt((v) => v + 1)}>{t('onboarding.retry')}</Button></div> : loading;
+  } else if (loaded.api && loaded.status && (loaded.status.state.status === 'pending' || onboardingRoute)) {
+    content = <OnboardingPage key={route} api={loaded.api} status={loaded.status} initialStep={loaded.status.state.status !== 'pending' && route === '#/onboarding/defaults' ? 2 : 0} onDone={async () => {
       const status = await loaded.api!.status();
       setLoaded({ ...loaded, status, onboardingRoute: false });
       location.hash = '';
       setRoute('');
     }} onExit={() => { location.hash = '#/settings'; setRoute('#/settings'); }} />;
+  } else {
+    content = <Suspense fallback={loading}><BusinessApp /></Suspense>;
   }
-  return <Suspense fallback={loading}><BusinessApp /></Suspense>;
+  return <><WindowCloseCoordinator platform={loaded?.status?.platform} />{content}</>;
 }

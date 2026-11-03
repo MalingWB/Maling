@@ -182,6 +182,7 @@ impl SetupRun {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetupStatus {
+    pub platform: &'static str,
     pub state: OnboardingState,
     pub environment_policy: EnvironmentPolicy,
     pub git_minimum_version: &'static str,
@@ -266,6 +267,7 @@ pub fn get_onboarding_status(state: State<'_, DesktopState>) -> CommandResult<Se
     let settings = gold_band::storage::load_settings_file(&paths.user_settings_file())
         .map_err(command_error)?;
     Ok(SetupStatus {
+        platform: crate::view_models::DESKTOP_PLATFORM,
         state: settings
             .onboarding
             .unwrap_or(OnboardingState::ExistingInstall),
@@ -338,6 +340,35 @@ mod tests {
     use gold_band::onboarding::environment::{
         EnvironmentError, EnvironmentStatus, EnvironmentTool,
     };
+
+    #[test]
+    fn legacy_doctor_models_do_not_become_setup_model_choices() {
+        let agent_id = "claude-acp".parse().unwrap();
+        let config = gold_band::config::ManagedAgentConfig::from_catalog(
+            gold_band::agent_catalog::builtin_agent("claude-acp").unwrap(),
+        );
+        let diagnostic = ProviderDiagnosticSnapshot {
+            available: true,
+            checked_at: "2026-11-02T00:00:00Z".into(),
+            error: None,
+            config_fingerprint: Some(fingerprint(&config).unwrap()),
+            capabilities: Some(serde_json::json!({
+                "models": {
+                    "currentModelId": "legacy-model",
+                    "availableModels": [{"modelId": "legacy-model", "name": "Legacy model"}]
+                },
+                "modes": {
+                    "currentModeId": "default",
+                    "availableModes": [{"id": "default", "name": "Default"}]
+                }
+            })),
+        };
+        let agent = SetupAgentVm::from(managed_agent_vm(&agent_id, &config, Some(&diagnostic)));
+        let payload = serde_json::to_value(agent).unwrap();
+        assert!(payload["supportedModels"].is_null());
+        assert!(payload["configOptions"].is_null());
+        assert_eq!(payload["supportedModes"][0]["id"], "default");
+    }
 
     #[test]
     fn runtime_gate_failure_keeps_diagnostics_across_command_and_channel_serialization() {

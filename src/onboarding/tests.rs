@@ -332,6 +332,69 @@ fn setup_unknown_model_and_implicit_model_are_rejected() {
 }
 
 #[test]
+fn setup_legacy_catalog_without_a_standard_selector_accepts_provider_default() {
+    for unrelated_config in [false, true] {
+        let (_temp, app, mut candidate, mut selection) = fixture();
+        let mut legacy = diagnostic(&candidate);
+        let mut capabilities = serde_json::json!({
+            "models": {
+                "currentModelId": "legacy-current",
+                "availableModels": [
+                    {"modelId": "legacy-current", "name": "Current model"},
+                    {"modelId": "legacy-other", "name": "Other model"}
+                ]
+            },
+            "modes": {"currentModeId": "default", "availableModes": [{"id": "default", "name": "Default"}]}
+        });
+        if unrelated_config {
+            capabilities["configOptions"] = serde_json::json!([
+                {"id": "output", "type": "select", "currentValue": "text", "options": [{"value": "text", "name": "Text"}]}
+            ]);
+        }
+        legacy.capabilities = Some(capabilities);
+        candidate.expected_fingerprint = Some(fingerprint(&candidate.config).unwrap());
+        register_success(&app.paths, &candidate, &legacy, &AtomicBool::new(false)).unwrap();
+
+        selection.profile.model_selection = ModelSelection::Explicit {
+            model_id: "invented".into(),
+        };
+        assert!(
+            preview(&app, &selection)
+                .unwrap_err()
+                .to_string()
+                .contains("model-config-invalid")
+        );
+        selection.profile.model_selection = ModelSelection::ProviderDefault;
+        let request = request(&app, selection);
+        let settings = apply(&app, &request, &ready()).unwrap();
+        assert_eq!(
+            settings
+                .default_execution_profile
+                .unwrap()
+                .model_selection
+                .model_id(),
+            None
+        );
+        let store = app.read_workflow_templates().unwrap();
+        assert!(
+            store
+                .templates
+                .iter()
+                .any(|template| !template.model_bindings.bindings.is_empty())
+        );
+        assert!(
+            store
+                .templates
+                .iter()
+                .flat_map(|template| &template.model_bindings.bindings)
+                .all(|binding| {
+                    binding.model_id.is_none() && binding.config_options.is_empty()
+                })
+        );
+    }
+}
+
+#[test]
 fn setup_switches_agents_with_safe_permissions_and_keeps_existing_slot_choices_on_upgrade() {
     let (_temp, app, candidate, mut selection) = fixture();
     let target = SetupCandidate {

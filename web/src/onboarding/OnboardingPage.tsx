@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { AcpModelThoughtSelects, updateAcpConfigOptionOverride } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { acpCompositeConfigSections, acpShowsModelConfigSelect, hasAuthoringModelBoundCatalog, projectAuthoringConfigOverrides, rememberAcpModelBoundOverrides, switchAcpModelBoundOverrides } from '@/lib/acp-composite-config';
-import { completeMainWindowClose, openExternalUrl, resolveAppExit, subscribeAppExitRequested } from '@/api';
+import { openExternalUrl } from '@/api';
 import { isTauriRuntime } from '@/api/shared';
 import { DESKTOP_LANGUAGE_OPTIONS } from '@/languages';
 import { loadI18nLanguage } from '@/i18n';
@@ -116,19 +116,6 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
     return stop;
   }, [step, runtimeReady, start, stop]);
   useEffect(() => { const leave = () => stop(); window.addEventListener('pagehide', leave); return () => window.removeEventListener('pagehide', leave); }, [stop]);
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-    let disposed = false;
-    const cleanups: (() => void)[] = [];
-    const attach = (cleanup: () => void) => { if (disposed) cleanup(); else cleanups.push(cleanup); };
-    void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().onCloseRequested((event) => {
-      event.preventDefault(); stop(); void completeMainWindowClose();
-    })).then(attach).catch(reportError);
-    void subscribeAppExitRequested(async ({ requestId }) => {
-      stop(); await resolveAppExit({ requestId, decision: 'proceed' });
-    }).then(attach).catch(reportError);
-    return () => { disposed = true; cleanups.forEach((cleanup) => cleanup()); };
-  }, [stop, reportError]);
 
   const selected = agents[selectedId];
   const models = selected?.supportedModels ?? [];

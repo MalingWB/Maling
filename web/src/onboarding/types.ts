@@ -1,4 +1,4 @@
-import type { AcpModeVm, AcpSelectConfigOptionVm, AppErrorVm, AppearancePreference, DesktopLanguage, ManagedAgentInput, WorkerModelBinding } from '@/types';
+import type { AcpModeVm, AcpSelectConfigOptionVm, AppErrorVm, AppearancePreference, DesktopLanguage, DesktopPlatform, ManagedAgentInput, WorkerModelBinding } from '@/types';
 
 export interface DefaultExecutionProfile {
   agentId: string;
@@ -7,6 +7,7 @@ export interface DefaultExecutionProfile {
   modelBoundOverrides: Record<string, Record<string, string>>;
 }
 export interface SetupStatus {
+  platform: DesktopPlatform;
   state: { status: 'pending'; gitDecision: 'undecided' | 'skip' } | { status: 'completed' | 'existing-install' };
   gitMinimumVersion: string;
   environmentPolicy: { node: { ranges: string[]; recommendedVersion: string; helpUrl: string }; npm: { ranges: string[] }; gitHelpUrl: string };
