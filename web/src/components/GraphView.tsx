@@ -218,7 +218,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   }
 
   return (
-    <div ref={setContainerElement} className={cn('relative min-w-0 overflow-hidden rounded-xl border bg-muted/15', variant === 'workflow' ? 'h-[360px]' : 'h-full min-h-0')}>
+    <div ref={setContainerElement} className={cn('relative min-w-0 overflow-hidden rounded-xl border bg-muted/15', variant === 'workflow' && allowFullscreen ? 'h-[360px]' : 'h-full min-h-0')}>
       <ReactFlow
         nodes={nodes}
         edges={edges}

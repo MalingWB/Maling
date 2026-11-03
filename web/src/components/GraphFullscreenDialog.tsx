@@ -23,11 +23,22 @@ export function GraphFullscreenDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         // The graph fullscreen is an opaque work surface, not a floating
-        // card: the dialog material recipe (translucent surface + backdrop
-        // blur) would otherwise blend the dark overlay behind this
-        // viewport-sized layer and wash out the graph text. Override the
-        // recipe background with the solid app background.
-        className="flex h-screen w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none border-0 !bg-none p-0 !bg-background sm:max-w-none [&>button]:z-10"
+        // card. The dialog material recipe paints a translucent texture
+        // (background-image) plus a backdrop blur; covering the whole
+        // viewport, it blends the dark overlay behind itself — a dark,
+        // grid-textured backdrop regardless of the active color scheme.
+        // Inline styles override the recipe deterministically: important
+        // utility classes are not reliably generated for every tool, so
+        // `!bg-none` silently never shipped and the bug survived a
+        // class-based fix attempt. The nested graph fills this surface: the
+        // embedding blueprint card keeps its fixed height, the fullscreen
+        // instance (allowFullscreen=false) switches to h-full.
+        style={{
+          backgroundColor: 'var(--background)',
+          backgroundImage: 'none',
+          backdropFilter: 'none',
+        }}
+        className="flex h-screen w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none border-0 p-0 sm:max-w-none [&>button]:z-10"
         aria-describedby={undefined}
       >
         <DialogHeader className="sr-only">
