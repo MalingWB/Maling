@@ -1273,10 +1273,42 @@ const RecentTaskRow = memo(function RecentTaskRow({
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const useAgentIdentity = conversationSidebarIdentityKind(row) === 'agent-icon';
-  const latestColor = row.latestRun ? conversationSidebarRunStatusClass(row.latestRun) : 'bg-muted-foreground/30';
+  const latestRun = row.latestRun;
+  const latestColor = latestRun ? conversationSidebarRunStatusClass(latestRun) : 'bg-muted-foreground/30';
   const relativeTime = row.lastActivityAt && (row.runMode === 'direct' || row.latestRun?.status !== 'running')
     ? formatCompactRelativeTime(row.lastActivityAt, t('conversation.runtime.justNow'))
     : null;
+  const recentRowBody = (
+    <>
+      <span className="flex size-4 shrink-0 items-center justify-center">
+        {useAgentIdentity && row.agentIdentity ? (
+          <img src={agentIconSrc(row.agentIdentity.iconKey)} alt="" className={agentIconClass(row.agentIdentity.iconKey, 'size-3')} />
+        ) : (
+          <span className={cn('size-1.5 rounded-full', latestColor)} />
+        )}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-sm">{row.title}</span>
+      <span className="shrink-0 truncate text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">
+        {relativeTime ? `${row.workspaceName} · ${relativeTime}` : row.workspaceName}
+      </span>
+    </>
+  );
+  // Rows without a run have nowhere to navigate: render a static row instead
+  // of a dead clickable button with hover/cursor affordances.
+  if (!latestRun) {
+    return (
+      <div
+        data-recent-task-id={row.taskId}
+        data-recent-task-project={row.projectId}
+        className={cn(
+          'flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sidebar-foreground/70',
+          isActive && 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground',
+        )}
+      >
+        {recentRowBody}
+      </div>
+    );
+  }
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -1289,27 +1321,16 @@ const RecentTaskRow = memo(function RecentTaskRow({
             isActive ? 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground' : 'cursor-pointer hover:bg-sidebar-accent',
           )}
           onClick={() => {
-            if (!row.latestRun) return;
             onSelect({
               kind: 'conversation-run',
               projectId: row.projectId,
               taskId: row.taskId,
               taskUuid: row.taskUuid,
-              runId: row.latestRun.runId,
+              runId: latestRun.runId,
             });
           }}
         >
-          <span className="flex size-4 shrink-0 items-center justify-center">
-            {useAgentIdentity && row.agentIdentity ? (
-              <img src={agentIconSrc(row.agentIdentity.iconKey)} alt="" className={agentIconClass(row.agentIdentity.iconKey, 'size-3')} />
-            ) : (
-              <span className={cn('size-1.5 rounded-full', latestColor)} />
-            )}
-          </span>
-          <span className="min-w-0 flex-1 truncate text-sm">{row.title}</span>
-          <span className="shrink-0 truncate text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">
-            {relativeTime ? `${row.workspaceName} · ${relativeTime}` : row.workspaceName}
-          </span>
+          {recentRowBody}
         </button>
       </TooltipTrigger>
       <TooltipContent side="right" className="max-w-[min(36rem,calc(100vw-2rem))] break-all">
