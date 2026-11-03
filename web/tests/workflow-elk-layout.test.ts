@@ -25,7 +25,7 @@ function terminal(id: string, pinBelow: string | null = null): WorkflowLayoutSpe
 }
 
 function edge(from: string, to: string, outcome: 'success' | 'failure', index: number): WorkflowLayoutSpec['edges'][number] {
-  return { id: `${from}-${to}-${index}`, from, to, outcome, labelWidth: 68 };
+  return { id: `${from}-${to}-${index}`, from, to, outcome };
 }
 
 /** Default full workflow shape: a success spine with retry loops and a new Round from acceptance. */
@@ -81,7 +81,7 @@ function expectReadableLayout(spec: WorkflowLayoutSpec, layout: WorkflowLayout) 
   for (const item of spec.edges) {
     const route = layout.edges.get(item.id);
     expect(route, item.id).toBeDefined();
-    if (item.labelWidth) {
+    {
       expect(distanceToRoute({ x: route!.labelX, y: route!.labelY }, route!.points), `${item.id} label`).toBeLessThanOrEqual(WORKFLOW_EDGE_LABEL_HEIGHT);
     }
     for (let i = 1; i < route!.points.length; i += 1) {

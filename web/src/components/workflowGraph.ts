@@ -20,12 +20,9 @@ export const RUNTIME_NODE_HEIGHT = 138;
 /** Source handles of a node that can fail sit at these fractions of its height. */
 export const WORKFLOW_NODE_OUTCOME_HANDLE_RATIO = { success: 0.34, failure: 0.66 } as const;
 
-// Edge labels are rendered at 11px with horizontal padding. The minimum covers
-// zh-CN and en outcome labels; longer labels reserve their estimated width.
-export const WORKFLOW_EDGE_LABEL_WIDTH = 68;
+// Edge labels float at the route's half-length point (never inside the ELK
+// spec); the height bounds how far a label may sit from its route.
 export const WORKFLOW_EDGE_LABEL_HEIGHT = 24;
-const EDGE_LABEL_FONT_SIZE = 11;
-const EDGE_LABEL_PADDING = 20;
 const TERMINAL_LABEL_FONT_SIZE = 12;
 const TERMINAL_LABEL_PADDING = 40;
 const EDGE_CORNER_RADIUS = 8;
@@ -102,7 +99,6 @@ export interface WorkflowLayoutEdgeSpec {
   from: string;
   to: string;
   outcome: WorkflowLayoutOutcome;
-  labelWidth?: number;
 }
 
 export interface WorkflowLayoutGroupSpec {
@@ -146,10 +142,6 @@ export function estimateLabelWidth(text: string, fontSize: number, padding: numb
   return Math.ceil(width + padding);
 }
 
-export function edgeLabelWidth(text: string): number {
-  return Math.max(WORKFLOW_EDGE_LABEL_WIDTH, estimateLabelWidth(text, EDGE_LABEL_FONT_SIZE, EDGE_LABEL_PADDING));
-}
-
 export function terminalNodeWidth(label: string): number {
   return Math.min(TERMINAL_NODE_MAX_WIDTH, Math.max(TERMINAL_NODE_WIDTH, estimateLabelWidth(label, TERMINAL_LABEL_FONT_SIZE, TERMINAL_LABEL_PADDING)));
 }
@@ -172,7 +164,6 @@ const ELK_LAYOUT_OPTIONS: LayoutOptions = {
   // node's 50% target port — violating the "success main chain keeps one
   // column/row" contract (task-workflow.md).
   'elk.layered.nodePlacement.strategy': 'INTERACTIVE',
-  // Inline label dummies already widen a layer, so the bare layer gap stays small.
   'elk.layered.spacing.nodeNodeBetweenLayers': '32',
   'elk.spacing.nodeNode': '48',
   'elk.layered.spacing.edgeNodeBetweenLayers': '24',
@@ -311,7 +302,7 @@ export function buildElkGraph(spec: WorkflowLayoutSpec): ElkNode {
       // lands on the port line, and the orthogonal router then detours every
       // edge through it — an S-shaped 5px jog that reads as squiggly lines.
       // Labels are placed by the app at the route's half-length point instead
-      // (readElkLayout); `labelWidth` stays on the spec only for size hints.
+      // (readElkLayout).
       labels: [],
       layoutOptions: {
         // Keep the success spine straight; failure / retry edges may bend.
@@ -549,7 +540,8 @@ export function runtimeEdgeId(edge: Pick<GraphEdgeVm, 'from' | 'to'>, index: num
 
 /**
  * Runtime layout input. Status, traversal counts and blocked reasons are excluded
- * so status refreshes never re-run layout; labels reserve their base width.
+ * so status refreshes never re-run layout; edge labels never enter the spec —
+ * they ride the route's half-length point and cannot churn the cache.
  */
 export function runtimeGraphLayoutSpec(graph: GraphVm, translate: (value: string) => string, direction: WorkflowLayoutDirection = 'RIGHT'): WorkflowLayoutSpec {
   const order = runtimeNodeOrder(graph.nodes);
@@ -572,7 +564,6 @@ export function runtimeGraphLayoutSpec(graph: GraphVm, translate: (value: string
         from: edge.from,
         to: edge.to,
         outcome: label === 'failure' ? 'failure' : label === 'success' ? 'success' : 'other',
-        labelWidth: edge.label ? edgeLabelWidth(translate(edge.label)) : undefined,
       }];
     }),
     groups: (graph.groups ?? []).map((group) => ({ id: group.id, parentId: group.parentGroupId ?? null })),

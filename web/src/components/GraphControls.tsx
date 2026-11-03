@@ -1,5 +1,5 @@
 import { ControlButton, Controls } from '@xyflow/react';
-import { Expand, Maximize2, Minimize, MoveDown, MoveRight, Shuffle, ZoomIn, ZoomOut } from 'lucide-react';
+import { Check, Expand, Maximize2, Minimize, MoveDown, MoveRight, Shuffle, ZoomIn, ZoomOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   DropdownMenu,
@@ -71,7 +71,7 @@ export function GraphControls({
             >
               <Shuffle className="size-4" />
               <span className="flex-1">{t('graph.directionAuto')}</span>
-              {direction.preference === 'auto' ? <span aria-hidden className="text-muted-foreground">✓</span> : null}
+              {direction.preference === 'auto' ? <Check aria-hidden className="size-4 text-muted-foreground" /> : null}
             </DropdownMenuItem>
             <DropdownMenuItem
               aria-label={t('graph.directionHorizontal')}
@@ -79,7 +79,7 @@ export function GraphControls({
             >
               <MoveRight className="size-4" />
               <span className="flex-1">{t('graph.directionHorizontal')}</span>
-              {direction.preference === 'horizontal' ? <span aria-hidden className="text-muted-foreground">✓</span> : null}
+              {direction.preference === 'horizontal' ? <Check aria-hidden className="size-4 text-muted-foreground" /> : null}
             </DropdownMenuItem>
             <DropdownMenuItem
               aria-label={t('graph.directionVertical')}
@@ -87,7 +87,7 @@ export function GraphControls({
             >
               <MoveDown className="size-4" />
               <span className="flex-1">{t('graph.directionVertical')}</span>
-              {direction.preference === 'vertical' ? <span aria-hidden className="text-muted-foreground">✓</span> : null}
+              {direction.preference === 'vertical' ? <Check aria-hidden className="size-4 text-muted-foreground" /> : null}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

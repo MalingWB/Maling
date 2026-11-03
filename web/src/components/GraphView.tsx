@@ -104,7 +104,20 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   const layoutDirectionRef = useRef<WorkflowLayoutDirection>(layoutDirection);
   const [fullscreen, setFullscreen] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; node: GraphNodeVm } | null>(null);
-  const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null);
+  const [containerElement, setContainerElementState] = useState<HTMLDivElement | null>(null);
+  // The ref callback runs synchronously at commit time, before layout effects:
+  // measuring here lets the very first render resolve the `auto` direction
+  // from the real container aspect, so a tall canvas never pays a wasted
+  // horizontal first ELK layout plus a refit (the seeding contract).
+  const setContainerElement = useCallback((element: HTMLDivElement | null) => {
+    setContainerElementState(element);
+    if (element) {
+      setViewportSize((current) => {
+        const next = { width: Math.round(element.clientWidth), height: Math.round(element.clientHeight) };
+        return current.width === next.width && current.height === next.height ? current : next;
+      });
+    }
+  }, []);
   const contextMenuTimerRef = useRef<number | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
