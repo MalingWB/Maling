@@ -163,7 +163,7 @@ const ELK_LAYOUT_OPTIONS: LayoutOptions = {
   // drifts nodes whenever a split node's 34% success port meets a single
   // node's 50% target port — violating the "success main chain keeps one
   // column/row" contract (task-workflow.md).
-  'elk.layered.nodePlacement.strategy': 'INTERACTIVE',
+  'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
   'elk.layered.spacing.nodeNodeBetweenLayers': '32',
   'elk.spacing.nodeNode': '48',
   'elk.layered.spacing.edgeNodeBetweenLayers': '24',
@@ -547,15 +547,27 @@ export function runtimeGraphLayoutSpec(graph: GraphVm, translate: (value: string
   const order = runtimeNodeOrder(graph.nodes);
   const nodes = [...graph.nodes].sort((a, b) => order.get(a.id)! - order.get(b.id)!);
   const nodeIds = new Set(nodes.map((node) => node.id));
+  // Terminals mirror the authoring contract: $end is a passive sink and the
+  // new-round node pins back to the entry row, so its long backward edge
+  // never crowds the tail layer and push the spine off its track.
+  const isTerminal = (node: GraphNodeVm) => node.id === END_NODE
+    || node.id === NEW_ROUND_NODE
+    || node.nodeType === 'terminal';
+  const hasIncoming = (id: string) => graph.edges.some((edge) => edge.to === id && nodeIds.has(edge.from));
+  const entryNodeId = nodes.find((node) => !isTerminal(node) && !hasIncoming(node.id))?.id ?? null;
   return {
     direction,
-    nodes: nodes.map((node) => ({
-      id: node.id,
-      width: NODE_WIDTH,
-      height: RUNTIME_NODE_HEIGHT,
-      sourceHandles: 'single',
-      groupId: node.dynamicGroupId ?? null,
-    })),
+    nodes: nodes.map((node) => {
+      const terminal = isTerminal(node);
+      return {
+        id: node.id,
+        width: terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH,
+        height: terminal ? TERMINAL_NODE_HEIGHT : RUNTIME_NODE_HEIGHT,
+        sourceHandles: terminal ? 'none' : 'single',
+        ...(node.id === NEW_ROUND_NODE && entryNodeId ? { pinBelow: entryNodeId } : {}),
+        groupId: node.dynamicGroupId ?? null,
+      };
+    }),
     edges: graph.edges.flatMap((edge, index) => {
       if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) return [];
       const label = edge.label?.toLowerCase() ?? '';

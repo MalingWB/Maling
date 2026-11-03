@@ -145,12 +145,16 @@ describe('workflow graph layout direction', () => {
       groups: [],
     };
 
+    // The worker spine shares the track exactly. The narrow $end terminal is
+    // allowed to sit wherever its inbound edge is straight: same-width ports
+    // line up only for same-width nodes, and straightening the terminal hop
+    // reads better than forcing the round terminal onto the column.
     const vertical = await layoutWorkflowGraph(mixed, elk);
-    const chainX = ['dev', 'build', 'review', '$end'].map((id) => vertical.nodes.get(id)!.x);
+    const chainX = ['dev', 'build', 'review'].map((id) => vertical.nodes.get(id)!.x);
     expect(Math.max(...chainX) - Math.min(...chainX)).toBeLessThanOrEqual(1);
 
     const horizontal = await layoutWorkflowGraph({ ...mixed, direction: 'RIGHT' }, elk);
-    const chainY = ['dev', 'build', 'review', '$end'].map((id) => horizontal.nodes.get(id)!.y);
+    const chainY = ['dev', 'build', 'review'].map((id) => horizontal.nodes.get(id)!.y);
     expect(Math.max(...chainY) - Math.min(...chainY)).toBeLessThanOrEqual(1);
 
     // Branching topologies still produce overlap-free placements.

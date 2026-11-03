@@ -106,7 +106,11 @@ describe('ELK workflow layout', () => {
     // success routes may jog through their inline label dummies instead of
     // drifting the nodes, so bound the route complexity rather than demanding
     // two-point lines.
-    expect(new Set(spine.map((rect) => Math.round(rect.y))).size).toBe(1);
+    const workerRows = new Set(spine.slice(0, 6).map((rect) => Math.round(rect.y)));
+    expect(workerRows.size).toBe(1);
+    // The $end terminal aligns with its inbound port instead of the worker
+    // column, so its hop from cleanup stays a straight line.
+    expect(layout.edges.get(`cleanup-${END_NODE}-8`)!.points).toHaveLength(2);
     for (const id of ['plan-dev-0', 'dev-review-1', 'review-test-2', 'test-accept-4', 'accept-cleanup-6', `cleanup-${END_NODE}-8`]) {
       const route = layout.edges.get(id)!;
       // At most one orthogonal corner: a port or node-width mismatch absorbs
