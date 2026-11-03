@@ -648,6 +648,53 @@ fn setup_fresh_install_prepares_an_adapter_for_an_installed_agent_cli() {
 }
 
 #[test]
+fn setup_fresh_install_discovers_standard_npm_cache_without_a_global_cli() {
+    use sha2::{Digest, Sha512};
+
+    let temp = tempfile::tempdir().unwrap();
+    let npx = local_program(temp.path(), "npx");
+    let npm = local_program(temp.path(), "npm");
+    let cache = temp.path().join("cache with spaces");
+    let npm_source = if cfg!(windows) {
+        format!("@echo off\r\necho {}\r\n", cache.display())
+    } else {
+        format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", cache.display())
+    };
+    std::fs::write(npm, npm_source).unwrap();
+    let node = temp.path().join(if cfg!(windows) { "node.exe" } else { "node" });
+    std::fs::write(&node, "fixture").unwrap();
+    let settings = crate::config::SettingsConfig::default();
+    let (batch, _) = candidates(&settings, None).unwrap();
+    let mut candidate = batch.into_iter().find(|candidate| candidate.id.as_str() == "codebuddy-code").unwrap();
+    candidate.config.executable_path = Some(npx.to_string_lossy().into());
+    candidate.config.adapter.env.insert("PATH".into(), temp.path().to_string_lossy().into());
+    let package_spec = candidate.config.adapter.args.iter().find(|arg| !arg.starts_with('-')).unwrap();
+    let (name, version) = package_spec.rsplit_once('@').unwrap();
+    let hash: String = Sha512::digest(package_spec.as_bytes())[..8].iter().map(|byte| format!("{byte:02x}")).collect();
+    let cache_root = cache.join("_npx").join(hash);
+    let package_root = cache_root.join("node_modules").join(name);
+    std::fs::create_dir_all(package_root.join("bin")).unwrap();
+    std::fs::write(cache_root.join("package.json"), serde_json::json!({
+        "dependencies": {(name): format!("^{version}")}
+    }).to_string()).unwrap();
+    std::fs::write(cache_root.join("node_modules/.package-lock.json"), serde_json::json!({
+        "lockfileVersion": 3,
+        "packages": {(format!("node_modules/{name}")): {"version": version}}
+    }).to_string()).unwrap();
+    std::fs::write(package_root.join("package.json"), serde_json::json!({
+        "name": name, "version": version,
+        "bin": {"codebuddy-code": "bin/codebuddy", "codebuddy": "bin/codebuddy", "cbc": "bin/codebuddy"}
+    }).to_string()).unwrap();
+    let script = package_root.join("bin/codebuddy");
+    std::fs::write(&script, "#!/usr/bin/env node\n").unwrap();
+    let adapter = prepared_adapter(&candidate, temp.path()).unwrap()
+        .expect("a locally cached Agent must be discovered before it has a saved instance or global CLI");
+    assert_eq!(std::path::Path::new(&adapter.command), node);
+    assert_eq!(adapter.args, [script.to_string_lossy().into_owned(), "--acp".into()]);
+    assert!(settings.agents.as_ref().is_none_or(BTreeMap::is_empty));
+}
+
+#[test]
 fn setup_fresh_install_registers_all_detected_agents_before_selecting_a_default() {
     let temp = tempfile::tempdir().unwrap();
     let root = camino::Utf8PathBuf::from_path_buf(temp.path().to_owned()).unwrap();
@@ -693,6 +740,51 @@ fn setup_fresh_install_registers_all_detected_agents_before_selecting_a_default(
     let app = App::with_config_and_path_config(root, RuntimeConfig::default().apply_settings(&settings), PATH_CONFIG);
     assert_eq!(app.managed_agents().keys().map(|id| id.as_str()).collect::<Vec<_>>(), ["kimi", "opencode"]);
     assert_eq!(app.provider_diagnostics().len(), 2);
+    assert!(app.provider_diagnostics().values().all(|diagnostic| diagnostic.available));
+}
+
+#[test]
+#[ignore = "requires explicitly selected installed and authenticated Agents; performs no inference"]
+fn setup_installed_agents_acceptance() {
+    let selected = std::env::var("GOLD_BAND_ONBOARDING_ACCEPTANCE_AGENTS")
+        .expect("set GOLD_BAND_ONBOARDING_ACCEPTANCE_AGENTS to comma-separated catalog IDs");
+    let expected: std::collections::BTreeSet<_> = selected.split(',').map(str::trim).filter(|id| !id.is_empty()).collect();
+    assert!(!expected.is_empty());
+    let temp = tempfile::tempdir().unwrap();
+    let root = camino::Utf8PathBuf::from_path_buf(temp.path().to_owned()).unwrap();
+    let paths = crate::storage::GoldBandPaths::new_with_path_config(root.clone(), PATH_CONFIG);
+    let settings = initialization::initialize(&paths).unwrap();
+    assert!(settings.agents.as_ref().unwrap().is_empty());
+    let (batch, _) = candidates(&settings, None).unwrap();
+    let batch: Vec<_> = batch.into_iter().filter(|candidate| expected.contains(candidate.id.as_str())).collect();
+    assert_eq!(batch.len(), expected.len(), "select only supported catalog IDs");
+    for candidate in batch {
+        let cwd = IsolatedProbeDirectory::new().unwrap();
+        let adapter = prepared_adapter(&candidate, cwd.0.as_std_path()).unwrap()
+            .unwrap_or_else(|| panic!("{} was not discovered", candidate.id.as_str()));
+        assert!(!crate::npx_cache::is_npx(&adapter), "acceptance must not download an adapter");
+        let diagnostic_dir = paths.doctor_acp_dir(&candidate.id);
+        println!("local acceptance: {} discovered", candidate.id.as_str());
+        let probe = crate::acp::client::doctor_prepared_with_control(
+            &candidate.id, &adapter, cwd.0.clone(), diagnostic_dir.clone(), std::sync::Arc::new(AtomicBool::new(false)),
+        ).unwrap_or_else(|error| panic!("{}: {}", candidate.id.as_str(), crate::acp::client::doctor_diagnostic_error(&error).code));
+        let snapshot = ProviderDiagnosticSnapshot {
+            config_fingerprint: Some(fingerprint(&candidate.config).unwrap()),
+            available: true, error: None, checked_at: chrono::Utc::now().to_rfc3339(),
+            capabilities: Some(probe.capabilities),
+        };
+        for _ in 0..2 {
+            register_success(&paths, &candidate, &snapshot, &AtomicBool::new(false)).unwrap();
+        }
+        assert!(!diagnostic_dir.join("provider.pid").exists());
+        println!("local acceptance: {} verified and registered", candidate.id.as_str());
+    }
+    let settings = load_settings_file(&paths.user_settings_file()).unwrap();
+    assert!(settings.default_execution_profile.is_none());
+    assert!(matches!(settings.onboarding, Some(OnboardingState::Pending { .. })));
+    let app = App::with_config_and_path_config(root, RuntimeConfig::default().apply_settings(&settings), PATH_CONFIG);
+    assert_eq!(app.managed_agents().keys().map(|id| id.as_str()).collect::<std::collections::BTreeSet<_>>(), expected);
+    assert_eq!(app.provider_diagnostics().len(), expected.len());
     assert!(app.provider_diagnostics().values().all(|diagnostic| diagnostic.available));
 }
 
