@@ -1,16 +1,20 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import ELK from 'elkjs/lib/elk.bundled.js';
 
 import {
   NODE_WIDTH,
   autoWorkflowLayoutDirection,
   buildElkGraph,
   entryAnchoredViewport,
+  layoutWorkflowGraph,
   workflowHandlePositions,
   type WorkflowLayoutSpec,
 } from '@/components/workflowGraph';
 import { resolveWorkflowLayoutDirection } from '@/components/workflow-direction-preference';
+
+const elk = new ELK();
 
 function spec(direction?: 'RIGHT' | 'DOWN'): WorkflowLayoutSpec {
   return {
@@ -97,6 +101,74 @@ describe('workflow graph layout direction', () => {
     expect(vertical.y).toBeGreaterThan(-0.001);
     // In the vertical flow the horizontal axis stays centered.
     expect(vertical.x).toBeLessThan(horizontal.x);
+  });
+
+  // Contract (task-workflow.md): the success main chain keeps one column in
+  // DOWN flow and one row in RIGHT flow — even when the chain mixes split
+  // nodes (success/failure ports at 34%/66%) with single-outcome nodes (50%).
+  // Port-perfect edge straightening must not drift the nodes instead.
+  it('keeps the mixed success main chain on one column or row without overlaps', async () => {
+    const mixed: WorkflowLayoutSpec = {
+      direction: 'DOWN',
+      nodes: [
+        { id: 'dev', width: NODE_WIDTH, height: 66, sourceHandles: 'split' },
+        { id: 'build', width: NODE_WIDTH, height: 66, sourceHandles: 'single' },
+        { id: 'review', width: NODE_WIDTH, height: 66, sourceHandles: 'split' },
+        { id: '$end', width: 140, height: 44, sourceHandles: 'none' },
+        { id: '$new-round', width: 140, height: 44, sourceHandles: 'none', pinBelow: 'dev' },
+      ],
+      edges: [
+        { id: 'e1', from: 'dev', to: 'build', outcome: 'success' },
+        { id: 'e2', from: 'build', to: 'review', outcome: 'success' },
+        { id: 'e3', from: 'review', to: '$end', outcome: 'success' },
+        { id: 'e4', from: 'review', to: 'build', outcome: 'failure' },
+        { id: 'e5', from: 'dev', to: '$new-round', outcome: 'failure' },
+      ],
+      groups: [],
+    };
+
+    const vertical = await layoutWorkflowGraph(mixed, elk);
+    const chainX = ['dev', 'build', 'review', '$end'].map((id) => vertical.nodes.get(id)!.x);
+    expect(Math.max(...chainX) - Math.min(...chainX)).toBeLessThanOrEqual(1);
+
+    const horizontal = await layoutWorkflowGraph({ ...mixed, direction: 'RIGHT' }, elk);
+    const chainY = ['dev', 'build', 'review', '$end'].map((id) => horizontal.nodes.get(id)!.y);
+    expect(Math.max(...chainY) - Math.min(...chainY)).toBeLessThanOrEqual(1);
+
+    // Branching topologies still produce overlap-free placements.
+    const parallel: WorkflowLayoutSpec = {
+      direction: 'DOWN',
+      nodes: [
+        { id: 'dev', width: NODE_WIDTH, height: 66, sourceHandles: 'split' },
+        { id: 'fast', width: NODE_WIDTH, height: 66, sourceHandles: 'single' },
+        { id: 'deep', width: NODE_WIDTH, height: 66, sourceHandles: 'single' },
+        { id: 'mid', width: NODE_WIDTH, height: 66, sourceHandles: 'single' },
+        { id: 'merge', width: NODE_WIDTH, height: 66, sourceHandles: 'split' },
+        { id: '$end', width: 140, height: 44, sourceHandles: 'none' },
+        { id: '$new-round', width: 140, height: 44, sourceHandles: 'none', pinBelow: 'dev' },
+      ],
+      edges: [
+        { id: 'p1', from: 'dev', to: 'fast', outcome: 'success' },
+        { id: 'p2', from: 'dev', to: 'deep', outcome: 'failure' },
+        { id: 'p3', from: 'deep', to: 'mid', outcome: 'success' },
+        { id: 'p4', from: 'fast', to: 'merge', outcome: 'success' },
+        { id: 'p5', from: 'mid', to: 'merge', outcome: 'success' },
+        { id: 'p6', from: 'merge', to: '$end', outcome: 'success' },
+        { id: 'p7', from: 'merge', to: '$new-round', outcome: 'failure' },
+      ],
+      groups: [],
+    };
+    const branched = await layoutWorkflowGraph(parallel, elk);
+    const rects = [...branched.nodes.values()];
+    for (let i = 0; i < rects.length; i += 1) {
+      for (let j = i + 1; j < rects.length; j += 1) {
+        const a = rects[i];
+        const b = rects[j];
+        const overlaps = a.x < b.x + b.width && a.x + a.width > b.x
+          && a.y < b.y + b.height && a.y + a.height > b.y;
+        expect(overlaps).toBe(false);
+      }
+    }
   });
 });
 

@@ -166,8 +166,12 @@ const ELK_LAYOUT_OPTIONS: LayoutOptions = {
   // Model order is the success topology / runtime sequence: edges against it are the loops.
   'elk.layered.cycleBreaking.strategy': 'MODEL_ORDER',
   'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
-  'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
-  'elk.layered.nodePlacement.bk.fixedAlignment': 'BALANCED',
+  // INTERACTIVE stacks the model-ordered main chain on one straight track.
+  // Port-perfect strategies (BRANDES_KOEPF) straighten edges instead, which
+  // drifts nodes whenever a split node's 34% success port meets a single
+  // node's 50% target port — violating the "success main chain keeps one
+  // column/row" contract (task-workflow.md).
+  'elk.layered.nodePlacement.strategy': 'INTERACTIVE',
   // Inline label dummies already widen a layer, so the bare layer gap stays small.
   'elk.layered.spacing.nodeNodeBetweenLayers': '32',
   'elk.spacing.nodeNode': '48',
@@ -202,7 +206,10 @@ function outPortId(node: WorkflowLayoutNodeSpec, outcome: WorkflowLayoutOutcome)
 
 /**
  * The target handle shares the height of the primary (success) source handle, so a
- * success chain is laid out as one straight row instead of drifting per split node.
+ * success chain of split nodes keeps port-matched (straight) hops. The chain's
+ * row/column alignment itself comes from INTERACTIVE node placement, which
+ * absorbs the 34%↔50% port mismatches of mixed split/single chains as small
+ * label-side jogs instead of drifting the nodes.
  */
 export function workflowTargetHandleRatio(sourceHandles: WorkflowLayoutNodeSpec['sourceHandles']): number {
   return sourceHandles === 'split' ? WORKFLOW_NODE_OUTCOME_HANDLE_RATIO.success : 0.5;

@@ -100,11 +100,24 @@ describe('ELK workflow layout', () => {
     expectReadableLayout(defaultWorkflowSpec, layout);
     const spine = ['plan', 'dev', 'review', 'test', 'accept', 'cleanup', END_NODE].map((id) => layout.nodes.get(id)!);
     for (let i = 1; i < spine.length; i += 1) expect(spine[i].x).toBeGreaterThan(spine[i - 1].x + spine[i - 1].width);
-    // Target handles share the success handle height, so success hops are straight lines.
-    for (const id of ['plan-dev-0', 'dev-review-1', 'review-test-2', 'test-accept-4']) {
-      expect(layout.edges.get(id)!.points, id).toHaveLength(2);
+    // Contract (task-workflow.md): the success main chain keeps one row even
+    // when it mixes split nodes (34%/66% ports) with single-outcome nodes
+    // (50%). INTERACTIVE placement trades straight edges for that alignment:
+    // success routes may jog through their inline label dummies instead of
+    // drifting the nodes, so bound the route complexity rather than demanding
+    // two-point lines.
+    expect(new Set(spine.map((rect) => Math.round(rect.y))).size).toBe(1);
+    for (const id of ['plan-dev-0', 'dev-review-1', 'review-test-2', 'test-accept-4', 'accept-cleanup-6', `cleanup-${END_NODE}-8`]) {
+      const route = layout.edges.get(id)!;
+      expect(route.points.length, id).toBeLessThanOrEqual(6);
+      // The route stays inside the spine's row band — no detours around the graph.
+      const rowTop = spine[0].y;
+      const rowBottom = spine[0].y + NODE_HEIGHT;
+      for (const point of route.points) {
+        expect(point.y, id).toBeGreaterThanOrEqual(rowTop - WORKFLOW_EDGE_LABEL_HEIGHT);
+        expect(point.y, id).toBeLessThanOrEqual(rowBottom + WORKFLOW_EDGE_LABEL_HEIGHT);
+      }
     }
-    expect(new Set(['plan', 'dev', 'review', 'test', 'accept'].map((id) => layout.nodes.get(id)!.y)).size).toBe(1);
   });
 
   it('pins the new Round target directly below the entry so it is visible on first view', async () => {
