@@ -696,13 +696,15 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           {/* Plain overflow container, not ScrollArea: the radix viewport is
               percentage-sized and collapses under a max-height-only parent
               (the sidebar's main list works because its flex column grants a
-              definite height). Content sizes naturally up to the cap, with a
-              floor of roughly the heading plus three rows so empty or
-              single-item lists keep the section visibly present. No top
+              definite height). The section keeps a stable share of the
+              sidebar — clamp(9.5rem, 33vh, 26rem), roughly one third on
+              common displays — so its footprint does not jump with the
+              conversation count (Codex-style fixed placement); lists longer
+              than the share scroll internally. No top
               padding: a padded scrollport parks its sticky child at the
               content-box top, leaving a strip where scrolling rows peek out
               above the heading. */}
-          <div className="gold-themed-scrollbar max-h-[min(40vh,20rem)] min-h-[9.5rem] overflow-y-auto px-0.5 pb-1">
+          <div className="gold-themed-scrollbar h-[clamp(9.5rem,33vh,26rem)] overflow-y-auto px-0.5 pb-1">
             <button
               type="button"
               data-conversation-sidebar-heading="recent"
