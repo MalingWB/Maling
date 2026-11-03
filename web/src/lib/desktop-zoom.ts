@@ -39,8 +39,9 @@ export function parseInterfaceZoomInput(raw: string): InterfaceZoomInput {
 
 /**
  * Applies a zoom percent to the desktop webview without persisting it.
- * Persistence always flows through `saveDesktopPreferences`; this preview path
- * is shared by the settings slider and the zoom shortcuts.
+ * Persistence flows through the single-field `saveInterfaceZoomPercent`
+ * (settings slider and zoom shortcuts) or the full `saveDesktopPreferences`
+ * save from the settings page.
  */
 export async function previewInterfaceZoomPercent(percent: number): Promise<number> {
   return getRuntimeApi().applyDesktopZoom(normalizeInterfaceZoomPercent(percent));

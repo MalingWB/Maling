@@ -19,13 +19,23 @@ const ZOOM_PERSIST_DEBOUNCE_MS = 600;
  * single-field zoom save (`save_interface_zoom_percent`), which changes one
  * field of the canonical personalization instead of round-tripping a possibly
  * stale full preference object.
+ *
+ * `enabled` gates stepping until the persisted preferences have hydrated:
+ * before the bootstrap IPC lands the frontend only holds startup defaults,
+ * so a step would jump the webview off the persisted zoom (backend applied it
+ * before first paint) and persist a value computed from a base the user
+ * never saw.
  */
 export function useDesktopZoomShortcuts(
   preferences: PreferencesVm,
   onPersistZoomPercent: (percent: number) => void,
+  enabled = true,
 ) {
   const appliedPercentRef = useRef(preferences.personalization.interfaceZoomPercent);
   const persistTimerRef = useRef<number | null>(null);
+  // The last percent this hook itself committed — its persisted echo must
+  // not cancel a newer pending step.
+  const selfCommitRef = useRef<number | null>(null);
   const latestRef = useRef({ onPersistZoomPercent });
   latestRef.current = { onPersistZoomPercent };
 
@@ -35,12 +45,13 @@ export function useDesktopZoomShortcuts(
   // persisted value must never be overwritten by a stale step target. A
   // cancelled step had already previewed a different percent to the webview,
   // so the adopted value is re-applied to keep display and preference in sync.
-  // Adoption without a pending step (startup bootstrap, settings commit) skips
-  // the re-apply: the backend applies persisted zoom before the first paint and
-  // the settings slider previews its own commits.
+  // The hook's own commit echo is exempt: while a newer step is pending, the
+  // echo of the older commit must not cancel it (the webview would visibly
+  // snap back to the older value and the newer step would be lost).
   useEffect(() => {
     const next = preferences.personalization.interfaceZoomPercent;
     const pendingStepTimer = persistTimerRef.current;
+    if (pendingStepTimer !== null && next === selfCommitRef.current) return;
     appliedPercentRef.current = next;
     if (pendingStepTimer !== null) {
       window.clearTimeout(pendingStepTimer);
@@ -59,6 +70,7 @@ export function useDesktopZoomShortcuts(
   useEffect(() => {
     const persist = (target: number) => {
       persistTimerRef.current = null;
+      selfCommitRef.current = target;
       latestRef.current.onPersistZoomPercent(target);
     };
     const schedulePersist = (target: number, immediate: boolean) => {
@@ -73,6 +85,7 @@ export function useDesktopZoomShortcuts(
       persistTimerRef.current = window.setTimeout(() => persist(target), ZOOM_PERSIST_DEBOUNCE_MS);
     };
     const apply = (target: number, immediate: boolean) => {
+      if (!enabled) return;
       const next = normalizeInterfaceZoomPercent(target);
       if (next === appliedPercentRef.current && !immediate) return;
       appliedPercentRef.current = next;
@@ -85,5 +98,5 @@ export function useDesktopZoomShortcuts(
       reset: () => apply(INTERFACE_ZOOM_DEFAULT, true),
     });
     return () => setDesktopPageZoomDriver(null);
-  }, []);
+  }, [enabled]);
 }

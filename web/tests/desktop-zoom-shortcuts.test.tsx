@@ -36,7 +36,7 @@ function preferencesWith(zoom: number): PreferencesVm {
   };
 }
 
-function mountHarness(zoom: number, onPersistZoom: (percent: number) => void) {
+function mountHarness(zoom: number, onPersistZoom: (percent: number) => void, enabled = true) {
   const container = document.createElement('div');
   document.body.append(container);
   const root: Root = createRoot(container);
@@ -44,7 +44,7 @@ function mountHarness(zoom: number, onPersistZoom: (percent: number) => void) {
     root.render(<Harness zoom={nextZoom} onPersistZoom={onPersistZoom} />);
   });
   function Harness({ zoom, onPersistZoom: persistZoom }: { zoom: number; onPersistZoom: (percent: number) => void }) {
-    useDesktopZoomShortcuts(preferencesWith(zoom), persistZoom);
+    useDesktopZoomShortcuts(preferencesWith(zoom), persistZoom, enabled);
     return null;
   }
   render(zoom);
@@ -161,6 +161,54 @@ describe('useDesktopZoomShortcuts', () => {
       // keeps the typed integer, so stepping it to 155 would desync the
       // webview from the persisted preference.
       expect(applyDesktopZoom).toHaveBeenLastCalledWith(153);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('lets a newer pending step survive the echo of its own earlier commit', async () => {
+    const onPersistZoom = vi.fn();
+    const { root, render, driver } = mountHarness(100, onPersistZoom);
+    try {
+      await act(async () => {
+        driver().adjust(5); // schedules persist(105)
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(700); // 105 commits
+      });
+      expect(onPersistZoom).toHaveBeenCalledWith(105);
+      // A new step lands before the 105 commit's state echo arrives.
+      await act(async () => {
+        driver().adjust(5); // schedules persist(110)
+      });
+      // The 105 echo must NOT cancel the pending 110 step or snap the
+      // webview back: it is this hook's own commit, not an external one.
+      await act(async () => {
+        render(105);
+        vi.advanceTimersByTime(700);
+      });
+      expect(onPersistZoom).toHaveBeenCalledTimes(2);
+      expect(onPersistZoom).toHaveBeenLastCalledWith(110);
+      expect(applyDesktopZoom).toHaveBeenLastCalledWith(110);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('ignores steps until the persisted preferences have hydrated', async () => {
+    const onPersistZoom = vi.fn();
+    const { root, driver } = mountHarness(100, onPersistZoom, false);
+    try {
+      await act(async () => {
+        driver().adjust(5);
+        driver().reset();
+        vi.advanceTimersByTime(1000);
+      });
+      // Startup defaults must not seed the step base: the persisted zoom
+      // (applied by the backend before first paint) would be overwritten by
+      // a value computed from a base the user never saw.
+      expect(applyDesktopZoom).not.toHaveBeenCalled();
+      expect(onPersistZoom).not.toHaveBeenCalled();
     } finally {
       act(() => root.unmount());
     }

@@ -1086,9 +1086,12 @@ export function App() {
   }, []);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
+  // Stepping stays gated until the persisted preferences hydrate: startup
+  // defaults would otherwise seed the step base and overwrite the persisted
+  // zoom with a value the user never saw.
   useDesktopZoomShortcuts(preferences, (percent) => {
     onSaveInterfaceZoomPercent(percent);
-  });
+  }, bootstrap != null);
   const updaterSettings = bootstrap?.updaterSettings ?? defaultUpdaterSettings;
   const metricsSettings = bootstrap?.metricsSettings ?? null;
   const updateStatus = bootstrap?.updateStatus ?? defaultUpdateStatus;
