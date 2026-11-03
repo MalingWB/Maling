@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteImageTrustVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaUpstreamPullEventVm, MulticaUpstreamPullPendingVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteImageTrustVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, RuntimeAssetInstalledEventVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT } from './client';
 import {
@@ -10,9 +10,12 @@ import {
   GIT_STATE_CHANGED_EVENT,
   GITHUB_OPERATION_UPDATED_EVENT,
   INTERVENTION_NAVIGATE_EVENT,
+  MULTICA_UPSTREAM_PULL_PENDING_EVENT,
+  MULTICA_UPSTREAM_PULL_SETTLED_EVENT,
   PERSONAL_ANALYTICS_UPDATED_EVENT,
   REMOTE_SOURCE_SETTINGS_UPDATED_EVENT,
   REMOTE_TASKS_UPDATED_EVENT,
+  RUNTIME_ASSET_INSTALLED_EVENT,
   SCHEDULED_NOTIFICATION_EVENT,
   SCHEDULED_OCCURRENCE_UPDATED_EVENT,
   SCHEDULED_TASK_UPDATED_EVENT,
@@ -64,6 +67,8 @@ function withWallpaperBootstrapAssetUrls(bootstrap: AppBootstrapVm): AppBootstra
 }
 
 export const desktopApi: RuntimeApi = {
+  resolveRightWorkspaceFileTarget: (source) => invokeCommand('resolve_right_workspace_file_target', { source }),
+  revealRightWorkspaceFile: (source) => invokeCommand('reveal_right_workspace_file', { source }),
   reportSourceControlLoad: (report) => invokeCommand("record_source_control_load", { report }),
   reportSourceControlWatch: (report) => invokeCommand("record_source_control_watch", { report }),
   readProjectMemory: (projectId) => invokeCommand('read_project_memory', { projectId }),
@@ -115,6 +120,9 @@ export const desktopApi: RuntimeApi = {
   },
   getGitComparison(projectId, source) {
     return invokeCommand('get_git_comparison', { projectId, source });
+  },
+  prepareGitPush(projectId, workspacePath, input) {
+    return invokeCommand('prepare_git_push', { projectId, workspacePath, input });
   },
   startGitOperation(projectId, workspacePath, input) {
     return invokeCommand('start_git_operation', { projectId, workspacePath, input });
@@ -247,9 +255,31 @@ export const desktopApi: RuntimeApi = {
     const unlisten: UnlistenFn = await listen(REMOTE_TASKS_UPDATED_EVENT, () => listener());
     return () => unlisten();
   },
+  async subscribeUpstreamPullEvents(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlistenPending: UnlistenFn = await listen<MulticaUpstreamPullEventVm>(MULTICA_UPSTREAM_PULL_PENDING_EVENT, (event) => listener(event.payload));
+    const unlistenSettled: UnlistenFn = await listen<MulticaUpstreamPullEventVm>(MULTICA_UPSTREAM_PULL_SETTLED_EVENT, (event) => listener(event.payload));
+    return () => {
+      unlistenPending();
+      unlistenSettled();
+    };
+  },
+  decideUpstreamPull(taskId, nodeId, decision, manualText) {
+    return invokeCommand<void>('decide_upstream_pull', { taskId, nodeId, decision, manualText: manualText ?? null });
+  },
+  listUpstreamPullPendings(taskId: string) {
+    return invokeCommand<MulticaUpstreamPullPendingVm[]>('list_upstream_pull_pendings', { taskId });
+  },
   async subscribeRemoteSourceSettingsUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen(REMOTE_SOURCE_SETTINGS_UPDATED_EVENT, () => listener());
+    return () => unlisten();
+  },
+  async subscribeRuntimeAssetInstalled(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<RuntimeAssetInstalledEventVm>(RUNTIME_ASSET_INSTALLED_EVENT, (event) => {
+      if (event.payload) listener(event.payload);
+    });
     return () => unlisten();
   },
   checkLocalClaude() {
@@ -327,6 +357,9 @@ export const desktopApi: RuntimeApi = {
   },
   importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean) {
     return invokeCommand<ImportProfilesResult>('import_profiles_from_folder', { input: { folderPath, dynamicTemplate } });
+  },
+  importProfilesFromFiles(filePaths: string[], dynamicTemplate: boolean) {
+    return invokeCommand<ImportProfilesResult>('import_profiles_from_files', { input: { filePaths, dynamicTemplate } });
   },
   updateProfile(id: string, input: ProfileInput) {
     return invokeCommand('update_profile', { id, input });
@@ -472,8 +505,35 @@ export const desktopApi: RuntimeApi = {
   deleteConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId) {
     return invokeCommand('delete_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId });
   },
-  useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId) {
-    return invokeCommand('use_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId });
+  useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, interruptActive, outerNodeId, outerAttemptId) {
+    return invokeCommand('use_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, interruptActive: interruptActive ?? false, outerNodeId, outerAttemptId });
+  },
+  setConversationPromptQueueMode(projectId, taskId, runId, roundId, nodeId, attemptId, mode, outerNodeId, outerAttemptId) {
+    return invokeCommand('set_conversation_prompt_queue_mode', { projectId, taskId, runId, roundId, nodeId, attemptId, mode, outerNodeId, outerAttemptId });
+  },
+  clearConversationQueuedPrompts(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
+    return invokeCommand('clear_conversation_queued_prompts', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  },
+  resumeConversationPromptQueue(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
+    return invokeCommand('resume_conversation_prompt_queue', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  },
+  listConversationComposerDrafts(projectId, taskId) {
+    return invokeCommand('list_conversation_composer_drafts', { projectId, taskId });
+  },
+  saveConversationComposerDraft(projectId, taskId, input, attachmentPaths) {
+    return invokeCommand('save_conversation_composer_draft', { projectId, taskId, input, attachmentPaths });
+  },
+  getConversationComposerDraft(projectId, taskId, draftId) {
+    return invokeCommand('get_conversation_composer_draft', { projectId, taskId, draftId });
+  },
+  deleteConversationComposerDraft(projectId, taskId, draftId) {
+    return invokeCommand('delete_conversation_composer_draft', { projectId, taskId, draftId });
+  },
+  getPromptQueueSettings() {
+    return invokeCommand('get_prompt_queue_settings');
+  },
+  savePromptQueueSettings(input) {
+    return invokeCommand('save_prompt_queue_settings', { input });
   },
   setAcpSessionModel(projectId, taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('set_acp_session_model', { projectId, taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId });
@@ -593,6 +653,12 @@ export const desktopApi: RuntimeApi = {
   removeRemoteCompletedTask(remoteTaskId: string) {
     return invokeCommand<void>('remove_remote_completed_task', { remoteTaskId });
   },
+  reconcileRemoteTaskStatuses() {
+    return invokeCommand<number>('reconcile_remote_task_statuses');
+  },
+  rerunRemoteTask(taskId: string) {
+    return invokeCommand<string>('rerun_remote_task', { taskId });
+  },
   listServerMulticaWorkspaces() {
     return invokeCommand<MulticaServerWorkspaceVm[]>('list_server_multica_workspaces');
   },
@@ -656,6 +722,9 @@ export const desktopApi: RuntimeApi = {
   getConversationTaskPage(projectId, cursor, limit) {
     return invokeCommand<ConversationTaskPageVm>('get_conversation_task_page', { projectId, cursor, limit });
   },
+  getConversationTaskSummary(projectId, taskId, taskUuid) {
+    return invokeCommand<ConversationTaskRowVm>('get_conversation_task_summary', { projectId, taskId, taskUuid });
+  },
   getConversationPinnedTaskPage(cursor, limit) {
     return invokeCommand<ConversationPinnedTaskPageVm>('get_conversation_pinned_task_page', { cursor, limit });
   },
@@ -695,8 +764,8 @@ export const desktopApi: RuntimeApi = {
   cancelWeComScanAuthorization(sessionId) {
     return invokeCommand('cancel_wecom_scan_authorization', { input: { sessionId } });
   },
-  startFeishuScanAuthorization(sessionId, reauthorize) {
-    return invokeCommand('start_feishu_scan_authorization', { input: { sessionId, reauthorize } });
+  startFeishuScanAuthorization(sessionId, mode) {
+    return invokeCommand('start_feishu_scan_authorization', { input: { sessionId, mode } });
   },
   completeFeishuScanAuthorization(sessionId) {
     return invokeCommand<ImSettingsVm>('complete_feishu_scan_authorization', { input: { sessionId } });

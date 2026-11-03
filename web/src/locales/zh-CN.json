@@ -587,6 +587,7 @@
     "closeWorkspace": "收起右侧工作区",
     "openNewTab": "打开新标签页",
     "closeTab": "关闭标签页",
+    "panelFailed": "此标签页无法显示",
     "allTabs": "所有标签页",
     "attention": "需要处理",
     "files": "工作空间",
@@ -632,6 +633,8 @@
       "switchToTreeView": "切换为树形目录",
       "copyAbsolutePath": "复制绝对路径",
       "copyRelativePath": "复制相对路径",
+      "relativeToRunDirectory": "相对于运行目录",
+      "relativeToAttachmentDirectory": "相对于附件目录", "relativeToSourceWorkspace": "相对于来源工作目录",
       "openWorkspaceFile": "打开工作空间文件",
       "referenceToConversation": "引用到对话",
       "removeWorkspaceReference": "移除文件引用",
@@ -818,6 +821,12 @@
       "workspace-outside-project": "所选 Worktree 不属于当前项目。",
       "ref-changed": "更改列表已更新，请再试一次。",
       "sync-ref-changed": "分支已变化，请再试一次。",
+      "push-upstream-invalid": "无法解析此分支的上游，请检查上游配置后重试。",
+      "push-upstream-unsupported": "此分支跟踪的是本地分支，暂不支持向该上游推送。",
+      "push-branch-not-current": "当前分支已变化，请重新打开推送确认。",
+      "push-remote-required": "请选择发布到哪个远程仓库。",
+      "push-confirmation-required": "请先确认推送的源分支和目标。",
+      "push-target-changed": "推送的源分支或目标已变化，请重新确认。",
       "repository-locked": "仓库正在执行其他写操作。",
       "workspace-locked": "当前工作空间正在执行其他写操作。",
       "operation-in-progress": "当前 Git 流程尚未结束，请完成或中止后重试。",
@@ -925,7 +934,9 @@
       "composer-history-query-failed": "输入历史加载失败，请重试。",
       "turn-execution-failed": "本次消息处理失败，请重试。",
       "session-request-failed": "会话准备失败，请重试。",
+      "session-restore-reference-missing": "当前 ACP 会话缺少 Provider 会话引用，无法恢复原会话。请新建会话后重新发送消息。",
       "missing-provider": "当前节点缺少 provider 配置。",
+      "subagent-protocol-upgrade-required": "请将 Claude ACP 升级至 {{minimumVersion}} 或更高版本后重试。",
       "session-config-value-unavailable": "所选会话配置已不可用，请从最新列表中重新选择。",
       "active-prompt-blocks-config-save": "当前有会话正在运行，请先停止会话后再保存配置。",
       "invalid-conversation-branch-id": "该 Agent 会话链接无效或已失效。",
@@ -987,7 +998,10 @@
         "folder-not-found": "找不到所选文件夹",
         "folder-not-directory": "所选路径不是文件夹",
         "folder-read-failed": "无法完整读取所选文件夹",
-        "no-markdown-files": "所选文件夹中没有 Markdown 文件"
+        "no-markdown-files": "所选文件夹中没有 Markdown 文件",
+        "file-not-found": "找不到所选文件",
+        "file-not-markdown": "所选文件不是 Markdown 文件",
+        "no-files": "未选择任何文件"
       }
     },
     "manual-check": {
@@ -996,7 +1010,8 @@
     "runtime": {
       "io": {
         "storage-full": "磁盘空间不足，本次执行已中断。释放空间后可继续。",
-        "permission-denied": "无法写入会话数据，请检查目录的写入权限。"
+        "permission-denied": "无法写入会话数据，请检查目录的写入权限。",
+        "attachment-path-too-long": "当前会话的数据目录层级过深，无法保存附件「{{name}}」。请新建会话后再发送。"
       },
       "conversation-not-available": "工作流正在运行，暂时不能发送普通消息。",
       "continue-not-available": "当前节点不需要继续，可能已经恢复或不再可继续。",
@@ -1023,7 +1038,6 @@
       "workspace-file-read-failed": "读取引用文件信息失败，请重试。",
       "workspace-file-count-exceeded": "上下文最多包含 {{max}} 个引用和附件。",
       "session-restore-unsupported": "当前 Agent 不支持恢复已有会话。",
-      "session-restore-reference-missing": "当前会话缺少可恢复的 Provider 会话引用。",
       "history-sync-unsupported": "当前 Agent 不支持同步已有会话的完整历史。",
       "prompt-empty": "请输入要发送的内容。",
       "prompt-quote-invalid": "引用数据无效，请删除后重新引用。",
@@ -1041,11 +1055,18 @@
       "prompt-queue-empty": "待发送队列为空。",
       "prompt-queue-revision-conflict": "待发送顺序已发生变化，请在列表更新后重试。",
       "prompt-queue-invalid-order": "待发送顺序无效，请重试。",
+      "prompt-queue-invalid-mode": "发送模式无效。",
       "prompt-queue-session-busy": "当前会话仍在运行，请停止后再手动使用。",
+      "prompt-queue-interrupt-timeout": "当前回复仍在停止中，这条内容已保留在队列，可稍后重试。",
+      "prompt-queue-dispatch-settling": "上一条回复尚未完全结束，这条内容已放回队列，请稍后重试。",
       "prompt-session-busy": "上一条消息仍在处理中，请稍候或先停止当前回复。",
       "prompt-submission-conflict": "这条消息的发送标识已被其他内容使用，请重新发送。",
       "prompt-submission-missing": "已接纳的消息内容无法读取，请重新发送。",
       "prompt-queue-storage-failed": "待发送队列保存失败，请重试。",
+      "composer-draft-empty": "没有可保存的内容。",
+      "composer-draft-full": "草稿箱已满，最多可保留 {{max}} 条。",
+      "composer-draft-not-found": "这条草稿已不存在。",
+      "composer-draft-storage-failed": "无法访问草稿箱，请重试。",
       "execution-plan": {
         "not-found": "这次 Run 还没有执行计划。",
         "revision-conflict": "执行计划已变化。请重新加载后再试。",
@@ -1112,6 +1133,7 @@
       "source-not-configured": "尚未配置任务来源，请先完成连接。"
     },
     "multica": {
+      "attachment-stage-failed": "下载任务附件失败：{{message}}",
       "auth-failed": "Multica 鉴权失败：{{message}}",
       "claim-conflict": "该任务已被其他 Daemon 领取。",
       "connect-cancelled": "已取消连接。",
@@ -1121,6 +1143,8 @@
       "runtime-offline": "运行时未就绪，请稍后重试。",
       "session-resume-failed": "会话恢复失败，将以全新任务重跑。",
       "task-not-found": "找不到该 Multica 任务。",
+      "upstream-pull-invalid-decision": "决策无效，请检查后重试。",
+      "upstream-pull-not-pending": "该拉取已结束，无需再选择。",
       "workspace-already-bound": "该工作空间已绑定。",
       "workspace-not-found": "找不到该工作空间绑定。"
     },
@@ -1317,7 +1341,6 @@
     "builtInSectionDescription": "固定角色，支持打开草稿并另存为新的自定义角色。",
     "customSectionTitle": "自定义角色",
     "customSectionDescription": "你创建的用户级自定义角色会在这里分页展示。",
-    "customProfilesPageRange": "自定义角色 {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "内置角色不可直接保存，请另存为新角色。",
     "emptyContent": "暂无正文内容",
     "profileRequired": "名称和摘要不能为空。",
@@ -1450,10 +1473,12 @@
       }
     },
     "importProfile": "导入角色",
-    "importSettingsDescription": "选择文件夹批量导入角色 Markdown 文件，缺失的名称和摘要会自动兜底。",
+    "importSettingsDescription": "从文件夹批量导入，或直接选择角色 Markdown 文件导入，缺失的名称和摘要会自动兜底。",
     "importDynamicTemplateDescription": "开启后本次导入的所有角色按动态模板处理；正文不合法的会自动降级为静态。",
     "importPickFolder": "选择文件夹并导入",
     "importPickFolderTitle": "选择包含角色 Markdown 文件的文件夹",
+    "importPickFiles": "选择文件并导入",
+    "importPickFilesTitle": "选择角色 Markdown 文件",
     "importResultTitle": "导入结果",
     "importResultSummary": "共扫描 {{total}} 个文件，成功 {{success}} 个，失败 {{failed}} 个。",
     "importResultImported": "已导入",
@@ -2028,6 +2053,10 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
+    "pushTargetRemote": "目标远程仓库",
+    "pushPreparing": "正在准备推送目标…",
+    "pushSetUpstream": "发布成功后，将目标分支设为上游。",
     "remote": "远程仓库",
     "name": "名称",
     "startPoint": "起点",
@@ -2330,9 +2359,37 @@
       "editDraftOccupied": "请先处理输入框中的当前草稿",
       "restoreDraftConflict": "输入框状态已变化，无法恢复这条待发送内容。",
       "reorder": "调整排队顺序",
-      "use": "使用",
+      "sendNow": "立即发送",
       "delete": "删除",
-      "enqueue": "加入队列"
+      "enqueue": "加入队列",
+      "autoSend": "自动发送",
+      "modeTooltip": "开启后，每轮回复结束时自动依次发送待发送内容；关闭后内容只保留在队列中，由你逐条“立即发送”。",
+      "paused": {
+        "stopped": "已暂停：会话已停止",
+        "failed": "已暂停：上一轮发送失败"
+      },
+      "resume": "恢复",
+      "resumeLabel": "恢复自动发送",
+      "moreActions": "更多操作",
+      "clear": "清空待发送",
+      "clearConfirmTitle": "清空待发送队列？",
+      "clearConfirmDescription": "将移除 {{count}} 条待发送消息，此操作无法撤销。",
+      "clearConfirmAction": "清空待发送",
+      "interruptConfirmTitle": "立即发送这条内容？",
+      "interruptConfirmDescription": "当前回复会被停止，然后发送这条内容。",
+      "interruptConfirmSkip": "后续不再提示",
+      "interruptConfirmAction": "停止并发送"
+    },
+    "composerDrafts": {
+      "title": "草稿箱",
+      "titleWithCount": "草稿箱（{{count}}）",
+      "count": "{{count}}/{{max}}",
+      "save": "存入草稿箱",
+      "empty": "还没有草稿",
+      "take": "取出到输入框",
+      "takeOccupied": "请先处理输入框中的当前内容",
+      "delete": "删除草稿",
+      "takeConflict": "输入框已有内容，草稿仍保留在草稿箱。"
     },
     "sending": "发送中",
     "sendFailed": "发送失败",
@@ -2450,7 +2507,8 @@
       "output": "输出",
       "cacheRead": "缓存读取",
       "cacheWrite": "缓存写入",
-      "total": "总计"
+      "total": "总计",
+      "excludesBackground": "不含后台唤醒的消耗"
     },
     "hiddenRemoteTaskContext": "隐藏远程任务上下文"
   },
@@ -2546,7 +2604,14 @@
     "im": {
       "title": "IM 远程干预与通知",
       "enabled": "启用",
+      "channelEnabled": "启用{{channel}}远程干预",
+      "channelSubtitle": "机器人 · 一对一私聊",
+      "expandChannel": "展开{{channel}}设置",
+      "collapseChannel": "收起{{channel}}设置",
+      "receiverAccount": "接收账号",
+      "robotName": "机器人名称",
       "privateBinding": "一对一私聊：{{name}}",
+      "privateBindingUnnamed": "已绑定一对一私聊",
       "notificationKinds": "通知类型",
       "notificationGroups": {
         "needsAction": "需要你处理",
@@ -2567,6 +2632,8 @@
         "notConfigured": "尚未接入{{channel}}。接入后可设置远程干预与通知。",
         "connect": "扫码接入",
         "reauthorize": "重新授权",
+        "changeApp": "更换飞书应用",
+        "changeAppWarning": "完成授权后将替换当前飞书应用，并清除现有私聊绑定。请使用新机器人重新完成绑定。",
         "generating": "正在生成二维码…",
         "waiting": "请使用{{channel}}扫码并确认授权",
         "expiresIn": "二维码将在 {{countdown}} 后过期",
@@ -2579,10 +2646,12 @@
       "channels": {
         "weCom": {
           "title": "企业微信",
+          "identityLabel": "机器人 ID",
           "identity": "机器人 ID：{{id}}"
         },
         "feishu": {
           "title": "飞书",
+          "identityLabel": "App ID",
           "identity": "App ID：{{id}}",
           "singleDeviceHint": "一个机器人只连接一台设备，避免操作被其他设备接收。",
           "permissions": {
@@ -2590,6 +2659,7 @@
             "send": "向你发送消息",
             "receive": "读取你发给机器人的私聊消息",
             "update": "更新机器人发送的卡片",
+            "profile": "读取你的姓名，用于显示接收账号",
             "confirm": "同意并生成二维码"
           },
           "resetBinding": {
@@ -2847,6 +2917,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "显示全部 {{count}} 个",
       "showLess": "收起"
+    },
+    "promptQueue": {
+      "title": "待发送",
+      "description": "回复进行中时“立即发送”会先停止当前回复。",
+      "confirmInterrupt": "立即发送前确认打断当前回复"
     }
   },
   "conversation": {
@@ -2938,6 +3013,8 @@
         "removeTask": "移出列表",
         "removeTaskHint": "仅从码灵侧列表移除，刷新后恢复",
         "removeTaskTerminalHint": "移出并删除本地完成记录，刷新不再显示",
+        "rerunTask": "重新执行",
+        "rerunBadge": "重新执行",
         "addWorkspace": "添加工作空间",
         "noWorkspacesBound": "尚未绑定工作空间",
         "status": {
@@ -2965,7 +3042,8 @@
     "composer": {
       "remoteNeedLocalWorkspace": "请先添加本地工作空间，再执行需求",
       "remoteBindingTag": "{{source}} · {{title}}",
-      "removeRemoteBinding": "解除任务绑定"
+      "removeRemoteBinding": "解除任务绑定",
+      "remoteAttachmentHint": "远程任务附件，发送时自动下载并附加"
     },
     "branchPicker": {
       "label": "分支",
@@ -3171,16 +3249,38 @@
         "dev": "开发",
         "test": "测试"
       },
+      "searchPlaceholder": "搜索任务名…",
       "readiness": {
-        "notReady": "未就绪",
-        "notReadyHint": "对应开发任务尚未完成，建议等待其完成后再执行"
+        "ready": "已就绪",
+        "readyHint": "对应开发任务已完成，可以开始执行"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "该任务需创建 DPMS 系统需求并回传关联，回传完成后此标签自动消失"
+      },
+      "issueStatus": {
+        "todo": "待办",
+        "backlog": "待办池"
       },
       "column": {
         "empty": "暂无任务"
       },
       "account": {
         "connected": "已连接"
-      }
+      },
+      "openPlatform": "打开 {{source}} 平台"
+    },
+    "upstreamPull": {
+      "title": "上游交付说明待拉取",
+      "description": "「{{task}}」的 {{node}} 节点尚未拉取到上游工作项 {{issue}} 的交付说明。",
+      "fallbackNote": "60 秒内未选择将自动继续轮询拉取。",
+      "retry": "继续等待拉取",
+      "manual": "手动提供信息",
+      "skip": "跳过拉取",
+      "manualLabel": "交付说明",
+      "manualPlaceholder": "构建产物、部署环境等关键信息……",
+      "manualSubmit": "使用此信息继续",
+      "waitingNote": "已继续等待上游交付说明更新，期间可随时手动提供或跳过。"
     },
     "connection": {
       "title": "连接地址设置",

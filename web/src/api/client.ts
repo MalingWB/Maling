@@ -72,12 +72,17 @@ import type {
   ImSettingsVm,
   SaveImNotificationPreferencesInputVm,
   SetImChannelEnabledInputVm,
+  FeishuScanMode,
   ImScanAuthorizationVm,
   MulticaSettingsVm,
   MulticaServerWorkspaceVm,
   RemoteSkillListItemVm,
   RemoteSkillPullReportVm,
   MulticaWorkspaceRefVm,
+  MulticaUpstreamPullEventVm,
+  MulticaUpstreamPullPendingVm,
+  RuntimeAssetInstalledEventVm,
+  UpstreamPullDecisionKind,
   RemoteConversationSidebarVm,
   RemoteTaskVm,
   WorkflowDsl,
@@ -117,6 +122,8 @@ import type {
   GitMutationRequestVm,
   GitMutationResultVm,
   GitOperationRequestVm,
+  GitPushIntentVm,
+  GitPreparedPushVm,
   GitOperationVm,
   GitStateChangedEventVm,
   GitHubCapabilityVm,
@@ -315,11 +322,12 @@ export interface BrowserAllowLocalAccessInput extends BrowserPageIdInput {
 export interface BrowserResolveLocalHtmlInput {
   projectId: string;
   workspacePath: string | null;
-  rawHref: string;
+  target: { kind: 'href'; href: string } | { kind: 'path'; path: string };
 }
 
 export interface BrowserLocalHtmlTargetVm {
-  canonicalPath: string;
+  /** Canonical file URL, including the navigation query and fragment. */
+  url: string;
 }
 
 export interface BrowserSetViewModeInput extends BrowserPageIdInput {
@@ -397,6 +405,8 @@ export interface BrowserBookmarkVm {
 }
 
 export interface RuntimeApi {
+  resolveRightWorkspaceFileTarget(source: import('../types').PromptWorkspaceFileRef): Promise<import('../types').RightWorkspaceFileTargetVm>;
+  revealRightWorkspaceFile(source: import('../types').PromptWorkspaceFileRef): Promise<void>;
   reportSourceControlLoad(report: import("@/lib/source-control-load-diagnostics").SourceControlLoadReport): Promise<void>;
   reportSourceControlWatch(report: import("@/lib/source-control-watch-diagnostics").SourceControlWatchReport): Promise<void>;
   readProjectMemory(projectId: string): Promise<import('@/lib/memory').MemorySnapshot>;
@@ -417,6 +427,7 @@ export interface RuntimeApi {
   getGitCommitReachability(projectId: string, workspacePath: string | null | undefined, query: GitCommitReachabilityQueryVm): Promise<GitCommitReachabilityVm>;
   executeGitMutation(projectId: string, workspacePath: string | null | undefined, input: GitMutationRequestVm): Promise<GitMutationResultVm>;
   getGitComparison(projectId: string, source: GitComparisonSourceVm): Promise<GitFileComparisonVm>;
+  prepareGitPush(projectId: string, workspacePath: string | null | undefined, input: GitPushIntentVm): Promise<GitPreparedPushVm>;
   startGitOperation(projectId: string, workspacePath: string | null | undefined, input: GitOperationRequestVm): Promise<GitOperationVm>;
   getGitOperation(operationId: string): Promise<GitOperationVm>;
   cancelGitOperation(operationId: string): Promise<GitOperationVm>;
@@ -462,6 +473,7 @@ export interface RuntimeApi {
   getProfile(id: string): Promise<ProfileVm>;
   createProfile(input: ProfileInput): Promise<ProfileVm>;
   importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean): Promise<ImportProfilesResult>;
+  importProfilesFromFiles(filePaths: string[], dynamicTemplate: boolean): Promise<ImportProfilesResult>;
   updateProfile(id: string, input: ProfileInput): Promise<ProfileVm>;
   deleteProfile(id: string, force?: boolean): Promise<ProfileListVm>;
   chooseWorkspace(): Promise<AppBootstrapVm | null>;
@@ -518,8 +530,7 @@ export interface RuntimeApi {
   startWeComScanAuthorization(sessionId: string): Promise<ImScanAuthorizationVm>;
   completeWeComScanAuthorization(sessionId: string): Promise<ImSettingsVm>;
   cancelWeComScanAuthorization(sessionId: string): Promise<void>;
-  /** `reauthorize` reuses the configured app instead of creating a new one. */
-  startFeishuScanAuthorization(sessionId: string, reauthorize: boolean): Promise<ImScanAuthorizationVm>;
+  startFeishuScanAuthorization(sessionId: string, mode: FeishuScanMode): Promise<ImScanAuthorizationVm>;
   completeFeishuScanAuthorization(sessionId: string): Promise<ImSettingsVm>;
   cancelFeishuScanAuthorization(sessionId: string): Promise<void>;
   setImChannelEnabled(input: SetImChannelEnabledInputVm): Promise<ImSettingsVm>;
@@ -536,7 +547,16 @@ export interface RuntimeApi {
   reorderConversationQueuedPrompts(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number, orderedItemIds: string[], outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
   restoreConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueRestoreVm>;
   deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
-  useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
+  useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, interruptActive?: boolean, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
+  setConversationPromptQueueMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, mode: 'auto' | 'manual', outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
+  clearConversationQueuedPrompts(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
+  resumeConversationPromptQueue(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
+  listConversationComposerDrafts(projectId: string | null | undefined, taskId: string): Promise<import('../types').ConversationComposerDraftBoxVm>;
+  saveConversationComposerDraft(projectId: string | null | undefined, taskId: string, input: import('../types').ConversationPromptInput, attachmentPaths?: string[]): Promise<import('../types').ConversationComposerDraftBoxVm>;
+  getConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string): Promise<import('../types').ConversationComposerDraftReadVm>;
+  deleteConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string): Promise<import('../types').ConversationComposerDraftBoxVm>;
+  getPromptQueueSettings(): Promise<import('../types').PromptQueueSettingsVm>;
+  savePromptQueueSettings(input: import('../types').PromptQueueSettingsVm): Promise<import('../types').PromptQueueSettingsVm>;
   setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   setAcpSessionPermissionMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   setAcpSessionAutoAccept(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, autoAccept: boolean, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
@@ -582,6 +602,12 @@ export interface RuntimeApi {
   /// 移出终态行的「最近完成」本地历史条目（真删除，刷新不复活）；不存在时幂等成功。
   /// 仅终态行（completed/failed）有意义——pending/running 行不来自本地历史。
   removeRemoteCompletedTask(remoteTaskId: string): Promise<void>;
+  /// 终态任务 issue 状态对账（batch-status 分批 → diff 写回本地历史，有变更才广播刷新）。
+  /// 返回变更条数；0 = 无变化 / 未连接 / 单飞退出 / 本轮失败（静默降级，不抛错）。
+  reconcileRemoteTaskStatuses(): Promise<number>;
+  /// 重新执行终态任务：server 克隆新任务（新 id、queued、同 issue、attribution 指回源任务），
+  /// 成功返回新任务 id；源任务与 issue 状态不变，新任务经列表刷新自然进板（按 id 去重）。
+  rerunRemoteTask(taskId: string): Promise<string>;
   listServerMulticaWorkspaces(): Promise<MulticaServerWorkspaceVm[]>;
   pickLocalDirectory(): Promise<string | null>;
   addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string): Promise<MulticaSettingsVm>;
@@ -604,6 +630,7 @@ export interface RuntimeApi {
   revokeRemoteImageHost(host: string): Promise<RemoteImageTrustVm>;
   getConversationSidebarBootstrap(): Promise<ConversationSidebarBootstrapVm>;
   getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number): Promise<ConversationTaskPageVm>;
+  getConversationTaskSummary(projectId: string, taskId: string, taskUuid?: string | null): Promise<ConversationTaskRowVm>;
   getConversationPinnedTaskPage(cursor?: string | null, limit?: number): Promise<ConversationPinnedTaskPageVm>;
   getConversationRunSummaryPage(projectId: string, taskId: string, cursor?: string | null, limit?: number): Promise<ConversationRunSummaryPageVm>;
   acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string): Promise<import('../types').ConversationTerminalResultAcknowledgementVm>;
@@ -659,6 +686,18 @@ export interface RuntimeApi {
   subscribeWorkspaceFileChanges?(listener: (event: WorkspaceFileChangedEventVm) => void): Promise<() => void>;
   subscribeRemoteTaskUpdates?(listener: () => void): Promise<() => void>;
   subscribeRemoteSourceSettingsUpdates?(listener: () => void): Promise<() => void>;
+  /// multica 上游拉取决策点（M5-ch）：pending（outcome=null，弹决策）与 settled（收口，关弹窗）
+  /// 合流为同一事件流；仅桌面端实现。
+  subscribeUpstreamPullEvents?(listener: (event: MulticaUpstreamPullEventVm) => void): Promise<() => void>;
+  /// multica 被动安装落地（M5-cr）：runtime-assets push-install 成功落库后触发，按 assetType
+  /// 重拉对应列表；仅桌面端实现（浏览器桩永不触发）。
+  subscribeRuntimeAssetInstalled?(listener: (event: RuntimeAssetInstalledEventVm) => void): Promise<() => void>;
+  /// 提交拉取决策（三选一）；manual 必须带非空 manualText。决策迟到（拉取已收口）→ 结构化错误。
+  decideUpstreamPull(taskId: string, nodeId: string, decision: UpstreamPullDecisionKind, manualText?: string | null): Promise<void>;
+
+  /// 待决上游拉取槽列表（M5-cj 卡片水合）：重进会话后恢复决策卡片/等待态；无在飞 run → 空列表。
+  /// 可选（对齐 subscribeUpstreamPullEvents）：测试 mock runtime api 不实现时 wrapper 兜底空列表。
+  listUpstreamPullPendings?(taskId: string): Promise<MulticaUpstreamPullPendingVm[]>;
   workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
   openExternalUrl(url: string): Promise<void>;
   browserCreatePage(input: BrowserCreatePageInput): Promise<BrowserPageNativeVm>;

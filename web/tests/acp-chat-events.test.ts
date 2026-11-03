@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  admitAcpSessionProjection,
   applyPendingInteractionEventsToSession,
   buildAcpTimeline,
   applyAgentBranchResultToSession,
@@ -18,9 +19,11 @@ import {
   pendingElicitationFromEvents,
   pendingPermissionFromEvents,
   projectAcpSessionControlEvents,
+  projectLiveAcpEventBatch,
   promptRetryFooterKind,
   reconcileAcpSessionForDisplay,
   runtimeControlMessageParts,
+  hasAcpSessionCanonicalContentForInitialShell,
   isAcpSessionReadyForInitialDisplay,
   isAcpConversationAtBottom,
   shouldShowReturnToLatest,
@@ -638,6 +641,25 @@ describe('ACP chat event handling', () => {
     ).toEqual([]);
   });
 
+  it.each(['accept', 'cancel', 'decline'])('never readmits an older pending projection after %s', (action) => {
+    const pending = session({
+      pendingInteractions: [{ kind: 'elicitation', interactionId: 'settled', message: 'Choose', requestedSchema: { type: 'object' }, raw: {} }],
+      eventPage: { generation: 2, coveredRevision: 10, newestRevision: 10, loadedCount: 0, total: 0, hasOlder: true, hasNewer: false },
+    });
+    const settled = applyPendingInteractionEventsToSession(pending, [event({
+      id: 'response', seq: 11, kind: 'elicitationResponse', raw: { elicitationId: 'settled', action },
+    })])!;
+    settled.eventPage = { ...pending.eventPage, coveredRevision: 11, newestRevision: 11 };
+    settled.events = [];
+    expect(admitAcpSessionProjection(settled, pending)).toBe(settled);
+    const newPending = { ...pending, eventPage: { ...pending.eventPage, coveredRevision: 12, newestRevision: 12 } };
+    expect(admitAcpSessionProjection(newPending, settled)).toBe(newPending);
+    expect(admitAcpSessionProjection(settled, newPending)?.pendingInteractions).toEqual(pending.pendingInteractions);
+    expect(admitAcpSessionProjection(newPending, {
+      ...settled, eventPage: { ...settled.eventPage, generation: 1, coveredRevision: 100 },
+    })).toBe(newPending);
+  });
+
   it('clears a pending elicitation when a newer authoritative projection omits the response event', () => {
     const pendingRequest = {
       interactionId: 'elicit-live',
@@ -679,6 +701,41 @@ describe('ACP chat event handling', () => {
     expect(
       reconcileAcpSessionForDisplay(live, settledProjection)?.pendingInteractions,
     ).toEqual([]);
+  });
+
+  it('keeps a live permission settlement after the display reconcile', () => {
+    const pendingPermission = {
+      kind: 'permission' as const,
+      interactionId: '0',
+      sessionId: 'session-1',
+      turnId: null,
+      promptEventId: null,
+      title: 'Edit file_A.txt',
+      toolCallId: 'toolu-1',
+      options: [],
+      raw: { requestId: '0' },
+    };
+    const live = session({
+      status: 'running',
+      pendingInteractions: [pendingPermission],
+    });
+    const cancelled = event({
+      id: 'permission-0',
+      seq: 30,
+      kind: 'permissionRequest',
+      status: 'cancelled',
+      toolCallId: 'toolu-1',
+      title: 'Edit file_A.txt',
+      raw: { requestId: '0', cancelled: true },
+    });
+
+    const projected = projectAcpSessionControlEvents(live, [cancelled], null);
+    expect(projected?.pendingInteractions).toEqual([]);
+
+    // The live batch projection is the newest fact: reconciling the display
+    // snapshot first and projecting afterwards must keep the settlement.
+    const batched = projectLiveAcpEventBatch(live, live, [cancelled], null);
+    expect(batched?.pendingInteractions).toEqual([]);
   });
 
   it('does not infer pending interactions from a terminal session history window', () => {
@@ -1287,6 +1344,45 @@ describe('ACP chat event handling', () => {
     }))).toBe(false);
   });
 
+  it('keeps an active empty response behind the readiness loading gate', () => {
+    expect(isAcpSessionReadyForInitialDisplay(session({
+      status: 'running',
+      systemPromptAppend: null,
+      config: null,
+      events: [],
+      eventPage: {
+        loadedCount: 0,
+        total: 0,
+        hasOlder: false,
+        hasNewer: false,
+      },
+    }))).toBe(false);
+  });
+
+  it('keeps an active empty response with a stale turn error behind the readiness loading gate', () => {
+    expect(isAcpSessionReadyForInitialDisplay({
+      ...session({
+        status: 'running',
+        systemPromptAppend: null,
+        config: null,
+        events: [],
+        eventPage: {
+          loadedCount: 0,
+          total: 0,
+          hasOlder: false,
+          hasNewer: false,
+        },
+      }),
+      turnError: {
+        code: { domain: 'provider', code: 'acp.turn-execution-failed' },
+        domain: 'provider',
+        recovery: 'retry',
+        params: {},
+        diagnostic: 'stale failure from an earlier turn',
+      },
+    })).toBe(false);
+  });
+
   it('treats idle canonical history as ready without system prompt metadata', () => {
     expect(isAcpSessionReadyForInitialDisplay(session({
       status: 'idle',
@@ -1303,13 +1399,34 @@ describe('ACP chat event handling', () => {
     }))).toBe(true);
   });
 
-  it('keeps idle sessions without canonical events behind the readiness loading gate', () => {
+  it('treats a successful idle response with no canonical history as ready-empty', () => {
     expect(isAcpSessionReadyForInitialDisplay(session({
       status: 'idle',
       systemPromptAppend: null,
       config: null,
       events: [],
-    }))).toBe(false);
+    }))).toBe(true);
+  });
+
+  it('treats an unmaterialized terminal failure with empty history as ready', () => {
+    const unmaterializedFailure: AcpSessionVm = {
+      ...session({
+        status: 'failed',
+        systemPromptAppend: null,
+        config: null,
+        events: [],
+        turnError: {
+          code: { domain: 'provider', code: 'acp.session-restore-reference-missing' },
+          domain: 'provider',
+          recovery: 'manual',
+          params: {},
+          diagnostic: 'provider session was not materialized',
+        },
+      }),
+      sessionId: null,
+    };
+    expect(isAcpSessionReadyForInitialDisplay(unmaterializedFailure)).toBe(true);
+    expect(hasAcpSessionCanonicalContentForInitialShell(unmaterializedFailure)).toBe(false);
   });
 
   it('keeps a terminal summary with unloaded events behind the readiness loading gate', () => {

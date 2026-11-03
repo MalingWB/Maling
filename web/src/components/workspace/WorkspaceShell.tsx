@@ -10,6 +10,7 @@ import { DesktopWindowFrame } from '../DesktopWindowFrame';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { MarkdownLocalImageConfigProvider } from '@/components/prompt-kit/markdown-local-images';
 import { cn } from '@/lib/utils';
 import { overlayOwnerAttribute, rightWorkspaceOverlayOwner, CollisionBoundaryContext, conversationOverlayCollisionBoundary } from '@/lib/portal-container';
 import {
@@ -93,6 +94,8 @@ interface WorkspaceShellProps {
   activeWorkspaceId?: string | null;
   defaultExpandedWorkspaceId?: string | null;
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
+  onRetryReveal?: () => void;
+  onRevealHandled?: (requestId: number) => void;
   conversationTaskUuid?: string | null;
   workLocation?: SessionWorkLocationVm | null;
   conversationWorkspaceStore: ConversationWorkspaceStore;
@@ -336,6 +339,8 @@ function WorkspaceShellLayout({
   activeWorkspaceId: _activeWorkspaceId,
   defaultExpandedWorkspaceId,
   workspaceRevealRequest,
+  onRetryReveal,
+  onRevealHandled,
   children,
 }: WorkspaceShellProps) {
   const { t } = useTranslation();
@@ -714,6 +719,7 @@ function WorkspaceShellLayout({
   );
 
   return (
+    <MarkdownLocalImageConfigProvider config={appConfig.workspaceFiles}>
     <WorkspaceFileReferencePresentationProvider value={workspaceFileReferencePresentation}>
     <DesktopWindowFrame frameStyle={windowFrameStyle}>
     <div
@@ -777,6 +783,8 @@ function WorkspaceShellLayout({
               showRemoteTaskManagement={showRemoteTaskManagement}
               defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
               workspaceRevealRequest={workspaceRevealRequest}
+              onRetryReveal={onRetryReveal}
+              onRevealHandled={onRevealHandled}
               onSelect={onSelect}
               onNewConversation={onNewConversation}
               onSearch={onSearch}
@@ -868,7 +876,7 @@ function WorkspaceShellLayout({
           ref={compactSheetContentRef}
           side="right"
           tabIndex={-1}
-          className="flex w-[min(92vw,44rem)] flex-col gap-0 p-0 focus:outline-none sm:max-w-none"
+          className="flex w-[min(92%,44rem)] flex-col gap-0 p-0 focus:outline-none sm:max-w-none"
           overlayProps={{ [overlayOwnerAttribute]: rightWorkspaceOverlayOwner }}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
@@ -889,5 +897,6 @@ function WorkspaceShellLayout({
     </div>
     </DesktopWindowFrame>
     </WorkspaceFileReferencePresentationProvider>
+    </MarkdownLocalImageConfigProvider>
   );
 }

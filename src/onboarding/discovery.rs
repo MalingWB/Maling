@@ -81,7 +81,9 @@ pub fn prepared_adapter(
             .insert("PATH".into(), path.to_string_lossy().into_owned());
     }
     if crate::npx_cache::is_npx(&adapter) {
-        if let Some(launch) = crate::npx_cache::cached_launch(&adapter, &adapter.args, cwd, &adapter.env) {
+        if let Some(launch) =
+            crate::npx_cache::cached_launch(&adapter, &adapter.args, cwd, &adapter.env)
+        {
             adapter.command = launch.node.to_string_lossy().into_owned();
             adapter.args = std::iter::once(launch.script.to_string_lossy().into_owned())
                 .chain(launch.args)

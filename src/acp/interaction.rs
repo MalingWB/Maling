@@ -31,6 +31,19 @@ impl AcpPromptInteractionKind {
     }
 }
 
+/// Canonical lifecycle state of one prompt interaction, derived from its
+/// signal files while the runtime owns it and from the timeline afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpInteractionSettlement {
+    /// The runtime is still waiting for an answer.
+    Pending,
+    /// Someone answered it (desktop, IM channel or auto-accept).
+    Answered,
+    /// It ended without an answer: stopped, timed out or abandoned by a
+    /// runtime that is gone.
+    Cancelled,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpPromptInteractionIdentity {
@@ -71,6 +84,25 @@ impl AcpPromptInteractionIdentity {
             turn_id: None,
             prompt_event_id: None,
             session_id: Some(session_id),
+        }
+    }
+
+    /// An interaction raised while a prompt turn owns the conversation. In
+    /// Direct mode it additionally carries the session id so retention can
+    /// still route it, but only its own settlement or turn terminal closes it.
+    pub fn for_turn_and_session(
+        interaction_id: String,
+        kind: AcpPromptInteractionKind,
+        turn_id: String,
+        prompt_event_id: String,
+        session_id: Option<String>,
+    ) -> Self {
+        Self {
+            interaction_id,
+            kind,
+            turn_id: Some(turn_id),
+            prompt_event_id: Some(prompt_event_id),
+            session_id,
         }
     }
 }

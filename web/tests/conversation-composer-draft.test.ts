@@ -116,7 +116,7 @@ describe('ConversationComposer draft cross-page retention', () => {
     expect(state.quotes).toEqual([quote]);
     expect(conversationComposerDraftReducer(state, { type: 'setQuotes', quotes: state.quotes })).toBe(state);
     expect(conversationComposerDraftReducer(state, { type: 'setContent', content: 'more' }).quotes).toEqual([quote]);
-    expect(conversationComposerDraftReducer(state, { type: 'prefill', content: 'remote', remote: { source: 'multica', remoteTaskId: 'rt', workspaceId: 'ws', title: 'T' } }).quotes).toEqual([]);
+    expect(conversationComposerDraftReducer(state, { type: 'prefill', content: 'remote', remote: { source: 'multica', remoteTaskId: 'rt', workspaceId: 'ws', title: 'T', attachments: [] } }).quotes).toEqual([]);
     expect(conversationComposerDraftReducer(state, { type: 'reset' }).quotes).toEqual([]);
   });
 
@@ -230,7 +230,7 @@ describe('ConversationComposer draft cross-page retention', () => {
       remote: null,
       submission: { kind: 'send' },
     };
-    const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
+    const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1', attachments: [] };
     const next = conversationComposerDraftReducer(state, { type: 'prefill', content: '远程任务需求正文', remote: binding });
 
     expect(next.content).toBe('远程任务需求正文');
@@ -241,7 +241,7 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('editing prefilled content keeps the remote binding (setContent preserves the binding)', () => {
-    const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
+    const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1', attachments: [] };
     let state = conversationComposerDraftReducer(
       { content: '需求', attachments: [], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } },
       { type: 'prefill', content: '需求', remote: binding },
@@ -255,7 +255,7 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('clearRemote drops the binding but keeps content and attachments (chip removed → local compose)', () => {
-    const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
+    const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1', attachments: [] };
     const state: ConversationComposerDraftState = { content: '需求正文', attachments: [makeAttachment('a1')], workspaceFiles: [], quotes: [], remote: binding, submission: { kind: 'send' } };
     const next = conversationComposerDraftReducer(state, { type: 'clearRemote' });
 
@@ -271,8 +271,41 @@ describe('ConversationComposer draft cross-page retention', () => {
     expect(next).toBe(state);
   });
 
+  /**
+   * 输入框附件可见性（元数据 chips）：prefill 携带的附件元数据随远程绑定同生命周期——
+   * 编辑正文不丢、解绑/进排程即一并消失（chips 渲染只认 remote.attachments）。
+   */
+  it('prefill carries remote attachment metadata through the binding lifecycle', () => {
+    const attachments = [
+      { filename: '多值测试样本.zip', contentType: 'application/zip' },
+      { filename: 'att-2', contentType: null },
+    ];
+    const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1', attachments };
+    let state = conversationComposerDraftReducer(
+      { content: '', attachments: [], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } },
+      { type: 'prefill', content: '需求正文', remote: binding },
+    );
+
+    // 元数据随绑定原样保留（展示投影，不进本地附件管线——本地 attachments 仍为空）。
+    expect(state.remote?.attachments).toEqual(attachments);
+    expect(state.attachments).toEqual([]);
+
+    // 编辑正文不丢绑定，也就不丢附件可见性。
+    state = conversationComposerDraftReducer(state, { type: 'setContent', content: '需求正文（改）' });
+    expect(state.remote?.attachments).toEqual(attachments);
+
+    // 解绑（删绑定 chip）→ 元数据 chips 一并消失。
+    state = conversationComposerDraftReducer(state, { type: 'clearRemote' });
+    expect(state.remote).toBeNull();
+
+    // 进排程同样解绑（提交意图互斥）。
+    state = conversationComposerDraftReducer(state, { type: 'prefill', content: '需求正文', remote: binding });
+    state = conversationComposerDraftReducer(state, { type: 'enterScheduledTask' });
+    expect(state.remote).toBeNull();
+  });
+
   it('reset clears a leftover remote binding so the next local compose is not mistaken for a remote run', () => {
-    const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
+    const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1', attachments: [] };
     let state: ConversationComposerDraftState = { content: '需求', attachments: [], workspaceFiles: [], quotes: [], remote: binding, submission: { kind: 'send' } };
     state = conversationComposerDraftReducer(state, { type: 'reset' });
 
@@ -281,7 +314,7 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('prefill from scheduled-task mode returns the draft to send intent (remote prepare owns the draft)', () => {
-    const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
+    const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1', attachments: [] };
     let state = createInitialConversationComposerDraft();
     state = conversationComposerDraftReducer(state, { type: 'enterScheduledTask' });
     state = conversationComposerDraftReducer(state, { type: 'prefill', content: '远程任务需求正文', remote: binding });
@@ -292,7 +325,7 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('enterScheduledTask drops a remote binding (submission intents are mutually exclusive)', () => {
-    const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
+    const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1', attachments: [] };
     let state = createInitialConversationComposerDraft();
     state = conversationComposerDraftReducer(state, { type: 'prefill', content: '需求', remote: binding });
     state = conversationComposerDraftReducer(state, { type: 'enterScheduledTask' });

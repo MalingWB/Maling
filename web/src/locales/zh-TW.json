@@ -587,6 +587,7 @@
     "closeWorkspace": "收起右側工作區",
     "openNewTab": "開啟新分頁",
     "closeTab": "關閉分頁",
+    "panelFailed": "此分頁無法顯示",
     "allTabs": "所有分頁",
     "attention": "需要處理",
     "files": "工作區",
@@ -632,6 +633,8 @@
       "switchToTreeView": "切換為樹狀目錄",
       "copyAbsolutePath": "複製絕對路徑",
       "copyRelativePath": "複製相對路徑",
+      "relativeToRunDirectory": "相對於執行目錄",
+      "relativeToAttachmentDirectory": "相對於附件目錄", "relativeToSourceWorkspace": "相對於來源工作目錄",
       "openWorkspaceFile": "開啟工作區檔案",
       "referenceToConversation": "引用到對話",
       "removeWorkspaceReference": "移除檔案引用",
@@ -818,6 +821,12 @@
       "workspace-outside-project": "所選 Worktree 不屬於目前專案。",
       "ref-changed": "變更清單已更新，請再試一次。",
       "sync-ref-changed": "分支已變化，請再試一次。",
+      "push-upstream-invalid": "無法解析此分支的上游，請檢查上游設定後重試。",
+      "push-upstream-unsupported": "此分支追蹤的是本機分支，目前不支援向該上游推送。",
+      "push-branch-not-current": "目前分支已變更，請重新開啟推送確認。",
+      "push-remote-required": "請選擇要發布到哪個遠端儲存庫。",
+      "push-confirmation-required": "請先確認推送的來源分支與目標。",
+      "push-target-changed": "推送的來源分支或目標已變更，請重新確認。",
       "repository-locked": "儲存庫正在執行其他寫操作。",
       "workspace-locked": "目前工作區正在執行其他寫操作。",
       "operation-in-progress": "目前 Git 流程尚未結束，請完成或中止後重試。",
@@ -925,7 +934,9 @@
       "composer-history-query-failed": "輸入歷史載入失敗，請重試。",
       "turn-execution-failed": "本次訊息處理失敗，請重試。",
       "session-request-failed": "工作階段準備失敗，請重試。",
+      "session-restore-reference-missing": "目前 ACP 工作階段缺少 Provider 工作階段引用，無法還原原工作階段。請建立新工作階段後重新傳送訊息。",
       "missing-provider": "目前節點缺少 provider 設定。",
+      "subagent-protocol-upgrade-required": "請將 Claude ACP 升級至 {{minimumVersion}} 或更新版本後重試。",
       "session-config-value-unavailable": "所選工作階段設定已不可用，請從最新清單中重新選擇。",
       "active-prompt-blocks-config-save": "目前有工作階段正在執行，請先停止工作階段再儲存設定。",
       "invalid-conversation-branch-id": "該 Agent 工作階段連結無效或已失效。",
@@ -987,7 +998,10 @@
         "folder-not-found": "找不到所選資料夾",
         "folder-not-directory": "所選路徑不是資料夾",
         "folder-read-failed": "無法完整讀取所選資料夾",
-        "no-markdown-files": "所選資料夾中沒有 Markdown 檔案"
+        "no-markdown-files": "所選資料夾中沒有 Markdown 檔案",
+        "file-not-found": "找不到所選檔案",
+        "file-not-markdown": "所選檔案不是 Markdown 檔案",
+        "no-files": "未選擇任何檔案"
       }
     },
     "manual-check": {
@@ -996,7 +1010,8 @@
     "runtime": {
       "io": {
         "storage-full": "磁碟空間不足，本次執行已中斷。釋放空間後可繼續。",
-        "permission-denied": "無法寫入工作階段資料，請檢查目錄的寫入權限。"
+        "permission-denied": "無法寫入工作階段資料，請檢查目錄的寫入權限。",
+        "attachment-path-too-long": "目前對話的資料目錄層級過深，無法儲存附件「{{name}}」。請建立新對話後再傳送。"
       },
       "conversation-not-available": "工作流正在執行，暫時不能傳送普通訊息。",
       "continue-not-available": "目前節點不需要繼續，可能已經還原或不再可繼續。",
@@ -1023,7 +1038,6 @@
       "workspace-file-read-failed": "無法讀取引用的檔案資訊，請重試。",
       "workspace-file-count-exceeded": "上下文最多可包含 {{max}} 個引用和附件。",
       "session-restore-unsupported": "目前 Agent 不支援還原已有工作階段。",
-      "session-restore-reference-missing": "目前工作階段缺少可還原的 Provider 工作階段引用。",
       "history-sync-unsupported": "目前 Agent 不支援同步已有工作階段的完整歷史。",
       "prompt-empty": "請輸入要傳送的內容。",
       "prompt-quote-invalid": "引用資料無效，請刪除後重新引用。",
@@ -1041,11 +1055,18 @@
       "prompt-queue-empty": "待傳送佇列為空。",
       "prompt-queue-revision-conflict": "待傳送順序已發生變化，請在清單更新後重試。",
       "prompt-queue-invalid-order": "待傳送順序無效，請重試。",
+      "prompt-queue-invalid-mode": "傳送模式無效。",
       "prompt-queue-session-busy": "目前工作階段仍在執行，請停止後再手動使用。",
+      "prompt-queue-interrupt-timeout": "目前回覆仍在停止中，這條內容已保留在佇列，可稍後重試。",
+      "prompt-queue-dispatch-settling": "上一條回覆尚未完全結束，這條內容已放回佇列，請稍後重試。",
       "prompt-session-busy": "上一則訊息仍在處理中，請稍候或先停止目前回覆。",
       "prompt-submission-conflict": "這則訊息的傳送識別碼已被其他內容使用，請重新傳送。",
       "prompt-submission-missing": "已接納的訊息內容無法讀取，請重新傳送。",
       "prompt-queue-storage-failed": "待傳送佇列儲存失敗，請重試。",
+      "composer-draft-empty": "沒有可儲存的內容。",
+      "composer-draft-full": "草稿箱已滿，最多可保留 {{max}} 則。",
+      "composer-draft-not-found": "這則草稿已不存在。",
+      "composer-draft-storage-failed": "無法存取草稿箱，請重試。",
       "execution-plan": {
         "not-found": "這次 Run 還沒有執行計畫。",
         "revision-conflict": "執行計畫已變化。請重新載入後再試。",
@@ -1109,6 +1130,7 @@
       "stale-package": "已下載的更新套件不高於目前版本。"
     },
     "multica": {
+      "attachment-stage-failed": "下載任務附件失敗：{{message}}",
       "auth-failed": "Multica 鑑權失敗：{{message}}",
       "claim-conflict": "該任務已被其他 Daemon 領取。",
       "connect-cancelled": "已取消連線。",
@@ -1118,6 +1140,8 @@
       "runtime-offline": "執行時未就緒，請稍後重試。",
       "session-resume-failed": "工作階段還原失敗，將以全新任務重跑。",
       "task-not-found": "找不到該 Multica 任務。",
+      "upstream-pull-invalid-decision": "決策無效，請檢查後再試。",
+      "upstream-pull-not-pending": "該拉取已結束，無需再選擇。",
       "workspace-already-bound": "該工作區已綁定。",
       "workspace-not-found": "找不到該工作區綁定。"
     },
@@ -1317,7 +1341,6 @@
     "builtInSectionDescription": "固定角色，支援開啟草稿並另存成新的自訂角色。",
     "customSectionTitle": "自訂角色",
     "customSectionDescription": "你建立的使用者級自訂角色會在這裡分頁展示。",
-    "customProfilesPageRange": "自訂角色 {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "內建角色不可直接儲存，請另存成新角色。",
     "emptyContent": "沒有正文內容",
     "profileRequired": "名稱和摘要不能為空。",
@@ -1450,10 +1473,12 @@
       }
     },
     "importProfile": "匯入角色",
-    "importSettingsDescription": "選擇資料夾批次匯入角色 Markdown 檔案，缺少的名稱和摘要會自動補上。",
+    "importSettingsDescription": "從資料夾批次匯入，或直接選擇角色 Markdown 檔案匯入，缺少的名稱和摘要會自動補上。",
     "importDynamicTemplateDescription": "開啟後本次匯入的所有角色按動態範本處理；正文不合法的會自動降級為靜態。",
     "importPickFolder": "選擇資料夾並匯入",
     "importPickFolderTitle": "選擇包含角色 Markdown 檔案的資料夾",
+    "importPickFiles": "選擇檔案並匯入",
+    "importPickFilesTitle": "選擇角色 Markdown 檔案",
     "importResultTitle": "匯入結果",
     "importResultSummary": "共掃描 {{total}} 個檔案，成功 {{success}} 個，失敗 {{failed}} 個。",
     "importResultImported": "已匯入",
@@ -2028,6 +2053,10 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
+    "pushTargetRemote": "目標遠端儲存庫",
+    "pushPreparing": "正在準備推送目標…",
+    "pushSetUpstream": "發布成功後，將目標分支設為上游。",
     "remote": "遠端儲存庫",
     "name": "名稱",
     "startPoint": "起點",
@@ -2330,9 +2359,37 @@
       "editDraftOccupied": "請先處理輸入框中的目前草稿",
       "restoreDraftConflict": "輸入框狀態已變化，無法還原這條待傳送內容。",
       "reorder": "調整排隊順序",
-      "use": "使用",
+      "sendNow": "立即傳送",
       "delete": "刪除",
-      "enqueue": "加入佇列"
+      "enqueue": "加入佇列",
+      "autoSend": "自動傳送",
+      "modeTooltip": "開啟後，每輪回覆結束時會自動依序傳送待傳送內容；關閉後內容只會保留在佇列中，由你逐則「立即傳送」。",
+      "paused": {
+        "stopped": "已暫停：工作階段已停止",
+        "failed": "已暫停：上一輪傳送失敗"
+      },
+      "resume": "恢復",
+      "resumeLabel": "恢復自動傳送",
+      "moreActions": "更多操作",
+      "clear": "清空待傳送",
+      "clearConfirmTitle": "清空待傳送佇列？",
+      "clearConfirmDescription": "將移除 {{count}} 條待傳送訊息，此操作無法復原。",
+      "clearConfirmAction": "清空待傳送",
+      "interruptConfirmTitle": "要立即傳送這則內容嗎？",
+      "interruptConfirmDescription": "目前的回覆會先停止，接著傳送這則內容。",
+      "interruptConfirmSkip": "之後不再提示",
+      "interruptConfirmAction": "停止並傳送"
+    },
+    "composerDrafts": {
+      "title": "草稿箱",
+      "titleWithCount": "草稿箱（{{count}}）",
+      "count": "{{count}}/{{max}}",
+      "save": "存入草稿箱",
+      "empty": "還沒有草稿",
+      "take": "取出到輸入框",
+      "takeOccupied": "請先處理輸入框中的目前內容",
+      "delete": "刪除草稿",
+      "takeConflict": "輸入框已有內容，草稿仍保留在草稿箱。"
     },
     "sending": "傳送中",
     "sendFailed": "傳送失敗",
@@ -2450,7 +2507,8 @@
       "output": "輸出",
       "cacheRead": "快取讀取",
       "cacheWrite": "快取寫入",
-      "total": "總計"
+      "total": "總計",
+      "excludesBackground": "不含背景喚醒的用量"
     },
     "hiddenRemoteTaskContext": "隱藏遠端任務上下文"
   },
@@ -2546,7 +2604,14 @@
     "im": {
       "title": "IM 遠端干預與通知",
       "enabled": "啟用",
+      "channelEnabled": "啟用{{channel}}遠端干預",
+      "channelSubtitle": "機器人 · 一對一私聊",
+      "expandChannel": "展開{{channel}}設定",
+      "collapseChannel": "收合{{channel}}設定",
+      "receiverAccount": "接收帳號",
+      "robotName": "機器人名稱",
       "privateBinding": "一對一私聊：{{name}}",
+      "privateBindingUnnamed": "已綁定一對一私聊",
       "notificationKinds": "通知類型",
       "notificationGroups": {
         "needsAction": "需要你處理",
@@ -2567,6 +2632,8 @@
         "notConfigured": "尚未接入{{channel}}。接入後可設定遠端干預與通知。",
         "connect": "掃碼接入",
         "reauthorize": "重新授權",
+        "changeApp": "更換飛書應用",
+        "changeAppWarning": "完成授權後將取代目前的飛書應用，並清除現有私聊綁定。請使用新機器人重新完成綁定。",
         "generating": "正在生成二維條碼…",
         "waiting": "請使用{{channel}}掃碼並確認授權",
         "expiresIn": "二維條碼將在 {{countdown}} 後過期",
@@ -2579,10 +2646,12 @@
       "channels": {
         "weCom": {
           "title": "企業微信",
+          "identityLabel": "機器人 ID",
           "identity": "機器人 ID：{{id}}"
         },
         "feishu": {
           "title": "飛書",
+          "identityLabel": "App ID",
           "identity": "App ID：{{id}}",
           "singleDeviceHint": "一個機器人只連線一台裝置，避免操作被其他裝置接收。",
           "permissions": {
@@ -2590,6 +2659,7 @@
             "send": "傳送訊息給你",
             "receive": "讀取你傳給機器人的私訊",
             "update": "更新機器人傳送的卡片",
+            "profile": "讀取你的姓名，用於顯示接收帳號",
             "confirm": "同意並產生 QR Code"
           },
           "resetBinding": {
@@ -2847,6 +2917,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "顯示全部 {{count}} 個",
       "showLess": "收合"
+    },
+    "promptQueue": {
+      "title": "待傳送",
+      "description": "回覆進行中時，「立即傳送」會先停止目前的回覆。",
+      "confirmInterrupt": "立即傳送前確認中斷目前回覆"
     }
   },
   "conversation": {
@@ -2954,7 +3029,9 @@
         "emptyTitle": "尚未連接{{source}}",
         "removeTask": "移出清單",
         "removeTaskHint": "僅從本側清單移除，重新整理後會恢復",
-        "removeTaskTerminalHint": "移出並刪除本機完成記錄，重新整理後不再顯示"
+        "removeTaskTerminalHint": "移出並刪除本機完成記錄，重新整理後不再顯示",
+        "rerunTask": "重新執行",
+        "rerunBadge": "重新執行"
       },
       "keepResident": "常駐工作階段",
       "releaseResident": "解除常駐",
@@ -2965,6 +3042,7 @@
     "composer": {
       "remoteNeedLocalWorkspace": "請先新增本機工作區，再執行需求",
       "removeRemoteBinding": "解除任務綁定",
+      "remoteAttachmentHint": "遠端任務附件，發送時自動下載並附加",
       "remoteBindingTag": "{{source}} · {{title}}"
     },
     "branchPicker": {
@@ -3168,6 +3246,7 @@
       "account": {
         "connected": "已連線"
       },
+      "openPlatform": "開啟 {{source}} 平台",
       "column": {
         "empty": "沒有任務"
       },
@@ -3192,10 +3271,31 @@
         "label": "類型",
         "test": "測試"
       },
+      "searchPlaceholder": "搜尋任務名稱…",
       "readiness": {
-        "notReady": "未就緒",
-        "notReadyHint": "對應開發任務尚未完成，建議等待其完成後再執行"
+        "ready": "已就緒",
+        "readyHint": "對應開發任務已完成，可以開始執行"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "該任務需建立 DPMS 系統需求並回傳關聯，回傳完成後此標籤自動消失"
+      },
+      "issueStatus": {
+        "todo": "待辦",
+        "backlog": "待辦池"
       }
+    },
+    "upstreamPull": {
+      "title": "上游交付說明待拉取",
+      "description": "「{{task}}」的 {{node}} 節點尚未拉取到上游工作項 {{issue}} 的交付說明。",
+      "fallbackNote": "60 秒內未選擇將自動繼續輪詢拉取。",
+      "retry": "繼續等待拉取",
+      "manual": "手動提供資訊",
+      "skip": "跳過拉取",
+      "manualLabel": "交付說明",
+      "manualPlaceholder": "構建產物、部署環境等關鍵資訊……",
+      "manualSubmit": "使用此資訊繼續",
+      "waitingNote": "已繼續等待上游交付說明更新，期間可隨時手動提供或跳過。"
     }
   },
   "onboarding": {

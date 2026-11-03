@@ -8,6 +8,7 @@ import {
   ChatContainerContent,
   ChatContainerRoot,
   type ChatContainerContext,
+  type ChatContainerUserScrollDirection,
 } from '@/components/prompt-kit/chat-container';
 import {
   ConversationViewport,
@@ -170,6 +171,76 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
     }
   });
 
+  it('keeps a bottom viewport pinned when dynamic footer height grows, without moving a history reader', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ConversationViewport,
+            { scrollClassName: 'overflow-y-auto', contextRef, initialFollowing: false },
+            [
+              React.createElement('div', { key: 'content' }, 'conversation content'),
+              React.createElement(
+                ConversationViewportFooter,
+                { key: 'footer' },
+                React.createElement('div', { 'data-testid': 'growing-footer' }, 'composer'),
+              ),
+            ],
+          ),
+        );
+      });
+
+      const viewport = container.querySelector<HTMLElement>('.overflow-y-auto')!;
+      const frame = container.querySelector<HTMLElement>('[data-conversation-viewport-frame="true"]')!;
+      const footerLayer = container.querySelector<HTMLElement>('[data-conversation-viewport-footer="true"]')!;
+      const footerObserver = ControlledResizeObserver.instances.find(
+        (observer) => observer.elements.has(footerLayer),
+      )!;
+      let footerHeight = 180;
+      vi.spyOn(footerLayer, 'getBoundingClientRect').mockImplementation(() => (
+        { top: 400 - footerHeight, bottom: 400, height: footerHeight } as DOMRect
+      ));
+
+      let scrollTop = 200;
+      const scrollHeight = () => 600 + Number.parseFloat(
+        frame.style.getPropertyValue('--conversation-viewport-footer-height') || '0',
+      );
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, value: 400 },
+        scrollHeight: { configurable: true, get: scrollHeight },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => { scrollTop = Math.min(Math.max(0, value), scrollHeight() - 400); },
+        },
+      });
+
+      // The viewport is geometrically at the bottom even though follow intent is detached.
+      await act(async () => {
+        footerObserver.emitHeight(footerHeight);
+        await waitForScrollFrames();
+      });
+      expect(scrollTop).toBe(380);
+      expect(scrollHeight() - scrollTop - viewport.clientHeight).toBe(0);
+
+      // A user reading history must not be pulled to the bottom by composer growth.
+      scrollTop = 50;
+      footerHeight = 240;
+      await act(async () => {
+        footerObserver.emitHeight(footerHeight);
+        await waitForScrollFrames();
+      });
+      expect(scrollTop).toBe(50);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('aligns the initial followed viewport before the first paint', () => {
     const viewport = {
       clientHeight: 320,
@@ -216,7 +287,7 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
   it('reports wheel and keyboard input but not an unqualified pointer press as user scrolling', async () => {
     vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
     const contextRef = React.createRef<ChatContainerContext>();
-    const userScrolls: number[] = [];
+    const userScrolls: ChatContainerUserScrollDirection[] = [];
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -226,7 +297,7 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
         root.render(
           React.createElement(
             ChatContainerRoot,
-            { contextRef, onViewportUserScroll: () => userScrolls.push(1) },
+            { contextRef, onViewportUserScroll: (_viewport, direction) => { userScrolls.push(direction); } },
             React.createElement(ChatContainerContent, null, 'streaming content'),
           ),
         );
@@ -243,7 +314,7 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
         viewport.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp' }));
         viewport.dispatchEvent(new Event('pointerdown', { bubbles: true }));
       });
-      expect(userScrolls).toHaveLength(2);
+      expect(userScrolls).toEqual(['up', 'up']);
     } finally {
       await act(async () => root.unmount());
     }

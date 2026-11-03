@@ -100,6 +100,8 @@ export type FileWorkspaceResource = RightWorkspaceResourceBase & {
   projectId: string;
   /** Root the file was resolved in; `null` is the project root. */
   workspacePath: string | null;
+  /** Explicit file provenance is independent of the receiving session's directory. */
+  source?: Extract<import('@/types').PromptWorkspaceFileRef, { kind: 'git-file' | 'turn-file' | 'turn-attachment' }>;
   locator: import('@/types').WorkspaceFileLocatorVm;
   target: import('@/types').FileTargetLocationVm | null;
   targetRevision: number;
@@ -876,6 +878,7 @@ export function projectWorkspaceTabRoots(
     changed = true;
     if (tab.kind === 'source-control') return { ...tab, root, browseMain };
     const selectedFile = tab.selectedFile
+      && !tab.selectedFile.source
       && root.kind === 'available'
       && !sameWorkspacePath(tab.selectedFile.workspacePath, root.workspacePath)
       ? null
@@ -943,19 +946,12 @@ export function taskInputAttachmentPath(name: string) {
   return `task-inputs/${name}`;
 }
 
-export function userInputAttachmentPath(name: string) {
-  return `user-inputs/${name}`;
-}
-
 export function sentAttachmentPreviewAliasKey(input: {
-  assetKind: 'input-attachment' | 'message-attachment';
+  assetKind: 'input-attachment';
   locator: AcpAttemptWorkspaceLocator;
   name: string;
 }) {
-  const path = input.assetKind === 'input-attachment'
-    ? taskInputAttachmentPath(input.name)
-    : userInputAttachmentPath(input.name);
-  return conversationAssetWorkspaceResourceKey(input.assetKind, input.locator, input.name, path);
+  return conversationAssetWorkspaceResourceKey(input.assetKind, input.locator, input.name, taskInputAttachmentPath(input.name));
 }
 
 export function detachDraftAttachmentPreview(attachment: AttachmentItem): AttachmentItem {

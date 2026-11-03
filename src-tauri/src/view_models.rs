@@ -753,6 +753,10 @@ pub struct AcpUsageVm {
     pub cached_write_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u64>,
+    /// Token totals come from prompt responses only; background Agent work
+    /// happened in this session and is not included.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub token_totals_exclude_background: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -815,6 +819,7 @@ pub struct AcpAgentExecutionVm {
     pub agent_execution_id: String,
     pub parent_agent_execution_id: Option<String>,
     pub execution_status: String,
+    pub provider_state_seq: Option<u64>,
     pub event_count: usize,
     pub tool_call_count: usize,
     pub read_file_count: usize,
@@ -4140,6 +4145,18 @@ pub fn acp_session_vm(
                 .and_then(|value| value.as_str())
         })
         .map(str::to_string);
+    let turn_error = session
+        .get("turnError")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok());
+    let has_queryable_attempt_state = turn_error.is_some()
+        || session
+            .get("latestTurnStatus")
+            .and_then(Value::as_str)
+            .is_some_and(|status| {
+                let status = status.trim();
+                !status.is_empty() && status != "none"
+            });
     let has_displayable_timeline_event = event_scan
         .events
         .iter()
@@ -4148,6 +4165,7 @@ pub fn acp_session_vm(
         && session_id.is_none()
         && !has_displayable_timeline_event
         && branch_record.is_none()
+        && !has_queryable_attempt_state
     {
         trace_acp_session_query(
             &mut query_trace,
@@ -4271,10 +4289,7 @@ pub fn acp_session_vm(
             .get("stopReason")
             .and_then(|value| value.as_str())
             .map(str::to_string),
-        turn_error: session
-            .get("turnError")
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok()),
+        turn_error,
         system_prompt_append,
         config,
         available_commands: event_scan.available_commands,
@@ -4640,6 +4655,7 @@ fn indexed_timeline_page_to_scan(
         used: usage.used,
         size: usage.size,
         cost_amount_usd: usage.cost_amount_usd,
+        token_totals_exclude_background: usage.token_totals_exclude_background,
         ..AcpUsageVm::default()
     });
     Ok(AcpEventScan {
@@ -6009,6 +6025,7 @@ fn agent_execution_vm(
         agent_execution_id: record.agent_execution_id.clone(),
         parent_agent_execution_id: record.parent_agent_execution_id.clone(),
         execution_status: record.status.clone(),
+        provider_state_seq: record.provider_state_seq,
         event_count: record.event_count,
         tool_call_count: record.tool_call_count,
         read_file_count: record.read_file_count,
@@ -8401,6 +8418,7 @@ mod tests {
             launch_tool_call_id: format!("launch-{agent_execution_id}"),
             session_id: "session-123".to_string(),
             status: status.to_string(),
+            provider_state_seq: None,
             title: Some(agent_execution_id.to_string()),
             description: None,
             started_at: "100Z".to_string(),
@@ -8494,6 +8512,27 @@ mod tests {
         let usage = usage.unwrap();
         assert_eq!(usage.used, Some(38_223));
         assert_eq!(usage.cost_amount_usd, Some(0.315532));
+    }
+
+    #[test]
+    fn usage_vm_serializes_the_background_token_totals_gap_only_when_present() {
+        let complete = serde_json::to_value(AcpUsageVm {
+            total_tokens: Some(107_089),
+            ..Default::default()
+        })
+        .unwrap();
+        let partial = serde_json::to_value(AcpUsageVm {
+            total_tokens: Some(107_089),
+            token_totals_exclude_background: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert!(complete.get("tokenTotalsExcludeBackground").is_none());
+        assert_eq!(
+            partial["tokenTotalsExcludeBackground"],
+            serde_json::json!(true)
+        );
     }
 
     #[test]
@@ -11106,6 +11145,88 @@ mod tests {
     }
 
     #[test]
+    fn acp_session_vm_projects_unmaterialized_failure_without_timeline() {
+        let dir = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap());
+        write_json(
+            &app.paths.node_file(
+                "task-unmaterialized-error",
+                "run-001",
+                "round-001",
+                "direct-agent",
+                "attempt-001",
+            ),
+            &NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: "direct-agent".to_string(),
+                node_type: NodeType::Worker,
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                status: RunStatus::Paused,
+                outcome: None,
+                started_at: "1792987200Z".to_string(),
+                finished_at: None,
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: gold_band::domain::ResolvedConfig::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let error = gold_band::runtime_error::manual_runtime_error_info(
+            gold_band::runtime_error::RuntimeErrorDomain::Provider,
+            "acp.session-restore-reference-missing",
+            "provider session was not materialized before the turn stopped",
+            json!({"attemptId": "attempt-001"}),
+        );
+        write_json(
+            &app.paths.acp_snapshot_file(
+                "task-unmaterialized-error",
+                "run-001",
+                "round-001",
+                "direct-agent",
+                "attempt-001",
+            ),
+            &json!({
+                "adapterId": "codex-acp",
+                "adapterDisplayName": "Codex",
+                "cwd": dir.path().to_str(),
+                "availability": "unavailable",
+                "latestTurnStatus": "failed",
+                "liveTurnActivity": "idle",
+                "turnError": error,
+                "restored": false,
+                "createdAt": "1792987200Z",
+                "updatedAt": "1792987201Z",
+                "capabilities": {},
+                "runtimeControlTimelineScanComplete": true
+            }),
+        )
+        .unwrap();
+
+        let session = acp_session_vm(
+            &app,
+            "task-unmaterialized-error",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("failed unmaterialized attempt should remain queryable");
+
+        assert!(session.session_id.is_none());
+        assert_eq!(session.status, "failed");
+        assert_eq!(session.turn_error.as_ref(), Some(&error));
+        assert!(session.events.is_empty());
+        assert_eq!(session.event_page.total, 0);
+    }
+
+    #[test]
     fn acp_session_vm_reads_background_failure_without_diagnostic_history() {
         let dir = tempdir().unwrap();
         let app = App::new(Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap());
@@ -12159,6 +12280,7 @@ mod tests {
             agent_execution_id: "agent-internal".to_string(),
             parent_agent_execution_id: Some("agent-parent".to_string()),
             execution_status: "running".to_string(),
+            provider_state_seq: Some(12),
             event_count: 1,
             tool_call_count: 1,
             read_file_count: 0,
@@ -12170,6 +12292,7 @@ mod tests {
         };
         let value = serde_json::to_value(vm).unwrap();
         assert_eq!(value["agentExecutionId"], "agent-internal");
+        assert_eq!(value["providerStateSeq"], 12);
         assert!(value.get("toolCallId").is_none());
         assert!(value.get("parentToolCallId").is_none());
         assert!(value.get("launchStatus").is_none());

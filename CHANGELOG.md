@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.20.0](https://github.com/MalingWB/Maling/compare/v0.19.1...v0.20.0) (2026-10-19)
+
+
+### Features
+
+* **acp-ui:** mark the background usage gap note with a warning icon ([e5c397f](https://github.com/MalingWB/Maling/commit/e5c397fc5ab71581c9323a401289d741e72590bf))
+* **acp:** track native Claude subagents and background Agent work ([bb3f075](https://github.com/MalingWB/Maling/commit/bb3f075923eb6944accf09bb0138455c2cb3c527))
+* **im:** add Feishu remote approvals and harden intervention lifecycle ([bbef772](https://github.com/MalingWB/Maling/commit/bbef77240bdb7e5b9a26bf37a56e5bdff7bcbe85))
+* **im:** add Feishu remote approvals and harden shared lifecycle ([b2b1099](https://github.com/MalingWB/Maling/commit/b2b1099edb130ee7be85384e456a7d265be1031b))
+* **markdown:** let live preview fill the available panel width ([f058caa](https://github.com/MalingWB/Maling/commit/f058caaa593b3b69295e09b2dcbf364de5a6f1aa))
+* **marketing:** add website, embedded demo and recorded scenes ([66ea185](https://github.com/MalingWB/Maling/commit/66ea1853e2a355be6fc5b8d0f24cc24896af0c05))
+* **multica:** M5 远程任务线与 SKILL    双向同步（completion-output 完成链路、story    拆分、远程页面解耦） ([151075b](https://github.com/MalingWB/Maling/commit/151075b3b94f7ce2a93cb7ac1e63122c102d72f6))
+* **multica:** stage issue attachments on send and surface read-only metadata chips in composer ([0921761](https://github.com/MalingWB/Maling/commit/0921761dc6ee2b9311abe4bd2c21804ca850aa87))
+* **search:** open conversation search with Ctrl+F ([2b23441](https://github.com/MalingWB/Maling/commit/2b23441cbd0f99d09492f6e31f1bfd746a4bbd37))
+* **source-control:** confirm push targets before pushing ([90be517](https://github.com/MalingWB/Maling/commit/90be517ed634140a40351601634363d48581a474))
+* **theme:** raise default editor font size to 13px ([bcb9f1f](https://github.com/MalingWB/Maling/commit/bcb9f1ff9fb90ae47c5ddb22e13cc513f2f46a6b))
+* **workspace:** isolate right workspace tab failures with an error boundary ([4aafe92](https://github.com/MalingWB/Maling/commit/4aafe92488a982fdf73b2dc42aab4ab80d46cf3b))
+
+
+### Bug Fixes
+
+* **acp:** stop double-counting prompt usage across runtime recreation ([56213e0](https://github.com/MalingWB/Maling/commit/56213e06220e7928aa38a52e67846d7f4a1cbfb4))
+* **acp:** take model and permission mode from session snapshot on continue ([4e9c9d2](https://github.com/MalingWB/Maling/commit/4e9c9d25cb21a014998b854aaaca16b4b15cd326))
+* **attachments:** fit stored attachment names within path length budget ([b2dfdd3](https://github.com/MalingWB/Maling/commit/b2dfdd394f8e802aa2da84cae25ee8704d7e8db2))
+* **attachments:** prevent same-name inputs from overwriting history ([6872f26](https://github.com/MalingWB/Maling/commit/6872f26efaea4cfe7fc4bde95aed019938705a17))
+* **chat:** track user scroll intent for history pagination ([6f21bc0](https://github.com/MalingWB/Maling/commit/6f21bc01d73e67ba3f5ea15c019dfcee143d7d87))
+* **desktop:** correct Chinese locale mapping and add search shortcut ([73a0f3a](https://github.com/MalingWB/Maling/commit/73a0f3a85c9833d6b4437e8299bedd0eadf61359))
+* **i18n:** prioritize Chinese script over region ([1a92b9b](https://github.com/MalingWB/Maling/commit/1a92b9b918d28ae69143b7ac85c230dbcc76232d))
+* **im:** cancel retired requests and render accepted approvals ([6abc572](https://github.com/MalingWB/Maling/commit/6abc57215eeac1c20614cc0386177a2d1371ea81))
+* **markdown:** resolve local HTML links and image previews ([e364c95](https://github.com/MalingWB/Maling/commit/e364c953ecafeb690272a17243bf905f1b692d4f))
+* **multica:** download issue attachments via /download route instead of metadata endpoint ([de3a421](https://github.com/MalingWB/Maling/commit/de3a421e68d99275f8612b496893a165d21144e4))
+* **multica:** reject linked skill dirs and source resume run_mode from persisted metadata ([01dfceb](https://github.com/MalingWB/Maling/commit/01dfceb87480bc70d850787770f8dc6dea74d6ef))
+* **multica:** require workflow finishing node to summarize entire work item in completion-output ([97e8c53](https://github.com/MalingWB/Maling/commit/97e8c5336a9ec28031734c0a8f34f25a97295038))
+* **release:** build signed WB packages across all platforms ([f8f32b1](https://github.com/MalingWB/Maling/commit/f8f32b1f7bd89da798571001bac78566ec245c23))
+* **release:** build signed WB packages across all platforms ([9123196](https://github.com/MalingWB/Maling/commit/9123196df81b8b05e7f90cfb67931676e1564f35))
+* **skill:** recover sole backup residue before sweeping bundle crash leftovers ([ceba2f4](https://github.com/MalingWB/Maling/commit/ceba2f4d389630ab774c389aa70d694b19d1c044))
+* **source-control:** keep commit review numstat paths off the command line ([4944b79](https://github.com/MalingWB/Maling/commit/4944b79dbf5a613d0eea569a64e2272eef919c0c))
+* **source-control:** mark branches without upstream as new ([4578515](https://github.com/MalingWB/Maling/commit/457851590676b57237fd12a3a3e55961d750cf52))
+* stabilize pause events and cross-platform regression contracts ([981ffb2](https://github.com/MalingWB/Maling/commit/981ffb2582ee4e5949d05bb4fbd75b2922e80754))
+* **ui:** let Radix own overflow tooltip open lifecycle ([c3f9248](https://github.com/MalingWB/Maling/commit/c3f9248fa82a7026212eeaab9236ca7284bd9aa4))
+* **web:** clear stale skill selection while remote list reloads ([f3c2c40](https://github.com/MalingWB/Maling/commit/f3c2c409f29c833e56836bd5c5d94801665d92ca))
+* **web:** complete resident-session locales for five languages ([2377cc9](https://github.com/MalingWB/Maling/commit/2377cc934d1a92b8020f4e7399ef0e77dfe703b1))
+* **workspace:** share one react-dnd manager across workspace trees ([3cbfff7](https://github.com/MalingWB/Maling/commit/3cbfff7880614c5a1f2fab0c1ab00ad30d9a59dc))
+
+## [0.19.1](https://github.com/diodeme/Gold-Band/compare/v0.19.0...v0.19.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **acp:** expand the composite config submenu in place in narrow panes ([5680449](https://github.com/diodeme/Gold-Band/commit/56804496d750eb7f8c17a21613e088a53bb05d53))
+* **acp:** settle Direct interactions and tools on stop boundaries ([e56d864](https://github.com/diodeme/Gold-Band/commit/e56d864169aeeb104ce9a97ed2e49fec463c9e7a))
+
 ## [0.19.0](https://github.com/diodeme/Gold-Band/compare/v0.18.0...v0.19.0) (2026-10-12)
 
 

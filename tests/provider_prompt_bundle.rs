@@ -615,7 +615,8 @@ fn render_raw_agent_first_prompt_appends_titled_hidden_sections() {
     req.turn_control_mode = TurnControlMode::NonRuntimeControlled;
     req.extra_hidden_sections = vec![PromptHiddenSection {
         title: "Gold Band remote task context".to_string(),
-        content: "本任务来自 DPMS 关联的工作项\n上游（父工作项）交付说明：https://t.example.com".to_string(),
+        content: "本任务来自 DPMS 关联的工作项\n上游（父工作项）交付说明：https://t.example.com"
+            .to_string(),
     }];
 
     let prompt = render_prompt_bundle(&req).unwrap();
@@ -660,7 +661,10 @@ fn render_raw_agent_first_prompt_without_sections_falls_back_to_requirement() {
 
     let prompt = render_prompt_bundle(&req).unwrap();
 
-    assert_eq!(prompt.display_text.as_deref(), Some("Need an implementation"));
+    assert_eq!(
+        prompt.display_text.as_deref(),
+        Some("Need an implementation")
+    );
 }
 
 #[test]
@@ -1043,7 +1047,7 @@ fn task_prompt_input_with_workspace_file(root: &std::path::Path) -> TaskPromptIn
             },
         }],
         role: None,
-        workspace_files: vec![PromptWorkspaceFileRef {
+        workspace_files: vec![PromptWorkspaceFileRef::Workspace {
             project_id: runtime_context().project_id,
             relative_path: "src/lib.rs".to_string(),
         }],
@@ -1058,6 +1062,7 @@ fn every_new_requirement_render_carries_the_task_quotes_and_workspace_files() {
     req.workspace_file_roots = vec![PromptWorkspaceRoot {
         project_id: runtime_context().project_id,
         root: workspace.path().to_path_buf(),
+        paths: None,
     }];
 
     let prompt = render_prompt_bundle(&req).unwrap();

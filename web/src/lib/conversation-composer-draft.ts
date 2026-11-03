@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { revokeAttachmentPreviewUrls, type AttachmentItem } from './attachment-service';
-import type { ScheduledTaskConfig } from '@/types';
+import type { RemoteTaskAttachmentVm, ScheduledTaskConfig } from '@/types';
 import type { ComposerQuote, ComposerWorkspaceFileRef } from './composer-context';
 
 /**
@@ -29,6 +29,10 @@ export interface ConversationComposerRemoteBinding {
   workspaceId: string;
   /// 任务标题，仅用于 composer 绑定 chip 的展示（不参与发送寻址）。
   title: string;
+  /// issue 需求附件元数据（仅展示）：进入输入框时的附件可见性——文件本体在发送时由后端
+  /// 用 claim 令牌下载并入任务输入，前端不持有文件、不参与发送寻址。随绑定同生命周期
+  /// （删绑定 chip / 进排程即一并消失）。空数组 = 无附件（不渲染）。
+  attachments: readonly RemoteTaskAttachmentVm[];
 }
 
 export interface ConversationComposerDraftState {

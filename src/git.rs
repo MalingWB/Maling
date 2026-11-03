@@ -327,7 +327,10 @@ fn git_command_from_executable(executable: Option<PathBuf>) -> Option<Command> {
     Some(command)
 }
 
-pub(crate) fn parse_git_version_from_output(stdout: &str, stderr: &str) -> Option<InstalledGitVersion> {
+pub(crate) fn parse_git_version_from_output(
+    stdout: &str,
+    stderr: &str,
+) -> Option<InstalledGitVersion> {
     stdout
         .lines()
         .chain(stderr.lines())

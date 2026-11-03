@@ -9,6 +9,9 @@ const apiMocks = vi.hoisted(() => ({
   getAcpSession: vi.fn(),
   submitConversationPrompt: vi.fn(),
   stopActiveSession: vi.fn(),
+  showConversationMessageAttachment: vi.fn(),
+  listConversationComposerDrafts: vi.fn(),
+  saveConversationComposerDraft: vi.fn(),
 }));
 
 vi.mock('@/api', async () => {
@@ -23,8 +26,12 @@ vi.mock('@/components/prompt-kit/markdown', () => ({
 import { ACPChatDialog, createAcpEventWindowCacheKey } from '@/components/acp/ACPChatDialog';
 import { useAcpComposerDraft, type AcpComposerDraft } from '@/lib/acp-composer-draft';
 import { getRuntimeApi } from '@/api/client';
+import i18n from '@/i18n';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { RightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
+import { RightWorkspaceProvider, useRightWorkspace } from '@/components/workspace/right-workspace-context';
+import { RightWorkspaceDock } from '@/components/workspace/RightWorkspaceDock';
+import { ConversationAssetWorkspacePanel } from '@/components/workspace/files/ConversationAssetWorkspacePanel';
+import { DraftAttachmentWorkspacePanel } from '@/components/workspace/files/DraftAttachmentWorkspacePanel';
 import type {
   AcpSessionVm,
   AcpUiEventVm,
@@ -39,6 +46,25 @@ function TestProviders({ children }: { children: React.ReactNode }) {
     null,
     React.createElement(TooltipProvider, null, children),
   );
+}
+
+function AttachmentWorkspaceProbe() {
+  const workspace = useRightWorkspace();
+  useLayoutEffect(() => {
+    const removeAsset = workspace.registerResourceRenderer('conversation-asset', (resource) => (
+      resource.kind === 'conversation-asset' ? <ConversationAssetWorkspacePanel key={resource.key} resource={resource} /> : null
+    ));
+    const removeDraft = workspace.registerResourceRenderer('draft-attachment', (resource) => (
+      resource.kind === 'draft-attachment' ? <DraftAttachmentWorkspacePanel key={resource.key} resource={resource} /> : null
+    ));
+    return () => { removeAsset(); removeDraft(); };
+  }, [workspace.registerResourceRenderer]);
+  const active = workspace.tabs.find((tab) => tab.key === workspace.activeTabKey);
+  return <output
+    data-attachment-workspace-count={workspace.tabs.length}
+    data-attachment-workspace-kind={active?.kind}
+    data-attachment-workspace-path={active?.kind === 'conversation-asset' ? active.path : undefined}
+  />;
 }
 
 let fixtureIndex = 0;
@@ -196,6 +222,19 @@ function cancelledSession(id: string): AcpSessionVm {
   };
 }
 
+function readySessionHistory(): Pick<AcpSessionVm, 'events' | 'eventPage'> {
+  return {
+    events: [{
+      id: 'previous-response', seq: 1, timestamp: '10Z', kind: 'textDelta',
+      content: 'Previous response', status: 'completed', startedSeq: 1, endedSeq: 1,
+    }],
+    eventPage: {
+      loadedCount: 1, total: 1, oldestSeq: 1, newestSeq: 1,
+      hasOlder: false, hasNewer: false, oldestCursor: '1', newestCursor: '1',
+    },
+  };
+}
+
 async function renderPausedDialog(options: {
   initialDraft?: AcpComposerDraft;
   onSubmitManualCheck?: (outcome: 'success' | 'failure') => Promise<void>;
@@ -206,11 +245,13 @@ async function renderPausedDialog(options: {
   runtimeErrorFallback?: string | null;
   sessionStatus?: string;
   session?: Partial<AcpSessionVm>;
+  showAttachmentWorkspace?: boolean;
 } = {}) {
   fixtureIndex += 1;
   const id = String(fixtureIndex);
   const session = {
     ...cancelledSession(id),
+    ...readySessionHistory(),
     status: options.sessionStatus ?? 'cancelled',
     ...options.session,
   };
@@ -234,6 +275,7 @@ async function renderPausedDialog(options: {
     nextSession: AcpSessionVm = session,
     locator = session,
   ) => act(async () => {
+    apiMocks.getAcpSession.mockResolvedValue(nextSession);
     root.render(
       <TestProviders>
         <ACPChatDialog
@@ -258,6 +300,7 @@ async function renderPausedDialog(options: {
           onSubmitManualCheck={options.onSubmitManualCheck}
           onOptimisticEventsChange={options.onOptimisticEventsChange}
         />
+        {options.showAttachmentWorkspace ? <><AttachmentWorkspaceProbe /><RightWorkspaceDock /></> : null}
       </TestProviders>,
     );
   });
@@ -295,6 +338,7 @@ async function renderActiveDirectDialog() {
       newestCursor: null,
     },
   } satisfies AcpSessionVm;
+  apiMocks.getAcpSession.mockResolvedValue(session);
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -387,7 +431,13 @@ async function unmount(root: Root) {
 
 beforeEach(() => {
   Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+  apiMocks.showConversationMessageAttachment.mockReset().mockResolvedValue({
+    title: 'draft.png', kind: 'message-attachment',
+    content: 'data:image/png;base64,AQIDBA==', metadata: { mimeType: 'image/png' },
+  });
   apiMocks.stopActiveSession.mockReset();
+  apiMocks.listConversationComposerDrafts.mockReset().mockResolvedValue({ revision: 0, maxItems: 20, items: [] });
+  apiMocks.saveConversationComposerDraft.mockReset();
   apiMocks.continueConversationRuntime.mockReset();
   apiMocks.getAcpSession.mockReset().mockResolvedValue(null);
   apiMocks.submitConversationPrompt.mockReset().mockResolvedValue({
@@ -414,6 +464,47 @@ afterEach(() => {
 });
 
 describe('ACP runtime continue submission', () => {
+  it('keeps a saving draft in the composer until storage succeeds and preserves edits on failure', async () => {
+    let rejectSave!: (error: unknown) => void;
+    apiMocks.saveConversationComposerDraft.mockReturnValue(new Promise((_, reject) => { rejectSave = reject; }));
+    const { container, root } = await renderActiveDirectDialog();
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!;
+      await setTextareaValue(textarea, 'original draft');
+      await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-composer-draft-box-trigger]')!.click());
+      await flushInteraction(() => document.querySelector<HTMLButtonElement>('[data-composer-draft-save]')!.click());
+      expect(apiMocks.saveConversationComposerDraft).toHaveBeenCalledTimes(1);
+      expect(textarea.value).toBe('original draft');
+      await setTextareaValue(textarea, 'original draft with newer edits');
+      await act(async () => rejectSave({ code: 'conversation.composer-draft-storage-failed', params: {} }));
+      expect(textarea.value).toBe('original draft with newer edits');
+      expect(document.querySelector('[role="alert"]')?.textContent).toContain('无法访问草稿箱');
+      expect(apiMocks.submitConversationPrompt).not.toHaveBeenCalled();
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('saves the captured snapshot without clearing edits made while storage was pending', async () => {
+    let resolveSave!: (box: { revision: number; maxItems: number; items: [] }) => void;
+    apiMocks.saveConversationComposerDraft.mockReturnValue(new Promise((resolve) => { resolveSave = resolve; }));
+    const { container, root } = await renderActiveDirectDialog();
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!;
+      await setTextareaValue(textarea, 'saved snapshot');
+      await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-composer-draft-box-trigger]')!.click());
+      await flushInteraction(() => document.querySelector<HTMLButtonElement>('[data-composer-draft-save]')!.click());
+      expect(apiMocks.saveConversationComposerDraft).toHaveBeenCalledTimes(1);
+      expect(textarea.value).toBe('saved snapshot');
+      await setTextareaValue(textarea, 'saved snapshot with new edits');
+      await act(async () => resolveSave({ revision: 1, maxItems: 20, items: [] }));
+      expect(textarea.value).toBe('saved snapshot with new edits');
+      expect(apiMocks.saveConversationComposerDraft.mock.calls[0][2].displayText).toBe('saved snapshot');
+    } finally {
+      await unmount(root);
+    }
+  });
+
   const contextDraft = (): AcpComposerDraft => ({
     content: 'cancelled draft',
     attachments: [
@@ -440,6 +531,35 @@ describe('ACP runtime continue submission', () => {
     expect(composer.querySelectorAll('[data-composer-quote-chip]')).toHaveLength(visible ? 1 : 0);
     if (visible) expect(composer.querySelector('img')?.getAttribute('src')).toBe('blob:draft-image');
   }
+
+  it.each(['success', 'failure'] as const)('retains attachment previews until draft storage settles with %s', async (outcome) => {
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', class extends URL { static revokeObjectURL = revoke; });
+    let resolveSave!: (box: { revision: number; maxItems: number; items: [] }) => void;
+    let rejectSave!: (error: unknown) => void;
+    apiMocks.saveConversationComposerDraft.mockReturnValue(new Promise((resolve, reject) => { resolveSave = resolve; rejectSave = reject; }));
+    const { container, root } = await renderPausedDialog({ initialDraft: contextDraft() });
+    try {
+      await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-composer-draft-box-trigger]')!.click());
+      await flushInteraction(() => document.querySelector<HTMLButtonElement>('[data-composer-draft-save]')!.click());
+      expectContext(container, true);
+      expect(revoke).not.toHaveBeenCalled();
+      const saved = apiMocks.saveConversationComposerDraft.mock.calls[0];
+      expect(saved[2].quotes).toEqual([{ id: 'quote', source: { kind: 'agentMessage', messageKey: 'original-message' }, text: 'quoted message' }]);
+      expect(saved[3]).toEqual(['C:/draft.png', 'C:/notes.txt']);
+      if (outcome === 'success') {
+        await act(async () => resolveSave({ revision: 1, maxItems: 20, items: [] }));
+        expectContext(container, false);
+        expect(revoke).toHaveBeenCalledWith('blob:draft-image');
+      } else {
+        await act(async () => rejectSave({ code: 'conversation.composer-draft-storage-failed', params: {} }));
+        expectContext(container, true);
+        expect(revoke).not.toHaveBeenCalled();
+      }
+    } finally {
+      await unmount(root);
+    }
+  });
 
   it.each([false, true])('restores the full unaccepted draft when stop settles first: %s', async (stopFirst) => {
     mockHistory();
@@ -502,6 +622,129 @@ describe('ACP runtime continue submission', () => {
       expect(textarea.value).toBe('history text');
       expectContext(container, false);
       expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:draft-image');
+    } finally { await unmount(root); }
+  });
+
+  it('opens three same-name persisted images by canonical path and reuses only the selected image tab', async () => {
+    const images = [
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNg+M8AAAICAQB7CYF4AAAAAElFTkSuQmCC',
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC',
+    ].map((data) => `data:image/png;base64,${data}`);
+    const paths = ['a', 'b', 'c'].map((hash) => `user-inputs/${hash.repeat(32)}/image.png`);
+    apiMocks.showConversationMessageAttachment.mockImplementation(async (...args: unknown[]) => {
+      const index = paths.indexOf(args[7] as string);
+      if (index < 0) throw new Error('Unexpected attachment path');
+      const imageIndex = String(args[5]).endsWith('-other') ? (index + 1) % images.length : index;
+      return { title: 'image.png', kind: 'message-attachment', content: images[imageIndex], metadata: { mimeType: 'image/png' } };
+    });
+    const events: AcpUiEventVm[] = paths.map((path, index) => ({
+      id: `image-${index}`, seq: index + 1, timestamp: `178698000${index}Z`,
+      kind: 'userTextDelta', content: '', status: 'completed',
+      raw: { attachments: [{ name: 'image.png', path, type: 'image/png', size: 69 }] },
+    }));
+    const { container, root, id, session, render } = await renderPausedDialog({
+      showAttachmentWorkspace: true,
+      session: { events },
+    });
+    try {
+      const thumbnails = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-acp-attachment-row="images"] button[aria-label="image.png"]'));
+      expect(thumbnails).toHaveLength(3);
+      expect(thumbnails.map((button) => button.querySelector('img')?.getAttribute('src'))).toEqual(images);
+      apiMocks.showConversationMessageAttachment.mockClear();
+      for (const [index, thumbnail] of thumbnails.entries()) {
+        await flushInteraction(() => thumbnail.click());
+        expect(container.querySelector('[data-attachment-workspace-path]')?.getAttribute('data-attachment-workspace-path')).toBe(paths[index]);
+        expect(container.querySelector('[data-workspace-image-canvas] img')?.getAttribute('src')).toBe(images[index]);
+        expect(container.querySelectorAll('[data-right-workspace-tab]')).toHaveLength(index + 1);
+        expect(apiMocks.showConversationMessageAttachment).toHaveBeenLastCalledWith(
+          `project-${id}`, `task-${id}`, `run-${id}`, session.roundId, session.nodeId, session.attemptId,
+          'image.png', paths[index], undefined, undefined,
+        );
+      }
+      expect(apiMocks.showConversationMessageAttachment).toHaveBeenCalledTimes(3);
+      await flushInteraction(() => thumbnails[0]!.click());
+      expect(container.querySelectorAll('[data-right-workspace-tab]')).toHaveLength(3);
+      expect(container.querySelector('[data-workspace-image-canvas] img')?.getAttribute('src')).toBe(images[0]);
+      expect(apiMocks.showConversationMessageAttachment).toHaveBeenCalledTimes(4);
+      const tabs = Array.from(container.querySelectorAll<HTMLElement>('[data-right-workspace-tab]'));
+      for (const index of [2, 1, 0]) {
+        await flushInteraction(() => tabs[index]!.querySelector('button')!.click());
+        expect(container.querySelector('[data-workspace-image-canvas] img')?.getAttribute('src')).toBe(images[index]);
+        expect(container.querySelectorAll('[data-right-workspace-tab]')).toHaveLength(3);
+      }
+      // The same canonical relative path in another attempt or branch is a
+      // different workspace resource, never an alias of the original tab.
+      const otherAttempt = { ...session, attemptId: `${session.attemptId}-other` };
+      await render(pausedLifecycle(), otherAttempt, otherAttempt);
+      await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-acp-attachment-row="images"] button')!.click());
+      expect(container.querySelectorAll('[data-right-workspace-tab]')).toHaveLength(4);
+      expect(container.querySelector('[data-workspace-image-canvas] img')?.getAttribute('src')).toBe(images[1]);
+      expect(apiMocks.showConversationMessageAttachment).toHaveBeenLastCalledWith(
+        `project-${id}`, `task-${id}`, `run-${id}`, session.roundId, session.nodeId, otherAttempt.attemptId,
+        'image.png', paths[0], undefined, undefined,
+      );
+      const otherBranch = { ...session, branchId: 'branch-other' };
+      await render(pausedLifecycle(), otherBranch);
+      await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-acp-attachment-row="images"] button')!.click());
+      expect(container.querySelectorAll('[data-right-workspace-tab]')).toHaveLength(5);
+      expect(container.querySelector('[data-right-workspace-tab][data-state="active"]')?.getAttribute('data-right-workspace-resource-key')).toContain(':branch-other:');
+      expect(container.querySelector('[data-workspace-image-canvas] img')?.getAttribute('src')).toBe(images[0]);
+      await render(pausedLifecycle(), session);
+      await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-acp-attachment-row="images"] button')!.click());
+      expect(container.querySelectorAll('[data-right-workspace-tab]')).toHaveLength(5);
+      expect(container.querySelector('[data-workspace-image-canvas] img')?.getAttribute('src')).toBe(images[0]);
+    } finally { await unmount(root); }
+  });
+
+  it('never aliases a submitted same-name draft to an existing persisted attachment', async () => {
+    const optimistic: AcpUiEventVm[] = [];
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = vi.fn(() => 'blob:detached-draft');
+      static revokeObjectURL = revoke;
+    });
+    // This is a real pre-existing locator, not an expected new storage path.
+    // A later same-name draft must not claim it by guessing from the basename.
+    const persisted: AcpUiEventVm = {
+      id: 'earlier-attachment', seq: 1, timestamp: '1786980001Z',
+      kind: 'userTextDelta', content: 'earlier image', status: 'completed',
+      raw: { attachments: [{ name: 'draft.png', path: 'user-inputs/draft.png', type: 'image/png', size: 4 }] },
+    };
+    const { container, root, render, session } = await renderPausedDialog({
+      initialDraft: contextDraft(),
+      showAttachmentWorkspace: true,
+      session: { events: [persisted] },
+      onOptimisticEventsChange: (events) => optimistic.splice(0, optimistic.length, ...events),
+    });
+    apiMocks.submitConversationPrompt.mockResolvedValue({ kind: 'acp-session', session, lifecycle: pausedLifecycle() });
+    try {
+      const draftImage = container.querySelector<HTMLImageElement>('[data-composer-attachment-chip] img')!;
+      expect(draftImage).not.toBeNull();
+      await flushInteraction(() => draftImage.closest('button')!.click());
+      expect(container.querySelector('[data-attachment-workspace-kind]')?.getAttribute('data-attachment-workspace-kind')).toBe('draft-attachment');
+      expect(container.querySelector('[data-workspace-image-canvas] img')?.getAttribute('src')).toBe('blob:detached-draft');
+
+      await flushInteraction(() => container.querySelector<HTMLButtonElement>('[data-acp-send]')!.click());
+      const promptId = optimistic.map((event) => (event.raw as { promptId?: string })?.promptId).find(Boolean);
+      expect(promptId).toBeTruthy();
+      await render(pausedLifecycle(), { ...session, events: [persisted, {
+        id: 'admitted-same-name', seq: 2, timestamp: '1786980002Z', kind: 'userTextDelta',
+        content: 'cancelled draft', status: 'processing', raw: { source: 'goldBandPrompt', promptId },
+      }] });
+      expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:draft-image');
+      expect(revoke).not.toHaveBeenCalledWith('blob:detached-draft');
+
+      const persistedButton = container.querySelector<HTMLButtonElement>('[data-acp-attachment-row="images"] button[aria-label="draft.png"]');
+      expect(persistedButton).not.toBeNull();
+      await flushInteraction(() => persistedButton!.click());
+      expect(container.querySelector('[data-attachment-workspace-kind]')?.getAttribute('data-attachment-workspace-kind')).toBe('conversation-asset');
+      expect(container.querySelector('[data-attachment-workspace-count]')?.getAttribute('data-attachment-workspace-count')).toBe('2');
+      expect(container.querySelector('[data-workspace-image-canvas] img')?.getAttribute('src')).toBe('data:image/png;base64,AQIDBA==');
+      const draftTab = container.querySelector<HTMLElement>('[data-right-workspace-resource-key^="draft-attachment:"]')!;
+      await flushInteraction(() => draftTab.querySelector('button')!.click());
+      expect(container.querySelector('[data-workspace-image-canvas] img')?.getAttribute('src')).toBe('blob:detached-draft');
+      expect(revoke).not.toHaveBeenCalledWith('blob:detached-draft');
     } finally { await unmount(root); }
   });
 
@@ -1094,6 +1337,178 @@ describe('ACP runtime continue submission', () => {
   });
 });
 
+describe('ACP error banner ownership', () => {
+  it.each(['starting', 'running', 'completed'] as const)(
+    'hides the old Workflow pause error during a manual follow-up (%s)',
+    async (phase) => {
+      const initial = runtimeAbnormalLifecycle();
+      const recovered = {
+        ...initial,
+        control: { mode: 'non-runtime-controlled' as const, transitionCause: 'manual-follow-up' as const },
+        acp: {
+          ...initial.acp,
+          revision: 2,
+          turnId: 'manual-follow-up',
+          operationId: 'follow-up-operation',
+          liveTurnActivity: phase === 'completed' ? 'idle' as const : phase,
+          latestTurnStatus: phase === 'completed' ? 'completed' as const : 'none' as const,
+          turnError: null,
+        },
+        displayStatus: phase,
+        runtimeDisplay: { ...initial.runtimeDisplay, code: phase, tone: phase === 'completed' ? 'neutral' : 'running' },
+      };
+      const result = await renderPausedDialog({
+        initialLifecycle: initial,
+        isOrchestrated: true,
+        runtimeError: 'old Workflow provider failure',
+        sessionStatus: 'failed',
+        session: readySessionHistory(),
+      });
+      try {
+        expect(result.container.textContent).toContain('old Workflow provider failure');
+        await result.render(recovered, { ...result.session, status: phase });
+        expect(result.container.textContent).not.toContain('old Workflow provider failure');
+        expect(recovered.runtime.status).toBe('paused');
+        expect(recovered.runtime.pauseReason).toBe('runtime-abnormal');
+        expect(apiMocks.continueConversationRuntime).not.toHaveBeenCalled();
+      } finally {
+        await unmount(result.root);
+      }
+    },
+  );
+
+  it('keeps the current follow-up failure instead of the old Workflow error', async () => {
+    const lifecycle = runtimeAbnormalLifecycle();
+    lifecycle.control.transitionCause = 'manual-follow-up';
+    lifecycle.acp = {
+      ...lifecycle.acp, turnId: 'new-failed-turn', operationId: 'new-operation',
+      turnError: {
+        code: { domain: 'internal', code: 'internal.unknown' },
+        domain: 'internal', recovery: 'manual', diagnostic: 'Current follow-up failed',
+      },
+    };
+    const result = await renderPausedDialog({
+      initialLifecycle: lifecycle, isOrchestrated: true, sessionStatus: 'failed',
+      runtimeError: 'old Workflow provider failure', session: readySessionHistory(),
+    });
+    try {
+      expect(result.container.textContent).toContain('Current follow-up failed');
+      expect(result.container.textContent).not.toContain('old Workflow provider failure');
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
+  it('dismisses only the current banner without changing lifecycle or submitting a command', async () => {
+    const lifecycle = runtimeAbnormalLifecycle();
+    lifecycle.acp = {
+      ...lifecycle.acp, revision: 3, turnId: 'failed-turn', operationId: 'failed-operation',
+      turnError: {
+        code: { domain: 'internal', code: 'internal.unknown' },
+        domain: 'internal', recovery: 'manual', diagnostic: 'Dismissible provider failure',
+      },
+    };
+    const before = structuredClone(lifecycle);
+    const result = await renderPausedDialog({
+      initialLifecycle: lifecycle, sessionStatus: 'failed', session: readySessionHistory(),
+    });
+    try {
+      const close = result.container.querySelector<HTMLButtonElement>(`button[aria-label="${i18n.t('common.close')}"]`);
+      expect(close).not.toBeNull();
+      await act(async () => close!.click());
+      expect(result.container.textContent).not.toContain('Dismissible provider failure');
+      await result.render({ ...lifecycle, acp: { ...lifecycle.acp, revision: 4 } });
+      expect(result.container.textContent).not.toContain('Dismissible provider failure');
+      expect(lifecycle).toEqual(before);
+      expect(apiMocks.continueConversationRuntime).not.toHaveBeenCalled();
+      expect(apiMocks.submitConversationPrompt).not.toHaveBeenCalled();
+      expect(apiMocks.stopActiveSession).not.toHaveBeenCalled();
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
+  it.each(['turn', 'operation', 'session', 'scope'] as const)(
+    'shows identical error text again after the banner %s identity changes',
+    async (identity) => {
+      const lifecycle = runtimeAbnormalLifecycle();
+      lifecycle.acp = {
+        ...lifecycle.acp, revision: 3, turnId: 'failed-turn', operationId: 'failed-operation',
+        turnError: {
+          code: { domain: 'internal', code: 'internal.unknown' },
+          domain: 'internal', recovery: 'manual', diagnostic: 'Repeated provider failure',
+        },
+      };
+      const result = await renderPausedDialog({
+        initialLifecycle: lifecycle, sessionStatus: 'failed', session: readySessionHistory(),
+      });
+      try {
+        const close = result.container.querySelector<HTMLButtonElement>(`button[aria-label="${i18n.t('common.close')}"]`);
+        expect(close).not.toBeNull();
+        await act(async () => close!.click());
+        expect(result.container.textContent).not.toContain('Repeated provider failure');
+        const nextSession = {
+          ...result.session,
+          sessionId: identity === 'session' ? 'another-session' : result.session.sessionId,
+          attemptId: identity === 'scope' ? 'another-attempt' : result.session.attemptId,
+        };
+        await result.render({
+          ...lifecycle,
+          acp: {
+            ...lifecycle.acp, revision: 4,
+            turnId: identity === 'turn' ? 'new-turn' : lifecycle.acp.turnId,
+            operationId: identity === 'operation' ? 'new-operation' : lifecycle.acp.operationId,
+          },
+        }, nextSession, nextSession);
+        expect(result.container.textContent).toContain('Repeated provider failure');
+      } finally {
+        await unmount(result.root);
+      }
+    },
+  );
+
+  it('keeps a dismissed runtime error hidden across ACP metadata updates but not a new runtime failure', async () => {
+    const lifecycle = runtimeAbnormalLifecycle();
+    lifecycle.control.mode = 'runtime-controlled';
+    lifecycle.runtime.revision = 7;
+    const result = await renderPausedDialog({
+      initialLifecycle: lifecycle, runtimeError: 'Runtime-owned failure', sessionStatus: 'failed',
+    });
+    try {
+      const close = result.container.querySelector<HTMLButtonElement>(`button[aria-label="${i18n.t('common.close')}"]`)!;
+      expect(result.container.textContent).toContain('Runtime-owned failure');
+      await act(async () => close.click());
+      const refreshed = { ...lifecycle, acp: { ...lifecycle.acp, revision: 100 } };
+      await result.render(refreshed);
+      expect(result.container.textContent).not.toContain('Runtime-owned failure');
+      await result.render({ ...refreshed, runtime: { ...lifecycle.runtime, revision: 8 } });
+      expect(result.container.textContent).toContain('Runtime-owned failure');
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
+  it('allows an unidentified failure to reappear after it has cleared', async () => {
+    const lifecycle = runtimeAbnormalLifecycle();
+    lifecycle.acp.turnError = {
+      code: { domain: 'internal', code: 'internal.unknown' },
+      domain: 'internal', recovery: 'manual', diagnostic: 'Unidentified failure',
+    };
+    const result = await renderPausedDialog({ initialLifecycle: lifecycle, sessionStatus: 'failed' });
+    try {
+      const close = result.container.querySelector<HTMLButtonElement>(`button[aria-label="${i18n.t('common.close')}"]`)!;
+      await act(async () => close.click());
+      expect(result.container.textContent).not.toContain('Unidentified failure');
+      await result.render({ ...lifecycle, acp: { ...lifecycle.acp, latestTurnStatus: 'completed', turnError: null } });
+      await result.render(lifecycle);
+      expect(result.container.textContent).toContain('Unidentified failure');
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
+});
+
 describe('ACP Direct queue submission', () => {
   it('invalidates a stale parent runtime error after the local Direct lifecycle recovers', async () => {
     const recoveredLifecycle = {
@@ -1320,6 +1735,75 @@ describe('ACP Direct queue submission', () => {
       );
       expect(textarea?.value).toBe('');
       expect(container.textContent).not.toContain('unexpected prompt queue response');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('restores the complete composer draft when the queue rejects the submission', async () => {
+    const { container, root } = await renderActiveDirectDialog();
+    apiMocks.submitConversationPrompt.mockRejectedValue({
+      code: 'conversation.prompt-queue-full',
+      params: {},
+    });
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      await setTextareaValue(textarea!, '入队失败的这条内容必须完整保留');
+
+      const sendButton = container.querySelector<HTMLButtonElement>('[data-acp-send="true"]');
+      expect(sendButton?.disabled).toBe(false);
+      await flushInteraction(() => {
+        sendButton?.click();
+      });
+
+      // 成功即全清、失败即还原：正文留在输入框，错误就地可见，可再次提交。
+      expect(container.textContent).toContain('待发送队列已满');
+      expect(textarea?.value).toBe('入队失败的这条内容必须完整保留');
+      expect(sendButton?.disabled).toBe(false);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('saves the current draft to the draft box without queueing it', async () => {
+    const { container, id, root } = await renderActiveDirectDialog();
+    apiMocks.saveConversationComposerDraft.mockResolvedValue({
+      revision: 1,
+      maxItems: 20,
+      items: [{
+        id: 'draft-1',
+        contentPreview: '先存进草稿箱的这句话',
+        attachmentCount: 0,
+        quoteCount: 0,
+        workspaceFileCount: 0,
+        createdAt: '2026-10-29T00:00:00Z',
+      }],
+    });
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      await setTextareaValue(textarea!, '先存进草稿箱的这句话');
+
+      const trigger = container.querySelector<HTMLButtonElement>('[data-composer-draft-box-trigger="true"]');
+      expect(trigger?.disabled).toBe(false);
+      await flushInteraction(() => {
+        trigger?.click();
+      });
+      const saveButton = document.body.querySelector<HTMLButtonElement>('[data-composer-draft-save="true"]');
+      expect(saveButton?.disabled).toBe(false);
+      await flushInteraction(() => {
+        saveButton?.click();
+      });
+
+      expect(apiMocks.saveConversationComposerDraft).toHaveBeenCalledWith(
+        `project-${id}`,
+        `task-${id}`,
+        { displayText: '先存进草稿箱的这句话', quotes: [], workspaceFiles: [] },
+        undefined,
+      );
+      // A draft is a separate entity: it never enters the dispatch queue.
+      expect(apiMocks.submitConversationPrompt).not.toHaveBeenCalled();
+      expect(textarea?.value).toBe('');
+      expect(container.querySelector('[data-composer-draft-count="true"]')?.textContent).toBe('1');
     } finally {
       await unmount(root);
     }

@@ -587,6 +587,7 @@
     "closeWorkspace": "Recolher espaço de trabalho à direita",
     "openNewTab": "Abrir nova aba",
     "closeTab": "Fechar aba",
+    "panelFailed": "Não foi possível exibir esta aba",
     "allTabs": "Todas as abas",
     "attention": "Precisa de atenção",
     "files": "Espaço de trabalho",
@@ -632,6 +633,8 @@
       "switchToTreeView": "Alternar para árvore de pastas",
       "copyAbsolutePath": "Copiar caminho absoluto",
       "copyRelativePath": "Copiar caminho relativo",
+      "relativeToRunDirectory": "Relativo ao diretório de execução",
+      "relativeToAttachmentDirectory": "Relativo ao diretório de anexos", "relativeToSourceWorkspace": "Relativo ao diretório de trabalho de origem",
       "openWorkspaceFile": "Abrir arquivo do espaço de trabalho",
       "referenceToConversation": "Referenciar na conversa",
       "removeWorkspaceReference": "Remover referência ao arquivo",
@@ -818,6 +821,12 @@
       "workspace-outside-project": "O worktree selecionado não pertence a este projeto.",
       "ref-changed": "A lista de alterações foi atualizada. Tente novamente.",
       "sync-ref-changed": "O branch mudou. Tente novamente.",
+      "push-upstream-invalid": "Não foi possível resolver o upstream do branch. Verifique a configuração de rastreamento e tente novamente.",
+      "push-upstream-unsupported": "Este branch rastreia um branch local. O push para um upstream local não é suportado.",
+      "push-branch-not-current": "O branch atual mudou. Abra novamente a confirmação de push.",
+      "push-remote-required": "Selecione um remote para publicar.",
+      "push-confirmation-required": "Confirme primeiro o branch de origem e o destino do push.",
+      "push-target-changed": "O branch de origem ou o destino do push mudou. Confirme novamente.",
       "repository-locked": "Outra operação de gravação no repositório está em execução.",
       "workspace-locked": "Outra operação de gravação no espaço de trabalho está em execução.",
       "operation-in-progress": "Um fluxo Git ainda está em andamento. Conclua ou aborte e tente novamente.",
@@ -925,7 +934,9 @@
       "composer-history-query-failed": "Não foi possível carregar o histórico de entrada. Tente novamente.",
       "turn-execution-failed": "Esta mensagem não pôde ser processada. Tente novamente.",
       "session-request-failed": "A sessão não pôde ser preparada. Tente novamente.",
+      "session-restore-reference-missing": "Esta sessão ACP não tem uma referência de sessão do Provider, portanto a sessão original não pode ser retomada. Inicie uma nova sessão e envie a mensagem novamente.",
       "missing-provider": "O nó atual não tem configuração de provider.",
+      "subagent-protocol-upgrade-required": "Atualize o Claude ACP para {{minimumVersion}} ou posterior e tente novamente.",
       "session-config-value-unavailable": "A configuração de sessão selecionada não está mais disponível. Escolha outro valor da lista mais recente.",
       "active-prompt-blocks-config-save": "Há uma sessão em execução. Interrompa-a antes de salvar a configuração.",
       "invalid-conversation-branch-id": "Este link de conversa do Agent é inválido ou não está mais disponível.",
@@ -987,7 +998,10 @@
         "folder-not-found": "A pasta selecionada não foi encontrada",
         "folder-not-directory": "O caminho selecionado não é uma pasta",
         "folder-read-failed": "A pasta selecionada não pôde ser lida completamente",
-        "no-markdown-files": "Nenhum arquivo Markdown encontrado na pasta selecionada"
+        "no-markdown-files": "Nenhum arquivo Markdown encontrado na pasta selecionada",
+        "file-not-found": "O arquivo selecionado não foi encontrado",
+        "file-not-markdown": "O arquivo selecionado não é um arquivo Markdown",
+        "no-files": "Nenhum arquivo selecionado"
       }
     },
     "manual-check": {
@@ -996,7 +1010,8 @@
     "runtime": {
       "io": {
         "storage-full": "O disco está cheio e esta execução foi interrompida. Libere espaço antes de continuar.",
-        "permission-denied": "Não foi possível gravar os dados da sessão. Verifique as permissões de gravação do diretório."
+        "permission-denied": "Não foi possível gravar os dados da sessão. Verifique as permissões de gravação do diretório.",
+        "attachment-path-too-long": "Esta conversa está armazenada em uma pasta de dados muito profunda para salvar o anexo \"{{name}}\". Crie uma nova conversa e envie-o por lá."
       },
       "conversation-not-available": "O fluxo de trabalho está em execução, então uma mensagem normal ainda não pode ser enviada.",
       "continue-not-available": "Este nó não precisa mais ser continuado. Ele pode já estar ativo ou não ser mais retomável.",
@@ -1023,7 +1038,6 @@
       "workspace-file-read-failed": "Não foi possível ler as informações do arquivo referenciado. Tente novamente.",
       "workspace-file-count-exceeded": "O contexto pode conter no máximo {{max}} referências e anexos.",
       "session-restore-unsupported": "Este Agent não pode restaurar uma sessão existente.",
-      "session-restore-reference-missing": "Esta sessão não tem referência de sessão do Provider.",
       "history-sync-unsupported": "Este Agent não pode sincronizar o histórico completo de uma sessão existente.",
       "prompt-empty": "Digite uma mensagem para enviar.",
       "prompt-quote-invalid": "O texto citado é inválido. Remova-o e cite a mensagem novamente.",
@@ -1041,11 +1055,18 @@
       "prompt-queue-empty": "A fila pendente está vazia.",
       "prompt-queue-revision-conflict": "A ordem pendente mudou. Tente novamente após a lista atualizar.",
       "prompt-queue-invalid-order": "A ordem pendente é inválida. Tente novamente.",
+      "prompt-queue-invalid-mode": "O modo de envio é inválido.",
       "prompt-queue-session-busy": "Pare a sessão ativa antes de usar manualmente um item da fila.",
+      "prompt-queue-interrupt-timeout": "A resposta atual ainda está sendo interrompida. A mensagem permanece na fila; tente novamente em instantes.",
+      "prompt-queue-dispatch-settling": "A resposta anterior ainda não terminou completamente. A mensagem foi devolvida à fila; tente novamente em instantes.",
       "prompt-session-busy": "A mensagem anterior ainda está sendo processada. Aguarde ou pare a resposta atual primeiro.",
       "prompt-submission-conflict": "Este identificador de mensagem já está associado a conteúdo diferente. Envie novamente.",
       "prompt-submission-missing": "O conteúdo da mensagem aceita não pôde ser lido. Envie novamente.",
       "prompt-queue-storage-failed": "A fila pendente não pôde ser salva. Tente novamente.",
+      "composer-draft-empty": "Não há nada para salvar.",
+      "composer-draft-full": "Os rascunhos estão cheios. Você pode manter até {{max}}.",
+      "composer-draft-not-found": "Este rascunho não existe mais.",
+      "composer-draft-storage-failed": "Não foi possível acessar os rascunhos. Tente novamente.",
       "execution-plan": {
         "not-found": "Este Run ainda não tem um plano de execução.",
         "revision-conflict": "O plano de execução mudou. Recarregue e tente novamente.",
@@ -1109,6 +1130,7 @@
       "stale-package": "O pacote baixado não é mais recente que a versão em execução."
     },
     "multica": {
+      "attachment-stage-failed": "Falha ao baixar os anexos da tarefa: {{message}}",
       "auth-failed": "Falha na autenticação Multica: {{message}}",
       "claim-conflict": "Esta tarefa já foi reivindicada por outro daemon.",
       "connect-cancelled": "Conexão cancelada.",
@@ -1118,6 +1140,8 @@
       "runtime-offline": "O runtime ainda não está pronto. Tente novamente em breve.",
       "session-resume-failed": "Falha ao retomar sessão. Uma nova execução será iniciada.",
       "task-not-found": "Esta tarefa multica não foi encontrada.",
+      "upstream-pull-invalid-decision": "Escolha inválida. Verifique e tente novamente.",
+      "upstream-pull-not-pending": "Esta busca já foi concluída; nenhuma escolha é necessária.",
       "workspace-already-bound": "Este espaço de trabalho já está vinculado.",
       "workspace-not-found": "Esta vinculação de espaço de trabalho não foi encontrada."
     },
@@ -1317,7 +1341,6 @@
     "builtInSectionDescription": "Papéis fixos que podem ser abertos como rascunhos e salvos como novos papéis personalizados.",
     "customSectionTitle": "Papéis personalizados",
     "customSectionDescription": "Seus papéis de usuário são paginados aqui.",
-    "customProfilesPageRange": "Papéis personalizados {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "Papéis integrados não podem ser salvos diretamente. Salve-os como um novo papel.",
     "emptyContent": "Nenhum conteúdo de papel ainda",
     "profileRequired": "Nome e resumo são obrigatórios.",
@@ -1450,10 +1473,12 @@
       }
     },
     "importProfile": "Importar papéis",
-    "importSettingsDescription": "Importação em lote de arquivos Markdown de papéis de uma pasta. Nomes e resumos ausentes são preenchidos automaticamente.",
+    "importSettingsDescription": "Importe em lote de uma pasta ou selecione arquivos Markdown de papéis diretamente. Nomes e resumos ausentes são preenchidos automaticamente.",
     "importDynamicTemplateDescription": "Quando habilitado, todos os papéis importados são tratados como templates dinâmicos; corpos inválidos são rebaixados para estáticos.",
     "importPickFolder": "Escolher pasta e importar",
     "importPickFolderTitle": "Escolha uma pasta contendo arquivos Markdown de papéis",
+    "importPickFiles": "Escolher arquivos e importar",
+    "importPickFilesTitle": "Escolha arquivos Markdown de papéis",
     "importResultTitle": "Resultados da importação",
     "importResultSummary": "Varridos {{total}} arquivo(s), {{success}} com sucesso, {{failed}} falharam.",
     "importResultImported": "Importado",
@@ -2028,6 +2053,10 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
+    "pushTargetRemote": "Remote de destino",
+    "pushPreparing": "Preparando destino do push…",
+    "pushSetUpstream": "Definir o branch de destino como upstream após a publicação bem-sucedida.",
     "remote": "Remote",
     "name": "Nome",
     "startPoint": "Ponto inicial",
@@ -2330,9 +2359,37 @@
       "editDraftOccupied": "Termine primeiro o rascunho atual do campo de entrada",
       "restoreDraftConflict": "O campo de entrada mudou e esta mensagem pendente não pode ser restaurada.",
       "reorder": "Reordenar mensagem na fila",
-      "use": "Usar",
+      "sendNow": "Enviar agora",
       "delete": "Excluir",
-      "enqueue": "Adicionar à fila"
+      "enqueue": "Adicionar à fila",
+      "autoSend": "Envio automático",
+      "modeTooltip": "Quando ativado, as mensagens pendentes são enviadas uma a uma ao fim de cada resposta. Quando desativado, elas ficam na fila até você escolher \"Enviar agora\".",
+      "paused": {
+        "stopped": "Pausado: sessão interrompida",
+        "failed": "Pausado: o último envio falhou"
+      },
+      "resume": "Retomar",
+      "resumeLabel": "Retomar envio automático",
+      "moreActions": "Mais ações",
+      "clear": "Limpar pendentes",
+      "clearConfirmTitle": "Limpar a fila de pendentes?",
+      "clearConfirmDescription": "{{count}} mensagens pendentes serão removidas. Isso não pode ser desfeito.",
+      "clearConfirmAction": "Limpar pendentes",
+      "interruptConfirmTitle": "Enviar esta mensagem agora?",
+      "interruptConfirmDescription": "A resposta atual será interrompida antes do envio desta mensagem.",
+      "interruptConfirmSkip": "Não perguntar novamente",
+      "interruptConfirmAction": "Interromper e enviar"
+    },
+    "composerDrafts": {
+      "title": "Rascunhos",
+      "titleWithCount": "Rascunhos ({{count}})",
+      "count": "{{count}}/{{max}}",
+      "save": "Salvar nos rascunhos",
+      "empty": "Nenhum rascunho ainda",
+      "take": "Mover para a entrada",
+      "takeOccupied": "Resolva primeiro o conteúdo atual da entrada",
+      "delete": "Excluir rascunho",
+      "takeConflict": "O campo de entrada contém conteúdo. O rascunho permanece na caixa de rascunhos."
     },
     "sending": "Enviando",
     "sendFailed": "Falha no envio",
@@ -2450,7 +2507,8 @@
       "output": "Saída",
       "cacheRead": "Leitura de cache",
       "cacheWrite": "Gravação de cache",
-      "total": "Total"
+      "total": "Total",
+      "excludesBackground": "Não inclui o uso de ativações em segundo plano"
     },
     "hiddenRemoteTaskContext": "Contexto de tarefa remota oculto"
   },
@@ -2546,7 +2604,14 @@
     "im": {
       "title": "Intervenção remota e notificações de IM",
       "enabled": "Habilitado",
+      "channelEnabled": "Habilitar intervenção remota do {{channel}}",
+      "channelSubtitle": "Bot · Chat privado",
+      "expandChannel": "Expandir configurações do {{channel}}",
+      "collapseChannel": "Recolher configurações do {{channel}}",
+      "receiverAccount": "Conta destinatária",
+      "robotName": "Nome do bot",
       "privateBinding": "Chat privado: {{name}}",
+      "privateBindingUnnamed": "Chat privado vinculado",
       "notificationKinds": "Tipos de notificação",
       "notificationGroups": {
         "needsAction": "Precisa da sua ação",
@@ -2567,6 +2632,8 @@
         "notConfigured": "{{channel}} não está conectado. Conecte-o para configurar intervenção remota e notificações.",
         "connect": "Escanear para conectar",
         "reauthorize": "Autorizar novamente",
+        "changeApp": "Alterar aplicativo do Feishu",
+        "changeAppWarning": "Concluir a autorização substitui o aplicativo Feishu atual e remove a vinculação de chat privado existente. Vincule novamente com o novo bot.",
         "generating": "Gerando código QR…",
         "waiting": "Escaneie com {{channel}} e confirme a autorização",
         "expiresIn": "Código QR expira em {{countdown}}",
@@ -2579,10 +2646,12 @@
       "channels": {
         "weCom": {
           "title": "WeCom",
+          "identityLabel": "ID do bot",
           "identity": "ID do bot: {{id}}"
         },
         "feishu": {
           "title": "Feishu / Lark",
+          "identityLabel": "App ID",
           "identity": "App ID: {{id}}",
           "singleDeviceHint": "Conecte cada bot a apenas um dispositivo para evitar que ações cheguem a outro dispositivo.",
           "permissions": {
@@ -2590,6 +2659,7 @@
             "send": "Enviar mensagens para você",
             "receive": "Ler mensagens privadas que você envia ao bot",
             "update": "Atualizar cartões enviados pelo bot",
+            "profile": "Ler seu nome para mostrar a conta de recebimento",
             "confirm": "Concordar e gerar código QR"
           },
           "resetBinding": {
@@ -2847,6 +2917,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "Mostrar todos ({{count}})",
       "showLess": "Mostrar menos"
+    },
+    "promptQueue": {
+      "title": "Mensagens pendentes",
+      "description": "Enquanto uma resposta está em andamento, \"Enviar agora\" interrompe a resposta atual primeiro.",
+      "confirmInterrupt": "Confirmar antes de \"Enviar agora\" interromper uma resposta"
     }
   },
   "conversation": {
@@ -2954,7 +3029,9 @@
         "emptyTitle": "Não conectado a {{source}}",
         "removeTask": "Remover da lista",
         "removeTaskHint": "Removido apenas da lista deste lado; ao atualizar, ele volta a aparecer",
-        "removeTaskTerminalHint": "Remove o registro local de conclusão; ele não volta a aparecer ao atualizar"
+        "removeTaskTerminalHint": "Remove o registro local de conclusão; ele não volta a aparecer ao atualizar",
+        "rerunTask": "Reexecutar",
+        "rerunBadge": "Reexecutar"
       },
       "keepResident": "Manter sessão ativa",
       "releaseResident": "Permitir encerramento da sessão",
@@ -2965,6 +3042,7 @@
     "composer": {
       "remoteNeedLocalWorkspace": "Adicione um espaço de trabalho local antes de executar um requisito",
       "removeRemoteBinding": "Desvincular tarefa",
+      "remoteAttachmentHint": "Anexo da tarefa remota; baixado e anexado automaticamente no envio",
       "remoteBindingTag": "{{source}} · {{title}}"
     },
     "branchPicker": {
@@ -3168,6 +3246,7 @@
       "account": {
         "connected": "Conectado"
       },
+      "openPlatform": "Abrir a plataforma {{source}}",
       "column": {
         "empty": "Nenhuma tarefa"
       },
@@ -3192,10 +3271,31 @@
         "label": "Tipo",
         "test": "Teste"
       },
+      "searchPlaceholder": "Pesquisar nome da tarefa…",
       "readiness": {
-        "notReady": "Não pronto",
-        "notReadyHint": "A tarefa de desenvolvimento correspondente ainda não foi concluída; considere aguardá-la"
+        "ready": "Pronto",
+        "readyHint": "A tarefa de desenvolvimento correspondente foi concluída; esta tarefa pode começar"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "Esta tarefa precisa criar uma demanda no DPMS e reportar o vínculo; o selo desaparece após o reporte"
+      },
+      "issueStatus": {
+        "todo": "A fazer",
+        "backlog": "Backlog"
       }
+    },
+    "upstreamPull": {
+      "title": "Entrega do upstream ainda não obtida",
+      "description": "O nó {{node}} de \"{{task}}\" ainda não obteve a entrega do item de trabalho upstream {{issue}}.",
+      "fallbackNote": "Sem escolha em 60 segundos, a busca automática continua.",
+      "retry": "Continuar aguardando",
+      "manual": "Fornecer manualmente",
+      "skip": "Pular busca",
+      "manualLabel": "Entrega",
+      "manualPlaceholder": "Informações essenciais como artefatos construídos e ambientes de implantação…",
+      "manualSubmit": "Continuar com isto",
+      "waitingNote": "Ainda aguardando a atualização da nota de entrega upstream. Você pode fornecê-la manualmente ou pular a qualquer momento."
     }
   },
   "onboarding": {

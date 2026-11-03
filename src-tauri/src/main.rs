@@ -12,6 +12,7 @@ mod builtin_mcp;
 mod channel;
 mod commands;
 mod commands_conversation;
+mod commands_file_references;
 mod conversation_attention;
 mod conversation_workspace;
 mod desktop_lifecycle;
@@ -60,29 +61,29 @@ use commands::{
     get_metrics_settings, get_multica_settings, get_profile, get_profiles, get_round_detail,
     get_run_detail, get_skill_sync_status, get_source_control_snapshot, get_system_fonts,
     get_task_detail, get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
-    get_workflow_templates, import_desktop_wallpaper, import_profiles_from_folder,
-    initialize_git_repository, list_conversation_directory, list_github_issues,
-    list_github_pull_requests, list_mcp_servers, list_mcp_tools, list_project_skills, list_skills,
-    mark_settings_advanced_update_seen, mark_settings_update_seen,
-    open_conversation_directory_path_in_file_manager, open_in_file_manager, pause_run,
-    preflight_github_pull_request, read_conversation_directory_file, read_skill, record_activity,
-    recover_conversation_runtime, remove_recent_workspace, renew_acp_session_lease,
-    reorder_conversation_queued_prompts, replace_auto_templates, report_frontend_error,
-    report_webview_environment, resolve_turn_attachment_file, respond_acp_permission,
-    respond_elicitation, restore_conversation_queued_prompt, restore_theme_desktop_wallpaper,
-    retry_run, save_auto_template, save_desktop_avatar, save_desktop_avatar_shape,
-    save_desktop_preferences, save_desktop_wallpaper_opacity, save_metrics_settings,
-    save_multica_connection_address, save_task_workflow, save_updater_settings,
-    save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
-    select_recent_desktop_avatar, select_recent_desktop_wallpaper, select_recent_workspace,
-    set_acp_session_auto_accept, set_acp_session_config_option, set_acp_session_model,
-    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref,
-    start_git_operation, start_git_state_monitor, start_github_login,
-    start_github_pull_request_create, start_run, start_update_install, stop_active_session,
-    stop_git_state_monitor, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
-    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
-    update_profile, update_skill_sync_targets, update_workflow_template,
-    use_conversation_queued_prompt, write_skill,
+    get_workflow_templates, import_desktop_wallpaper, import_profiles_from_files,
+    import_profiles_from_folder, initialize_git_repository, list_conversation_directory,
+    list_github_issues, list_github_pull_requests, list_mcp_servers, list_mcp_tools,
+    list_project_skills, list_skills, mark_settings_advanced_update_seen,
+    mark_settings_update_seen, open_conversation_directory_path_in_file_manager,
+    open_in_file_manager, pause_run, preflight_github_pull_request,
+    read_conversation_directory_file, read_skill, record_activity, recover_conversation_runtime,
+    remove_recent_workspace, renew_acp_session_lease, reorder_conversation_queued_prompts,
+    replace_auto_templates, report_frontend_error, report_webview_environment,
+    resolve_turn_attachment_file, respond_acp_permission, respond_elicitation,
+    restore_conversation_queued_prompt, restore_theme_desktop_wallpaper, retry_run,
+    save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
+    save_desktop_wallpaper_opacity, save_metrics_settings, save_multica_connection_address,
+    save_task_workflow, save_updater_settings, save_workflow_template, search_acp_prompts,
+    search_acp_sessions, search_tasks, select_recent_desktop_avatar,
+    select_recent_desktop_wallpaper, select_recent_workspace, set_acp_session_auto_accept,
+    set_acp_session_config_option, set_acp_session_model, set_acp_session_permission_mode,
+    show_artifact, show_attachment, show_worker_ref, start_git_operation, start_git_state_monitor,
+    start_github_login, start_github_pull_request_create, start_run, start_update_install,
+    stop_active_session, stop_git_state_monitor, submit_conversation_prompt, submit_manual_check,
+    toggle_mcp_server, update_agent, update_auto_template, update_mcp_server,
+    update_notification_attention, update_profile, update_skill_sync_targets,
+    update_workflow_template, use_conversation_queued_prompt, write_skill,
 };
 use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
@@ -90,27 +91,28 @@ use commands_conversation::{
     delete_conversation_task, delete_scheduled_execution_history, delete_scheduled_task,
     get_conversation_execution_plan, get_conversation_pinned_task_page, get_conversation_run,
     get_conversation_run_mode, get_conversation_run_summary_page,
-    get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_workspaces,
-    get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
-    list_scheduled_execution_history, list_scheduled_tasks, materialize_conversation_attachments,
-    pin_conversation, preflight_conversation_execution_plan_save,
-    recover_conversation_execution_plan_operation, remove_conversation_workspace,
-    reorder_pinned_conversations, rerun_conversation_task, run_scheduled_task_now,
-    save_conversation_execution_plan, save_conversation_preference, save_conversation_run_mode,
-    save_desktop_ui_mode, save_last_conversation_workspace, save_scheduled_runtime_settings,
-    search_conversation_tasks, set_conversation_resident, set_scheduled_task_enabled,
-    show_conversation_attachment, show_conversation_message_attachment, stat_attachment_files,
-    sync_conversation_workspace, unpin_conversation, update_scheduled_task, update_task_metadata,
-    validate_conversation_create,
+    get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_task_summary,
+    get_conversation_workspaces, get_scheduled_runtime_settings, get_scheduled_task,
+    get_scheduled_task_diagnostics, list_scheduled_execution_history, list_scheduled_tasks,
+    materialize_conversation_attachments, pin_conversation,
+    preflight_conversation_execution_plan_save, recover_conversation_execution_plan_operation,
+    remove_conversation_workspace, reorder_pinned_conversations, rerun_conversation_task,
+    run_scheduled_task_now, save_conversation_execution_plan, save_conversation_preference,
+    save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
+    save_scheduled_runtime_settings, search_conversation_tasks, set_conversation_resident,
+    set_scheduled_task_enabled, show_conversation_attachment, show_conversation_message_attachment,
+    stat_attachment_files, sync_conversation_workspace, unpin_conversation, update_scheduled_task,
+    update_task_metadata, validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
 use gold_band::storage::{GoldBandPaths, configure_storage_paths};
 use multica::commands::{
-    add_multica_workspace, cancel_remote_task, get_remote_task_requirement, get_remote_tasks,
-    list_remote_skills, list_server_multica_workspaces, pull_remote_skills,
+    add_multica_workspace, cancel_remote_task, decide_upstream_pull, get_remote_task_requirement,
+    get_remote_tasks, list_remote_skills, list_server_multica_workspaces,
+    list_upstream_pull_pendings, pull_remote_skills, reconcile_remote_task_statuses,
     recover_remote_work_dir_sessions, remove_multica_workspace, remove_remote_completed_task,
-    set_active_multica_workspace, start_remote_conversation_run,
+    rerun_remote_task, set_active_multica_workspace, start_remote_conversation_run,
 };
 // Heartbeat signals are projected by the RuntimeLifecycleBus metrics subscriber.
 use image_actions::{copy_image_to_clipboard, save_image_as};
@@ -134,6 +136,9 @@ pub(crate) fn start_business_runtime(handle: tauri::AppHandle) {
     {
         return;
     }
+    // Lifecycle subscribers enqueue completion-output work, so install the
+    // single ordered queue before they can receive any events.
+    multica::bridge::init_completion_output_queue(handle.clone());
     if let Ok(runtime_app) = state.app() {
         let im_handle = handle.clone();
         tauri::async_runtime::spawn(async move {
@@ -396,6 +401,15 @@ fn run() -> anyhow::Result<()> {
             state.install_scheduled_service(std::sync::Arc::new(
                 scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
             ))?;
+            // M5-cf：上游交付解析器（`$upstream.completion-output`）——AppHandle 就绪即可装入，
+            // 须在下方 `state.app()` 组装之前，否则首个 App 不带解析器。
+            state.install_upstream_output_resolver(std::sync::Arc::new(
+                multica::upstream::MulticaUpstreamResolver::new(app.handle().clone()),
+            ))?;
+            // M5-cg：完成输出协议区段解析器（按节点身份渲染协议变体）——同上，先装后组装。
+            state.install_completion_protocol_section_resolver(std::sync::Arc::new(
+                multica::upstream::MulticaCompletionProtocolResolver::new(app.handle().clone()),
+            ))?;
             start_business_runtime(app.handle().clone());
             let handle = app.handle().clone();
             let command_handle = handle.clone();
@@ -450,6 +464,8 @@ fn run() -> anyhow::Result<()> {
             onboarding::probe_setup_model,
             onboarding::preview_default_setup,
             onboarding::apply_default_setup,
+            commands_file_references::resolve_right_workspace_file_target,
+            commands_file_references::reveal_right_workspace_file,
             memory::read_project_memory,
             memory::write_project_memory,
             get_app_bootstrap,
@@ -496,6 +512,7 @@ fn run() -> anyhow::Result<()> {
             get_profile,
             create_profile,
             import_profiles_from_folder,
+            import_profiles_from_files,
             update_profile,
             delete_profile,
             choose_workspace,
@@ -532,6 +549,13 @@ fn run() -> anyhow::Result<()> {
             restore_conversation_queued_prompt,
             delete_conversation_queued_prompt,
             use_conversation_queued_prompt,
+            commands::set_conversation_prompt_queue_mode,
+            commands::resume_conversation_prompt_queue,
+            commands::list_conversation_composer_drafts,
+            commands::save_conversation_composer_draft,
+            commands::get_conversation_composer_draft,
+            commands::delete_conversation_composer_draft,
+            commands::clear_conversation_queued_prompts,
             set_acp_session_model,
             set_acp_session_config_option,
             set_acp_session_permission_mode,
@@ -560,6 +584,7 @@ fn run() -> anyhow::Result<()> {
             get_git_commit_reachability,
             execute_git_mutation,
             get_git_comparison,
+            commands::prepare_git_push,
             start_git_operation,
             start_git_state_monitor,
             stop_git_state_monitor,
@@ -608,7 +633,11 @@ fn run() -> anyhow::Result<()> {
             get_remote_task_requirement,
             start_remote_conversation_run,
             cancel_remote_task,
+            decide_upstream_pull,
+            list_upstream_pull_pendings,
             remove_remote_completed_task,
+            reconcile_remote_task_statuses,
+            rerun_remote_task,
             list_server_multica_workspaces,
             list_remote_skills,
             pull_remote_skills,
@@ -630,6 +659,7 @@ fn run() -> anyhow::Result<()> {
             save_desktop_ui_mode,
             get_conversation_sidebar_bootstrap,
             get_conversation_task_page,
+            get_conversation_task_summary,
             get_conversation_pinned_task_page,
             get_conversation_run_summary_page,
             list_scheduled_tasks,
@@ -638,6 +668,8 @@ fn run() -> anyhow::Result<()> {
             get_scheduled_task_diagnostics,
             get_scheduled_runtime_settings,
             save_scheduled_runtime_settings,
+            commands_conversation::get_prompt_queue_settings,
+            commands_conversation::save_prompt_queue_settings,
             run_scheduled_task_now,
             create_scheduled_task,
             get_scheduled_task,

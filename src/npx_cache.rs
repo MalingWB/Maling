@@ -371,12 +371,17 @@ fn installed_bin(cache: &Path, spec: &NpxSpec) -> Option<PathBuf> {
     let root = cache.join("_npx").join(hash);
     let manifest = read_json(&root.join("package.json"))?;
     let requirement = manifest.get("dependencies")?.get(&spec.name)?.as_str()?;
-    if !semver::VersionReq::parse(requirement).ok()?.matches(&spec.version) {
+    if !semver::VersionReq::parse(requirement)
+        .ok()?
+        .matches(&spec.version)
+    {
         return None;
     }
     // npm's installed lock records the completed tree; root manifests need no private metadata.
     let lock = read_json(&root.join("node_modules/.package-lock.json"))?;
-    let locked = lock.get("packages")?.get(format!("node_modules/{}", spec.name))?;
+    let locked = lock
+        .get("packages")?
+        .get(format!("node_modules/{}", spec.name))?;
     if semver::Version::parse(locked.get("version")?.as_str()?).ok()? != spec.version {
         return None;
     }

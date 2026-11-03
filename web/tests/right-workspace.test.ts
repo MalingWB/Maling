@@ -25,6 +25,7 @@ import {
   browserWorkspaceResourceKey,
   draftAttachmentWorkspaceResourceKey,
   type AgentTranscriptLocator,
+  type ConversationAssetWorkspaceResource,
   type FileWorkspaceResource,
   type RightWorkspaceResource,
 } from '@/components/workspace/right-workspace-context';
@@ -52,6 +53,20 @@ const agent = (branchId: string): RightWorkspaceResource => ({
 });
 
 describe('right workspace resource model', () => {
+  it('reactivates an artifact tab and preserves independent tabs for different sources', () => {
+    const makeArtifact = (attemptId: string): ConversationAssetWorkspaceResource => {
+      const source = { ...locator('branch-a'), attemptId };
+      return { kind: 'conversation-asset', key: conversationAssetWorkspaceResourceKey('artifact', source, 'report.md'), assetKind: 'artifact', locator: source, name: 'report.md', title: 'report.md', scopeKey: 'conversation:project-1:task-uuid-1:run-1', attention: false };
+    };
+    const first = makeArtifact('attempt-a');
+    const second = makeArtifact('attempt-b');
+    let state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource: first });
+    state = rightWorkspaceReducer(state, { type: 'open', resource: second });
+    state = rightWorkspaceReducer(state, { type: 'open', resource: first });
+    expect(state.tabs).toHaveLength(2);
+    expect(state.activeTabKey).toBe(first.key);
+    expect((state.tabs[1] as ConversationAssetWorkspaceResource).locator.attemptId).toBe('attempt-b');
+  });
   it('keeps one source-control tab and only projects a different workspace identity', () => {
     const resource: RightWorkspaceResource = {
       kind: 'source-control',
@@ -170,6 +185,31 @@ describe('right workspace resource model', () => {
         partIndex: 2,
       },
     });
+  });
+
+  it('isolates same-name message attachments by canonical path and every locator dimension', () => {
+    const base = { ...locator('root'), outerNodeId: 'outer-node-1', outerAttemptId: 'outer-attempt-1' };
+    const path = `user-inputs/${'a'.repeat(32)}/image.png`;
+    const key = (scope: typeof base, canonicalPath = path) => conversationAssetWorkspaceResourceKey(
+      'message-attachment', scope, 'image.png', canonicalPath,
+    );
+    const scoped = (Object.keys(base) as (keyof typeof base)[])
+      // taskUuid is the canonical task identity; taskId is only its display locator.
+      .filter((field) => field !== 'taskId')
+      .map((field) => ({ ...base, [field]: `${base[field]}-other` }));
+    const resources: ConversationAssetWorkspaceResource[] = [base, ...scoped].map((scope) => ({
+      kind: 'conversation-asset', key: key(scope), scopeKey: 'draft:default', title: 'image.png', attention: false,
+      assetKind: 'message-attachment', locator: scope, name: 'image.png', path,
+    }));
+    const otherPath = `user-inputs/${'b'.repeat(32)}/image.png`;
+    resources.push({ ...resources[0]!, key: key(base, otherPath), path: otherPath });
+    let state = createInitialRightWorkspaceState();
+    for (const resource of resources) state = rightWorkspaceReducer(state, { type: 'open', resource });
+    expect(new Set(resources.map((resource) => resource.key)).size).toBe(resources.length);
+    expect(state.tabs).toHaveLength(resources.length);
+    state = rightWorkspaceReducer(state, { type: 'open', resource: resources[0]! });
+    expect(state.tabs).toHaveLength(resources.length);
+    expect(state.activeTabKey).toBe(resources[0]!.key);
   });
 
   it('keeps one run-directory tab bound to the selected attempt without activating unrelated resources', () => {
@@ -542,11 +582,12 @@ describe('right workspace resource model', () => {
     const reused = store.draftAttachmentForPreviewAlias(conversation.key, aliasKey);
     expect(reused?.attachment).toMatchObject({ id: attachment.id, previewUrl: 'blob:open-preview' });
     expect(reused?.kind).toBe('draft-attachment');
-    expect(store.draftAttachmentForPreviewAlias(conversation.key, sentAttachmentPreviewAliasKey({
-      assetKind: 'message-attachment',
-      locator: { ...attempt, attemptId: 'attempt-2' },
-      name: attachment.name,
-    }))).toBeNull();
+    expect(store.draftAttachmentForPreviewAlias(conversation.key, conversationAssetWorkspaceResourceKey(
+      'message-attachment',
+      { ...attempt, attemptId: 'attempt-2' },
+      attachment.name,
+      `user-inputs/${'a'.repeat(32)}/${attachment.name}`,
+    ))).toBeNull();
     expect(store.restore(conversation).tabs.filter((tab) => tab.kind === 'draft-attachment')).toHaveLength(2);
   });
 

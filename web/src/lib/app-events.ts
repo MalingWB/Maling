@@ -32,6 +32,13 @@ export const WORKSPACE_FILE_CHANGED_EVENT = 'gold-band://workspace-file-changed'
 // ── 远程来源（任务生命周期 / 来源连接配置变更）──
 export const REMOTE_TASKS_UPDATED_EVENT = 'gold-band://remote-tasks-updated';
 export const REMOTE_SOURCE_SETTINGS_UPDATED_EVENT = 'gold-band://remote-source-settings-updated';
+// multica 上游拉取决策点（M5-ch：首拉空值时交还控制权 / 任意路径收口），与 Rust 侧
+// `src-tauri/src/multica/upstream.rs` 的事件常量对应。
+export const MULTICA_UPSTREAM_PULL_PENDING_EVENT = 'gold-band://multica-upstream-pull-pending';
+export const MULTICA_UPSTREAM_PULL_SETTLED_EVENT = 'gold-band://multica-upstream-pull-settled';
+// multica 被动安装落地（M5-cr：runtime-assets push-install 成功落库后按 assetType 重拉
+// 对应列表），与 Rust 侧 `src-tauri/src/multica/runtime_assets.rs` 的事件常量对应。
+export const RUNTIME_ASSET_INSTALLED_EVENT = 'gold-band://runtime-asset-installed';
 
 // ── 个人分析 / 排程 ──
 export const PERSONAL_ANALYTICS_UPDATED_EVENT = 'gold-band://personal-analytics-updated';

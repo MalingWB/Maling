@@ -16,7 +16,9 @@ use crate::view_models::{
 };
 use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
 use gold_band::acp::control::load_runtime_control_cursor;
-use gold_band::acp::prompt_queue::{MAX_QUEUED_PROMPTS, QueuedPromptState, load_prompt_queue};
+use gold_band::acp::prompt_queue::{
+    DispatchMode, MAX_QUEUED_PROMPTS, QueuedPromptState, SuspensionReason, load_prompt_queue,
+};
 use gold_band::app::{
     App, DEFAULT_WORKFLOW_TEMPLATE_ID, apply_optional_entry_preference, is_run_continuable,
 };
@@ -663,7 +665,6 @@ pub struct ConversationRunVm {
     pub run_status: String,
     pub run_outcome: Option<String>,
     pub session_tree: ConversationSessionTreeVm,
-    pub selected_session: Option<crate::view_models::AcpSessionVm>,
     pub active_sessions: Vec<ConversationActiveSessionVm>,
     pub input_attachments: Vec<crate::view_models::AssetItemVm>,
     pub workflow_status: String,
@@ -768,6 +769,10 @@ pub struct ConversationPromptQueueVm {
     pub revision: u64,
     pub items: Vec<ConversationQueuedPromptVm>,
     pub max_items: usize,
+    pub dispatch_mode: String,
+    pub auto_dispatch_suspended: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suspension_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1092,6 +1097,7 @@ pub struct ConversationMissingItemVm {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSearchResultVm {
     pub project_id: String,
+    pub task_uuid: Option<String>,
     pub workspace_path: String,
     pub workspace_name: String,
     pub task_id: String,
@@ -1173,6 +1179,15 @@ fn direct_prompt_queue_vm(
             })
             .collect(),
         max_items: MAX_QUEUED_PROMPTS,
+        dispatch_mode: match queue.dispatch_mode {
+            DispatchMode::Auto => "auto".to_string(),
+            DispatchMode::Manual => "manual".to_string(),
+        },
+        auto_dispatch_suspended: queue.auto_dispatch_suspended,
+        suspension_reason: queue.suspension_reason.map(|reason| match reason {
+            SuspensionReason::Stopped => "stopped".to_string(),
+            SuspensionReason::Failed => "failed".to_string(),
+        }),
     })
 }
 
@@ -4140,7 +4155,7 @@ pub fn conversation_run_vm(
     apply_session_successors_to_tree(&mut tree_rounds, &session_successors);
     apply_session_successors_to_active_sessions(&mut active_sessions, &session_successors);
 
-    // Determine which session leaf to load.
+    // Select the navigation leaf; ACP content is queried independently.
     let selected_leaf: Option<ConversationSessionLeafVm> = if let Some(key) = selected_session_key {
         // Find the leaf matching the key by searching the tree.
         find_leaf_by_key(&tree_rounds, key)
@@ -4151,10 +4166,6 @@ pub fn conversation_run_vm(
     };
 
     let effective_key: Option<String> = selected_leaf.as_ref().map(conversation_leaf_key);
-
-    // The run aggregate owns navigation and lifecycle only. ACPChatDialog is
-    // the single bounded正文 query boundary for the selected branch.
-    let selected_session: Option<crate::view_models::AcpSessionVm> = None;
 
     let input_attachments = input_attachments_vm(app, task_id);
 
@@ -4244,7 +4255,6 @@ pub fn conversation_run_vm(
             rounds: tree_rounds,
             selected_session_key: effective_key,
         },
-        selected_session,
         active_sessions,
         input_attachments,
         workflow_status: "valid".to_string(),
@@ -4680,7 +4690,6 @@ pub fn create_conversation_run_vm(
                     rounds: Vec::new(),
                     selected_session_key: None,
                 },
-                selected_session: None,
                 active_sessions: Vec::new(),
                 input_attachments: Vec::new(),
                 workflow_status: "valid".to_string(),
@@ -4766,7 +4775,6 @@ pub fn rerun_conversation_task_vm(
                 rounds: Vec::new(),
                 selected_session_key: None,
             },
-            selected_session: None,
             active_sessions: Vec::new(),
             input_attachments: Vec::new(),
             workflow_status: "valid".to_string(),
@@ -4838,7 +4846,10 @@ mod tests {
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
-    use gold_band::acp::prompt_queue::enqueue_prompt;
+    use gold_band::acp::prompt_queue::{
+        DispatchMode, SuspensionReason, enqueue_prompt, mark_user_priority, set_dispatch_mode,
+        suspend_auto_dispatch,
+    };
     use gold_band::app::{
         App, CreateTaskInput, OptionalEntryStage, RuntimeLifecycleEvent, WorkflowTemplate,
     };
@@ -6712,7 +6723,12 @@ mod tests {
             .attempts[0]
             .clone();
 
-        assert!(vm.selected_session.is_none());
+        assert!(
+            serde_json::to_value(&vm)
+                .unwrap()
+                .get("selectedSession")
+                .is_none()
+        );
         assert_eq!(
             leaf.work_location,
             SessionWorkLocationVm::Worktree {
@@ -7721,6 +7737,28 @@ mod tests {
     }
 
     #[test]
+    fn conversation_search_target_summary_is_lightweight_and_preserves_identity() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        let row = conversation_task_row_vm(&app, "project-001", "task-046", false, None).unwrap();
+        assert_eq!(row.project_id, "project-001");
+        assert_eq!(row.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
+        assert!(row.latest_run.is_some());
+        assert!(row.runs.is_empty());
+        assert_eq!(row.run_history_status, "not-loaded");
+        let json = serde_json::to_value(&row).unwrap();
+        for field in [
+            "sessionTree",
+            "selectedSession",
+            "workflowJson",
+            "requirement",
+        ] {
+            assert!(json.get(field).is_none(), "summary must not load {field}");
+        }
+    }
+
+    #[test]
     fn conversation_run_vm_keeps_assets_out_of_session_dto_and_exposes_leaf_counts() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
@@ -7736,11 +7774,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(vm.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
-        assert!(
-            vm.selected_session.is_none(),
-            "run aggregate must not query selected ACP正文"
-        );
         let serialized = serde_json::to_value(&vm).unwrap();
+        assert!(
+            serialized.get("selectedSession").is_none(),
+            "run aggregate must not expose an ACP content field"
+        );
         assert!(serialized.get("title").is_none());
         assert!(serialized.get("autoTitle").is_none());
         let task = conversation_task_row_vm(&app, "project-001", "task-046", false, None).unwrap();
@@ -7780,7 +7818,7 @@ mod tests {
                 display_text: "persist after stop".to_string(),
                 quotes: Vec::new(),
                 role: None,
-                workspace_files: vec![gold_band::provider::PromptWorkspaceFileRef {
+                workspace_files: vec![gold_band::provider::PromptWorkspaceFileRef::Workspace {
                     project_id: "project-001".to_string(),
                     relative_path: "src/a.ts".to_string(),
                 }],
@@ -7811,6 +7849,63 @@ mod tests {
         assert_eq!(queue.items.len(), 1);
         assert_eq!(queue.items[0].content, "persist after stop");
         assert_eq!(queue.items[0].workspace_file_count, 1);
+    }
+
+    #[test]
+    fn direct_prompt_queue_vm_projects_mode_and_suspension() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        write_sidebar_conversation_metadata_fixture(
+            &app,
+            "task-046",
+            "direct",
+            "2026-08-07T00:00:00Z",
+        );
+        let attempt_dir =
+            app.paths
+                .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-002");
+        enqueue_prompt(&attempt_dir, "paused".to_string(), Vec::new()).unwrap();
+        suspend_auto_dispatch(&attempt_dir, SuspensionReason::Failed).unwrap();
+
+        let vm = conversation_run_vm(
+            &app,
+            "project-001",
+            "task-046",
+            "run-060",
+            Some("round-001/测试/attempt-002"),
+        )
+        .unwrap();
+        let leaf = find_leaf_by_key(
+            &vm.session_tree.rounds,
+            vm.session_tree.selected_session_key.as_deref().unwrap(),
+        )
+        .unwrap();
+        let queue = leaf.lifecycle.prompt_queue.as_ref().unwrap();
+
+        assert_eq!(queue.dispatch_mode, "auto");
+        assert!(queue.auto_dispatch_suspended);
+        assert_eq!(queue.suspension_reason.as_deref(), Some("failed"));
+
+        set_dispatch_mode(&attempt_dir, DispatchMode::Manual).unwrap();
+        mark_user_priority(&attempt_dir).unwrap();
+        let vm = conversation_run_vm(
+            &app,
+            "project-001",
+            "task-046",
+            "run-060",
+            Some("round-001/测试/attempt-002"),
+        )
+        .unwrap();
+        let leaf = find_leaf_by_key(
+            &vm.session_tree.rounds,
+            vm.session_tree.selected_session_key.as_deref().unwrap(),
+        )
+        .unwrap();
+        let queue = leaf.lifecycle.prompt_queue.as_ref().unwrap();
+        assert_eq!(queue.dispatch_mode, "manual");
+        assert!(!queue.auto_dispatch_suspended);
+        assert_eq!(queue.suspension_reason, None);
     }
 
     #[test]
@@ -7875,7 +7970,12 @@ mod tests {
             vm.session_tree.selected_session_key.as_deref(),
             Some("round-001/测试/attempt-002")
         );
-        assert!(vm.selected_session.is_none());
+        assert!(
+            serde_json::to_value(&vm)
+                .unwrap()
+                .get("selectedSession")
+                .is_none()
+        );
     }
 
     #[test]
@@ -7909,7 +8009,12 @@ mod tests {
         )
         .unwrap();
 
-        assert!(vm.selected_session.is_none());
+        assert!(
+            serde_json::to_value(&vm)
+                .unwrap()
+                .get("selectedSession")
+                .is_none()
+        );
         assert!(selected_leaf.session_established);
         assert_eq!(
             selected_leaf.session_id.as_deref(),

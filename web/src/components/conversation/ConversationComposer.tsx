@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
-import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2, Globe } from 'lucide-react';
+import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2 } from 'lucide-react';
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
@@ -17,14 +16,12 @@ import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
 import { useConversationComposerDraft, type ConversationComposerRemoteBinding } from '@/lib/conversation-composer-draft';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { shouldBackspaceClearRemoteBinding } from '@/lib/conversation-composer-remote-chip';
-import { remoteTaskSourceLabel } from '@/lib/remote-sources';
 import { AgentIcon, AgentIdentityLabel } from '@/components/AgentIdentityLabel';
-import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
 import { useMentionMenuLabels } from '@/hooks/useMentionWorkspaceFiles';
 import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
-import { SlashCommandInputTag } from '@/components/conversation/SlashCommandInputTag';
+import { ComposerLeadingAdornment } from '@/components/conversation/ComposerLeadingAdornment';
 import {
   AcpModelThoughtSelects,
   rememberAcpModelBoundOverrides,
@@ -44,7 +41,7 @@ import type { ScheduledScheduleInput } from '@/types';
 import { validateScheduledConversationInput } from '@/lib/scheduled-task-validation';
 import { formatScheduledScheduleInput } from '@/lib/scheduled-task-formatting';
 import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
-import { COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME, CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
 import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
@@ -146,8 +143,7 @@ export function ConversationWorkspaceControl({
   const {
     valueRef,
     tooltipOpen,
-    showTooltipIfOverflowing,
-    showTooltipOnKeyboardFocus,
+    handleTooltipFocus,
     hideTooltip,
     handleTooltipOpenChange,
   } = useOverflowTooltip<HTMLSpanElement>({ always: variant === 'info' });
@@ -158,7 +154,6 @@ export function ConversationWorkspaceControl({
     ? CONTEXT_CONTROL_INTERACTION_CLASS_NAME
     : 'hover:bg-gold-surface-high/55 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55';
   const triggerEvents = {
-    onPointerEnter: showTooltipIfOverflowing,
     onPointerLeave: hideTooltip,
     onPointerDown: () => {
       selectionUsedPointerRef.current = true;
@@ -167,22 +162,20 @@ export function ConversationWorkspaceControl({
     onKeyDown: () => {
       selectionUsedPointerRef.current = false;
     },
-    onFocus: showTooltipOnKeyboardFocus,
+    onFocus: handleTooltipFocus,
     onBlur: hideTooltip,
   };
   const value = (
-    <TooltipTrigger asChild>
-      <span className={cn('flex min-w-0 flex-1 items-center', variant === 'info' ? 'gap-1.5' : 'gap-2')}>
-        <Folders className={cn('size-3.5 shrink-0', variant === 'info' ? 'text-current' : 'text-muted-foreground/80')} />
-        <span
-          ref={valueRef}
-          data-conversation-workspace-value="true"
-          className={cn('min-w-0 truncate', variant === 'info' && 'hidden @xs/conversation-context:inline')}
-        >
-          {selectedWorkspaceName}
-        </span>
+    <span className={cn('flex min-w-0 flex-1 items-center', variant === 'info' ? 'gap-1.5' : 'gap-2')}>
+      <Folders className={cn('size-3.5 shrink-0', variant === 'info' ? 'text-current' : 'text-muted-foreground/80')} />
+      <span
+        ref={valueRef}
+        data-conversation-workspace-value="true"
+        className={cn('min-w-0 truncate', variant === 'info' && 'hidden @xs/conversation-context:inline')}
+      >
+        {selectedWorkspaceName}
       </span>
-    </TooltipTrigger>
+    </span>
   );
 
   return (
@@ -197,15 +190,19 @@ export function ConversationWorkspaceControl({
               hideTooltip();
             }}
           >
-            <SelectTrigger
-              ref={selectTriggerRef}
-              {...triggerEvents}
-              aria-label={`${t('conversation.home.workspace')}: ${selectedWorkspaceName}`}
-              data-context-control={variant === 'info' ? 'workspace' : undefined}
-              className={`${controlClassName} ${triggerSurfaceClassName} focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10`}
-            >
-              {value}
-            </SelectTrigger>
+            <TooltipTrigger asChild>
+              <SelectTrigger
+                ref={selectTriggerRef}
+                data-slot="select-trigger"
+                data-state={selectOpen ? 'open' : 'closed'}
+                {...triggerEvents}
+                aria-label={`${t('conversation.home.workspace')}: ${selectedWorkspaceName}`}
+                data-context-control={variant === 'info' ? 'workspace' : undefined}
+                className={`${controlClassName} ${triggerSurfaceClassName} focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10`}
+              >
+                {value}
+              </SelectTrigger>
+            </TooltipTrigger>
             <SelectContent
               position="popper"
               align="start"
@@ -228,15 +225,17 @@ export function ConversationWorkspaceControl({
             </SelectContent>
           </Select>
         ) : (
-          <div
-            {...triggerEvents}
-            tabIndex={0}
-            aria-label={`${t('conversation.home.workspace')}: ${selectedWorkspaceName}`}
-            data-context-control={variant === 'info' ? 'workspace' : undefined}
-            className={cn(controlClassName, triggerSurfaceClassName, 'focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 focus-visible:outline-none')}
-          >
-            {value}
-          </div>
+          <TooltipTrigger asChild>
+            <div
+              {...triggerEvents}
+              tabIndex={0}
+              aria-label={`${t('conversation.home.workspace')}: ${selectedWorkspaceName}`}
+              data-context-control={variant === 'info' ? 'workspace' : undefined}
+              className={cn(controlClassName, triggerSurfaceClassName, 'focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 focus-visible:outline-none')}
+            >
+              {value}
+            </div>
+          </TooltipTrigger>
         )}
         <TooltipContent
           side="top"
@@ -800,13 +799,12 @@ export function ConversationComposer({
     ? selectedDirectAgentObj?.iconKey
     : selectedAgentObj?.iconKey;
   const visibleContent = committedSlashCommand?.suffix ?? content;
-  // The remote binding chip and the slash-command label are both leading adornments at the very
-  // front of the body. They are mutually exclusive (slash wins — the binding prefills task
-  // requirement text, not a slash command) and share the same text-indent mechanism: the first
-  // line indents to clear the label width, wrapped lines return to the left edge (standard CSS
+  // The remote binding chip and the committed slash-command label are both leading adornments at
+  // the very front of the body and may coexist (a remote-task draft plus a committed `@role` is a
+  // legal combination — see ComposerLeadingAdornment). The shared slot measures its total width
+  // for the first-line text indent; wrapped lines return to the left edge (standard CSS
   // text-indent behavior, which only affects the first line).
-  const remoteChipActive = Boolean(remoteBinding) && !committedSlashCommand;
-  const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand) || remoteChipActive);
+  const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand) || remoteBinding !== null);
 
   useEffect(() => {
     const fallbackAgent = runMode.directConfig?.agentType
@@ -946,10 +944,7 @@ export function ConversationComposer({
         ? branchSelection.branch
         : undefined,
       ...(role ? { role } : {}),
-      workspaceFiles: workspaceFiles.map(({ projectId: refProjectId, relativePath }) => ({
-        projectId: refProjectId,
-        relativePath,
-      })),
+      workspaceFiles: workspaceFiles.map(({ source }) => source),
       quotes,
     };
     setSubmittingAttachments(true);
@@ -1026,10 +1021,7 @@ export function ConversationComposer({
       }) : undefined,
       autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
       ...(role ? { role } : {}),
-      workspaceFiles: workspaceFiles.map(({ projectId: refProjectId, relativePath }) => ({
-        projectId: refProjectId,
-        relativePath,
-      })),
+      workspaceFiles: workspaceFiles.map(({ source }) => source),
       quotes,
     };
   };
@@ -1156,6 +1148,7 @@ export function ConversationComposer({
         >
           <ComposerContextArea
             attachments={attachments}
+            remoteAttachments={remoteBinding?.attachments}
             quotes={quotes}
             workspaceFiles={workspaceFiles}
             error={contextError}
@@ -1183,52 +1176,13 @@ export function ConversationComposer({
             variant="inline"
           >
             <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.inputScrollContainerClassName}>
-              {committedSlashCommand ? (
-                <span ref={committedInputLayout.adornmentRef} className={`${COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME} left-0 top-2`}>
-                  <SlashCommandInputTag
-                    prefix={committedSlashCommand.prefix}
-                    description={committedSlashCommand.item.description}
-                    content={committedSlashCommand.item.content}
-                    kind={committedSlashCommand.item.kind}
-                    iconSrc={committedSlashCommand.item.kind === 'role'
-                      ? '/logo.svg'
-                      : slashAgentIconKey
-                        ? agentIconSrc(slashAgentIconKey)
-                        : '/logo.svg'}
-                    iconClassName={committedSlashCommand.item.kind === 'command' && slashAgentIconKey
-                      ? agentIconClass(slashAgentIconKey)
-                      : undefined}
-                  />
-                </span>
-              ) : remoteBinding ? (
-                <span ref={committedInputLayout.adornmentRef} className={`${COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME} left-0 top-2`}>
-                  {/* accent/accent-foreground is the theme contract's guaranteed-contrast pair for
-                      emphasized surfaces (same pairing as permission-card and recipe hover/selected
-                      states). Never tint this chip from `primary` alone: in themes like
-                      tech-neutral dark, primary (#2d2d2d) sits nearly on the composer background
-                      (#1b1b1b) and the chip becomes unreadable. */}
-                  <Badge
-                    variant="secondary"
-                    className="gap-1 h-6 rounded-md border-accent-foreground/15 bg-accent px-2 text-[0.75rem] font-medium text-accent-foreground"
-                  >
-                    <Globe className="size-3 shrink-0" />
-                    <span className="max-w-[260px] truncate">
-                      {t('conversation.composer.remoteBindingTag', {
-                        source: remoteTaskSourceLabel(t, remoteBinding.source),
-                        title: remoteBinding.title,
-                      })}
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={t('conversation.composer.removeRemoteBinding')}
-                      onClick={handleUnbindRemoteTask}
-                      className="ml-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm hover:bg-accent-foreground/15"
-                    >
-                      <X className="size-3" />
-                    </button>
-                  </Badge>
-                </span>
-              ) : null}
+              <ComposerLeadingAdornment
+                committedSlashCommand={committedSlashCommand}
+                remoteBinding={remoteBinding}
+                slashAgentIconKey={slashAgentIconKey}
+                adornmentRef={committedInputLayout.adornmentRef}
+                onUnbindRemoteTask={handleUnbindRemoteTask}
+              />
               <PromptInputTextarea
                 ref={composerTextareaRef}
                 style={committedInputLayout.textareaStyle}

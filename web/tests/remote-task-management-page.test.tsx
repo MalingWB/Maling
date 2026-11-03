@@ -16,12 +16,14 @@ vi.mock('@/i18n', () => ({ displayAppError: () => 'mock-error' }));
 
 vi.mock('lucide-react', () => ({
   ChevronDown: () => null,
+  ExternalLink: () => null,
   Folders: () => null,
   Globe: () => null,
   ListFilter: () => null,
   Loader2: () => null,
   Plus: () => null,
   RotateCw: () => null,
+  Search: () => null,
   Settings: () => null,
   Trash2: () => null,
   User: () => null,
@@ -110,12 +112,14 @@ vi.mock('@/components/ui/tooltip', () => ({
   TooltipContent: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 
-// Board 桩：渲染收到的任务标题 + prepare/cancel/remove/open 触发按钮，把容器逻辑与看板内部解耦。
+// Board 桩：渲染收到的任务标题 + prepare/cancel/rerun/remove/open 触发按钮，把容器逻辑与看板内部解耦。
+// （rerun 入口的 issue 状态门控在看板组件单测固化；桩里终态行恒暴露入口以验证容器接线。）
 vi.mock('@/components/conversation/RemoteTaskBoard', () => ({
-  RemoteTaskBoard: ({ tasks, onPrepare, onCancel, onRemove, onSelectRun }: {
+  RemoteTaskBoard: ({ tasks, onPrepare, onCancel, onRerun, onRemove, onSelectRun }: {
     tasks: { id: string; title: string; status: string; projectId?: string | null; localTaskId?: string | null; runId?: string | null }[];
     onPrepare: (t: unknown) => void;
     onCancel: (t: unknown) => void;
+    onRerun: (t: unknown) => void;
     onRemove: (t: unknown) => void;
     onSelectRun: (p: string, t: string, r: string) => void;
   }) => (
@@ -128,6 +132,9 @@ vi.mock('@/components/conversation/RemoteTaskBoard', () => ({
           )}
           {task.status === 'running' && (
             <button aria-label="conversation.sidebar.remoteTasks.cancelTask" onClick={() => onCancel(task)} />
+          )}
+          {(task.status === 'completed' || task.status === 'failed') && (
+            <button aria-label="conversation.sidebar.remoteTasks.rerunTask" onClick={() => onRerun(task)} />
           )}
           <button aria-label="conversation.sidebar.remoteTasks.removeTask" onClick={() => onRemove(task)} />
           {task.projectId && task.localTaskId && task.runId && (
@@ -160,8 +167,10 @@ const mocks = vi.hoisted(() => ({
   disconnectMultica: vi.fn(),
   getRemoteTaskRequirement: vi.fn(),
   cancelRemoteTask: vi.fn(),
+  reconcileRemoteTaskStatuses: vi.fn(),
   removeRemoteCompletedTask: vi.fn(),
   removeMulticaWorkspace: vi.fn(),
+  rerunRemoteTask: vi.fn(),
   setActiveMulticaWorkspace: vi.fn(),
   openExternalUrl: vi.fn(),
   subscribeRemoteTaskUpdates: vi.fn(),
@@ -174,15 +183,17 @@ vi.mock('@/api', () => ({
   disconnectMultica: mocks.disconnectMultica,
   getRemoteTaskRequirement: mocks.getRemoteTaskRequirement,
   cancelRemoteTask: mocks.cancelRemoteTask,
+  reconcileRemoteTaskStatuses: mocks.reconcileRemoteTaskStatuses,
   removeRemoteCompletedTask: mocks.removeRemoteCompletedTask,
   removeMulticaWorkspace: mocks.removeMulticaWorkspace,
+  rerunRemoteTask: mocks.rerunRemoteTask,
   setActiveMulticaWorkspace: mocks.setActiveMulticaWorkspace,
   openExternalUrl: mocks.openExternalUrl,
   subscribeRemoteTaskUpdates: mocks.subscribeRemoteTaskUpdates,
   subscribeRemoteSourceSettingsUpdates: mocks.subscribeRemoteSourceSettingsUpdates,
 }));
 
-import { RemoteTaskManagementPage, filterTasksByIssueKind } from '@/pages/RemoteTaskManagementPage';
+import { RemoteTaskManagementPage, filterTasksByIssueKind, filterTasksByTitle } from '@/pages/RemoteTaskManagementPage';
 import type { RemoteConversationSidebarVm, RemoteTaskVm } from '@/types';
 
 const noopUnlisten = () => {};
@@ -191,6 +202,8 @@ const {
   getMulticaSettings,
   getRemoteTaskRequirement,
   cancelRemoteTask,
+  reconcileRemoteTaskStatuses,
+  rerunRemoteTask,
   setActiveMulticaWorkspace,
   subscribeRemoteTaskUpdates,
   subscribeRemoteSourceSettingsUpdates,
@@ -232,6 +245,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   getMulticaSettings.mockResolvedValue(baseSettings());
   setActiveMulticaWorkspace.mockResolvedValue(baseSettings());
+  // 终态对账（multica 状态对账改造）：默认静默成功（0 行变更）；具体行为在专属用例断言。
+  reconcileRemoteTaskStatuses.mockResolvedValue(0);
   subscribeRemoteTaskUpdates.mockResolvedValue(noopUnlisten);
   subscribeRemoteSourceSettingsUpdates.mockResolvedValue(noopUnlisten);
 });
@@ -399,6 +414,35 @@ describe('RemoteTaskManagementPage (container)', () => {
     expect(connectedContainer.querySelector('button[aria-label="common.refresh"]')).not.toBeNull();
   });
 
+  // 快捷跳转 multica 平台：footer（source==='multica' 门控）右侧组的 ExternalLink 按钮，
+  // 点击用 settings VM 的 multicaAppUrl（平台 Web 前端地址）调 openExternalUrl。
+  it('opens the multica platform (app_url) from the toolbar button when connected', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {},
+    }));
+    const { container } = await renderPage();
+
+    const openBtn = container.querySelector('button[aria-label="remote.taskManagement.openPlatform"]') as HTMLButtonElement;
+    expect(openBtn).toBeTruthy();
+    await act(async () => { openBtn.click(); });
+
+    expect(mocks.openExternalUrl).toHaveBeenCalledWith('https://app.example');
+  });
+
+  it('hides the platform button when app_url is not configured', async () => {
+    getMulticaSettings.mockResolvedValue(baseSettings({ multicaAppUrl: null }));
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {},
+    }));
+    const { container } = await renderPage();
+
+    expect(container.querySelector('button[aria-label="remote.taskManagement.openPlatform"]')).toBeNull();
+  });
+
   it('prepares a queued task (read-only) — fetches requirement, prefills composer draft, then navigates to conversation-home', async () => {
     const onSelectRun = vi.fn();
     const onPrepareRemoteTask = vi.fn();
@@ -409,10 +453,11 @@ describe('RemoteTaskManagementPage (container)', () => {
         'ws-004': [{ id: 'rt-1', workspaceId: 'ws-004', title: 'Some task', status: 'queued' } as RemoteTaskVm],
       },
     }));
-    // 任务详情回填需求正文（pending 列表只有 thread_name，正文仅任务详情里有）。
+    // 任务详情回填需求正文（pending 列表只有 thread_name，正文仅任务详情里有）+ 附件元数据（输入框可见性）。
     getRemoteTaskRequirement.mockResolvedValue({
       id: 'rt-1', issueRef: null, status: 'queued',
       workspaceId: 'ws-004', title: 'Some task', requirement: '远程任务需求正文', lastActivityAt: null,
+      attachments: [{ filename: '多值测试样本.zip', contentType: 'application/zip' }],
     });
     const { container } = await renderPage(onSelectRun, onPrepareRemoteTask);
 
@@ -421,9 +466,15 @@ describe('RemoteTaskManagementPage (container)', () => {
     await act(async () => { claimBtn.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
-    // claim-at-send：点击只读取（任务仍 queued），预填正文 + 远程绑定，落 conversation-home；发送时才 claim+start。
+    // claim-at-send：点击只读取（任务仍 queued），预填正文 + 远程绑定（含附件元数据），落 conversation-home；发送时才 claim+start。
     expect(getRemoteTaskRequirement).toHaveBeenCalledWith('rt-1', 'ws-004');
-    expect(draftMocks.prefill).toHaveBeenCalledWith('远程任务需求正文', { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-004', title: 'Some task' });
+    expect(draftMocks.prefill).toHaveBeenCalledWith('远程任务需求正文', {
+      source: 'multica',
+      remoteTaskId: 'rt-1',
+      workspaceId: 'ws-004',
+      title: 'Some task',
+      attachments: [{ filename: '多值测试样本.zip', contentType: 'application/zip' }],
+    });
     expect(onPrepareRemoteTask).toHaveBeenCalledWith();
     expect(onSelectRun).not.toHaveBeenCalled();
   });
@@ -439,6 +490,7 @@ describe('RemoteTaskManagementPage (container)', () => {
     getRemoteTaskRequirement.mockResolvedValue({
       id: 'rt-1', issueRef: 'issue-1', status: 'queued',
       workspaceId: 'ws-004', title: 'Issue title', requirement: null, lastActivityAt: null,
+      attachments: [],
     });
     const { container } = await renderPage();
 
@@ -468,6 +520,50 @@ describe('RemoteTaskManagementPage (container)', () => {
     expect(cancelRemoteTask).toHaveBeenCalledWith('rt-run');
   });
 
+  // 重新执行（multica 任务重试改造）：202 后直接重取列表（server pending 单一事实源，不做本地注入）。
+  it('reruns a terminal task and re-fetches the list after 202', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {
+        'ws-004': [{ id: 'rt-done', workspaceId: 'ws-004', title: 'Done', status: 'completed' } as RemoteTaskVm],
+      },
+    }));
+    rerunRemoteTask.mockResolvedValue('rt-new');
+    const { container } = await renderPage();
+    expect(getRemoteTasks).toHaveBeenCalledTimes(1);
+
+    const rerunBtn = container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.rerunTask"]') as HTMLButtonElement;
+    expect(rerunBtn).toBeTruthy();
+    await act(async () => { rerunBtn.click(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(rerunRemoteTask).toHaveBeenCalledWith('rt-done');
+    // 202 后重取列表：新任务经服务端 pending 自然进板（按 id 去重由合并逻辑保证）。
+    expect(getRemoteTasks).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows the passthrough error (可重试) and keeps the list when rerun fails', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {
+        'ws-004': [{ id: 'rt-done', workspaceId: 'ws-004', title: 'Done', status: 'completed' } as RemoteTaskVm],
+      },
+    }));
+    rerunRemoteTask.mockRejectedValue({ code: 'remote.network-failed', params: { message: 'HTTP 400: issue 已有 pending 任务' } });
+    const { container } = await renderPage();
+
+    const rerunBtn = container.querySelector('button[aria-label="conversation.sidebar.remoteTasks.rerunTask"]') as HTMLButtonElement;
+    await act(async () => { rerunBtn.click(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    // 非 202 错误按错误码原样回显（displayAppError 桩 → mock-error），不重取列表。
+    expect(container.textContent).toContain('mock-error');
+    expect(getRemoteTasks).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="task-rt-done"]')).toBeTruthy();
+  });
+
   it('manual refresh re-fetches the task list without remounting', async () => {
     getRemoteTasks.mockResolvedValue(baseVm({
       workspaces: [ws004],
@@ -487,6 +583,47 @@ describe('RemoteTaskManagementPage (container)', () => {
 
     // 刷新触发再次拉取（count → 2），无需重进页面。
     expect(getRemoteTasks).toHaveBeenCalledTimes(2);
+  });
+
+  // 终态对账（multica 状态对账改造）：页面驱动——multica + 已连接 + 有工作空间时 mount 即一轮。
+  it('reconciles terminal task statuses once on mount when multica is connected with workspaces', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {},
+    }));
+    await renderPage();
+
+    expect(reconcileRemoteTaskStatuses).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips reconciliation when disconnected or no workspaces are bound', async () => {
+    // 未连接：对账无从发起。
+    getRemoteTasks.mockResolvedValue(baseVm({ connected: false }));
+    await renderPage();
+    expect(reconcileRemoteTaskStatuses).not.toHaveBeenCalled();
+
+    // 已连接但未绑定工作空间：无终态历史可对账（本地历史按工作空间归属）。
+    getRemoteTasks.mockResolvedValue(baseVm({ workspaces: [] }));
+    await renderPage();
+    expect(reconcileRemoteTaskStatuses).not.toHaveBeenCalled();
+  });
+
+  it('fires an extra reconciliation round on manual refresh', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {},
+    }));
+    const { container } = await renderPage();
+    expect(reconcileRemoteTaskStatuses).toHaveBeenCalledTimes(1);
+
+    const refreshBtn = container.querySelector('button[aria-label="common.refresh"]') as HTMLButtonElement;
+    await act(async () => { refreshBtn.click(); });
+    await act(async () => { await Promise.resolve(); });
+
+    // mount 一轮 + 手动刷新附带一轮（静默，失败不打扰）。
+    expect(reconcileRemoteTaskStatuses).toHaveBeenCalledTimes(2);
   });
 
   it('filters the board by issue kind and restores the full list on "all"', async () => {
@@ -555,6 +692,66 @@ describe('RemoteTaskManagementPage (container)', () => {
       (s) => Array.from(s.options).map((o) => o.value).join(',') === 'all,dev,test',
     );
     expect(filterSelect).toBeUndefined();
+  });
+
+  // 任务名搜索（列表检索增强）：纯客户端过滤 + 与类型筛选可组合；清空恢复全量。
+  it('filters the board by task title search (case-insensitive), composes with the kind filter and restores on clear', async () => {
+    getRemoteTasks.mockResolvedValue(baseVm({
+      workspaces: [ws004],
+      lastActiveWorkspaceId: 'ws-004',
+      tasksByWorkspace: {
+        'ws-004': [
+          { id: 'rt-1', workspaceId: 'ws-004', title: '支付模块重构', status: 'queued', kind: 'dev' },
+          { id: 'rt-2', workspaceId: 'ws-004', title: 'PAYMENT regression test', status: 'queued', kind: 'test', readiness: false },
+          { id: 'rt-3', workspaceId: 'ws-004', title: '登录页修复', status: 'queued', kind: 'bug' },
+        ] as RemoteTaskVm[],
+      },
+    }));
+    const { container } = await renderPage();
+
+    const searchInput = container.querySelector('[data-testid="task-search-input"]') as HTMLInputElement;
+    expect(searchInput).toBeTruthy();
+
+    // 受控 input 赋值走原生 setter（绕过 React value tracker，仓库既有测试模式）。
+    const type = async (value: string) => {
+      await act(async () => {
+        const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+        valueSetter.call(searchInput, value);
+        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    };
+
+    // 大小写不敏感子串（拉丁）：'payment' 命中 'PAYMENT regression test'（rt-2）。
+    await type('payment');
+    expect(container.querySelector('[data-testid="task-rt-1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-rt-2"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="task-rt-3"]')).toBeNull();
+
+    // 中文子串：'支付' 只命中 rt-1。
+    await type('支付');
+    expect(container.querySelector('[data-testid="task-rt-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="task-rt-2"]')).toBeNull();
+
+    // 与类型筛选组合（类型 ∩ 标题）：搜索 'payment' + 类型 dev → 空板（rt-2 是 test）。
+    const filterSelect = Array.from(container.querySelectorAll('select')).find(
+      (s) => Array.from(s.options).map((o) => o.value).join(',') === 'all,dev,test',
+    ) as HTMLSelectElement;
+    await type('payment');
+    await act(async () => {
+      filterSelect.value = 'dev';
+      filterSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="task-rt-1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-rt-2"]')).toBeNull();
+
+    // 清空搜索：恢复类型筛选下的全量 dev 列表（搜索不清类型筛选，两者独立）。
+    await type('');
+    expect(container.querySelector('[data-testid="task-rt-1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="task-rt-2"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-rt-3"]')).toBeNull();
+
+    // 纯客户端过滤：全程不产生额外拉取。
+    expect(getRemoteTasks).toHaveBeenCalledTimes(1);
   });
 
   // 移出列表（终态行真删除本地历史；pending/running 行纯视图过滤——按行数据源分派）。
@@ -653,5 +850,35 @@ describe('filterTasksByIssueKind', () => {
 
   it('handles the empty list', () => {
     expect(filterTasksByIssueKind([], 'dev')).toEqual([]);
+  });
+});
+
+// 任务名搜索纯函数：接口层不变量（空/空白查询恒等 + 大小写不敏感子串 + 组合语义由容器测试覆盖）。
+describe('filterTasksByTitle', () => {
+  const tasks = [
+    { id: '1', title: '支付模块重构' },
+    { id: '2', title: 'PAYMENT regression test' },
+    { id: '3', title: '登录页修复' },
+  ] as RemoteTaskVm[];
+
+  it('returns the same list reference for an empty or whitespace-only query', () => {
+    expect(filterTasksByTitle(tasks, '')).toBe(tasks);
+    expect(filterTasksByTitle(tasks, '   ')).toBe(tasks);
+  });
+
+  it('matches case-insensitively as a substring across CJK and Latin titles', () => {
+    expect(filterTasksByTitle(tasks, 'payment')).toEqual([tasks[1]]);
+    expect(filterTasksByTitle(tasks, 'PAYMENT')).toEqual([tasks[1]]);
+    expect(filterTasksByTitle(tasks, '支付')).toEqual([tasks[0]]);
+    expect(filterTasksByTitle(tasks, 'regression')).toEqual([tasks[1]]);
+  });
+
+  it('trims the query before matching', () => {
+    expect(filterTasksByTitle(tasks, '  登录  ')).toEqual([tasks[2]]);
+  });
+
+  it('returns an empty list when nothing matches', () => {
+    expect(filterTasksByTitle(tasks, '不存在的任务')).toEqual([]);
+    expect(filterTasksByTitle([], 'x')).toEqual([]);
   });
 });

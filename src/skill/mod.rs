@@ -2235,8 +2235,7 @@ compatibility: claude-code-only
 
         assert!(!backup.exists(), "backup residue must be consumed");
         assert_eq!(
-            fs::read_to_string(parent.join("my-skill").join("SKILL.md").as_std_path())
-                .unwrap(),
+            fs::read_to_string(parent.join("my-skill").join("SKILL.md").as_std_path()).unwrap(),
             "---\nname: my-skill\n---\nsole copy",
             "sole backup must be recovered into the target dir, not deleted"
         );
@@ -2259,7 +2258,11 @@ compatibility: claude-code-only
         }
         // my-skill 自身目标在位（backup 只可能是已提交的陈旧残留 → 删除语义）。
         fs::create_dir_all(parent.join("my-skill").as_std_path()).unwrap();
-        fs::write(parent.join("my-skill").join("SKILL.md").as_std_path(), "cur").unwrap();
+        fs::write(
+            parent.join("my-skill").join("SKILL.md").as_std_path(),
+            "cur",
+        )
+        .unwrap();
 
         remove_stale_bundle_staging(&parent, "my-skill");
 

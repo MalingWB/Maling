@@ -254,7 +254,12 @@ fn config() -> ResolvedImChannelConfig {
     }
 }
 
-fn session_responses(ws_url: &str, client_config: Value) -> Vec<(u16, String)> {
+/// Owner lookup of a session whose app holds the contact profile scopes.
+fn owner_profile() -> Value {
+    json!({ "code": 0, "data": { "user": { "open_id": OWNER, "name": "Fixture Owner" } } })
+}
+
+fn session_responses(ws_url: &str, client_config: Value, owner: Value) -> Vec<(u16, String)> {
     let token = json!({ "code": 0, "tenant_access_token": "t-1", "expire": 7200 });
     let bot = json!({
         "code": 0,
@@ -264,7 +269,7 @@ fn session_responses(ws_url: &str, client_config: Value) -> Vec<(u16, String)> {
         "code": 0,
         "data": { "URL": ws_url, "ClientConfig": client_config },
     });
-    [token, bot, endpoint]
+    [token, bot, owner, endpoint]
         .into_iter()
         .map(|body| (200, body.to_string()))
         .collect()
@@ -280,10 +285,33 @@ async fn start(
         .0
 }
 
+async fn start_with_owner(owner: Value) -> Started {
+    start_with_session(json!({}), 1, |_| {}, owner, Vec::new())
+        .await
+        .0
+}
+
 async fn start_with_http(
     client_config: Value,
     generation: u64,
     prepare: impl FnOnce(&FeishuConnector),
+    extra_responses: Vec<(u16, String)>,
+) -> (Started, Arc<std::sync::Mutex<Vec<String>>>) {
+    start_with_session(
+        client_config,
+        generation,
+        prepare,
+        owner_profile(),
+        extra_responses,
+    )
+    .await
+}
+
+async fn start_with_session(
+    client_config: Value,
+    generation: u64,
+    prepare: impl FnOnce(&FeishuConnector),
+    owner: Value,
     extra_responses: Vec<(u16, String)>,
 ) -> (Started, Arc<std::sync::Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -291,7 +319,7 @@ async fn start_with_http(
         "ws://{}/ws?service_id=7&ticket=hidden",
         listener.local_addr().unwrap()
     );
-    let mut responses = session_responses(&ws_url, client_config);
+    let mut responses = session_responses(&ws_url, client_config, owner);
     responses.extend(extra_responses);
     let (open, requests) = fixture_server(responses).await;
     let connector = FeishuConnector::for_test(
@@ -416,6 +444,10 @@ async fn owner_message_is_acked_and_observes_the_private_binding() {
                 bot_id: APP_ID.to_owned(),
                 display_name: "Gold Band".to_owned(),
             },
+            owner: Some(crate::im::ImOwnerProfile {
+                actor_id: OWNER.to_owned(),
+                display_name: "Fixture Owner".to_owned(),
+            }),
         }
     );
 
@@ -452,11 +484,36 @@ async fn owner_message_is_acked_and_observes_the_private_binding() {
                 conversation_id: "oc_fixture_p2p".to_owned(),
                 actor_id: OWNER.to_owned(),
                 is_private: true,
+                display_name: Some("Fixture Owner".to_owned()),
             },
         }
     );
     assert!(events.try_recv().is_err(), "only the owner message binds");
 
+    cancellation.cancel();
+    assert_eq!(task.await.unwrap(), Ok(()));
+}
+
+/// The owner lookup runs once per connect with the tenant token. Without the
+/// contact scopes the binding is still observed, only without a name.
+#[tokio::test]
+async fn owner_lookup_failure_keeps_the_binding_without_a_name() {
+    let (listener, _connector, mut events, cancellation, task) =
+        start_with_owner(json!({ "code": 41050, "msg": "no user authority" })).await;
+    let mut server = accept(&listener).await;
+    assert!(matches!(
+        next_event(&mut events).await,
+        ImConnectorEvent::Connected { owner: None, .. }
+    ));
+    send_frame(&mut server, &event_frame(30, "m-owner", RECEIVE_FIXTURE)).await;
+    next_data_frame(&mut server).await;
+    match next_event(&mut events).await {
+        ImConnectorEvent::BindingObserved { binding, .. } => {
+            assert_eq!(binding.actor_id, OWNER);
+            assert_eq!(binding.display_name, None);
+        }
+        other => panic!("expected binding, got {other:?}"),
+    }
     cancellation.cancel();
     assert_eq!(task.await.unwrap(), Ok(()));
 }
@@ -596,6 +653,77 @@ async fn slow_card_callback_gets_a_processing_toast_and_late_reply_is_discarded(
     assert_eq!(task.await.unwrap(), Ok(()));
 }
 
+/// A rejection has no durable record, so once the callback window has closed
+/// (the user saw "Processing") the reason must still reach the chat.
+#[tokio::test]
+async fn slow_card_callback_rejection_is_sent_as_a_follow_up_message() {
+    let ((listener, connector, mut events, cancellation, task), requests) = start_with_http(
+        json!({}),
+        1,
+        |_| {},
+        vec![(
+            200,
+            json!({"code": 0, "data": {"message_id": "om_follow", "chat_id": "oc_private"}})
+                .to_string(),
+        )],
+    )
+    .await;
+    let mut server = accept(&listener).await;
+    assert!(matches!(
+        next_event(&mut events).await,
+        ImConnectorEvent::Connected { .. }
+    ));
+    send_frame(
+        &mut server,
+        &event_frame(26, "m-rejected", &card_event("ev-rejected")),
+    )
+    .await;
+    let context = match next_event(&mut events).await {
+        ImConnectorEvent::InboundAction {
+            response_context, ..
+        } => response_context,
+        other => panic!("expected inbound, got {other:?}"),
+    };
+    let ack = next_data_frame(&mut server).await;
+    let body: Value = serde_json::from_slice(ack.payload.as_deref().unwrap()).unwrap();
+    let reply: Value = serde_json::from_slice(
+        &base64::engine::general_purpose::STANDARD
+            .decode(body["data"].as_str().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reply["toast"]["content"], "Processing");
+
+    let mut source = card::tests::delivery(crate::im::ImNotificationKind::Elicitation, Vec::new());
+    source.display_ref = Some(12);
+    connector
+        .respond_to_action(
+            context,
+            ImActionResponse {
+                state: crate::im::ImActionResponseState::Rejected(
+                    crate::im::ImErrorCode::FormCustomAnswerMissing,
+                ),
+                resolved_by: None,
+                outcome: None,
+                delivery: Some(source),
+            },
+        )
+        .await
+        .unwrap();
+
+    let captured = requests.lock().unwrap().clone();
+    assert_eq!(captured.len(), 5, "session setup and one follow-up message");
+    assert!(captured[4].starts_with("POST /open-apis/im/v1/messages?receive_id_type=open_id "));
+    let message: Value =
+        serde_json::from_str(captured[4].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(message["receive_id"], "ou_owner");
+    let content = message["content"].as_str().unwrap();
+    assert!(content.contains("id=0012"), "{content}");
+    assert!(content.contains("Enter the custom answer"), "{content}");
+    cancellation.cancel();
+    assert_eq!(task.await.unwrap(), Ok(()));
+}
+
 #[tokio::test]
 async fn callback_timeout_is_completed_by_durable_worker_patch() {
     use crate::im::{
@@ -715,9 +843,9 @@ async fn callback_timeout_is_completed_by_durable_worker_patch() {
     let worker = ImDeliveryWorker::new(ImChannelKind::Feishu, repository, connector);
     assert_eq!(worker.dispatch_once(102).await.unwrap(), 1);
     let captured = requests.lock().unwrap().clone();
-    assert_eq!(captured.len(), 4, "only the session setup and one PATCH");
-    assert!(captured[3].starts_with("PATCH /open-apis/im/v1/messages/om_card "));
-    let patch: Value = serde_json::from_str(captured[3].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(captured.len(), 5, "only the session setup and one PATCH");
+    assert!(captured[4].starts_with("PATCH /open-apis/im/v1/messages/om_card "));
+    let patch: Value = serde_json::from_str(captured[4].split("\r\n\r\n").nth(1).unwrap()).unwrap();
     let patched_card: Value = serde_json::from_str(patch["content"].as_str().unwrap()).unwrap();
     let expected = card::action_reply(&response, ImLocale::En, &test_codec());
     assert_eq!(patched_card, expected["card"]["data"]);

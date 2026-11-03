@@ -43,10 +43,23 @@
 ### 2.2 会话工作位置与文件根
 
 - 会话 VM（`AcpSessionVm`、`ConversationSessionLeafVm`）只暴露一个三态 `workLocation`：`main`（项目根）、`worktree { path, branch }`、`unavailable { reason: released | unresolved, path? }`。`released` 表示 worktree 已被收回，`unresolved` 表示 dynamic 节点或其 workspace 无法解析；不可用状态不得折叠成 `main`，避免把项目根文件当作会话文件展示。
-- 右侧文件与源码管理 Tab 的 `root` 是当前会话工作位置在读取时的投影，不写回独立事实源。会话切到另一个根时，选中文件若属于旧根则取消选中；根变为不可用时保留选中文件，恢复后仍可回到原文件。
-- 根不可用时，文件与源码管理 Tab 分别展示“会话工作树已收回 / 不可用”、原路径和“浏览主工作区”按钮。按钮只作用于当前 Tab（`browseMain`），会话重新可用后该选择失效；不自动回落项目根。
+- 右侧文件与源码管理 Tab 的 `root` 是当前会话工作位置在读取时的投影，不写回独立事实源。会话切到另一个根时，普通目录选中的文件若属于旧根则取消选中；由产物、会话变更或 Git 来源显式打开的文件保留自身来源根，读取、定位与 watcher 都按该来源根执行。根变为不可用时保留选中文件，恢复后仍可回到原文件。
+- 固定来源文件打开后，从文件预览标题栏再次“引用到对话”必须沿用资源已有的 `source`：Git 文件保留原工作位置，会话文件保留完整 locator 与 change identity。受控交付附件即使解析为 `scope=external`、没有 workspace 相对路径，也保留引用按钮及完整 manifest 来源；从消息引用或交付附件卡片打开时遵守同一契约。展示文件名取自已解析路径，不能代替来源身份。不得从展示用的相对路径重新生成普通 workspace 来源；没有固定来源的外部文件仍不提供引用，普通目录文件继续按接收会话工作目录解析。
+- 根不可用时，文件与源码管理 Tab 分别展示“会话工作树已收回 / 不可用”、原路径和“浏览主工作区”按钮；若当前选中的文件来自固定来源，文件详情仍按来源根显示，目录侧保持接收会话的不可用状态。按钮只作用于当前 Tab 的目录根（`browseMain`），会话重新可用后该选择失效；不自动回落项目根，也不丢弃固定来源文件。
 - 后端所有文件命令接收可选 `workspacePath`（`None` 为项目根）。非项目根必须是与项目共享 Git common dir 的 linked worktree 顶层目录，子目录、其他仓库和不存在的路径分别返回 `workspace-file.workspace-unavailable` / `workspace-file.workspace-outside-project`（参数 `workspacePath`）。Git 校验（两次 rev-parse）只在首次访问该根时执行，结果进入 32 项有界 LRU，按 project + 规范路径为键并在每次命中时复核目录存在与 `.git` 指针内容，worktree 被收回或替换后立即失效重验。
 - 文件 watcher、前端目录树、正文代际和 watch 引用计数都以 `projectId + workspacePath` 为身份。watch 事件携带工作位置身份（linked worktree 路径，项目根为 `None`），前端按身份精确路由，不用路径前缀猜测，因此嵌套在项目目录内的 dynamic worktree 不会被主根和 worktree 根重复刷新。被监听的根目录消失时发送 `invalidated`。停止文件监听与 Git 状态监听不做 Git 校验，已收回的 worktree 仍能释放监听。
+
+### 2.3 产物与变更文件 Tab 操作
+
+2026-10-28 已为产物 Tab、工作流交付附件 Tab、变更文件 Diff / 历史版本 Tab 增加共用右键菜单，依次提供“复制绝对路径、复制相对路径、在文件管理器中打开、引用到对话”。本地 Git / Commit / PR 比较 Tab 使用相同操作，目标是其明确本地工作目录下的当前文件。实现与验证记录见[产物与变更文件 Tab 右键操作技术方案](../../../开发计划/新UI/产物与变更文件Tab右键操作技术方案.md)。
+
+- 产物路径由其固定来源的运行目录解析；工作流交付附件以来源 attempt 的 attachments 目录为基准，从 finalized manifest 按 changeSetId + attachmentId 定位；变更文件路径指向来源工作目录下的对应逻辑文件，不指向 CAS 历史正文。相对路径分别以来源 attempt 运行目录、附件目录、来源工作目录为基准。
+- 交付附件的预览与操作元数据读取共用 manifest 路径和附件根校验，拒绝被替换为 symlink / Windows junction 的附件根。预览在 canonicalize 前先校验根，再确认目标为普通文件且仍位于该根内；子目录链接也不得将读取带到根外。
+- “引用到对话”复用结构化文件上下文，引用当前物理文件；既有“引用 Diff”继续保留。现有 `workspaceFiles` 元素区分工作空间、产物、工作流交付附件、会话变更和 Git 文件来源，草稿、提交、持久化、队列、下发和消息 chip 保留原始来源；发送时再次校验，不冻结添加时的正文。队列恢复先还原完整来源，再补齐展示元数据，用户编辑后不被迟到结果覆盖。
+- 缺失文件或已收回工作树只能复制可靠记录路径；文件管理器和文件引用动作不可用，不自动回退主工作区或使用历史版本代替当前文件。菜单不触发目录定位、分支切换或后台 Tab 正文加载。
+- 菜单按需加载元数据，支持键盘操作。执行前核对被右键 Tab 的完整来源；引用的异步校验期间切换 Composer 时丢弃结果，避免添加到其他会话。没有可接收文件的 Composer 时禁用引用。
+- 工作流交付附件的集成验收从消息中的附件卡片点击开始，经过真实 `RightWorkspaceProvider` 和 Dock 验证四项菜单、两种路径复制、受控文件管理器调用与文件引用；不能仅用手工构造的 Tab 替代入口回归。对应测试为 `web/tests/workflow-attachment-tab-menu.test.tsx`。
+- Rust 回归同时覆盖任务 prompt 渲染、定时任务持久化前校验、定时续聊和停止会话的队列摘要；普通工作空间文件使用 `Workspace` 来源，续聊断言完整来源与项目、路径，确保来源联合迁移后原有入口仍可编译并执行。
 
 ## 3. 查看格式
 
@@ -71,7 +84,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - Markdown 使用 `@atomic-editor/editor` 的 CodeMirror 6 公开扩展实现实时预览，不创建 HTML/富文本副本，也不执行 DOM 到 Markdown 的反向序列化。
 - Markdown renderer 的构建契约要求 React、CodeMirror 与 Lezer 的身份敏感运行时包在 Vite 产物中保持单实例；生产构建与 Vitest 共用同一份显式 dedupe 清单。包管理器允许存在的多版本或重复物理副本不得改变 parser、Facet、StateField、Context 与 decoration 的模块身份，也不得使实时预览静默退化为源码展示。
 - 用户可直接编辑标题、强调、列表、任务项、链接、代码块和表格；当前结构的 Markdown 标记按成熟组件规则显露。
-- 实时预览正文基准字号为 14px，标题、表格、代码块继续使用相对层级，不放大成文档页式展示。
+- 实时预览正文随面板可用宽度伸缩，保留左右各 `1rem` 留白，不设固定字符行宽或居中窄栏。正文继承编辑器字体与字号偏好，内置主题默认 `13px`，用户自定义值保持不变；标题、表格、代码块继续使用相对层级，不放大成文档页式展示。
 - 内容区域右上角提供“复制 Markdown 源码”和“源码 / 实时预览”两个悬浮按钮。Markdown 默认打开实时预览：编辑器等预览扩展就绪后直接以渲染模式创建，不先展示源码。扩展加载失败时才进入源码，眼睛按钮会重新加载并切回预览。按钮图标表示当前正文实际所在的模式。复制内容取自当前 `EditorState.doc`，包含尚处于自动保存等待期的最新输入。
 - Markdown 始终只挂载一个、身份稳定的 CodeMirror `EditorView`。源码 / 预览是同一编辑器的展示状态，不参与 React `key`，也不通过 props 替换整套扩展。基础扩展拓扑固定，并按生命周期拆成语言、模式、编辑策略三个稳定 `Compartment`：Markdown/GFM language parser 在文档生命周期内持续挂载，源码/预览切换只能重配置展示模式，不能卸载或替换 parser；每个 Compartment 以及独立通过 StateEffect 更新的图片配置都记录已应用 profile，首次 View 创建后不得为相同 profile 再 dispatch，只有对应领域状态真实变化时才允许 reconfigure/update，避免大型 widget 挂载后发生冗余同步布局。普通文本块的视口锚点为源码位置与块内像素偏移；Atomic table 使用“源码 Table 范围 + 渲染行索引 + 行内进度”，通过 CodeMirror 公共 `domAtPos()` 关联 widget DOM，并利用稳定 Markdown parser 在源码行与 `thead/tbody/tr` 之间双向映射，禁止把整个表格像素百分比直接换算成整个 Table 的字符百分比；其他 range widget 保存源码范围、组件内相对进度及往返语义位置。模式 transaction 先用官方 `EditorView.scrollIntoView` 把目标范围带入视口；固定 `scrollHandler` 在 CodeMirror 完成新 decoration 测量、准备执行该滚动目标时，使用真实 widget 几何恢复组件内部位置。巨型 widget 触发 CodeMirror 单次 viewport 稳定上限时，只允许在下一布局帧补发一次官方 measure 调度以消费仍待处理的滚动目标，不做固定帧轮询或 ResizeObserver 重试。视口顶部采样向内容区内缩 1px，避免浮点边界把已恢复的源码行误判成上一行；源码态顶部仍位于同一表格行时，反向切换复用该行原锚点。禁止读取 Atomic 私有 model、销毁 View、估算 widget 高度、保存全局裸 `scrollTop` 或同时常驻两个编辑器。
 - Atomic table、Markdown 图片与 README decoration 只在模式 Compartment 内显式重配置，不随 React extensions props 反复重组；Markdown/GFM parser 只位于语言 Compartment。这样 table `StateField` 每次进入预览时都消费同一棵持续增长的语法树，长文档从源码返回预览不会因重新解析尚未完成而退化成原始 Markdown。图片授权状态继续由稳定 `StateField + StateEffect` 更新；源码切到预览前，对当前源码视口及有限 overscan 内已有 preview grant 的图片执行 `HTMLImageElement.decode()`，解码完成或明确失败后再原子提交模式 transaction。图片 URL 与 token 不因模式切换释放，禁止用截图、遮罩、淡入或固定延迟掩盖重挂载闪烁。
@@ -113,6 +126,8 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - `turn-attachment` 不接受前端绝对路径。后端必须先以完整 attempt locator、branch、changeSetId 和 attachmentId 查询 finalized manifest，验证 branch ownership，再在 attempt `attachments/` 根内解析 manifest 相对路径；canonicalize 后越界、缺失、非普通文件或 symlink escape 一律拒绝。验证通过后才可复用工作空间外精确读写 grant 与 watcher。
 - 图片不使用 `file://`。Rust 完成文件签名、字节数、像素数和 revision 校验后签发 `WorkspaceFilePreviewGrantVm { token, expiresAtMs }`；SVG 禁止原始 DOM 注入和外部资源加载。
 - Markdown 图片不使用组件默认的原始 `<img src>`：工作空间内图片以及工作空间外 Markdown 同目录/子目录相对图片自动签发 preview grant；文档目录外引用按当前文档统一确认一次，且只授权文档实际引用的精确文件。grant 到期前按当前引用批量原子轮换，新 token 生效后再释放旧 token；页面重新可见、图片加载失败或开发后端重启导致内存 grant 丢失时幂等补发。UNC 和危险 scheme 不加载；网络图片不经过 preview grant，只有 host 已受信任时才直接加载。
+- ACP 会话中的本地 Markdown 图片复用安全预览接口，以现有 project/session identity 与 canonical `workLocation` 绑定 workspace/worktree；不借用文件面板当前浏览的目录，不在工作位置未就绪或已释放时回落主项目。只有 canonical root 内图片自动签发 grant，越界、软链接逃逸、UNC 和危险协议拒绝；文档来源继续沿用真实 Markdown 文件及精确批准集合。
+- 对话 Markdown 的本地链接与图片在 Streamdown 的 HAST 阶段统一适配，保留 sanitize/harden；不修改代码片段，不把内部定位代理发往网络。仅近视口图片申请 grant，按会话去重并限制并发/引用量；总驻留像素复用 `imagePreviewMaxPixels` 作为预算。离屏、页面隐藏、切换身份及卸载释放引用，迟到 grant 立即回收；重新可见后重新申请，不把已释放 token 再交给 `<img>`。图片点击使用 canonical 文件路径打开工作区，token 仅用于受控预览，不交给系统 opener。
 - 所有文件错误继续使用 `CommandErrorVm { code, params }`；Rust 不产生对客文案，前端同步维护中英文恢复提示。
 - “在文件管理器中显示”必须先由 Rust 按当前 project/attempt 根目录解析相对路径、执行 canonicalize 并完成越界校验，再把已授权 canonical path 交给官方 `tauri-plugin-opener` 的 `reveal_item_in_dir`。工作空间与运行/会话目录复用同一平台抽象，不在业务代码中拼接 Explorer 参数，也不维护 `xdg-open`/Finder 分支。
 
@@ -168,6 +183,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - 复用现有 mutation journal、CAS、comparison identity 和组件，不新增 schema、依赖或持久队列；本次不新增历史迁移，不重写已有记录。
 
 - 右侧工作区增加 `file-version`、`file-diff` 与 `conversation-asset` 三类只读资源。历史版本 key 包含 change set/change identity，同一路径不同 turn 不复用错误内容；消息附件和 artifact key 包含完整 attempt/branch locator。
+- 追问附件的 `name` 只用于展示，持久 `path` 为 `user-inputs/<原始文件 BLAKE3 摘要前缀>/<存储名>`，存储名可能因路径预算被截短，展示只使用 `name`。同名不同内容必须独立保存、打开独立 Tab；同一完整 locator/path 重复点击复用已有 Tab。已打开草稿预览仍拥有自己的附件 id 与 Object URL，发送追问后不得按文件名猜测路径或把已发送图片关联到旧草稿。历史已覆盖附件不在预览读取时自动扫描 raw 或恢复。
 - `file-diff` 使用官方 `@codemirror/merge` 的 `unifiedMergeView`，固定只读、无 merge controls，开启 gutter、变化高亮和未修改区折叠。标题使用“本轮修改 Diff”，比较当前已记录编辑或精确衔接链的首尾端点，而不是 live workspace；不同范围的断链编辑各自拥有独立 comparison identity；仅当官方 changed chunk 数量至少为 2 时展示上一处/下一处导航。viewer 必须跟随右侧工作区容器宽度并启用 `EditorView.lineWrapping`，长行在当前可视宽度内换行，不产生页面级横向滚动。普通文件与 diff 复用同一语言加载、主题和 syntax highlight extension；新增片段的主题选择器必须命中同一编辑器根节点 `&.cm-merge-b`，显式移除 merge 默认 background image，只保留实色语义背景。只读 diff/version viewer 不安装 CodeMirror 自绘 selection layer，使用应用级 `--text-selection` / `--text-selection-foreground` 原生选中态，避免 diff 标记背景遮挡深色模式选区；普通 CodeMirror 自绘选区也必须使用同一 selection token。
 - 所有复用统一 viewer 的 Turn、Git worktree、Commit 与 GitHub PR Diff 保留 CodeMirror 官方行级与字符级 Diff：新增/删除行使用 10% 语义背景，`.cm-deletedText` / `.cm-changedText` 字符变化层统一降为 12% 语义背景并移除默认 background image，避免两层叠加后过重。merge viewer 继续使用 CodeMirror 默认 active line 与 chunk range 导航；用户主动框选文本仍使用应用级 selection token。
 - 打开 `file-diff` / `file-version` 属于普通只读浏览，即使捕获或渲染存在限制也不得显示 Tab 黄点；限制仅在 viewer 内说明。变更列表的“修改”文件图标使用主题 `gold-running` 蓝色语义 token，不使用固定琥珀色；新增/删除仍使用各自的成功/破坏性语义色。

@@ -29,6 +29,19 @@ function fakeT(prefix: string) {
 }
 
 describe('acpRuntimeErrorBannerCopy', () => {
+  it.each(['zh-CN', 'zh-TW', 'en', 'ja-JP', 'ko-KR', 'pt-BR', 'es'] as const)(
+    'shows the minimum Claude ACP version in %s', async (language) => {
+      await loadI18nLanguage(language);
+      const copy = acpRuntimeErrorBannerCopy(i18n.getFixedT(language), runtimeError({
+        code: { domain: 'config', code: 'acp.subagent-protocol-upgrade-required' },
+        params: { minimumVersion: '0.90.0' },
+      }));
+      expect(copy).toContain('Claude ACP');
+      expect(copy).toContain('0.90.0');
+      expect(copy).not.toContain('{{minimumVersion}}');
+      expect(copy).not.toContain('errors.acp.');
+    },
+  );
   it('keeps the ACP AuthRequired reason visible once in the existing error banner', async () => {
     await loadI18nLanguage('zh-CN');
     const error = runtimeError({
@@ -136,6 +149,18 @@ async function zhCnT() {
 }
 
 describe('acpRuntimeErrorBannerCopy with catalog copy', () => {
+  it('explains how to recover when the provider session reference is missing', async () => {
+    const copy = acpRuntimeErrorBannerCopy(await zhCnT(), runtimeError({
+      code: { domain: 'provider', code: 'acp.session-restore-reference-missing' },
+      domain: 'provider',
+      diagnostic: 'ACP continue requires an existing provider session reference',
+    }));
+
+    expect(copy).toBe(
+      '当前 ACP 会话缺少 Provider 会话引用，无法恢复原会话。请新建会话后重新发送消息。\nACP continue requires an existing provider session reference',
+    );
+  });
+
   it('localizes dynamic completion repair exhaustion by error code', async () => {
     const t = await zhCnT();
 

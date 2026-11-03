@@ -129,6 +129,50 @@ pub fn save_scheduled_runtime_settings(
     Ok(scheduled_runtime_settings_vm(&context.config, power))
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptQueueSettingsVm {
+    pub confirm_interrupt: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptQueueSettingsInputVm {
+    pub confirm_interrupt: bool,
+}
+
+#[tauri::command]
+pub fn get_prompt_queue_settings(
+    state: State<'_, DesktopState>,
+) -> CommandResult<PromptQueueSettingsVm> {
+    let context = state.context().map_err(command_error)?;
+    Ok(PromptQueueSettingsVm {
+        confirm_interrupt: context.config.confirm_queued_prompt_interrupt,
+    })
+}
+
+#[tauri::command]
+pub async fn save_prompt_queue_settings(
+    state: State<'_, DesktopState>,
+    input: PromptQueueSettingsInputVm,
+) -> CommandResult<PromptQueueSettingsVm> {
+    let app = state.app().map_err(command_error)?;
+    let settings = spawn_blocking_command(move || {
+        let mut settings = app.load_settings().map_err(command_error)?;
+        settings.confirm_queued_prompt_interrupt = Some(input.confirm_interrupt);
+        app.save_settings(&settings).map_err(command_error)?;
+        Ok(settings)
+    })
+    .await?;
+    state
+        .update_settings_config(&settings)
+        .map_err(command_error)?;
+    let context = state.context().map_err(command_error)?;
+    Ok(PromptQueueSettingsVm {
+        confirm_interrupt: context.config.confirm_queued_prompt_interrupt,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationRunModeSettingsVm {
@@ -289,6 +333,45 @@ pub async fn get_conversation_task_page(
         "conversation task page loaded"
     );
     result
+}
+
+#[tauri::command]
+pub async fn get_conversation_task_summary(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+    task_uuid: Option<String>,
+) -> CommandResult<crate::view_models_conversation::ConversationTaskRowVm> {
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let state = context.app().load_state().map_err(command_error)?;
+        let (workspace_path, project_id) = workspace_entry_for_project(&state, &project_id)
+            .ok_or_else(|| CommandErrorVm::new("workspace.not-found", serde_json::json!({})))?;
+        let app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+        let pin = state
+            .conversation_pins
+            .iter()
+            .find(|pin| pin.project_id == project_id && pin.task_id == task_id);
+        let row = crate::view_models_conversation::conversation_task_row_vm(
+            &app,
+            &project_id,
+            &task_id,
+            pin.is_some(),
+            pin.map(|pin| pin.order),
+        )
+        .map_err(command_error)?;
+        if task_uuid
+            .as_ref()
+            .is_some_and(|expected| row.task_uuid.as_ref() != Some(expected))
+        {
+            return Err(CommandErrorVm::new(
+                "task.not-found",
+                serde_json::json!({ "taskId": task_id }),
+            ));
+        }
+        Ok(row)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1319,9 +1402,8 @@ fn conversation_search_result_for_workspace(
     workspace_name: String,
     result: gold_band::storage::sqlite::TaskSearchResult,
 ) -> Option<crate::view_models_conversation::ConversationSearchResultVm> {
-    let latest_run = workspace_app
-        .task_summary(&result.task_id)
-        .ok()?
+    let summary = workspace_app.task_summary(&result.task_id).ok()?;
+    let latest_run = summary
         .latest_run
         .as_ref()
         .map(crate::view_models_conversation::conversation_run_summary_vm)?;
@@ -1335,6 +1417,7 @@ fn conversation_search_result_for_workspace(
     Some(
         crate::view_models_conversation::ConversationSearchResultVm {
             project_id,
+            task_uuid: summary.task.uuid,
             workspace_path,
             workspace_name,
             task_id: result.task_id,
@@ -1457,7 +1540,11 @@ pub fn get_conversation_run_mode(
                 serde_json::json!({ "projectId": project_id }),
             )
         })?;
-    let initial = app.config.default_execution_profile.as_ref().map(|profile| profile.initial_run_mode());
+    let initial = app
+        .config
+        .default_execution_profile
+        .as_ref()
+        .map(|profile| profile.initial_run_mode());
     Ok(state
         .conversation_run_modes
         .get(&resolved_project_id)
@@ -2994,7 +3081,7 @@ mod tests {
                 id: task_id.to_string(),
                 title: Some("Searchable conversation".to_string()),
                 description: None,
-                uuid: None,
+                uuid: Some("search-task-uuid".to_string()),
             },
         )
         .unwrap();
@@ -3044,6 +3131,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.project_id, "project-a");
+        assert_eq!(result.task_uuid.as_deref(), Some("search-task-uuid"));
         assert_eq!(result.workspace_path, root.as_str());
         assert_eq!(result.latest_run.unwrap().run_id, run_id);
         let _ = std::fs::remove_dir_all(root.as_std_path());
@@ -3176,6 +3264,48 @@ mod tests {
         assert_eq!(binary_content.metadata["encoding"], "binary");
         assert_eq!(binary_content.metadata["isImage"], false);
         let _ = std::fs::remove_dir_all(root.as_std_path());
+    }
+
+    #[test]
+    fn shows_same_named_message_images_from_distinct_content_addressed_paths() {
+        use gold_band::provider::{AttachmentProjectionPolicy, resolve_user_input_attachments};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let attempt_dir = root.join("attempt-001");
+        let mut attachments = Vec::new();
+        for (index, color) in [[255, 0, 0], [0, 0, 255]].into_iter().enumerate() {
+            let source = root.join(index.to_string()).join("image.png");
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            image::RgbImage::from_pixel(2, 2, image::Rgb(color))
+                .save(&source)
+                .unwrap();
+            let bytes = std::fs::read(&source).unwrap();
+            let resolved = resolve_user_input_attachments(
+                &[source.to_string()],
+                &attempt_dir,
+                AttachmentProjectionPolicy::from(&gold_band::config::RuntimeConfig::default()),
+            )
+            .unwrap();
+            attachments.push((resolved[0].meta.clone(), bytes));
+        }
+        assert_ne!(attachments[0].0.path, attachments[1].0.path);
+        // Read both after publication, then reopen the first: each locator must keep its bytes.
+        for index in [0, 1, 0] {
+            let (meta, bytes) = &attachments[index];
+            let content =
+                message_attachment_content_from_attempt_dir(&attempt_dir, &meta.name, &meta.path)
+                    .unwrap();
+            assert_eq!(content.title, "image.png");
+            assert_eq!(content.kind, "message-attachment");
+            assert_eq!(content.metadata["path"], meta.path);
+            assert_eq!(content.metadata["mimeType"], "image/png");
+            assert_eq!(content.metadata["encoding"], "data-url");
+            assert_eq!(
+                content.content,
+                format!("data:image/png;base64,{}", base64_encode(bytes))
+            );
+        }
     }
 
     #[test]

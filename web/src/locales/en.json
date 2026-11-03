@@ -587,6 +587,7 @@
     "closeWorkspace": "Collapse right workspace",
     "openNewTab": "Open new tab",
     "closeTab": "Close tab",
+    "panelFailed": "This tab couldn't be displayed",
     "allTabs": "All tabs",
     "attention": "Needs attention",
     "files": "Workspace",
@@ -632,6 +633,8 @@
       "switchToTreeView": "Switch to folder tree",
       "copyAbsolutePath": "Copy absolute path",
       "copyRelativePath": "Copy relative path",
+      "relativeToRunDirectory": "Relative to the run directory",
+      "relativeToAttachmentDirectory": "Relative to the attachment directory", "relativeToSourceWorkspace": "Relative to the source working directory",
       "openWorkspaceFile": "Open workspace file",
       "referenceToConversation": "Reference in conversation",
       "removeWorkspaceReference": "Remove file reference",
@@ -818,6 +821,12 @@
       "workspace-outside-project": "The selected worktree does not belong to this project.",
       "ref-changed": "The change list was updated. Try again.",
       "sync-ref-changed": "The branch changed. Try again.",
+      "push-upstream-invalid": "The branch's upstream could not be resolved. Check its tracking configuration and try again.",
+      "push-upstream-unsupported": "This branch tracks a local branch. Pushing to a local upstream is not supported.",
+      "push-branch-not-current": "The current branch changed. Reopen the push confirmation.",
+      "push-remote-required": "Select a remote to publish to.",
+      "push-confirmation-required": "Confirm the source branch and push target first.",
+      "push-target-changed": "The source branch or push target changed. Confirm again.",
       "repository-locked": "Another repository write operation is running.",
       "workspace-locked": "Another workspace write operation is running.",
       "operation-in-progress": "A Git operation is still in progress. Complete or abort it and try again.",
@@ -925,7 +934,9 @@
       "composer-history-query-failed": "Could not load input history. Please try again.",
       "turn-execution-failed": "This message could not be processed. Try again.",
       "session-request-failed": "The session could not be prepared. Try again.",
+      "session-restore-reference-missing": "This ACP session is missing its Provider session reference, so the original session cannot be resumed. Start a new session and send the message again.",
       "missing-provider": "The current node is missing provider configuration.",
+      "subagent-protocol-upgrade-required": "Update Claude ACP to {{minimumVersion}} or later, then try again.",
       "session-config-value-unavailable": "The selected session configuration is no longer available. Choose another value from the latest list.",
       "active-prompt-blocks-config-save": "A session is currently running. Stop it before saving the configuration.",
       "invalid-conversation-branch-id": "This Agent conversation link is invalid or no longer available.",
@@ -987,7 +998,10 @@
         "folder-not-found": "Selected folder could not be found",
         "folder-not-directory": "Selected path is not a folder",
         "folder-read-failed": "Selected folder could not be read completely",
-        "no-markdown-files": "No Markdown files found in the selected folder"
+        "no-markdown-files": "No Markdown files found in the selected folder",
+        "file-not-found": "Selected file could not be found",
+        "file-not-markdown": "Selected file is not a Markdown file",
+        "no-files": "No files selected"
       }
     },
     "manual-check": {
@@ -996,7 +1010,8 @@
     "runtime": {
       "io": {
         "storage-full": "The disk is full and this execution was interrupted. Free up space before continuing.",
-        "permission-denied": "Unable to write session data. Check the directory write permissions."
+        "permission-denied": "Unable to write session data. Check the directory write permissions.",
+        "attachment-path-too-long": "This conversation is stored too deep in the data folder to save the attachment \"{{name}}\". Start a new conversation and send it there."
       },
       "conversation-not-available": "The workflow is running, so a normal message cannot be sent yet.",
       "continue-not-available": "This node does not need to continue. It may already have resumed, or it may no longer be resumable.",
@@ -1023,7 +1038,6 @@
       "workspace-file-read-failed": "Could not read the referenced file metadata. Try again.",
       "workspace-file-count-exceeded": "Context can contain at most {{max}} references and attachments.",
       "session-restore-unsupported": "This Agent cannot restore an existing session.",
-      "session-restore-reference-missing": "This session is missing its Provider session reference.",
       "history-sync-unsupported": "This Agent cannot synchronize the full history of an existing session.",
       "prompt-empty": "Enter a message to send.",
       "prompt-quote-invalid": "The quoted text is invalid. Remove it and quote the message again.",
@@ -1041,11 +1055,18 @@
       "prompt-queue-empty": "The pending queue is empty.",
       "prompt-queue-revision-conflict": "The pending order changed. Try again after the list updates.",
       "prompt-queue-invalid-order": "The pending order is invalid. Try again.",
+      "prompt-queue-invalid-mode": "The send mode is invalid.",
       "prompt-queue-session-busy": "Stop the active session before using a queued prompt manually.",
+      "prompt-queue-interrupt-timeout": "The current reply is still stopping. The message stays queued; try again shortly.",
+      "prompt-queue-dispatch-settling": "The previous reply has not fully finished. The message was returned to the queue; try again shortly.",
       "prompt-session-busy": "The previous message is still processing. Wait or stop the current response first.",
       "prompt-submission-conflict": "This message identifier is already associated with different content. Send it again.",
       "prompt-submission-missing": "The accepted message content could not be read. Send it again.",
       "prompt-queue-storage-failed": "The pending queue could not be saved. Try again.",
+      "composer-draft-empty": "There is nothing to save.",
+      "composer-draft-full": "Drafts are full. You can keep up to {{max}}.",
+      "composer-draft-not-found": "This draft no longer exists.",
+      "composer-draft-storage-failed": "Cannot access drafts. Try again.",
       "execution-plan": {
         "not-found": "This run has no execution plan.",
         "revision-conflict": "The execution plan changed. Reload and try again.",
@@ -1112,6 +1133,7 @@
       "source-not-configured": "Task source is not configured. Connect first."
     },
     "multica": {
+      "attachment-stage-failed": "Failed to download task attachments: {{message}}",
       "auth-failed": "Multica authentication failed: {{message}}",
       "claim-conflict": "This task has already been claimed by another daemon.",
       "connect-cancelled": "Connection cancelled.",
@@ -1121,6 +1143,8 @@
       "runtime-offline": "Runtime is not ready. Please try again shortly.",
       "session-resume-failed": "Session resume failed. It will rerun as a new task.",
       "task-not-found": "This multica task could not be found.",
+      "upstream-pull-invalid-decision": "Invalid decision. Please check and try again.",
+      "upstream-pull-not-pending": "This pull has already finished; no choice is needed.",
       "workspace-already-bound": "This workspace is already bound.",
       "workspace-not-found": "This workspace binding could not be found."
     },
@@ -1317,7 +1341,6 @@
     "builtInSectionDescription": "Fixed roles that can be opened as drafts and saved as new custom roles.",
     "customSectionTitle": "Custom Roles",
     "customSectionDescription": "Custom roles you created are listed here.",
-    "customProfilesPageRange": "Custom roles {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "Built-in roles cannot be saved directly. Save them as a new role instead.",
     "emptyContent": "No role content yet",
     "profileRequired": "Name and summary are required.",
@@ -1450,10 +1473,12 @@
       }
     },
     "importProfile": "Import Roles",
-    "importSettingsDescription": "Batch import role Markdown files from a folder. Missing names and summaries are filled automatically.",
+    "importSettingsDescription": "Batch import from a folder or select role Markdown files directly. Missing names and summaries are filled automatically.",
     "importDynamicTemplateDescription": "When enabled, all imported roles are treated as dynamic templates; invalid bodies are downgraded to static.",
     "importPickFolder": "Choose folder and import",
     "importPickFolderTitle": "Choose a folder containing role Markdown files",
+    "importPickFiles": "Choose files and import",
+    "importPickFilesTitle": "Choose role Markdown files",
     "importResultTitle": "Import Results",
     "importResultSummary": "Scanned {{total}} files: {{success}} succeeded, {{failed}} failed.",
     "importResultImported": "Imported",
@@ -2028,6 +2053,10 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
+    "pushTargetRemote": "Target remote",
+    "pushPreparing": "Preparing push target…",
+    "pushSetUpstream": "Set the target branch as upstream after publishing successfully.",
     "remote": "Remote",
     "name": "Name",
     "startPoint": "Start point",
@@ -2330,9 +2359,37 @@
       "editDraftOccupied": "Finish the current composer draft first",
       "restoreDraftConflict": "The composer changed before this queued message could be restored.",
       "reorder": "Reorder queue",
-      "use": "Use",
+      "sendNow": "Send now",
       "delete": "Delete",
-      "enqueue": "Add to queue"
+      "enqueue": "Add to queue",
+      "autoSend": "Auto send",
+      "modeTooltip": "When on, pending messages are sent one by one after each reply finishes. When off, they stay in the queue until you choose \"Send now\".",
+      "paused": {
+        "stopped": "Paused: session stopped",
+        "failed": "Paused: last send failed"
+      },
+      "resume": "Resume",
+      "resumeLabel": "Resume auto send",
+      "moreActions": "More actions",
+      "clear": "Clear pending",
+      "clearConfirmTitle": "Clear the pending queue?",
+      "clearConfirmDescription": "{{count}} pending messages will be removed. This cannot be undone.",
+      "clearConfirmAction": "Clear pending",
+      "interruptConfirmTitle": "Send this message now?",
+      "interruptConfirmDescription": "The current reply will be stopped before this message is sent.",
+      "interruptConfirmSkip": "Don't ask again",
+      "interruptConfirmAction": "Stop and send"
+    },
+    "composerDrafts": {
+      "title": "Drafts",
+      "titleWithCount": "Drafts ({{count}})",
+      "count": "{{count}}/{{max}}",
+      "save": "Save to drafts",
+      "empty": "No drafts yet",
+      "take": "Move to input",
+      "takeOccupied": "Handle the current input first",
+      "delete": "Delete draft",
+      "takeConflict": "The input is not empty. The draft remains in the draft box."
     },
     "sending": "Sending",
     "sendFailed": "Send failed",
@@ -2450,7 +2507,8 @@
       "output": "Output",
       "cacheRead": "Cache Read",
       "cacheWrite": "Cache Write",
-      "total": "Total"
+      "total": "Total",
+      "excludesBackground": "Excludes usage from background wake-ups"
     },
     "hiddenRemoteTaskContext": "Hidden remote task context"
   },
@@ -2546,7 +2604,14 @@
     "im": {
       "title": "IM remote intervention and notifications",
       "enabled": "Enabled",
+      "channelEnabled": "Enable {{channel}} remote intervention",
+      "channelSubtitle": "Bot · Private chat",
+      "expandChannel": "Expand {{channel}} settings",
+      "collapseChannel": "Collapse {{channel}} settings",
+      "receiverAccount": "Recipient account",
+      "robotName": "Bot name",
       "privateBinding": "Private chat: {{name}}",
+      "privateBindingUnnamed": "Private chat bound",
       "notificationKinds": "Notification types",
       "notificationGroups": {
         "needsAction": "Needs your action",
@@ -2567,6 +2632,8 @@
         "notConfigured": "{{channel}} is not connected. Connect it to configure remote intervention and notifications.",
         "connect": "Scan to connect",
         "reauthorize": "Authorize again",
+        "changeApp": "Change Feishu app",
+        "changeAppWarning": "Completing authorization replaces the current Feishu app and clears the existing private-chat binding. Bind again with the new bot.",
         "generating": "Generating QR code…",
         "waiting": "Scan with {{channel}} and confirm authorization",
         "expiresIn": "QR code expires in {{countdown}}",
@@ -2579,10 +2646,12 @@
       "channels": {
         "weCom": {
           "title": "WeCom",
+          "identityLabel": "Bot ID",
           "identity": "Bot ID: {{id}}"
         },
         "feishu": {
           "title": "Feishu / Lark",
+          "identityLabel": "App ID",
           "identity": "App ID: {{id}}",
           "singleDeviceHint": "Connect each bot to only one device so actions do not reach another device.",
           "permissions": {
@@ -2590,6 +2659,7 @@
             "send": "Send you messages",
             "receive": "Read private messages you send to the bot",
             "update": "Update cards sent by the bot",
+            "profile": "Read your name to show the receiving account",
             "confirm": "Agree and generate QR code"
           },
           "resetBinding": {
@@ -2847,6 +2917,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "Show all {{count}}",
       "showLess": "Show less"
+    },
+    "promptQueue": {
+      "title": "Pending messages",
+      "description": "While a reply is in progress, \"Send now\" stops the current reply first.",
+      "confirmInterrupt": "Confirm before \"Send now\" interrupts a reply"
     }
   },
   "conversation": {
@@ -2938,6 +3013,8 @@
         "removeTask": "Remove from list",
         "removeTaskHint": "Removed on this side only; refresh restores it",
         "removeTaskTerminalHint": "Removes the local completion record; it will not reappear on refresh",
+        "rerunTask": "Re-run",
+        "rerunBadge": "Re-run",
         "addWorkspace": "Add Workspace",
         "noWorkspacesBound": "No workspaces bound",
         "status": {
@@ -2965,7 +3042,8 @@
     "composer": {
       "remoteNeedLocalWorkspace": "Add a local workspace before running a requirement",
       "remoteBindingTag": "{{source}} · {{title}}",
-      "removeRemoteBinding": "Unbind task"
+      "removeRemoteBinding": "Unbind task",
+      "remoteAttachmentHint": "Remote task attachment; downloaded and attached automatically on send"
     },
     "branchPicker": {
       "label": "Branch",
@@ -3171,16 +3249,38 @@
         "dev": "Dev",
         "test": "Test"
       },
+      "searchPlaceholder": "Search task name…",
       "readiness": {
-        "notReady": "Not ready",
-        "notReadyHint": "The matching dev task is not done yet; consider waiting for it"
+        "ready": "Ready",
+        "readyHint": "The matching dev task is done; this test task can start now"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "This task must create a DPMS story and report its link; the badge clears once reported"
+      },
+      "issueStatus": {
+        "todo": "To do",
+        "backlog": "Backlog"
       },
       "column": {
         "empty": "No tasks"
       },
       "account": {
         "connected": "Connected"
-      }
+      },
+      "openPlatform": "Open {{source}} platform"
+    },
+    "upstreamPull": {
+      "title": "Upstream deliverable not pulled yet",
+      "description": "Node {{node}} of \"{{task}}\" has not pulled the deliverable handoff from upstream work item {{issue}}.",
+      "fallbackNote": "If no choice is made within 60 seconds, polling resumes automatically.",
+      "retry": "Keep waiting",
+      "manual": "Provide manually",
+      "skip": "Skip pull",
+      "manualLabel": "Deliverable handoff",
+      "manualPlaceholder": "Key facts such as built artifacts and deployed environments…",
+      "manualSubmit": "Continue with this",
+      "waitingNote": "Still waiting for the upstream completion note to update. You can provide it manually or skip at any time."
     },
     "connection": {
       "title": "Connection address settings",

@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use camino::Utf8PathBuf;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::time::Instant;
 
 use tracing::{info, warn};
@@ -523,15 +523,6 @@ pub(crate) fn build_worker_invocation(
             bail!("ai-dynamic nodes must be executed by the dynamic orchestrator")
         }
     };
-    let model = model_override
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or(configured_model);
-    let permission_mode = permission_mode_override
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or(permission_mode);
-
     let profile_entry = profile
         .as_deref()
         .map(|id| app.profile_show(id))
@@ -543,6 +534,55 @@ pub(crate) fn build_worker_invocation(
         .as_ref()
         .is_some_and(|profile| profile.dynamic_template);
 
+    // 上游交付引用（M5-cf）：goal / 角色正文携带 `$upstream.completion-output` 令牌 → 节点
+    // 启动前解析（桌面壳 multica 域解析器：父 issue 寻址 + 有限退避轮询，run 专用线程同步
+    // 等待）。解析器缺席 / 失败 → 结构化错误上抛，节点按执行失败处理（failure 边 / attempt
+    // 重试契约与其他节点执行错误同路）。解析结果注入首条 prompt 的隐式隐藏区段（「上游交付
+    // 说明」，随隐藏运行上下文可见可审计），正文中的令牌移除——按 AGENTS.md system/user
+    // prompt 划分，随执行变化的交付数据属 user prompt 区，不内联进 system prompt 的角色正文。
+    // 加载策略与首条隐藏区段一致：仅 `SessionMode::New` 解析（快照语义 = 节点启动时的值）；
+    // Continue 回合只移除令牌不重新解析（快照已随 session 首条 prompt 存在）。
+    let mut task_instruction = task_instruction;
+    let mut profile_content = profile_content;
+    let mut extra_hidden_sections = first_prompt_hidden_sections(app, task_id, session_mode);
+    // M5-cg 产出侧门禁：completion-output 块的产出资格在装配时按节点身份判定（sink > 标记
+    // 声明 > 禁止），判定数据 = 模型所见的同一份 goal / 角色正文 + 手头的工作流结构，零反查
+    // （喂给模型的正文含标记 ⇔ 判定为 Staged）。经桌面壳解析器渲染按节点协议变体注入，仅
+    // `SessionMode::New`（与首条区段加载策略一致，Continue 回合不重放）。注入先于上游拉取段：
+    // 冻结区段嗅探（旧任务冻结段已含协议正文则跳过，防两套产出规则并存）只看任务级冻结区段。
+    if session_mode == SessionMode::New {
+        let designation = super::upstream::workflow_node_designation(
+            workflow,
+            node_id,
+            task_instruction.as_deref(),
+            profile_content.as_deref(),
+        );
+        if let Some(section) = super::upstream::completion_protocol_designation_section(
+            app,
+            task_id,
+            node_id,
+            designation,
+            &extra_hidden_sections,
+        ) {
+            extra_hidden_sections.push(section);
+        }
+    }
+    if super::upstream::needs_upstream_resolution([
+        task_instruction.as_deref(),
+        profile_content.as_deref(),
+    ]) {
+        if session_mode == SessionMode::New {
+            let section = super::upstream::upstream_hidden_section(
+                app.resolve_upstream_output(task_id, node_id)?,
+            );
+            extra_hidden_sections.push(section);
+        }
+        task_instruction =
+            task_instruction.map(|text| super::upstream::strip_upstream_references(&text));
+        profile_content =
+            profile_content.map(|text| super::upstream::strip_upstream_references(&text));
+    }
+
     let runtime_context =
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
     let diagnostics = app.provider_diagnostics();
@@ -550,12 +590,21 @@ pub(crate) fn build_worker_invocation(
         .as_deref()
         .and_then(|provider| diagnostics.get(provider))
         .and_then(|snapshot| snapshot.capabilities.as_ref());
-    let config_options = crate::acp::session_config::invocation_config_option_overrides(
+    let crate::acp::session_config::InvocationSessionConfig {
+        model,
+        permission_mode,
+        config_options,
+    } = crate::acp::session_config::invocation_session_config(
         session_mode == SessionMode::Continue,
-        configured_options,
-        current_acp_config_option_overrides(&runtime_context.attempt_dir),
+        crate::acp::session_config::InvocationSessionConfig {
+            model: configured_model,
+            permission_mode,
+            config_options: configured_options,
+        },
+        crate::acp::events::read_continued_session_config(continue_ref.as_ref()),
+        model_override,
+        permission_mode_override,
         capabilities,
-        model.as_deref(),
     );
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
@@ -640,7 +689,8 @@ pub(crate) fn build_worker_invocation(
         extra_system_sections: Vec::new(),
         // 首条 prompt 的隐式隐藏区段（multica 远程任务上下文等，改动四十八）：策略见
         // [`first_prompt_hidden_sections`]——仅首次执行 / 自动重试加载，追问与续跑不重放。
-        extra_hidden_sections: first_prompt_hidden_sections(app, task_id, session_mode),
+        // 上游交付说明区段（M5-cf）在同一策略下追加（见上方装配注释）。
+        extra_hidden_sections,
         task_instruction,
         user_tips_instruction: None,
         resume_task_instruction: None,
@@ -715,22 +765,6 @@ fn load_first_prompt_hidden_sections(
             Vec::new()
         }
     }
-}
-
-fn current_acp_config_option_overrides(attempt_dir: &camino::Utf8Path) -> BTreeMap<String, String> {
-    let snapshot_path = attempt_dir.join("acp.snapshot.json");
-    let session_path = attempt_dir.join("acp.session.json");
-    let path = if snapshot_path.exists() {
-        snapshot_path
-    } else if session_path.exists() {
-        session_path
-    } else {
-        return BTreeMap::new();
-    };
-    crate::acp::events::load_session_metadata(&path, None)
-        .ok()
-        .map(|metadata| metadata.config_option_overrides)
-        .unwrap_or_default()
 }
 
 pub(crate) fn execute_ai_node(
@@ -1530,6 +1564,13 @@ mod tests {
     }
 
     fn attachment_test_workflow() -> ValidatedWorkflow {
+        configured_test_workflow(None, None)
+    }
+
+    fn configured_test_workflow(
+        model: Option<&str>,
+        permission_mode: Option<&str>,
+    ) -> ValidatedWorkflow {
         crate::dsl::validate_workflow(crate::dsl::WorkflowDsl {
             version: VERSION.to_string(),
             id: "workflow-001".to_string(),
@@ -1539,12 +1580,12 @@ mod tests {
                 id: "dev".to_string(),
                 execution_slot_id: None,
                 provider: Some("claude-acp".to_string()),
-                model: None,
+                model: model.map(str::to_string),
                 profile: None,
                 goal: Some("Do the work".to_string()),
                 output: None,
                 success_condition: None,
-                permission_mode: None,
+                permission_mode: permission_mode.map(str::to_string),
                 auto_accept: false,
                 config_options: Default::default(),
                 manual_check: None,
@@ -1679,7 +1720,7 @@ mod tests {
                 },
             }],
             role: None,
-            workspace_files: vec![crate::provider::PromptWorkspaceFileRef {
+            workspace_files: vec![crate::provider::PromptWorkspaceFileRef::Workspace {
                 project_id: app.paths.project_id.clone(),
                 relative_path: "src/lib.rs".to_string(),
             }],
@@ -1739,6 +1780,71 @@ mod tests {
     }
 
     #[test]
+    fn continue_worker_invocation_takes_session_snapshot_after_new_session_rollback() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root.clone(), crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
+        let snapshot = repo_root.join("source-attempt").join("acp.snapshot.json");
+        crate::storage::write_json(
+            &snapshot,
+            &serde_json::json!({
+                "adapterId": "npx",
+                "adapterDisplayName": "Codex",
+                "cwd": repo_root.as_str(),
+                "sessionId": "session-001",
+                "createdAt": "1792113902Z",
+                "updatedAt": "1792113940Z",
+                "restored": false,
+                "stopReason": "end_turn",
+                "capabilities": {},
+                "configOptionOverrides": { "effort": "high" },
+            }),
+        )
+        .unwrap();
+        let workflow = configured_test_workflow(Some("deepseek-flash"), Some("bypassPermissions"));
+        let build = |session_id: &str| {
+            build_worker_invocation(
+                &app,
+                "task-001",
+                "run-001",
+                &attachment_test_round(),
+                "attempt-001",
+                &workflow,
+                "dev",
+                SessionMode::Continue,
+                Some(serde_json::json!({
+                    "acpSessionId": session_id,
+                    "snapshotFile": snapshot.as_str(),
+                })),
+                Some("continue".to_string()),
+                Some("prompt-001".to_string()),
+                None,
+                PromptVisibility::Visible,
+                UserPromptRenderMode::UserMessage,
+                Vec::new(),
+                None,
+                None,
+            )
+            .expect("invocation should build")
+        };
+
+        let resumed = build("session-001");
+        assert_eq!(resumed.model, None);
+        assert_eq!(resumed.permission_mode, None);
+        assert_eq!(
+            resumed.config_options,
+            std::collections::BTreeMap::from([("effort".to_string(), "high".to_string())])
+        );
+
+        // A snapshot that belongs to another session is not this session's fact.
+        let foreign = build("session-other");
+        assert_eq!(foreign.model, None);
+        assert!(foreign.config_options.is_empty());
+    }
+
+    #[test]
     fn new_worker_invocation_uses_task_input_attachments() {
         let temp = tempfile::tempdir().expect("tempdir");
         let repo_root =
@@ -1785,6 +1891,258 @@ mod tests {
             invocation.turn_control_mode,
             TurnControlMode::RuntimeControlled
         );
+    }
+
+    #[test]
+    fn upstream_token_resolution_appends_hidden_section_and_strips_token() {
+        use std::sync::Mutex;
+
+        struct RecordingResolver {
+            replacement: &'static str,
+            calls: Mutex<Vec<(String, String)>>,
+        }
+        impl crate::app::upstream::UpstreamOutputResolver for RecordingResolver {
+            fn resolve_upstream_output(
+                &self,
+                task_id: &str,
+                node_id: &str,
+            ) -> Result<String, crate::app::upstream::UpstreamResolveError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((task_id.to_string(), node_id.to_string()));
+                Ok(self.replacement.to_string())
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let resolver = std::sync::Arc::new(RecordingResolver {
+            replacement: "「上游交付说明：部署地址 https://t.example.com（父 issue in_progress）」",
+            calls: Mutex::new(Vec::new()),
+        });
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default())
+            .with_upstream_output_resolver(resolver.clone());
+        write_attachment_test_run(&app);
+        let mut workflow = attachment_test_workflow();
+        let NodeDsl::Worker(worker) = &mut workflow.raw.nodes[0] else {
+            panic!("expected worker node");
+        };
+        worker.goal = Some(
+            "基于 $upstream.completion-output 开始回归测试，再次参考 $upstream.completion-output"
+                .to_string(),
+        );
+        workflow
+            .nodes_by_id
+            .insert("dev".to_string(), workflow.raw.nodes[0].clone());
+
+        let invocation = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &workflow,
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        // 正文令牌全部移除（多处出现一并清除，不留残余）。
+        assert_eq!(
+            invocation.task_instruction.as_deref(),
+            Some("基于  开始回归测试，再次参考 ")
+        );
+        // 解析结果作为「上游交付说明」隐式隐藏区段追加（随首条 prompt 隐藏运行上下文下发，
+        // 会话内可展开审计——不再内联进 system prompt 的角色正文）。
+        let section = invocation
+            .extra_hidden_sections
+            .iter()
+            .find(|section| section.title == crate::app::upstream::UPSTREAM_HIDDEN_SECTION_TITLE)
+            .expect("upstream hidden section appended");
+        assert_eq!(
+            section.content,
+            "「上游交付说明：部署地址 https://t.example.com（父 issue in_progress）」"
+        );
+        assert_eq!(
+            resolver.calls.lock().unwrap().as_slice(),
+            [("task-001".to_string(), "dev".to_string())]
+        );
+    }
+
+    #[test]
+    fn upstream_token_on_continue_session_strips_without_resolving() {
+        use std::sync::Mutex;
+
+        struct RefusingResolver {
+            calls: Mutex<Vec<(String, String)>>,
+        }
+        impl crate::app::upstream::UpstreamOutputResolver for RefusingResolver {
+            fn resolve_upstream_output(
+                &self,
+                task_id: &str,
+                node_id: &str,
+            ) -> Result<String, crate::app::upstream::UpstreamResolveError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((task_id.to_string(), node_id.to_string()));
+                Err(crate::app::upstream::UpstreamResolveError::Timeout)
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let resolver = std::sync::Arc::new(RefusingResolver {
+            calls: Mutex::new(Vec::new()),
+        });
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default())
+            .with_upstream_output_resolver(resolver.clone());
+        write_attachment_test_run(&app);
+        let mut workflow = attachment_test_workflow();
+        let NodeDsl::Worker(worker) = &mut workflow.raw.nodes[0] else {
+            panic!("expected worker node");
+        };
+        worker.goal = Some("参考 $upstream.completion-output 继续执行".to_string());
+        workflow
+            .nodes_by_id
+            .insert("dev".to_string(), workflow.raw.nodes[0].clone());
+
+        // Continue 回合：快照已随 session 首条 prompt 存在，不重新解析（解析器不可达也不报错），
+        // 令牌仍要移除（避免字面令牌泄漏进 prompt）。
+        let invocation = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &workflow,
+            "dev",
+            SessionMode::Continue,
+            Some(serde_json::json!({ "acpSessionId": "session-001" })),
+            Some("continue".to_string()),
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        assert_eq!(
+            invocation.task_instruction.as_deref(),
+            Some("参考  继续执行")
+        );
+        assert!(invocation
+            .extra_hidden_sections
+            .iter()
+            .all(|section| section.title != crate::app::upstream::UPSTREAM_HIDDEN_SECTION_TITLE));
+        assert!(resolver.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn upstream_token_without_resolver_fails_structured() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
+        let mut workflow = attachment_test_workflow();
+        let NodeDsl::Worker(worker) = &mut workflow.raw.nodes[0] else {
+            panic!("expected worker node");
+        };
+        worker.goal = Some("等待 $upstream.completion-output 注入".to_string());
+        workflow
+            .nodes_by_id
+            .insert("dev".to_string(), workflow.raw.nodes[0].clone());
+
+        let error = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &workflow,
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect_err("build must fail without a resolver");
+
+        assert!(
+            error.to_string().contains("resolver is not installed"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn upstream_resolver_never_invoked_without_token() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingResolver(AtomicUsize);
+        impl crate::app::upstream::UpstreamOutputResolver for CountingResolver {
+            fn resolve_upstream_output(
+                &self,
+                _task_id: &str,
+                _node_id: &str,
+            ) -> Result<String, crate::app::upstream::UpstreamResolveError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok("unused".to_string())
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let resolver = std::sync::Arc::new(CountingResolver(AtomicUsize::new(0)));
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default())
+            .with_upstream_output_resolver(resolver.clone());
+        write_attachment_test_run(&app);
+
+        let invocation = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+
+        assert_eq!(invocation.task_instruction.as_deref(), Some("Do the work"));
+        assert_eq!(resolver.0.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -1871,9 +2229,11 @@ mod tests {
             invocation_new.extra_hidden_sections[0].title,
             "Gold Band remote task context"
         );
-        assert!(invocation_new.extra_hidden_sections[0]
-            .content
-            .contains("completion protocol"));
+        assert!(
+            invocation_new.extra_hidden_sections[0]
+                .content
+                .contains("completion protocol")
+        );
 
         // Continue（追问 / 续跑）不重放首条区段。
         let invocation_continue = build_worker_invocation(
@@ -1900,11 +2260,106 @@ mod tests {
 
         // 策略层直接断言：该策略是 workflow 面与 AI-DYNAMIC 面的共同入口
         //（`build_dynamic_worker_invocation` 同样调用它），因此 New/Continue 的语义在此固化。
-        assert_eq!(first_prompt_hidden_sections(&app, task_id, SessionMode::New).len(), 1);
+        assert_eq!(
+            first_prompt_hidden_sections(&app, task_id, SessionMode::New).len(),
+            1
+        );
         assert!(first_prompt_hidden_sections(&app, task_id, SessionMode::Continue).is_empty());
 
         // fail-open：文件损坏 → 空区段，不阻断执行。
         std::fs::write(sections_file.as_std_path(), "not json").unwrap();
         assert!(load_first_prompt_hidden_sections(&app, task_id).is_empty());
+    }
+
+    /// 桩协议解析器：恒返回指定身份区段（记录调用，验证注入路径与加载策略）。
+    struct StubProtocolResolver {
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl crate::app::upstream::CompletionProtocolSectionResolver for StubProtocolResolver {
+        fn completion_protocol_section(
+            &self,
+            _task_id: &str,
+            _node_id: &str,
+            designation: crate::app::upstream::CompletionProtocolDesignation,
+        ) -> Option<crate::provider::PromptHiddenSection> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(designation.as_str().to_string());
+            Some(crate::provider::PromptHiddenSection {
+                title: "Gold Band remote task protocol".to_string(),
+                content: format!("stub {}", designation.as_str()),
+            })
+        }
+    }
+
+    #[test]
+    fn completion_protocol_designation_injected_on_new_only() {
+        // M5-cg 产出侧门禁（workflow 面）：fixture 工作流的 "dev" 节点出边指向 $end（sink）→
+        // Final 指定；装配 New 时经解析器注入按节点协议区段，Continue 回合不重放。
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default())
+            .with_completion_protocol_section_resolver(std::sync::Arc::new(StubProtocolResolver {
+                calls: std::sync::Mutex::new(Vec::new()),
+            }));
+        write_attachment_test_run(&app);
+
+        let invocation_new = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+        assert!(
+            invocation_new
+                .extra_hidden_sections
+                .iter()
+                .any(|section| section.content == "stub final")
+        );
+
+        // Continue（追问 / 续跑）不注入按节点协议区段（与首条冻结区段策略一致）。
+        let invocation_continue = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &attachment_test_workflow(),
+            "dev",
+            SessionMode::Continue,
+            Some(serde_json::json!({ "acpSessionId": "session-001" })),
+            Some("continue".to_string()),
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::UserMessage,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("invocation should build");
+        assert!(
+            invocation_continue
+                .extra_hidden_sections
+                .iter()
+                .all(|section| !section.content.starts_with("stub "))
+        );
     }
 }

@@ -170,6 +170,31 @@ export interface RemoteTaskVm {
   /// 就绪标记（原 is_ready；服务端派生：父 dev issue 已 done 才 true）。仅 pending/detail 行有值，
   /// running/completed 行恒 null（已领取/终态无「能否执行」语义）。旧 server 不发 → null。
   readiness: boolean | null;
+  /// issue 需求附件元数据（仅展示，不下载）：仅 detail 行回填，供 composer 在「点执行 → 进输入框」
+  /// 阶段渲染附件 chips；文件本体在发送时由后端 stage_issue_attachments 下载。空数组 = 无附件
+  /// 或旧 server 未下发，前端不渲染。
+  attachments: RemoteTaskAttachmentVm[];
+  /// 终态行关联 issue 的状态分类（todo|backlog|in_progress|done|canceled；对账 batch-status 回填，
+  /// 仅 completed/failed 行有值）。∈ {todo,backlog,done} 时渲染「重新执行」入口（in_progress =
+  /// 他端在执行，multica 按 issue+agent 串行）；∈ {todo,backlog} 时渲染 issue 状态标记
+  /// （任务终了但 issue 仍未开工）。null = 未对账 / 旧历史条目 / 非终态行，不渲染。
+  issueStatusCategory: string | null;
+  /// 自定义 issue 状态名（对账回填，仅终态行）：issue 状态标记展示优先于分类文案（更精确）。
+  issueStatusName: string | null;
+  /// rerun 血缘：本任务是 rerun 产生的新任务时指回源任务 id（wire attribution.rerun_of_task_id）。
+  /// 看板 queued 卡片渲染「重新执行」徽标（multica「归组到源任务行」的看板投影）。null = 普通任务。
+  rerunOfTaskId: string | null;
+  /// DPMS 需求「待回传」提醒（后端三源合成：要求创建 DPMS 需求且 story 关联尚未回传）。
+  /// true 时看板卡片渲染红色「DPMS」徽标；回传成功（或 issue 已预链接 / 不涉及 DPMS）→ false。
+  dpmsLinkPending: boolean;
+}
+
+/// issue 需求附件元数据展示投影（RemoteTaskVm.attachments 元素）。
+export interface RemoteTaskAttachmentVm {
+  /// 展示名（后端已做空白回退附件 id 的归一）。
+  filename: string;
+  /// 可选 content_type；仅展示参考，码灵侧不消费 mime（落盘扩展名判定）。
+  contentType: string | null;
 }
 
 export interface RemoteConversationSidebarVm {
@@ -180,6 +205,38 @@ export interface RemoteConversationSidebarVm {
   tasksByWorkspace: Record<string, RemoteTaskVm[]>;
   lastActiveWorkspaceId: string | null;
   connected: boolean;
+}
+
+/// 上游拉取决策事件载荷（M5-ch 决策点）：pending 与 settled 同形，pending 的 outcome 为 null。
+export interface MulticaUpstreamPullEventVm {
+  taskId: string;
+  runId: string;
+  nodeId: string;
+  parentIssueId: string;
+  taskTitle: string | null;
+  /// null = pending（等待选择）；resolved | manual | skipped | timeout = settled（拉取已收口）。
+  outcome: string | null;
+}
+
+/// 拉取决策三选一（decide_upstream_pull 的 decision 字面量）。
+export type UpstreamPullDecisionKind = 'retry' | 'manual' | 'skip';
+
+/// multica 被动安装落地事件载荷（M5-cr）：前端按 `assetType`（'workflow' | 'role'）只重拉
+/// 对应列表；`installedDisplayName` 是实际落库名（与 multica 网页 toast 同源）。
+export interface RuntimeAssetInstalledEventVm {
+  assetType: string;
+  installedDisplayName: string;
+}
+
+/// 待决上游拉取槽（M5-cj 卡片水合，list_upstream_pull_pendings 返回）：重进会话后恢复
+/// 决策卡片/等待态的数据源；`retried` 标识「继续等待」已选过一轮（恢复为等待态而非选择态）。
+export interface MulticaUpstreamPullPendingVm {
+  taskId: string;
+  runId: string;
+  nodeId: string;
+  parentIssueId: string;
+  taskTitle: string | null;
+  retried: boolean;
 }
 
 /// 「从远程同步」勾选列表项（list_remote_skills 返回）。
@@ -410,13 +467,21 @@ export type WorkspaceFileSnapshotVm =
   | ImageFileSnapshotVm
   | UnsupportedFileSnapshotVm;
 
+export type MarkdownImageSource =
+  | { kind: 'workspace' }
+  | {
+      kind: 'document';
+      canonicalPath: string;
+      externalAccessToken?: string | null;
+      approvedExternalTargets?: string[];
+    };
+
 export interface ResolveMarkdownImageInput {
   projectId: string;
   workspacePath: string | null;
-  markdownCanonicalPath: string;
-  markdownExternalAccessToken: string | null;
+  source: MarkdownImageSource;
+  /** Markdown URL syntax: query/fragment are excluded, percent encoding is decoded once. */
   rawSrc: string;
-  approvedExternalTargets: string[];
 }
 
 export type MarkdownImagePreviewVm =
@@ -594,6 +659,8 @@ export interface AcpUsageVm {
   cachedReadTokens?: number | null;
   cachedWriteTokens?: number | null;
   totalTokens?: number | null;
+  /** Token totals cover prompt responses only; background Agent work ran too. */
+  tokenTotalsExcludeBackground?: boolean;
 }
 
 export interface AgentEnvEntryVm {
@@ -909,6 +976,8 @@ export interface GitRepositorySnapshotVm {
   unborn: boolean;
   upstream?: GitUpstreamVm | null;
   remotes: GitRemoteVm[];
+  /** Repository config identity; remotes are refetched only when it changes. */
+  remotesRevision: string;
   lock: GitLockVm;
   revision: string;
   syncRevision: string;
@@ -1164,10 +1233,28 @@ export type GitMutationResultVm =
 
 export type GitPullStrategyVm = 'fast-forward-only' | 'merge' | 'rebase';
 
+export type GitPushIntentVm =
+  | { kind: 'upstream-sync'; branch: string; remote: string | null }
+  | { kind: 'publish-head'; branch: string; remote: string };
+
+export interface GitPushTargetVm {
+  branch: string;
+  sourceOid: string;
+  remote: string;
+  remoteBranch: string;
+  setUpstream: boolean;
+}
+
+export interface GitPreparedPushVm {
+  intent: GitPushIntentVm;
+  target: GitPushTargetVm;
+  expectedRevision: string;
+}
+
 export type GitOperationInputVm =
   | { kind: 'fetch'; remote?: string | null; prune: boolean }
   | { kind: 'pull'; remote?: string | null; branch?: string | null; strategy: GitPullStrategyVm }
-  | { kind: 'push'; remote: string; branch: string; setUpstream: boolean }
+  | { kind: 'push'; intent: GitPushIntentVm; target: GitPushTargetVm }
   | { kind: 'push-tag'; remote: string; tag: string }
   | { kind: 'stash-create'; message?: string | null; includeUntracked: boolean }
   | { kind: 'stash-apply'; stashRef: string; restoreIndex: boolean }
@@ -1210,7 +1297,7 @@ export interface GitStateChangedEventVm {
   projectId: string;
   repositoryCommonDir: string;
   workspacePath: string;
-  reason: 'workspace' | 'metadata' | 'operation';
+  reason: 'metadata';
 }
 
 export type GitHubCapabilityStatusVm = 'not-installed' | 'not-authenticated' | 'repository-unresolved' | 'ready';
@@ -1570,6 +1657,11 @@ export interface ProfileInput {
 
 export interface ImportProfilesInput {
   folderPath: string;
+  dynamicTemplate: boolean;
+}
+
+export interface ImportProfileFilesInput {
+  filePaths: string[];
   dynamicTemplate: boolean;
 }
 
@@ -2183,7 +2275,8 @@ export interface ImBindingSummaryVm {
   destinationId: string;
   conversationId: string;
   authorizedActorId: string;
-  displayName: string;
+  /** Platform name of the bound account; null shows a neutral label. */
+  displayName: string | null;
 }
 
 export interface ImObservedBindingVm {
@@ -2191,6 +2284,7 @@ export interface ImObservedBindingVm {
   conversationId: string;
   actorId: string;
   isPrivate: boolean;
+  displayName: string | null;
 }
 
 export type ImMessageUpdateMode = 'none' | 'callbackOnly' | 'anytime';
@@ -2268,6 +2362,8 @@ export interface ImGenerationInputVm {
     kind: ImChannelKind;
     expectedGeneration: number;
 }
+
+export type FeishuScanMode = 'selectOrCreate' | 'reauthorizeCurrent';
 
 export interface ImScanAuthorizationVm {
   sessionId: string;
@@ -2723,6 +2819,8 @@ export interface AcpAgentExecutionVm {
   parentAgentExecutionId?: string | null;
   attemptId?: string | null;
   executionStatus: string;
+  /** Latest canonical native Agent state event sequence, not the last content sequence. */
+  providerStateSeq?: number | null;
   eventCount: number;
   toolCallCount: number;
   readFileCount: number;
@@ -2764,6 +2862,8 @@ export interface ConversationRunSummaryVm {
 }
 
 export interface ConversationSidebarVm {
+  // A single search target outside the regular paging window; its row stays in tasksByWorkspace.
+  locatedTask?: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'> | null;
   loadStatus: ConversationLoadStatus;
   workspaces: ConversationWorkspaceVm[];
   pinRefs: PinRef[];
@@ -2908,15 +3008,33 @@ export interface ConversationPromptInput {
   workspaceFiles?: PromptWorkspaceFileRef[];
 }
 
-export interface PromptWorkspaceFileRef {
+export type PromptWorkspaceFileRef =
+  | { kind: 'workspace'; projectId: string; relativePath: string }
+  | { kind: 'artifact'; locator: TurnFileLocatorVm & { taskUuid?: string | null }; name: string }
+  | { kind: 'turn-file'; locator: TurnFileLocatorVm & { taskUuid?: string | null }; changeSetId: string; changeId: string }
+  | { kind: 'turn-attachment'; locator: TurnFileLocatorVm & { taskUuid?: string | null }; changeSetId: string; attachmentId: string }
+  | { kind: 'git-file'; projectId: string; workspacePath: string | null; relativePath: string };
+
+export interface RightWorkspaceFileTargetVm {
+  source: PromptWorkspaceFileRef;
   projectId: string;
-  relativePath: string;
+  name: string;
+  absolutePath: string | null;
+  relativePath: string | null;
+  relativeBase: 'attempt' | 'workspace' | 'attachment' | null;
+  workspacePath: string | null;
+  byteLength: number | null;
+  mimeType: string;
+  availability: { kind: 'available' } | { kind: 'unavailable'; code: string; params: Record<string, unknown> };
 }
 
 export interface ConversationPromptQueueVm {
   revision: number;
   items: ConversationQueuedPromptVm[];
   maxItems: number;
+  dispatchMode: 'auto' | 'manual';
+  autoDispatchSuspended: boolean;
+  suspensionReason?: 'stopped' | 'failed' | null;
 }
 
 export interface ConversationAttemptLifecycleVm {
@@ -3072,7 +3190,6 @@ export interface ConversationRunVm {
   runStatus: string;
   runOutcome?: string | null;
   sessionTree: ConversationSessionTreeVm;
-  selectedSession?: AcpSessionVm | null;
   activeSessions: ConversationActiveSessionVm[];
   inputAttachments: AssetItemVm[];
   workflowStatus: string;
@@ -3118,6 +3235,33 @@ export interface ConversationQueuedPromptDraftVm {
   attachmentPaths: string[];
   role?: UserPromptRole | null;
   workspaceFiles?: PromptWorkspaceFileRef[];
+}
+
+/** One saved composer draft; drafts belong to the conversation task and are never auto-sent. */
+export interface ConversationComposerDraftVm {
+  id: string;
+  contentPreview: string;
+  attachmentCount: number;
+  quoteCount: number;
+  workspaceFileCount: number;
+  roleName?: string | null;
+  createdAt: string;
+}
+
+/** Newest first; `revision` advances on every mutation for last-writer-wins convergence. */
+export interface ConversationComposerDraftBoxVm {
+  revision: number;
+  maxItems: number;
+  items: ConversationComposerDraftVm[];
+}
+
+export interface ConversationComposerDraftReadVm {
+  draft: ConversationQueuedPromptDraftVm;
+  drafts: ConversationComposerDraftBoxVm;
+}
+
+export interface PromptQueueSettingsVm {
+  confirmInterrupt: boolean;
 }
 
 export interface ConversationRunWorktreeVm {
@@ -3237,6 +3381,7 @@ export interface WorkflowRepairTarget {
 
 export interface ConversationSearchResultVm {
   projectId: string;
+  taskUuid?: string | null;
   workspacePath: string;
   workspaceName: string;
   taskId: string;

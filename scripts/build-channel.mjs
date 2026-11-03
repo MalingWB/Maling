@@ -2,7 +2,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 
-import { assertChannelBuildSecrets, channelBuildPlan, parseChannelBuildArgs } from './build-channel-options.mjs';
+import { assertChannelBuildSecrets, channelBuildPlan, parseChannelBuildArgs, updaterGeneratorArgs } from './build-channel-options.mjs';
 import { findBundleDir, possibleBundleDirs, readCargoTargetDirectory } from './cargo-bundle-dirs.mjs';
 import { channelEnvPrefix, readChannelConfig, repoRoot, writeTauriConfigOverlay } from './channel-config.mjs';
 
@@ -142,11 +142,14 @@ if (result.status === 0 && config.releaseBaseUrl && buildPlan.shouldCollectRelea
 
   // Generate latest.json
   const version = isDefaultChannel ? baseVersion : channelVersion;
-  const criticalFlag = isCritical ? ' --critical' : '';
-  execSync(
-    `node scripts/generate-updater-json.mjs "${releaseDir}" "${join(releaseDir, 'latest.json')}" --base-url "${config.releaseBaseUrl}" --version "${version}"${criticalFlag}`,
+  const manifest = spawnSync(process.execPath,
+    updaterGeneratorArgs(releaseDir, join(releaseDir, 'latest.json'), config.releaseBaseUrl, version, isCritical),
     { stdio: 'inherit', cwd: repoRoot },
   );
+  if (manifest.status !== 0) {
+    console.error('Failed to generate the updater manifest.');
+    process.exit(manifest.status ?? 1);
+  }
 
   console.log(`Release artifacts ready: ${relative(repoRoot, releaseDir)}`);
 }

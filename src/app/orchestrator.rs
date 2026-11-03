@@ -5800,34 +5800,26 @@ fn dynamic_config_options_for_invocation(
 fn resolve_dynamic_invocation_model(
     dynamic: &AiDynamicNode,
     node: &DynamicNodeState,
-    model_override: Option<String>,
 ) -> Option<String> {
-    model_override
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            if node.id == DYNAMIC_BOOTSTRAP_NODE_ID {
-                return node.model.clone().or_else(|| {
-                    dynamic
-                        .bootstrap_model()
-                        .map(str::trim)
-                        .filter(|model| !model.is_empty())
-                        .map(str::to_string)
-                });
-            }
-            match node.kind {
-                DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
-                    dynamic_acceptance_model(dynamic)
-                        .map(ToOwned::to_owned)
-                        .or_else(|| node.model.clone())
-                }
-                _ => node
-                    .provider
-                    .as_deref()
-                    .and_then(|provider| dynamic_model_for_provider(dynamic, provider))
-                    .or_else(|| node.model.clone()),
-            }
-        })
+    if node.id == DYNAMIC_BOOTSTRAP_NODE_ID {
+        return node.model.clone().or_else(|| {
+            dynamic
+                .bootstrap_model()
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_string)
+        });
+    }
+    match node.kind {
+        DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => dynamic_acceptance_model(dynamic)
+            .map(ToOwned::to_owned)
+            .or_else(|| node.model.clone()),
+        _ => node
+            .provider
+            .as_deref()
+            .and_then(|provider| dynamic_model_for_provider(dynamic, provider))
+            .or_else(|| node.model.clone()),
+    }
 }
 
 fn dynamic_acceptance_model(dynamic: &AiDynamicNode) -> Option<&str> {
@@ -13022,7 +13014,6 @@ fn build_dynamic_worker_invocation(
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "runtime_context");
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
-    let snapshot_config_options = dynamic_acp_config_option_overrides(&runtime_context.attempt_dir);
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -13098,14 +13089,28 @@ fn build_dynamic_worker_invocation(
         has_output_contract,
     )?;
     // 任务级首条 prompt 隐式区段（multica 远程任务上下文等，改动四十八）：AI-DYNAMIC 执行面与
-    // workflow 面共用同一策略（`SessionMode::New` 才加载）——Auto 模式入口即 AI-DYNAMIC 节点，
-    // 若只让 workflow 面加载，远程任务的完成输出协议会在这条路径上丢失。
+    // workflow 面共用同一策略（`SessionMode::New` 才加载）。M5-cg 起 issue 关联任务的冻结段
+    // 只含附件失败清单（协议正文仅 direct 冻结），编排面的完成输出协议改由下方按节点身份注入。
     // 排在动态区段之后：动态上下文（本节点身份与目录）在前，任务级上下文收尾。
-    extra_hidden_sections.extend(crate::app::node_executor::first_prompt_hidden_sections(
-        ctx.app,
-        ctx.task_id,
-        session_mode,
-    ));
+    let frozen_sections =
+        crate::app::node_executor::first_prompt_hidden_sections(ctx.app, ctx.task_id, session_mode);
+    extra_hidden_sections.extend(frozen_sections.iter().cloned());
+    // M5-cg 产出侧门禁（auto 面）：动态图的「最后一个节点」在叶子启动时不可判定（图运行时
+    // 生长）——验收节点是装配时唯一可判定的收尾产出者身份，按 Final 指定；其余叶子一律禁止
+    // 产出 completion-output 块。auto 最终交付由 `/complete` 终态路径携带（auto 无中段推送）。
+    // 嗅探只看冻结区段（动态区段含节点任务正文，不作判据）。
+    if session_mode == SessionMode::New {
+        let designation = crate::app::upstream::dynamic_node_designation(node.kind);
+        if let Some(section) = crate::app::upstream::completion_protocol_designation_section(
+            ctx.app,
+            ctx.task_id,
+            &node.id,
+            designation,
+            &frozen_sections,
+        ) {
+            extra_hidden_sections.push(section);
+        }
+    }
     if let Some(contract) = output_contract
         .as_mut()
         .filter(|contract| contract.emission_mode == OutputEmissionMode::PostTurnProjection)
@@ -13131,7 +13136,6 @@ fn build_dynamic_worker_invocation(
     );
 
     let step_started_at = dynamic_invocation_build_step_begin(ctx, node, attempt_id, "model");
-    let model = resolve_dynamic_invocation_model(ctx.dynamic, node, model_override);
     let diagnostics = ctx.app.provider_diagnostics();
     let capabilities = node
         .provider
@@ -13140,13 +13144,20 @@ fn build_dynamic_worker_invocation(
         .or(Some(dynamic_control_provider(ctx.dynamic)))
         .and_then(|provider| diagnostics.get(provider))
         .and_then(|snapshot| snapshot.capabilities.as_ref());
-    let config_options = crate::acp::session_config::invocation_config_option_overrides(
+    let session_config = crate::acp::session_config::invocation_session_config(
         session_mode == SessionMode::Continue,
-        dynamic_config_options_for_invocation(ctx.dynamic, node),
-        snapshot_config_options,
+        crate::acp::session_config::InvocationSessionConfig {
+            model: resolve_dynamic_invocation_model(ctx.dynamic, node),
+            permission_mode: node.permission_mode.clone(),
+            config_options: dynamic_config_options_for_invocation(ctx.dynamic, node),
+        },
+        crate::acp::events::read_continued_session_config(continue_ref.as_ref()),
+        model_override,
+        permission_mode_override,
         capabilities,
-        model.as_deref(),
     );
+    let model = session_config.model;
+    let config_options = session_config.config_options;
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -13189,7 +13200,7 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "task_instruction");
-    let task_instruction = dynamic_task_instruction(ctx, graph, node, has_output_contract);
+    let mut task_instruction = dynamic_task_instruction(ctx, graph, node, has_output_contract);
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -13201,12 +13212,30 @@ fn build_dynamic_worker_invocation(
         }),
     );
 
+    // M5-cf 上游交付引用（auto 面）：与 workflow worker（`node_executor::build_worker_invocation`）
+    // 同一拉取契约——任务正文 / 角色正文携带令牌即声明拉取意图。解析结果注入隐式隐藏区段
+    // （仅 `SessionMode::New`，与首条区段加载策略一致），正文令牌随后移除（New/Continue 都
+    // 移除，防续跑时令牌原文漏进模型 prompt）。解析器缺席 / 失败 → 结构化错误，节点按执行
+    // 错误同路（与 workflow 面同契约，不静默放行）。
+    let mut profile_content = profile_content;
+    if crate::app::upstream::needs_upstream_resolution([
+        Some(task_instruction.as_str()),
+        profile_content.as_deref(),
+    ]) {
+        if session_mode == SessionMode::New {
+            let section = crate::app::upstream::upstream_hidden_section(
+                ctx.app.resolve_upstream_output(ctx.task_id, &node.id)?,
+            );
+            extra_hidden_sections.push(section);
+        }
+        task_instruction = crate::app::upstream::strip_upstream_references(&task_instruction);
+        profile_content =
+            profile_content.map(|text| crate::app::upstream::strip_upstream_references(&text));
+    }
+
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "permission_mode");
-    let permission_mode = permission_mode_override
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| node.permission_mode.clone());
+    let permission_mode = session_config.permission_mode;
     let auto_accept = node.auto_accept;
     dynamic_invocation_build_step_end(
         ctx,
@@ -13355,22 +13384,6 @@ fn build_dynamic_worker_invocation(
         }),
     );
     Ok(invocation)
-}
-
-fn dynamic_acp_config_option_overrides(attempt_dir: &Utf8Path) -> BTreeMap<String, String> {
-    let snapshot_path = attempt_dir.join("acp.snapshot.json");
-    let session_path = attempt_dir.join("acp.session.json");
-    let path = if snapshot_path.exists() {
-        snapshot_path
-    } else if session_path.exists() {
-        session_path
-    } else {
-        return BTreeMap::new();
-    };
-    crate::acp::events::load_session_metadata(&path, None)
-        .ok()
-        .map(|metadata| metadata.config_option_overrides)
-        .unwrap_or_default()
 }
 
 fn dynamic_builtin_profile(
@@ -18291,7 +18304,7 @@ mod tests {
         bootstrap.model = Some("gpt-5.6-sol".to_string());
 
         assert_eq!(
-            resolve_dynamic_invocation_model(&dynamic, &bootstrap, None).as_deref(),
+            resolve_dynamic_invocation_model(&dynamic, &bootstrap).as_deref(),
             Some("gpt-5.6-sol")
         );
         assert_eq!(
@@ -18310,7 +18323,7 @@ mod tests {
         worker.provider = Some("codex-acp".to_string());
         worker.model = Some("gpt-5.5".to_string());
         assert_eq!(
-            resolve_dynamic_invocation_model(&dynamic, &worker, None).as_deref(),
+            resolve_dynamic_invocation_model(&dynamic, &worker).as_deref(),
             Some("gpt-5.4")
         );
         assert_eq!(
@@ -18322,7 +18335,7 @@ mod tests {
 
         worker.kind = DynamicNodeKind::Acceptance;
         assert_eq!(
-            resolve_dynamic_invocation_model(&dynamic, &worker, None).as_deref(),
+            resolve_dynamic_invocation_model(&dynamic, &worker).as_deref(),
             Some("gpt-5.6-sol")
         );
         assert_eq!(
@@ -20763,6 +20776,161 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_upstream_token_resolution_appends_hidden_section_and_strips_token() {
+        use std::sync::Mutex;
+
+        struct RecordingResolver {
+            replacement: &'static str,
+            calls: Mutex<Vec<(String, String)>>,
+        }
+        impl crate::app::upstream::UpstreamOutputResolver for RecordingResolver {
+            fn resolve_upstream_output(
+                &self,
+                task_id: &str,
+                node_id: &str,
+            ) -> Result<String, crate::app::upstream::UpstreamResolveError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((task_id.to_string(), node_id.to_string()));
+                Ok(self.replacement.to_string())
+            }
+        }
+
+        let (_temp, repo_root) = init_repo();
+        let resolver = std::sync::Arc::new(RecordingResolver {
+            replacement: "「上游交付说明：部署地址 https://t.example.com（父 issue in_progress）」",
+            calls: Mutex::new(Vec::new()),
+        });
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default())
+            .with_upstream_output_resolver(resolver.clone());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("upstream-pull-leaf");
+        // 任务正文（goal 面）声明拉取意图——auto 动态叶子与 workflow worker 同一声明语义。
+        node.task = "基于 $upstream.completion-output 开始回归测试".to_string();
+        let graph = test_dynamic_graph_at(repo_root.clone(), vec![node.clone()]);
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            None,
+            SessionMode::New,
+            None,
+            None,
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // 正文令牌移除（auto 面与 workflow 面同契约）。
+        assert!(
+            !invocation
+                .task_instruction
+                .as_deref()
+                .unwrap_or_default()
+                .contains("$upstream.completion-output"),
+            "task instruction must not leak the raw token: {:?}",
+            invocation.task_instruction
+        );
+        // 解析结果作为「上游交付说明」隐式隐藏区段追加。
+        let section = invocation
+            .extra_hidden_sections
+            .iter()
+            .find(|section| section.title == crate::app::upstream::UPSTREAM_HIDDEN_SECTION_TITLE)
+            .expect("upstream hidden section appended");
+        assert_eq!(
+            section.content,
+            "「上游交付说明：部署地址 https://t.example.com（父 issue in_progress）」"
+        );
+        assert_eq!(
+            resolver.calls.lock().unwrap().as_slice(),
+            [(ctx.task_id.to_string(), node.id.clone())]
+        );
+    }
+
+    #[test]
+    fn dynamic_upstream_token_on_continue_session_strips_without_resolving() {
+        use std::sync::Mutex;
+
+        struct RefusingResolver {
+            calls: Mutex<Vec<(String, String)>>,
+        }
+        impl crate::app::upstream::UpstreamOutputResolver for RefusingResolver {
+            fn resolve_upstream_output(
+                &self,
+                _task_id: &str,
+                _node_id: &str,
+            ) -> Result<String, crate::app::upstream::UpstreamResolveError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(("refused".to_string(), "refused".to_string()));
+                Err(crate::app::upstream::UpstreamResolveError::NoResolver)
+            }
+        }
+
+        let (_temp, repo_root) = init_repo();
+        let resolver = std::sync::Arc::new(RefusingResolver {
+            calls: Mutex::new(Vec::new()),
+        });
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default())
+            .with_upstream_output_resolver(resolver.clone());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("upstream-pull-continue");
+        node.task = "参考 $upstream.completion-output 的交付说明继续".to_string();
+        let graph = test_dynamic_graph_at(repo_root.clone(), vec![node.clone()]);
+
+        let invocation = build_dynamic_worker_invocation(
+            &ctx,
+            &graph,
+            &node,
+            &dynamic_attempt_id(&node),
+            None,
+            SessionMode::Continue,
+            None,
+            Some("继续".to_string()),
+            "test-turn".to_string(),
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            !invocation
+                .task_instruction
+                .as_deref()
+                .unwrap_or_default()
+                .contains("$upstream.completion-output"),
+            "task instruction must not leak the raw token on continue: {:?}",
+            invocation.task_instruction
+        );
+        assert!(
+            !invocation
+                .extra_hidden_sections
+                .iter()
+                .any(|section| section.title == crate::app::upstream::UPSTREAM_HIDDEN_SECTION_TITLE),
+            "continue must not append a new upstream section"
+        );
+        assert!(
+            resolver.calls.lock().unwrap().is_empty(),
+            "continue session must not resolve the token"
+        );
+    }
+
+    #[test]
     fn dynamic_leaf_new_session_carries_the_task_quotes() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root, RuntimeConfig::default());
@@ -20816,6 +20984,75 @@ mod tests {
 
         let resumed = build(SessionMode::Continue, UserPromptRenderMode::WorkflowResume);
         assert!(resumed.task_prompt_input.is_empty());
+    }
+
+    #[test]
+    fn dynamic_continue_takes_session_snapshot_after_new_session_rollback() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut node = test_worktree_node("leaf");
+        node.model = Some("deepseek-flash".to_string());
+        node.permission_mode = Some("bypassPermissions".to_string());
+        let graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![node.clone()]);
+        let attempt_id = dynamic_attempt_id(&node);
+        let snapshot = dynamic_runtime_context(&ctx, &node.id, &attempt_id)
+            .attempt_dir
+            .join("acp.snapshot.json");
+        // `session/new` rolled model and mode back to unspecified, so the
+        // snapshot keeps only the bound option that the live catalog accepted.
+        write_json(
+            &snapshot,
+            &serde_json::json!({
+                "adapterId": "npx",
+                "adapterDisplayName": "Codex",
+                "cwd": app.paths.repo_root.as_str(),
+                "sessionId": "session-1",
+                "createdAt": "1792113902Z",
+                "updatedAt": "1792113940Z",
+                "restored": false,
+                "stopReason": "end_turn",
+                "capabilities": {},
+                "configOptionOverrides": { "effort": "high" },
+            }),
+        )
+        .unwrap();
+        let continue_ref = serde_json::json!({
+            "acpSessionId": "session-1",
+            "snapshotFile": snapshot.as_str(),
+        });
+        let build = |model_override: Option<String>| {
+            build_dynamic_worker_invocation(
+                &ctx,
+                &graph,
+                &node,
+                &attempt_id,
+                None,
+                SessionMode::Continue,
+                Some(continue_ref.clone()),
+                Some("继续".to_string()),
+                "test-turn".to_string(),
+                None,
+                PromptVisibility::Visible,
+                UserPromptRenderMode::WorkflowResume,
+                Vec::new(),
+                model_override,
+                None,
+            )
+            .unwrap()
+        };
+
+        let resumed = build(None);
+        assert_eq!(resumed.model, None);
+        assert_eq!(resumed.permission_mode, None);
+        assert_eq!(
+            resumed.config_options,
+            BTreeMap::from([("effort".to_string(), "high".to_string())])
+        );
+
+        let switched = build(Some("gpt-6-sol".to_string()));
+        assert_eq!(switched.model.as_deref(), Some("gpt-6-sol"));
     }
 
     #[test]
@@ -20938,6 +21175,72 @@ mod tests {
         )
         .unwrap();
         assert!(!has_remote_section(&invocation_continue));
+    }
+
+    /// 桩协议解析器：恒返回指定身份区段（验证 auto 面按叶子身份注入）。
+    struct StubProtocolResolver;
+
+    impl crate::app::upstream::CompletionProtocolSectionResolver for StubProtocolResolver {
+        fn completion_protocol_section(
+            &self,
+            _task_id: &str,
+            _node_id: &str,
+            designation: crate::app::upstream::CompletionProtocolDesignation,
+        ) -> Option<crate::provider::PromptHiddenSection> {
+            Some(crate::provider::PromptHiddenSection {
+                title: "Gold Band remote task protocol".to_string(),
+                content: format!("stub {}", designation.as_str()),
+            })
+        }
+    }
+
+    #[test]
+    fn dynamic_invocation_designates_acceptance_final_workers_prohibited() {
+        // M5-cg 产出侧门禁（auto 面）：验收叶子按 Final 指定，普通 worker 叶子按 Prohibited
+        // 指定；装配 New 时注入对应协议区段。
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default())
+            .with_completion_protocol_section_resolver(std::sync::Arc::new(StubProtocolResolver));
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+
+        let stub_designation = |kind: crate::dynamic::DynamicNodeKind| {
+            let mut node = test_worktree_node("bootstrap");
+            node.kind = kind;
+            let graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![node.clone()]);
+            let invocation = build_dynamic_worker_invocation(
+                &ctx,
+                &graph,
+                &node,
+                &dynamic_attempt_id(&node),
+                None,
+                SessionMode::New,
+                None,
+                None,
+                "test-turn".to_string(),
+                None,
+                PromptVisibility::Visible,
+                UserPromptRenderMode::RequirementTask,
+                Vec::new(),
+                None,
+                None,
+            )
+            .unwrap();
+            invocation
+                .extra_hidden_sections
+                .iter()
+                .find(|section| section.content.starts_with("stub "))
+                .map(|section| section.content.clone())
+        };
+
+        assert_eq!(
+            stub_designation(crate::dynamic::DynamicNodeKind::Acceptance).as_deref(),
+            Some("stub final")
+        );
+        assert_eq!(
+            stub_designation(crate::dynamic::DynamicNodeKind::Worker).as_deref(),
+            Some("stub prohibited")
+        );
     }
 
     #[test]

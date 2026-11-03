@@ -493,7 +493,9 @@ pub(crate) async fn handle_local_skill_import(
 
 /// 全局 skill 库是 home 作用域（渠道目录，非 workspace 目录），取 home App 做 `SkillManager`
 /// 扫描入口（与 `invalidate_remote_task` 的 `context.app()` 同一取法）。
-fn home_app<R: Runtime>(app: &AppHandle<R>) -> Option<App> {
+///
+/// `runtime_assets`（角色共享工单）的本地角色读写取同一 home App，直接复用。
+pub(crate) fn home_app<R: Runtime>(app: &AppHandle<R>) -> Option<App> {
     let desktop = app.try_state::<DesktopState>()?;
     let context = desktop.context().ok()?;
     Some(context.app())
@@ -910,8 +912,15 @@ mod tests {
         // 库外目录：含 SKILL.md，若被打包即泄露。
         let outside = base.join("outside");
         fs::create_dir_all(outside.as_std_path()).unwrap();
-        fs::write(outside.join("SKILL.md").as_std_path(), "---\nname: leak\n---\nsecret").unwrap();
-        create_test_directory_link(outside.as_std_path(), root.join("leaky-skill").as_std_path());
+        fs::write(
+            outside.join("SKILL.md").as_std_path(),
+            "---\nname: leak\n---\nsecret",
+        )
+        .unwrap();
+        create_test_directory_link(
+            outside.as_std_path(),
+            root.join("leaky-skill").as_std_path(),
+        );
 
         let err = resolve_skill_dir_under_root(&root, "leaky-skill").unwrap_err();
         assert!(err.contains("directory link"), "{err}");

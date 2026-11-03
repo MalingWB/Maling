@@ -1,18 +1,24 @@
 //! multica issue 完成输出（completion_output）提取（issue 完成输出传递特性，码灵侧设计方案 §5）。
 //!
-//! 写路径协议：agent 最终回复末尾附加 info 为 `completion-output` 的代码围栏块；run 成功收尾时
-//! [`extract_completion_output`] 从投影出的最终 assistant 回复中取**最后一个**匹配块，随
-//! `update_issue_status(done)` 一次 PUT 原子上送（status + completion_output 单请求，与 multica
-//! 服务端单 PATCH 设计对齐）。提取失败一律 fail-open（None）——issue 照常 done，写作可选、不门控。
+//! 写路径协议：agent 产出 info 为 `completion-output` 的代码围栏块；run 成功收尾时块作为
+//! `completion_output` 随 `POST /complete` 同事务上送（multica C6 改造，2026-10：完成与写输出
+//! 单请求、后写胜，取代此前 `update_issue_status(done)` PUT 附带通道）。direct 模式由该块**门控**
+//! 完成（缺块扣留，见 bridge，口径=最后一条 assistant 消息）；工作流收尾节点带 JSON 输出验证时
+//! 最后一条消息被裁决 JSON 占用、块在它之前的人类可读消息里，故工作流口径按
+//! [`attempt_completion_scan`] 在**全部** assistant 消息中倒序找块（last-block-wins）——只认块，
+//! 提不出则不发送该字段（multica 保留 issue 现值），不做全文兜底（机器裁决/报告全文都不是交付物）。
 
 use gold_band::acp::events::{
     AcpAttemptPaths, AcpUiEvent, is_semantically_empty_agent_content, load_timeline_items,
 };
 
-/// 服务端同口径上限（multica 按 rune 计数，超长 400 会让整个 PUT 失败、issue 卡非 done）。
-/// 客户端按 Unicode 标量截断，保证状态流转优先于内容完整。
+/// 服务端同口径上限（multica 按 rune 计数，超长 400 且**任务不置 completed**——multica C6 改造）。
+/// 客户端按 Unicode 标量预截断（截断标记计入上限），保证完成优先于内容完整。
 /// 2026-09-21 服务端从 64_000 收紧为 16_000（改动清单 §1.2）。
 pub(crate) const MAX_COMPLETION_OUTPUT_CHARS: usize = 16_000;
+
+/// 预截断时追加的尾部标记（multica 改造清单 §2.2：截断到 16000 并加截断标记，标记计入上限）。
+const COMPLETION_OUTPUT_TRUNCATION_MARKER: &str = "\n[已截断：超出 16000 字符上限]";
 
 /// 从最终 assistant 回复提取交付说明块（设计方案 §5.1 规则，纯函数）。
 ///
@@ -84,20 +90,26 @@ fn is_closing_fence(line: &str, fence_len: usize) -> bool {
     len >= fence_len && len == trimmed.chars().count()
 }
 
-/// 提取 + trim + 16k 截断（设计方案 §5.1 组合入口，bridge Success 分支调用）。
-///
-/// trim 后为空 → None（空块不发送，服务端保持/清空由键缺席语义决定）。
-pub(crate) fn completion_output_from_reply(reply: &str) -> Option<String> {
-    let extracted = extract_completion_output(reply)?.trim();
-    if extracted.is_empty() {
+/// trim + 空判 + 16k 预截断（超长时尾部追加截断标记，标记计入上限——发送值恒 ≤16_000 rune，
+/// 规避 server 超长 400「任务不置 completed」的硬失败）。trim 后为空 → None（空值不发送，
+/// 服务端「缺省/空串不动现值」语义决定）。
+fn clamp_completion_output(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
         return None;
     }
-    Some(
-        extracted
-            .chars()
-            .take(MAX_COMPLETION_OUTPUT_CHARS)
-            .collect(),
-    )
+    if trimmed.chars().count() <= MAX_COMPLETION_OUTPUT_CHARS {
+        return Some(trimmed.to_string());
+    }
+    let kept = MAX_COMPLETION_OUTPUT_CHARS - COMPLETION_OUTPUT_TRUNCATION_MARKER.chars().count();
+    let mut clamped: String = trimmed.chars().take(kept).collect();
+    clamped.push_str(COMPLETION_OUTPUT_TRUNCATION_MARKER);
+    Some(clamped)
+}
+
+/// 提取块 + trim + 16k 预截断（设计方案 §5.1 组合入口，direct 门控路径调用）。
+pub(crate) fn completion_output_from_reply(reply: &str) -> Option<String> {
+    extract_completion_output(reply).and_then(clamp_completion_output)
 }
 
 /// 近似形态 1：info 串 `completion-output` 被写在裸围栏（或其它 info 围栏）开栏后的新行——
@@ -163,30 +175,86 @@ fn near_miss_completion_fence(reply: &str) -> Option<&'static str> {
     None
 }
 
-/// 投影 run 最终 attempt 的最终 assistant 回复文本（设计方案 §5.2 支撑改动 2）。
+/// attempt 完成扫描结果（一次 timeline 读，两个口径的块探测，零额外 I/O）。
 ///
-/// `acp.timeline.jsonl` 中同流 textDelta 已由 runtime 合并为单条目（`apply_streaming_delta`，
-/// 内容累积），`load_timeline_items` 物化后按 seq 排序——取**最后一条**非占位 textDelta 的 content
-/// 即最终 assistant 消息。读失败/无文本 → None（fail-open，调用方仍照常流转 issue）。
-pub(crate) fn final_assistant_reply(attempt_dir: &str) -> Option<String> {
+/// - [`AttemptCompletionScan::final_probe`]：**最后一条** assistant 消息——direct 门控（run/turn
+///   收尾）与终态后补交的协议口径，块必须出现在「最终回复末尾」。
+/// - [`AttemptCompletionScan::attempt_probe`]：**全部** assistant 消息倒序找块（last-block-wins，
+///   与 multica「多次输出整体覆盖」一致）——工作流收尾采集口径：收尾节点带 JSON 输出验证
+///   （默认 accept `{"reason","result"}`）时最后一条消息被裁决 JSON 占用，块在它之前的人类
+///   可读消息里（M5-cd 内网实测：只看最后一条 → 裁决 JSON 被当交付物上送）。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct AttemptCompletionScan {
+    pub(crate) final_probe: CompletionBlockProbe,
+    pub(crate) attempt_probe: CompletionBlockProbe,
+}
+
+/// 工作流收尾采集入口（run 成功收尾，multica C6 改造清单 §2.1）：attempt 级找块。
+///
+/// 块命中 → `attempt_probe.block` 即上送值（已 trim + 16k 预截断）；提不出块（未产出/近似形态
+/// 滑落）→ `block` None，调用方**不发送该字段**（multica 保留 issue 现值），`near_miss_reason`
+/// 给出机器可检索原因（观测日志用）。读失败 → 全空 probe（fail-open，issue 照常流转）。
+pub(crate) fn attempt_completion_scan(attempt_dir: &str) -> AttemptCompletionScan {
+    let Some(items) = assistant_text_items(attempt_dir) else {
+        return AttemptCompletionScan::default();
+    };
+    // 借用指针视图（无内容复制）：final 口径取末位，attempt 口径倒序含末位全量。
+    let texts: Vec<&str> = items
+        .iter()
+        .filter(|item| is_assistant_text(item))
+        .filter_map(|item| item.content.as_deref())
+        .collect();
+    let final_probe = texts
+        .last()
+        .map(|reply| completion_block_probe(reply))
+        .unwrap_or_default();
+    let mut attempt_probe = CompletionBlockProbe::default();
+    for reply in texts.iter().rev() {
+        let probe = completion_block_probe(reply);
+        if probe.block.is_some() {
+            attempt_probe = probe;
+            break;
+        }
+        // 无块时保留**最新**一条近似形态原因（倒序首遇），诊断最贴近终态。
+        if attempt_probe.near_miss_reason.is_none() {
+            attempt_probe.near_miss_reason = probe.near_miss_reason;
+        }
+    }
+    AttemptCompletionScan {
+        final_probe,
+        attempt_probe,
+    }
+}
+
+/// 最后一条 assistant 消息的块探测（direct turn 门控与终态后补交口径，单次 timeline 读）。
+pub(crate) fn final_completion_probe(attempt_dir: &str) -> CompletionBlockProbe {
+    let Some(items) = assistant_text_items(attempt_dir) else {
+        return CompletionBlockProbe::default();
+    };
+    items
+        .iter()
+        .filter(|item| is_assistant_text(item))
+        .next_back()
+        .and_then(|item| item.content.as_deref())
+        .map(completion_block_probe)
+        .unwrap_or_default()
+}
+
+/// attempt timeline 物化（读失败 → None 并 WARN，fail-open）。调用方直接借用 items 探测，
+/// 不复制消息内容——补交通道逐 turn 触发，避免整份文本的无谓克隆。
+fn assistant_text_items(attempt_dir: &str) -> Option<Vec<AcpUiEvent>> {
     let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir.into());
-    let items = match load_timeline_items(&paths.timeline) {
-        Ok(items) => items,
+    match load_timeline_items(&paths.timeline) {
+        Ok(items) => Some(items),
         Err(error) => {
             tracing::warn!(
                 timeline = %paths.timeline,
                 %error,
                 "multica completion-output: timeline read failed (fail-open)"
             );
-            return None;
+            None
         }
-    };
-    items
-        .iter()
-        .filter(|item| is_assistant_text(item))
-        .next_back()
-        .and_then(|item| item.content.clone())
-        .filter(|content| !content.trim().is_empty())
+    }
 }
 
 /// 最终 assistant 文本判据：textDelta 且非占位（复用 runtime 的语义空判据，保持与 UI 投影同源）。
@@ -247,12 +315,101 @@ mod tests {
 
     #[test]
     fn completion_output_caps_at_16k_chars_by_unicode_scalar() {
-        // 16_001 个 CJK 字符：按 rune 截断到 16_000（服务端同口径收紧上限，非 UTF-16/字节）
+        // 16_001 个 CJK 字符：按 rune 截断到 16_000（服务端同口径收紧上限，非 UTF-16/字节），
+        // 且尾部追加截断标记（标记计入上限——发送值恒 ≤16_000，规避 server 400 任务不置 completed）。
         let body = "门".repeat(16_001);
         let reply = format!("```completion-output\n{body}\n```\n");
         let output = completion_output_from_reply(&reply).expect("hit");
         assert_eq!(output.chars().count(), MAX_COMPLETION_OUTPUT_CHARS);
-        assert!(output.chars().all(|c| c == '门'));
+        assert!(output.ends_with(COMPLETION_OUTPUT_TRUNCATION_MARKER));
+        let kept =
+            MAX_COMPLETION_OUTPUT_CHARS - COMPLETION_OUTPUT_TRUNCATION_MARKER.chars().count();
+        assert!(output.chars().take(kept).all(|c| c == '门'));
+    }
+
+    #[test]
+    fn attempt_scan_delivers_block_from_earlier_message_when_last_is_verdict_json() {
+        // M5-cd 内网实测回归（2026-10-23）：accept 节点带 JSON 输出验证（`{"reason","result"}`），
+        // 最后一条 assistant 消息是裁决 JSON、completion-output 块在它之前的主回复里。工作流
+        // 采集（attempt 口径）必须交付块；final 口径（direct 门控/补交，块须在最终回复末尾）
+        // 对裁决 JSON 收尾的形态不命中——两口径的差异即本回归的固化点。
+        let (attempt_dir, _temp) = attempt_dir_with_texts(&[
+            "验证报告。\n```completion-output\n本次交付：任务重试链路测试通过。\n```\n",
+            "{\"reason\":\"验收完成\",\"result\":true}",
+        ]);
+        let scan = attempt_completion_scan(attempt_dir.as_str());
+        assert_eq!(
+            scan.attempt_probe.block,
+            Some("本次交付：任务重试链路测试通过。".to_string())
+        );
+        assert_eq!(scan.attempt_probe.near_miss_reason, None);
+        assert_eq!(scan.final_probe.block, None);
+    }
+
+    #[test]
+    fn attempt_scan_takes_last_block_across_messages() {
+        // 多条消息各含块 → last-block-wins（multica「多次输出整体覆盖，只保留最终结论」）。
+        let (attempt_dir, _temp) = attempt_dir_with_texts(&[
+            "```\ncompletion-output\n草稿块，应被覆盖\n```\n",
+            "结论定稿。\n```completion-output\n最终交付说明\n```\n",
+        ]);
+        let scan = attempt_completion_scan(attempt_dir.as_str());
+        assert_eq!(scan.attempt_probe.block, Some("最终交付说明".to_string()));
+        assert_eq!(scan.final_probe.block, Some("最终交付说明".to_string()));
+    }
+
+    #[test]
+    fn attempt_scan_near_miss_in_earlier_message_is_flagged_not_delivered() {
+        // §12.55 形态滑落在前置消息：attempt 口径不发送字段（near-miss 原因可检索），裁决 JSON
+        // 收尾的最后一条消息不得成为交付内容。
+        let (attempt_dir, _temp) = attempt_dir_with_texts(&[
+            "```\ncompletion-output\n任务性质：测试性工作项，无实质代码变更。\n```",
+            "{\"reason\":\"验收完成\",\"result\":true}",
+        ]);
+        let scan = attempt_completion_scan(attempt_dir.as_str());
+        assert_eq!(scan.attempt_probe.block, None);
+        assert_eq!(
+            scan.attempt_probe.near_miss_reason,
+            Some(NEAR_MISS_INFO_ON_OWN_LINE)
+        );
+    }
+
+    #[test]
+    fn attempt_scan_without_block_or_missing_dir_is_default() {
+        // 无块（正常未产出，issue 现值保留）/ attempt 缺失（非 ACP 完成路径）→ 全空 probe。
+        let (attempt_dir, _temp) = attempt_dir_with_texts(&["工作完成，无交付说明块。"]);
+        let scan = attempt_completion_scan(attempt_dir.as_str());
+        assert_eq!(scan.final_probe.block, None);
+        assert_eq!(scan.attempt_probe.block, None);
+        assert_eq!(scan.attempt_probe.near_miss_reason, None);
+
+        let missing =
+            Utf8PathBuf::from_path_buf(std::env::temp_dir().join("gold-band-scan-missing"))
+                .expect("utf8 temp path");
+        assert_eq!(
+            attempt_completion_scan(missing.as_str()),
+            AttemptCompletionScan::default()
+        );
+    }
+
+    #[test]
+    fn final_completion_probe_only_looks_at_last_message() {
+        // final 口径（direct 门控/终态后补交）只看最后一条消息：块仅在更早消息 → 不命中
+        // （协议要求块在「最终回复末尾」）；块在最后一条 → 命中。
+        let (earlier_only, _temp) = attempt_dir_with_texts(&[
+            "```completion-output\n前置消息的块\n```\n",
+            "最终致意，无块。",
+        ]);
+        assert_eq!(final_completion_probe(earlier_only.as_str()).block, None);
+
+        let (last_has_block, _temp2) = attempt_dir_with_texts(&[
+            "前置说明。",
+            "最终回复\n```completion-output\n交付说明\n```\n",
+        ]);
+        assert_eq!(
+            final_completion_probe(last_has_block.as_str()).block,
+            Some("交付说明".to_string())
+        );
     }
 
     #[test]
@@ -290,46 +447,21 @@ mod tests {
         assert_eq!(probe.near_miss_reason, None);
     }
 
-    #[test]
-    fn final_assistant_reply_reads_last_non_placeholder_text_delta() {
+    /// 构造含多条 assistant 文本消息（按给定顺序、seq 递增）的 attempt timeline 目录。
+    /// 返回 TempDir 供测试持有（drop 即删除目录，读取须在其存活期间完成）。
+    fn attempt_dir_with_texts(texts: &[&str]) -> (Utf8PathBuf, tempfile::TempDir) {
         let temp = tempfile::tempdir().expect("tempdir");
         let attempt_dir =
             Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let items: Vec<AcpUiEvent> = texts
+            .iter()
+            .enumerate()
+            .map(|(index, text)| text_delta(&format!("assistant-{index}"), index as u64 + 1, text))
+            .collect();
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir.clone());
-        gold_band::acp::events::write_timeline_items(
-            &paths.timeline,
-            &[
-                text_delta("user-echo", 1, "用户输入"),
-                text_delta("assistant-1", 2, "中间说明"),
-                text_delta(
-                    "assistant-final",
-                    3,
-                    "最终回复\n```completion-output\n交付\n```\n",
-                ),
-            ],
-        )
-        .expect("write timeline");
-
-        assert_eq!(
-            final_assistant_reply(attempt_dir.as_str()),
-            Some("最终回复\n```completion-output\n交付\n```\n".to_string())
-        );
-        assert_eq!(
-            completion_output_from_reply(
-                final_assistant_reply(attempt_dir.as_str())
-                    .as_deref()
-                    .unwrap_or_default()
-            ),
-            Some("交付".to_string())
-        );
-    }
-
-    #[test]
-    fn final_assistant_reply_missing_dir_is_none() {
-        let missing =
-            Utf8PathBuf::from_path_buf(std::env::temp_dir().join("gold-band-handoff-missing"))
-                .expect("utf8 temp path");
-        assert_eq!(final_assistant_reply(missing.as_str()), None);
+        gold_band::acp::events::write_timeline_items(&paths.timeline, &items)
+            .expect("write timeline");
+        (attempt_dir, temp)
     }
 
     fn text_delta(id: &str, seq: u64, content: &str) -> AcpUiEvent {

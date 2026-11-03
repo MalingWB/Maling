@@ -21,7 +21,7 @@ use crate::prompts::{
     LocalizedText, PROFILE_ACCEPT, PROFILE_CICD, PROFILE_CLEAN, PROFILE_DEV, PROFILE_DEV_TEST,
     PROFILE_GRILLME, PROFILE_INTERVIEW, PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT,
     PROFILE_OVERLAY_REQUIREMENT_IDENTITY, PROFILE_PLAN, PROFILE_REVIEW, PROFILE_TEST,
-    profile_template_validation_contexts, prompt_by_language, render,
+    PROFILE_WEAPM, profile_template_validation_contexts, prompt_by_language, render,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
 
@@ -72,6 +72,14 @@ pub struct ProfileList {
 #[serde(rename_all = "camelCase")]
 pub struct ImportProfilesInput {
     pub folder_path: String,
+    #[serde(default)]
+    pub dynamic_template: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportProfileFilesInput {
+    pub file_paths: Vec<String>,
     #[serde(default)]
     pub dynamic_template: bool,
 }
@@ -221,6 +229,12 @@ pub enum ProfileCommandError {
     ImportFolderReadFailed,
     #[error("profile.import.no-markdown-files")]
     ImportNoMarkdownFiles,
+    #[error("profile.import.file-not-found")]
+    ImportFileNotFound,
+    #[error("profile.import.file-not-markdown")]
+    ImportFileNotMarkdown,
+    #[error("profile.import.no-files")]
+    ImportNoFiles,
 }
 
 impl ProfileCommandError {
@@ -234,6 +248,9 @@ impl ProfileCommandError {
             Self::ImportFolderNotDirectory => "profile.import.folder-not-directory",
             Self::ImportFolderReadFailed => "profile.import.folder-read-failed",
             Self::ImportNoMarkdownFiles => "profile.import.no-markdown-files",
+            Self::ImportFileNotFound => "profile.import.file-not-found",
+            Self::ImportFileNotMarkdown => "profile.import.file-not-markdown",
+            Self::ImportNoFiles => "profile.import.no-files",
         }
     }
 
@@ -244,7 +261,10 @@ impl ProfileCommandError {
             | Self::ImportFolderNotFound
             | Self::ImportFolderNotDirectory
             | Self::ImportFolderReadFailed
-            | Self::ImportNoMarkdownFiles => json!({}),
+            | Self::ImportNoMarkdownFiles
+            | Self::ImportFileNotFound
+            | Self::ImportFileNotMarkdown
+            | Self::ImportNoFiles => json!({}),
             Self::DeleteConfirmationRequired {
                 template_count,
                 task_count,
@@ -404,6 +424,17 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
         summary: LocalizedProfileText::zh_en(
             "CI/CD 角色，使用 WeTest 完成构建，并与用户交互确认按构建或包名部署。",
             "CI/CD role for WeTest builds and interactive deployment from a build or by package name.",
+        ),
+        dynamic_template: false,
+    },
+    DefaultProfileSeed {
+        key: "weapm",
+        required_capability: Some(ProfileChannelCapability::Weapm),
+        id: "pf-builtin-weapm",
+        name: LocalizedProfileText::zh_en("WeAPM", "WeAPM"),
+        summary: LocalizedProfileText::zh_en(
+            "WeAPM 角色，使用 weapm CLI 查询调用链 Trace 与日志 Log，定位慢调用、错误与超时。",
+            "WeAPM role for querying traces and logs with the weapm CLI to locate slow calls, errors, and timeouts.",
         ),
         dynamic_template: false,
     },
@@ -600,6 +631,56 @@ pub(crate) fn import_profiles_from_folder(
     })
 }
 
+pub(crate) fn import_profiles_from_files(
+    paths: &GoldBandPaths,
+    input: ImportProfileFilesInput,
+) -> Result<ImportProfilesResult> {
+    if input.file_paths.is_empty() {
+        return Err(ProfileCommandError::ImportNoFiles.into());
+    }
+
+    let mut files = Vec::with_capacity(input.file_paths.len());
+    for raw in &input.file_paths {
+        let path = Utf8PathBuf::from(raw.as_str());
+        if !path.exists() {
+            return Err(ProfileCommandError::ImportFileNotFound.into());
+        }
+        if !path.is_file() {
+            return Err(ProfileCommandError::ImportFileNotMarkdown.into());
+        }
+        if !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        {
+            return Err(ProfileCommandError::ImportFileNotMarkdown.into());
+        }
+        files.push(path);
+    }
+
+    let existing = list_profiles(paths, DesktopLanguage::ZhCn)?;
+    let mut used_names = existing
+        .profiles
+        .iter()
+        .map(|profile| profile.name.clone())
+        .collect::<BTreeSet<String>>();
+
+    let mut imported = Vec::new();
+    let mut failed = Vec::new();
+    for path in &files {
+        match import_one_profile(paths, path, input.dynamic_template, &mut used_names) {
+            Ok(record) => imported.push(record),
+            Err(record) => failed.push(record),
+        }
+    }
+
+    Ok(ImportProfilesResult {
+        total_scanned: files.len(),
+        imported,
+        failed,
+        truncated: false,
+    })
+}
+
 fn import_one_profile(
     paths: &GoldBandPaths,
     path: &Utf8Path,
@@ -676,18 +757,9 @@ fn import_one_profile(
 
     let body = document.body;
     let mut final_dynamic = dynamic_template;
-    if dynamic_template {
-        let mut renders_ok = true;
-        for context in profile_template_validation_contexts() {
-            if render(&body, context).is_err() {
-                renders_ok = false;
-                break;
-            }
-        }
-        if !renders_ok {
-            fallbacks.push(ProfileFieldFallback::DynamicTemplateDowngraded);
-            final_dynamic = false;
-        }
+    if dynamic_template && !dynamic_template_body_renders(&body) {
+        fallbacks.push(ProfileFieldFallback::DynamicTemplateDowngraded);
+        final_dynamic = false;
     }
 
     let final_name = resolve_unique_name(&name, used_names);
@@ -783,6 +855,171 @@ fn first_non_empty(fields: &BTreeMap<String, String>, keys: &[&str]) -> Option<S
         }
     }
     None
+}
+
+/// dynamic template 正文在全部校验上下文是否可渲染（文件夹导入与 multica 安装共用的降级判定）。
+fn dynamic_template_body_renders(content: &str) -> bool {
+    profile_template_validation_contexts()
+        .iter()
+        .all(|context| render(content, context).is_ok())
+}
+
+// ===== multica 角色共享交换（daemon 通道 B 工单；格式转换唯一真源，见 Multica接入方案「角色共享」）=====
+
+/// multica 角色共享的交换文档载荷（wire 字段名即字段名：`name` 恒为 slug、`is_builtin` 保持 snake）。
+///
+/// multica 只存不改 `content`（完整 `pf-*.md`：frontmatter + 正文）。本地角色的 display name
+/// 没有 wire 顶层字段可走（wire `name` 恒为 slug），经 content frontmatter 的 `title` 键往返；
+/// `dynamicTemplate` 是本地 bool，同样走 frontmatter——wire 顶层同名可选字段是其他 runtime 的
+/// 字符串模板形态，码灵不产出不消费（单一事实源在 content）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MulticaRoleExchange {
+    /// slug（multica 商店唯一编号）= 本地 profile.id（canonical 身份；`pf-{base36}` 形态
+    /// 天然满足 multica slug 正则 `^[a-z0-9][a-z0-9._-]{0,63}$`）。
+    pub name: String,
+    /// 一句话描述 = 本地 summary。multica 发布校验必填；解析侧仍宽容缺省（第三方/旧 bundle）。
+    #[serde(default)]
+    pub description: String,
+    /// 完整 md 文档（frontmatter + 正文）。
+    pub content: String,
+    /// 内置标记（仅目录徽标展示；push-install 侧构成「拷贝不覆盖」语义的一部分）。
+    #[serde(default)]
+    pub is_builtin: bool,
+}
+
+/// 本地角色 → multica 交换文档（export 工单回传 body 的 payload）。
+///
+/// frontmatter 重写为 multica 发布校验形态：`name` = slug（multica 硬校验规则 2：必须等于
+/// item slug）、`description` = summary（规则 3 必填）；`title` 携带 display name 供下载侧
+/// 还原；id/createdAt/updatedAt/dynamicTemplate 原样保留（multica 不理解内容，附加键合法）。
+pub fn profile_to_multica_exchange(profile: &ProfileEntry) -> MulticaRoleExchange {
+    let slug = profile.id.clone();
+    let dynamic_template = if profile.dynamic_template {
+        "true"
+    } else {
+        "false"
+    };
+    let updates = [
+        FrontmatterUpdate {
+            key: "name",
+            value: &slug,
+            source: None,
+        },
+        FrontmatterUpdate {
+            key: "description",
+            value: &profile.summary,
+            source: None,
+        },
+        FrontmatterUpdate {
+            key: "title",
+            value: &profile.name,
+            source: None,
+        },
+        FrontmatterUpdate {
+            key: "id",
+            value: &profile.id,
+            source: None,
+        },
+        FrontmatterUpdate {
+            key: "createdAt",
+            value: &profile.created_at,
+            source: None,
+        },
+        FrontmatterUpdate {
+            key: "updatedAt",
+            value: &profile.updated_at,
+            source: None,
+        },
+        FrontmatterUpdate {
+            key: "dynamicTemplate",
+            value: dynamic_template,
+            source: None,
+        },
+    ];
+    let content = render_frontmatter_document(&updates, &profile.content);
+    MulticaRoleExchange {
+        name: slug,
+        description: profile.summary.clone(),
+        content,
+        is_builtin: profile.is_built_in,
+    }
+}
+
+/// multica 交换文档 → 本地 [`ProfileInput`]（push-install 落库前的转换）。
+///
+/// display name 还原顺序：content frontmatter `title`（码灵上传物专有）→ frontmatter `name`
+/// （第三方可能放展示名）→ wire slug 兜底；summary：wire description（multica 发布必填）→
+/// frontmatter summary/description → display name 兜底。与既有用户角色重名时改名拷贝
+/// （`-{n}` 后缀，与文件夹导入同一策略），绝不覆盖既有角色；`pf-builtin-*` / `is_builtin`
+/// 推送同样落为**新**用户角色（内置角色只读，ADR-0008 D6 拷贝语义天然成立）。dynamicTemplate
+/// 为 true 但正文渲染校验不过时降级为 false（与导入同策略）。
+/// multica push-install 的落库形态（#6 安装回报：区分全新/拷贝/复用，multica 反馈 P3——
+/// 服务端无法从 id/名称兜底判断「装了副本」还是「全新安装」）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MulticaInstallOutcome {
+    /// 全新落库：无重名/无同 key 既有用户资产，市场身份直达。
+    Created,
+    /// 重名改名拷贝（`-{n}` 后缀副本；ADR-0008 D6 用户数据不覆盖）。
+    RenamedCopy,
+    /// 同 key 既有用户资产原样复用（不新落库，返回既有条目）。
+    ReusedExisting,
+}
+
+impl MulticaInstallOutcome {
+    /// 上报 wire 字面量（daemon → server 安装回报的 `outcome` 字段；服务端消费按需求文档跟进）。
+    pub fn as_wire_str(&self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::RenamedCopy => "renamed-copy",
+            Self::ReusedExisting => "reused-existing",
+        }
+    }
+}
+
+pub fn multica_exchange_to_profile_input(
+    exchange: &MulticaRoleExchange,
+    used_names: &BTreeSet<String>,
+) -> Result<(ProfileInput, MulticaInstallOutcome)> {
+    // multica 硬校验规则 1 要求 content 必带 frontmatter 块——用严格解析，未闭合/缺失即失败
+    // （工单按 failed 上报，不把半成品正文当角色正文落库）。
+    let document = parse_frontmatter_document(&exchange.content)
+        .context("multica role exchange content is not a valid frontmatter document")?;
+    // 交换文档规范示例在闭合 fence 后留一个空行（`---\n\n<正文>`），本地格式 body 紧贴 fence
+    // （`render_frontmatter_document`）；落库前归一掉这一条框架换行，保证往返字节一致。
+    let body = document
+        .body
+        .strip_prefix("\r\n")
+        .or_else(|| document.body.strip_prefix('\n'))
+        .unwrap_or(&document.body);
+    let display_name = first_non_empty(&document.fields, &["title", "name"])
+        .unwrap_or_else(|| exchange.name.clone());
+    let summary = if !exchange.description.trim().is_empty() {
+        exchange.description.trim().to_string()
+    } else {
+        first_non_empty(&document.fields, &["summary", "description"])
+            .unwrap_or_else(|| display_name.clone())
+    };
+    let dynamic_template = document
+        .fields
+        .get("dynamicTemplate")
+        .is_some_and(|value| value.trim() == "true")
+        && dynamic_template_body_renders(body);
+    // 重名判定与改名同点发生（单一真源）：resolve 后名字偏离期望展示名 → 改名拷贝。
+    let resolved_name = resolve_unique_name(&display_name, used_names);
+    let outcome = if resolved_name == display_name {
+        MulticaInstallOutcome::Created
+    } else {
+        MulticaInstallOutcome::RenamedCopy
+    };
+    Ok((
+        ProfileInput {
+            name: resolved_name,
+            summary,
+            content: body.to_string(),
+            dynamic_template,
+        },
+        outcome,
+    ))
 }
 
 fn summary_from_body(body: &str) -> String {
@@ -946,6 +1183,7 @@ fn built_in_profile_content(key: &str, language: DesktopLanguage) -> String {
         "review" => prompt_by_language(language, PROFILE_REVIEW),
         "test" => prompt_by_language(language, PROFILE_TEST),
         "cicd" => prompt_by_language(language, PROFILE_CICD),
+        "weapm" => prompt_by_language(language, PROFILE_WEAPM),
         "accept" => prompt_by_language(language, PROFILE_ACCEPT),
         "cleanup" => prompt_by_language(language, PROFILE_CLEAN),
         "interview" => prompt_by_language(language, PROFILE_INTERVIEW),
@@ -1529,9 +1767,13 @@ profile body
     fn channel_profile_catalog_preserves_shared_roles_and_restricts_cicd() {
         for channel in ["default", "wb", "enterprise", ""] {
             let profiles = default_profile_seeds_for_channel(channel).collect::<Vec<_>>();
-            assert_eq!(profiles.len(), if channel == "wb" { 10 } else { 9 });
+            assert_eq!(profiles.len(), if channel == "wb" { 11 } else { 9 });
             assert_eq!(
                 profiles.iter().any(|seed| seed.id == "pf-builtin-cicd"),
+                channel == "wb"
+            );
+            assert_eq!(
+                profiles.iter().any(|seed| seed.id == "pf-builtin-weapm"),
                 channel == "wb"
             );
             for seed in DEFAULT_PROFILE_SEEDS
@@ -1925,6 +2167,7 @@ profile body
         fs::write(import_dir.join("a.MD"), "a").unwrap();
         fs::write(import_dir.join("b.md"), "b").unwrap();
         fs::write(import_dir.join("ignored.txt"), "ignored").unwrap();
+        fs::write(import_dir.join("ignored.markdown"), "ignored").unwrap();
         let import_dir = Utf8PathBuf::from_path_buf(import_dir).unwrap();
 
         let (files, truncated) = collect_md_files(&import_dir, 2).unwrap();
@@ -2040,6 +2283,94 @@ profile body
     }
 
     #[test]
+    fn import_profiles_from_files_imports_markdown_files() {
+        let (_tmp, paths, import_dir) = setup_import_dir();
+        let file_a = import_dir.join("role-a.md");
+        let file_b = import_dir.join("role-b.MD");
+        fs::write(
+            &file_a,
+            "---\nname: 文件角色A\nsummary: 摘要A\n---\n正文A\n",
+        )
+        .unwrap();
+        fs::write(
+            &file_b,
+            "---\nname: 文件角色B\nsummary: 摘要B\n---\n正文B\n",
+        )
+        .unwrap();
+        let result = import_profiles_from_files(
+            &paths,
+            ImportProfileFilesInput {
+                file_paths: vec![
+                    file_a.to_string_lossy().to_string(),
+                    file_b.to_string_lossy().to_string(),
+                ],
+                dynamic_template: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(result.total_scanned, 2);
+        assert_eq!(result.imported.len(), 2);
+        assert!(result.failed.is_empty());
+        assert!(!result.truncated);
+        let names = result
+            .imported
+            .iter()
+            .map(|record| record.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"文件角色A"));
+        assert!(names.contains(&"文件角色B"));
+    }
+
+    #[test]
+    fn import_profiles_from_files_rejects_missing_file() {
+        let (_tmp, paths, _import_dir) = setup_import_dir();
+        let error = import_profiles_from_files(
+            &paths,
+            ImportProfileFilesInput {
+                file_paths: vec!["/no/such/role.md".to_string()],
+                dynamic_template: false,
+            },
+        )
+        .unwrap_err();
+        let command_error = error.downcast_ref::<ProfileCommandError>().unwrap();
+        assert_eq!(command_error.code(), "profile.import.file-not-found");
+    }
+
+    #[test]
+    fn import_profiles_from_files_rejects_non_markdown() {
+        for extension in ["txt", "markdown", "MARKDOWN"] {
+            let (_tmp, paths, import_dir) = setup_import_dir();
+            let file = import_dir.join(format!("role.{extension}"));
+            fs::write(&file, "# Role\n\nRole instructions.\n").unwrap();
+            let error = import_profiles_from_files(
+                &paths,
+                ImportProfileFilesInput {
+                    file_paths: vec![file.to_string_lossy().to_string()],
+                    dynamic_template: false,
+                },
+            )
+            .unwrap_err();
+            let command_error = error.downcast_ref::<ProfileCommandError>().unwrap();
+            assert_eq!(command_error.code(), "profile.import.file-not-markdown");
+        }
+    }
+
+    #[test]
+    fn import_profiles_from_files_rejects_empty_list() {
+        let (_tmp, paths, _import_dir) = setup_import_dir();
+        let error = import_profiles_from_files(
+            &paths,
+            ImportProfileFilesInput {
+                file_paths: Vec::new(),
+                dynamic_template: false,
+            },
+        )
+        .unwrap_err();
+        let command_error = error.downcast_ref::<ProfileCommandError>().unwrap();
+        assert_eq!(command_error.code(), "profile.import.no-files");
+    }
+
+    #[test]
     fn grill_profile_is_built_in_but_not_in_default_workflow() {
         // The grill profile must appear in the built-in profile list.
         let built_in = built_in_profiles(DesktopLanguage::ZhCn);
@@ -2073,5 +2404,131 @@ profile body
 
         // Clean up temp dir
         let _ = std::fs::remove_dir_all(std::env::temp_dir().join("gb-grill-test"));
+    }
+
+    // ===== multica 角色共享交换：转换真值表（上传组装 / 下载还原 / 冲突拷贝 / 降级）=====
+
+    fn exchange_source_profile() -> ProfileEntry {
+        ProfileEntry {
+            id: "pf-1a2b3c".to_string(),
+            name: "评审专家".to_string(),
+            summary: "专注代码评审".to_string(),
+            summary_source: "专注代码评审".to_string(),
+            content: "你是一名评审专家……".to_string(),
+            dynamic_template: false,
+            scope: ProfileScope::User,
+            is_built_in: false,
+            created_at: "2026-10-31 10:00:00".to_string(),
+            updated_at: "2026-10-31 11:00:00".to_string(),
+            path: String::new(),
+        }
+    }
+
+    #[test]
+    fn profile_to_multica_exchange_builds_publishable_document() {
+        let exchange = profile_to_multica_exchange(&exchange_source_profile());
+        // wire 顶层：name 恒为 slug（= profile.id）、description = summary、内置标记透传。
+        assert_eq!(exchange.name, "pf-1a2b3c");
+        assert_eq!(exchange.description, "专注代码评审");
+        assert!(!exchange.is_builtin);
+        // content 是完整 md：frontmatter name = slug（multica 硬校验规则 2）、description 必填、
+        // title 携带 display name（往返键）、id/时间戳/dynamicTemplate 原样保留，正文收尾。
+        let document = parse_frontmatter_document(&exchange.content).unwrap();
+        assert_eq!(document.fields["name"], "pf-1a2b3c");
+        assert_eq!(document.fields["description"], "专注代码评审");
+        assert_eq!(document.fields["title"], "评审专家");
+        assert_eq!(document.fields["id"], "pf-1a2b3c");
+        assert_eq!(document.fields["createdAt"], "2026-10-31 10:00:00");
+        assert_eq!(document.fields["updatedAt"], "2026-10-31 11:00:00");
+        assert_eq!(document.fields["dynamicTemplate"], "false");
+        assert_eq!(document.body, "你是一名评审专家……");
+    }
+
+    #[test]
+    fn multica_exchange_round_trip_restores_display_fields() {
+        let exchange = profile_to_multica_exchange(&exchange_source_profile());
+        let (input, _) = multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
+        // display name 从 title 还原（不是 slug）、summary 取 wire description、
+        // 正文剥离 frontmatter（落库后由本地键重新渲染）、dynamicTemplate 走 frontmatter。
+        assert_eq!(input.name, "评审专家");
+        assert_eq!(input.summary, "专注代码评审");
+        assert_eq!(input.content, "你是一名评审专家……");
+        assert!(!input.dynamic_template);
+    }
+
+    #[test]
+    fn multica_exchange_round_trip_preserves_dynamic_template() {
+        let mut profile = exchange_source_profile();
+        profile.dynamic_template = true;
+        let exchange = profile_to_multica_exchange(&profile);
+        assert_eq!(
+            parse_frontmatter_document(&exchange.content)
+                .unwrap()
+                .fields["dynamicTemplate"],
+            "true"
+        );
+        let (input, _) = multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
+        assert!(input.dynamic_template);
+    }
+
+    #[test]
+    fn multica_exchange_to_profile_input_falls_back_for_third_party_documents() {
+        // 第三方上传物（无 title、frontmatter name = slug、wire description 缺省、fence 后带
+        // 规范示例的空行）：display name 回退 frontmatter name（= slug），summary 回退
+        // frontmatter description，框架换行被归一。
+        let exchange = MulticaRoleExchange {
+            name: "pf-third-party".to_string(),
+            description: String::new(),
+            content: "---\nname: pf-third-party\ndescription: 第三方角色\n---\n\nbody".to_string(),
+            is_builtin: false,
+        };
+        let (input, _) = multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
+        assert_eq!(input.name, "pf-third-party");
+        assert_eq!(input.summary, "第三方角色");
+        assert_eq!(input.content, "body");
+    }
+
+    #[test]
+    fn multica_exchange_to_profile_input_copies_on_name_conflict() {
+        // 与既有角色重名 → 改名拷贝（-{n} 后缀，与文件夹导入同策略），绝不覆盖。
+        let exchange = profile_to_multica_exchange(&exchange_source_profile());
+        let used: BTreeSet<String> = ["评审专家".to_string()].into_iter().collect();
+        let (input, outcome) = multica_exchange_to_profile_input(&exchange, &used).unwrap();
+        assert_eq!(input.name, "评审专家-2");
+        // #6 安装回报：落库形态必须可区分（multica 反馈 P3——服务端无法从 id/名称兜底
+        // 判断「装了副本」还是「全新安装」）。
+        assert_eq!(outcome, MulticaInstallOutcome::RenamedCopy);
+        // 无重名 → 全新落库。
+        let (fresh, outcome) =
+            multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
+        assert_eq!(fresh.name, "评审专家");
+        assert_eq!(outcome, MulticaInstallOutcome::Created);
+    }
+
+    #[test]
+    fn multica_exchange_to_profile_input_downgrades_broken_dynamic_template() {
+        // dynamicTemplate: true 但正文模板在 strict 渲染下不过 → 降级 false（与导入同策略）。
+        let exchange = MulticaRoleExchange {
+            name: "pf-broken-template".to_string(),
+            description: "d".to_string(),
+            content:
+                "---\nname: pf-broken-template\ndynamicTemplate: true\n---\n\n{{ 未定义变量 }}"
+                    .to_string(),
+            is_builtin: false,
+        };
+        let (input, _) = multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).unwrap();
+        assert!(!input.dynamic_template);
+    }
+
+    #[test]
+    fn multica_exchange_to_profile_input_rejects_invalid_document() {
+        // frontmatter 块未闭合 → 转换失败（工单按 failed 上报）。
+        let exchange = MulticaRoleExchange {
+            name: "pf-bad".to_string(),
+            description: "d".to_string(),
+            content: "---\nname: pf-bad\nbody without closing fence".to_string(),
+            is_builtin: false,
+        };
+        assert!(multica_exchange_to_profile_input(&exchange, &BTreeSet::new()).is_err());
     }
 }

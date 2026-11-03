@@ -24,8 +24,13 @@ export function parseChannelBuildArgs(args) {
   return options;
 }
 
-export function channelBuildPlan(overlayPath, { devtools = false } = {}) {
+export function channelBuildPlan(overlayPath, { channel = 'default', devtools = false } = {}, platform = process.platform) {
   const tauriArgs = ['tauri', 'build', '--config', overlayPath];
+  // Local channel versions contain a timestamp and Git SHA, which WiX cannot
+  // represent. Official GitHub releases use tag versions and native targets.
+  if (channel !== 'default' && platform === 'win32') {
+    tauriArgs.push('--bundles', 'nsis');
+  }
   if (devtools) {
     tauriArgs.push('--features', SUPPORT_DEVTOOLS_FEATURE);
   }
@@ -47,4 +52,9 @@ export function assertChannelBuildSecrets(channel, config, env) {
       `Missing required build secret ${GOLD_BAND_METRICS_API_KEY} for channel ${channel} because metrics are enabled.`,
     );
   }
+}
+
+export function updaterGeneratorArgs(releaseDir, outputPath, baseUrl, version, critical) {
+  return ['scripts/generate-updater-json.mjs', releaseDir, outputPath, '--base-url', baseUrl, '--version', version,
+    ...(critical ? ['--critical'] : [])];
 }

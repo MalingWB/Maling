@@ -33,11 +33,30 @@ pub enum MulticaError {
     /// 用户在浏览器登录等待期间主动取消（连接弹窗「取消连接」）。非失败：前端静默关闭弹窗。
     #[error("multica connect cancelled by user")]
     ConnectCancelled,
+    /// issue 附件中转目录创建失败（M5-bu）：本地临时目录不可写（磁盘满/权限），附件既无法下载
+    /// 也无法告知 agent，整体无法继续 → 硬失败并 release 回滚。逐个附件的下载失败是软失败
+    /// （局部失败隔离），不进本错误码——以隐藏区段告知 agent，不阻断任务启动。
+    #[error("multica attachment staging failed: {0}")]
+    AttachmentStageFailed(String),
     // M4-d：保留在错误码表（multica.session-resume-failed），但断点续跑路径不 emit——任何 resume Err
     // 改走 silent fresh-fallback（更稳，无需 fragile 串匹配）。见开发设计 §2.2.8。
     #[allow(dead_code)]
     #[error("multica session resume failed, will rerun")]
     SessionResumeFailed,
+    /// 上游拉取决策无对应等待槽（M5-ch）：决策迟到（resolve 已收口或 run 已终态）。
+    /// 前端通常已随 settled 事件关闭弹窗，此错误用于兜底（如弹窗与收口竞态的迟到提交）。
+    #[error("multica upstream pull decision has no pending slot")]
+    UpstreamPullNotPending,
+    /// 上游拉取决策载荷非法（M5-ch）：manual 空文本（trim 后）或未知决策字面量。
+    /// 与 [`MulticaError::UpstreamPullNotPending`]（槽不存在，前端幂等收卡）严格区分——
+    /// 本错误槽未被写入、等待方仍在，前端须保留卡片让用户重选；字面量细节进后端日志。
+    #[error("multica upstream pull decision payload invalid")]
+    UpstreamPullInvalidDecision,
+    /// DPMS 需求回写冲突（M5-cl）：issue 已链接不同 DPMS story（`POST /api/daemon/issues/{id}/dpms-story`
+    /// HTTP 409）。服务端该路径已把 `dpms_required` 两半置 false（告警熄灭），调用方记日志后不再发送、
+    /// 不重试。仅回写通道内部使用，不进前端错误码消费。
+    #[error("multica issue already linked to a different DPMS story")]
+    IssueLinkConflict,
 }
 
 impl MulticaError {
@@ -54,7 +73,11 @@ impl MulticaError {
             Self::RuntimeOffline => "multica.runtime-offline",
             Self::InvalidAddress => "multica.invalid-address",
             Self::ConnectCancelled => "multica.connect-cancelled",
+            Self::AttachmentStageFailed(_) => "multica.attachment-stage-failed",
             Self::SessionResumeFailed => "multica.session-resume-failed",
+            Self::UpstreamPullNotPending => "multica.upstream-pull-not-pending",
+            Self::UpstreamPullInvalidDecision => "multica.upstream-pull-invalid-decision",
+            Self::IssueLinkConflict => "multica.issue-link-conflict",
         }
     }
 
@@ -64,6 +87,7 @@ impl MulticaError {
             Self::AuthFailed(msg) | Self::NetworkFailed(msg) | Self::RegisterFailed(msg) => {
                 json!({ "message": msg })
             }
+            Self::AttachmentStageFailed(msg) => json!({ "message": msg }),
             _ => json!({}),
         }
     }
@@ -106,8 +130,20 @@ mod tests {
             "multica.connect-cancelled"
         );
         assert_eq!(
+            MulticaError::AttachmentStageFailed("temp dir unwritable".into()).code(),
+            "multica.attachment-stage-failed"
+        );
+        assert_eq!(
             MulticaError::SessionResumeFailed.code(),
             "multica.session-resume-failed"
+        );
+        assert_eq!(
+            MulticaError::UpstreamPullNotPending.code(),
+            "multica.upstream-pull-not-pending"
+        );
+        assert_eq!(
+            MulticaError::UpstreamPullInvalidDecision.code(),
+            "multica.upstream-pull-invalid-decision"
         );
     }
 

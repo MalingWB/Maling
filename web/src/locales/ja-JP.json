@@ -587,6 +587,7 @@
     "closeWorkspace": "右側のワークスペースを折りたたむ",
     "openNewTab": "新しいタブを開く",
     "closeTab": "タブを閉じる",
+    "panelFailed": "このタブを表示できません",
     "allTabs": "すべてのタブ",
     "attention": "注意が必要です",
     "files": "ワークスペース",
@@ -632,6 +633,8 @@
       "switchToTreeView": "フォルダーツリーに切り替える",
       "copyAbsolutePath": "絶対パスをコピーする",
       "copyRelativePath": "相対パスをコピーする",
+      "relativeToRunDirectory": "実行ディレクトリからの相対パス",
+      "relativeToAttachmentDirectory": "添付ディレクトリからの相対パス", "relativeToSourceWorkspace": "参照元の作業ディレクトリからの相対パス",
       "openWorkspaceFile": "ワークスペースファイルを開く",
       "referenceToConversation": "会話で参照",
       "removeWorkspaceReference": "ファイル参照を削除",
@@ -818,6 +821,12 @@
       "workspace-outside-project": "選択した worktree はこのプロジェクトに属していません。",
       "ref-changed": "変更一覧が更新されました。もう一度お試しください。",
       "sync-ref-changed": "ブランチが変わりました。もう一度お試しください。",
+      "push-upstream-invalid": "ブランチの上流を解決できません。追跡設定を確認して再試行してください。",
+      "push-upstream-unsupported": "このブランチはローカルブランチを追跡しています。ローカルの上流へのプッシュはサポートされていません。",
+      "push-branch-not-current": "現在のブランチが変わりました。プッシュの確認を開き直してください。",
+      "push-remote-required": "公開先のリモートを選択してください。",
+      "push-confirmation-required": "先に送信元ブランチとプッシュ先を確認してください。",
+      "push-target-changed": "送信元ブランチまたはプッシュ先が変わりました。もう一度確認してください。",
       "repository-locked": "別のリポジトリ書き込み操作が実行中です。",
       "workspace-locked": "別のワークスペース書き込み操作が実行中です。",
       "operation-in-progress": "Git ワークフローはまだ進行中です。完了するか中止して、再試行してください。",
@@ -925,7 +934,9 @@
       "composer-history-query-failed": "入力履歴を読み込めませんでした。もう一度試してください。",
       "turn-execution-failed": "このメッセージは処理できませんでした。もう一度やり直してください。",
       "session-request-failed": "セッションを準備できませんでした。もう一度やり直してください。",
+      "session-restore-reference-missing": "この ACP セッションには Provider セッション参照がないため、元のセッションを再開できません。新しいセッションを作成して、メッセージをもう一度送信してください。",
       "missing-provider": "現在のノードには provider の構成がありません。",
+      "subagent-protocol-upgrade-required": "Claude ACP を {{minimumVersion}} 以降に更新してから、もう一度お試しください。",
       "session-config-value-unavailable": "選択したセッション設定は使えなくなりました。最新の一覧から選び直してください。",
       "active-prompt-blocks-config-save": "セッションが実行中です。セッションを停止してから設定を保存してください。",
       "invalid-conversation-branch-id": "このAgentの会話リンクは無効であるか、使用できなくなりました。",
@@ -987,7 +998,10 @@
         "folder-not-found": "選択したフォルダーが見つかりませんでした",
         "folder-not-directory": "選択したパスはフォルダーではありません",
         "folder-read-failed": "選択したフォルダーを完全に読み取ることができませんでした",
-        "no-markdown-files": "選択したフォルダーに Markdown ファイルが見つかりません"
+        "no-markdown-files": "選択したフォルダーに Markdown ファイルが見つかりません",
+        "file-not-found": "選択したファイルが見つかりませんでした",
+        "file-not-markdown": "選択したファイルは Markdown ファイルではありません",
+        "no-files": "ファイルが選択されていません"
       }
     },
     "manual-check": {
@@ -996,7 +1010,8 @@
     "runtime": {
       "io": {
         "storage-full": "ディスク容量が不足したため、実行が中断されました。空き容量を確保してから続行してください。",
-        "permission-denied": "セッションデータを書き込めません。ディレクトリの書き込み権限を確認してください。"
+        "permission-denied": "セッションデータを書き込めません。ディレクトリの書き込み権限を確認してください。",
+        "attachment-path-too-long": "この会話のデータフォルダーの階層が深すぎるため、添付ファイル「{{name}}」を保存できません。新しい会話を作成してから送信してください。"
       },
       "conversation-not-available": "ワークフローが実行中であるため、通常のメッセージはまだ送信できません。",
       "continue-not-available": "このノードを継続する必要はなくなりました。すでにアクティブになっているか、再開できなくなっている可能性があります。",
@@ -1023,7 +1038,6 @@
       "workspace-file-read-failed": "参照ファイルの情報を読み取れませんでした。もう一度お試しください。",
       "workspace-file-count-exceeded": "コンテキストに追加できる参照と添付ファイルは最大 {{max}} 件です。",
       "session-restore-unsupported": "このAgentは既存のセッションを復元できません。",
-      "session-restore-reference-missing": "このセッションには、再開できる Provider セッション参照がありません。",
       "history-sync-unsupported": "このAgentは、既存のセッションの完全な履歴を同期できません。",
       "prompt-empty": "送信する内容を入力してください。",
       "prompt-quote-invalid": "引用したテキストが無効です。削除して、もう一度引用してください。",
@@ -1041,11 +1055,18 @@
       "prompt-queue-empty": "保留中のキューは空です。",
       "prompt-queue-revision-conflict": "送信待ちの順序が変更されました。リストの更新後にもう一度試してください。",
       "prompt-queue-invalid-order": "送信待ちの順序が無効です。もう一度試してください。",
+      "prompt-queue-invalid-mode": "送信モードが無効です。",
       "prompt-queue-session-busy": "キューに入れられたプロンプトを手動で使用する前に、アクティブなセッションを停止してください。",
+      "prompt-queue-interrupt-timeout": "現在の返信はまだ停止中です。このメッセージはキューに残ります。少し待ってから再試行してください。",
+      "prompt-queue-dispatch-settling": "前の返信が完全に終わっていません。このメッセージはキューに戻されました。少し待ってから再試行してください。",
       "prompt-session-busy": "前のメッセージはまだ処理中です。まず現在の応答を待つか停止してください。",
       "prompt-submission-conflict": "このメッセージ識別子は、すでに別のコンテンツに関連付けられています。もう一度送信してください。",
       "prompt-submission-missing": "受け付けられたメッセージの内容を読み取れませんでした。もう一度送信してください。",
       "prompt-queue-storage-failed": "保留キューを保存できませんでした。もう一度やり直してください。",
+      "composer-draft-empty": "保存できる内容がありません。",
+      "composer-draft-full": "下書きボックスがいっぱいです。最大 {{max}} 件まで保存できます。",
+      "composer-draft-not-found": "この下書きはすでに存在しません。",
+      "composer-draft-storage-failed": "草稿ボックスにアクセスできません。再試行してください。",
       "execution-plan": {
         "not-found": "この Run には実行計画がありません。",
         "revision-conflict": "実行計画が更新されています。再読み込みしてからやり直してください。",
@@ -1109,6 +1130,7 @@
       "stale-package": "ダウンロード済みのパッケージは現在のバージョンより新しくありません。"
     },
     "multica": {
+      "attachment-stage-failed": "タスクの添付ファイルのダウンロードに失敗しました: {{message}}",
       "auth-failed": "Multica 認証が失敗しました: {{message}}",
       "claim-conflict": "このタスクは、別の Daemon がすでに受け取っています。",
       "connect-cancelled": "接続がキャンセルされました。",
@@ -1118,6 +1140,8 @@
       "runtime-offline": "ランタイムの準備ができていません。しばらくしてからもう一度お試しください。",
       "session-resume-failed": "セッションの再開に失敗しました。新たな実行が開始されます。",
       "task-not-found": "この Multica タスクが見つかりませんでした。",
+      "upstream-pull-invalid-decision": "選択が無効です。確認してもう一度お試しください。",
+      "upstream-pull-not-pending": "この取得はすでに終了しました。選択は不要です。",
       "workspace-already-bound": "このワークスペースはすでにバインドされています。",
       "workspace-not-found": "このワークスペース バインディングが見つかりませんでした。"
     },
@@ -1317,7 +1341,6 @@
     "builtInSectionDescription": "ドラフトとして開いたり、新しいカスタム ロールとして保存したりできるロールを修正しました。",
     "customSectionTitle": "カスタムロール",
     "customSectionDescription": "ユーザーの役割はここでページ分けされます。",
-    "customProfilesPageRange": "カスタムロール {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "組み込みの役割を直接保存することはできません。代わりに、新しいロールとして保存してください。",
     "emptyContent": "役割内容はまだありません",
     "profileRequired": "名前と概要は必須です。",
@@ -1450,10 +1473,12 @@
       }
     },
     "importProfile": "役割のインポート",
-    "importSettingsDescription": "ロール Markdown ファイルをフォルダーからバッチインポートします。不足している名前と概要は自動的に入力されます。",
+    "importSettingsDescription": "フォルダーからバッチインポートするか、ロール Markdown ファイルを直接選択してインポートします。不足している名前と概要は自動的に入力されます。",
     "importDynamicTemplateDescription": "有効にすると、インポートされたすべての役割が動的テンプレートとして扱われます。無効なボディは静的ボディにダウングレードされます。",
     "importPickFolder": "フォルダーを選択してインポートする",
     "importPickFolderTitle": "ロールの Markdown ファイルがあるフォルダーを選択",
+    "importPickFiles": "ファイルを選択してインポートする",
+    "importPickFilesTitle": "ロールの Markdown ファイルを選択",
     "importResultTitle": "インポート結果",
     "importResultSummary": "{{total}} ファイルをスキャンし、{{success}} に成功し、{{failed}} に失敗しました。",
     "importResultImported": "インポート済み",
@@ -2028,6 +2053,10 @@
     "fetch": "Fetch",
     "pull": "Pull",
     "push": "Push",
+    "newBranchIndicator": "new",
+    "pushTargetRemote": "送信先リモート",
+    "pushPreparing": "プッシュ先を準備中…",
+    "pushSetUpstream": "公開に成功したら、送信先ブランチを上流に設定します。",
     "remote": "リモート",
     "name": "名前",
     "startPoint": "開始点",
@@ -2330,9 +2359,37 @@
       "editDraftOccupied": "先に入力欄の現在の下書きを処理してください",
       "restoreDraftConflict": "入力欄の状態が変わったため、この送信待ちの内容を復元できません。",
       "reorder": "キューに入れられたメッセージを並べ替える",
-      "use": "使用",
+      "sendNow": "今すぐ送信",
       "delete": "削除",
-      "enqueue": "キューに追加"
+      "enqueue": "キューに追加",
+      "autoSend": "自動送信",
+      "modeTooltip": "オンにすると、返信が終わるたびに送信待ちの内容を順に自動送信します。オフにすると内容はキューに残り、「今すぐ送信」で 1 件ずつ送信します。",
+      "paused": {
+        "stopped": "一時停止中：セッションを停止しました",
+        "failed": "一時停止中：前回の送信に失敗しました"
+      },
+      "resume": "再開",
+      "resumeLabel": "自動送信を再開",
+      "moreActions": "その他の操作",
+      "clear": "送信待ちをクリア",
+      "clearConfirmTitle": "送信待ちキューをクリアしますか？",
+      "clearConfirmDescription": "送信待ちメッセージ {{count}} 件が削除されます。この操作は元に戻せません。",
+      "clearConfirmAction": "送信待ちをクリア",
+      "interruptConfirmTitle": "この内容を今すぐ送信しますか？",
+      "interruptConfirmDescription": "現在の返信を停止してから、この内容を送信します。",
+      "interruptConfirmSkip": "今後表示しない",
+      "interruptConfirmAction": "停止して送信"
+    },
+    "composerDrafts": {
+      "title": "下書きボックス",
+      "titleWithCount": "下書きボックス（{{count}}）",
+      "count": "{{count}}/{{max}}",
+      "save": "下書きボックスに保存",
+      "empty": "下書きはまだありません",
+      "take": "入力欄に戻す",
+      "takeOccupied": "先に入力欄の内容を処理してください",
+      "delete": "下書きを削除",
+      "takeConflict": "入力欄に内容があるため、草稿は草稿ボックスに残っています。"
     },
     "sending": "送信中",
     "sendFailed": "送信に失敗しました",
@@ -2450,7 +2507,8 @@
       "output": "出力",
       "cacheRead": "キャッシュ読み取り",
       "cacheWrite": "キャッシュ書き込み",
-      "total": "合計"
+      "total": "合計",
+      "excludesBackground": "バックグラウンド起動による使用量は含まれません"
     },
     "hiddenRemoteTaskContext": "非表示のリモートタスクコンテキスト"
   },
@@ -2546,7 +2604,14 @@
     "im": {
       "title": "IM リモート介入と通知",
       "enabled": "有効",
+      "channelEnabled": "{{channel}} のリモート介入を有効にする",
+      "channelSubtitle": "ボット · プライベートチャット",
+      "expandChannel": "{{channel}} の設定を展開",
+      "collapseChannel": "{{channel}} の設定を折りたたむ",
+      "receiverAccount": "受信アカウント",
+      "robotName": "ボット名",
       "privateBinding": "プライベートチャット: {{name}}",
+      "privateBindingUnnamed": "1 対 1 のチャットにバインド済み",
       "notificationKinds": "通知の種類",
       "notificationGroups": {
         "needsAction": "対応が必要",
@@ -2567,6 +2632,8 @@
         "notConfigured": "{{channel}} が接続されていません。接続してリモート介入と通知を設定します。",
         "connect": "スキャンして接続する",
         "reauthorize": "再度認可する",
+        "changeApp": "Feishu アプリを変更",
+        "changeAppWarning": "認可が完了すると現在の Feishu アプリが置き換えられ、既存のプライベートチャット連携が解除されます。新しいボットで連携し直してください。",
         "generating": "QRコードを生成中…",
         "waiting": "{{channel}} でスキャンし、認可を確認してください",
         "expiresIn": "QR コードは {{countdown}} 後に期限切れになります。",
@@ -2579,10 +2646,12 @@
       "channels": {
         "weCom": {
           "title": "WeCom",
+          "identityLabel": "ボット ID",
           "identity": "ボット ID: {{id}}"
         },
         "feishu": {
           "title": "Feishu / Lark",
+          "identityLabel": "App ID",
           "identity": "App ID: {{id}}",
           "singleDeviceHint": "操作が別の端末に届かないよう、1 つのボットは 1 台の端末のみに接続してください。",
           "permissions": {
@@ -2590,6 +2659,7 @@
             "send": "あなたにメッセージを送信する",
             "receive": "あなたがボットに送る個別メッセージを読む",
             "update": "ボットが送信したカードを更新する",
+            "profile": "受信アカウントの表示のために名前を読み取る",
             "confirm": "同意して QR コードを生成"
           },
           "resetBinding": {
@@ -2847,6 +2917,11 @@
       "hiddenCount": "+{{count}}",
       "showAll": "すべて表示（{{count}} 件）",
       "showLess": "折りたたむ"
+    },
+    "promptQueue": {
+      "title": "送信待ち",
+      "description": "返信中に「今すぐ送信」を使うと、現在の返信を先に停止します。",
+      "confirmInterrupt": "「今すぐ送信」で返信を中断する前に確認する"
     }
   },
   "conversation": {
@@ -2954,7 +3029,9 @@
         "emptyTitle": "{{source}}に接続されていません",
         "removeTask": "リストから削除",
         "removeTaskHint": "この側のリストから削除されるだけです。更新すると復元されます",
-        "removeTaskTerminalHint": "ローカルの完了記録を削除します。更新しても再表示されません"
+        "removeTaskTerminalHint": "ローカルの完了記録を削除します。更新しても再表示されません",
+        "rerunTask": "再実行",
+        "rerunBadge": "再実行"
       },
       "keepResident": "セッションを常駐",
       "releaseResident": "常駐を解除",
@@ -2965,6 +3042,7 @@
     "composer": {
       "remoteNeedLocalWorkspace": "要件を実行する前に、ローカルワークスペースを追加してください",
       "removeRemoteBinding": "タスクのバインド解除",
+      "remoteAttachmentHint": "リモートタスクの添付ファイル。送信時に自動でダウンロードして添付されます",
       "remoteBindingTag": "{{source}} · {{title}}"
     },
     "branchPicker": {
@@ -3168,6 +3246,7 @@
       "account": {
         "connected": "接続済み"
       },
+      "openPlatform": "{{source}} プラットフォームを開く",
       "column": {
         "empty": "タスクがありません"
       },
@@ -3192,10 +3271,31 @@
         "label": "種類",
         "test": "テスト"
       },
+      "searchPlaceholder": "タスク名を検索…",
       "readiness": {
-        "notReady": "準備未完了",
-        "notReadyHint": "対応する開発タスクがまだ完了していません。完了を待ってからの実行をご検討ください"
+        "ready": "準備完了",
+        "readyHint": "対応する開発タスクが完了しました。実行を開始できます"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "このタスクは DPMS 要求の作成と関連付けの報告が必要です。報告が完了するとこのラベルは自動的に消えます"
+      },
+      "issueStatus": {
+        "todo": "未着手",
+        "backlog": "バックログ"
       }
+    },
+    "upstreamPull": {
+      "title": "上流の成果物説明を未取得",
+      "description": "「{{task}}」の {{node}} ノードは、上流ワークアイテム {{issue}} の成果物説明をまだ取得していません。",
+      "fallbackNote": "60 秒以内に選択しない場合、自動的にポーリングを再開します。",
+      "retry": "取得を待機",
+      "manual": "手動で入力",
+      "skip": "取得をスキップ",
+      "manualLabel": "成果物説明",
+      "manualPlaceholder": "ビルド成果物やデプロイ環境などの重要情報…",
+      "manualSubmit": "この内容で続行",
+      "waitingNote": "上流の成果物メモの更新を待機しています。待機中はいつでも手動で入力またはスキップできます。"
     }
   },
   "onboarding": {

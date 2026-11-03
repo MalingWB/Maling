@@ -19,6 +19,7 @@ import {
   getConversationRunSummaryPage,
   getConversationSidebarBootstrap,
   getConversationTaskPage,
+  getConversationTaskSummary,
   acknowledgeConversationTerminalResult,
   getProfiles,
   getWorkflowTemplates,
@@ -59,6 +60,7 @@ import {
   subscribeConversationRunStateUpdates,
   subscribeConversationTerminalResultUpdates,
   subscribeRemoteTaskUpdates,
+  subscribeRuntimeAssetInstalled,
   updateNotificationAttention,
   recordActivity,
 } from './api';
@@ -208,8 +210,8 @@ import {
   shouldCommitConversationNavigation,
   shouldSurfaceConversationNavigationError,
 } from '@/lib/conversation-navigation';
-import { preloadConversationTurnFileChangeSets } from '@/lib/turn-file-change-set-cache';
 import { ConversationRunCache, conversationRunCacheKey } from '@/lib/conversation-run-cache';
+import { sameConversationRunEntity } from '@/lib/conversation-run-identity';
 import {
   applyConversationTaskSnapshot,
   findConversationTask,
@@ -218,6 +220,8 @@ import {
   CONVERSATION_RUN_PAGE_SIZE,
   CONVERSATION_TASK_PAGE_SIZE,
   ConversationSidebarSingleFlight,
+  clearConversationLocatedTask,
+  locateConversationSidebarTask,
   applyConversationPinnedTaskPage,
   applyConversationRunSummaryPage,
   applyConversationSidebarBootstrap as mergeConversationSidebarBootstrap,
@@ -602,6 +606,57 @@ export function App() {
   const workspaceRevealRequestIdRef = useRef(0);
   const [workspaceRevealRequest, setWorkspaceRevealRequest] = useState<ConversationSidebarWorkspaceRevealRequest | null>(null);
 
+  const cancelConversationSidebarReveal = useCallback((destination?: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>) => {
+    workspaceRevealRequestIdRef.current += 1;
+    setWorkspaceRevealRequest(null);
+    setConversationSidebar((current) => {
+      const next = clearConversationLocatedTask(current, destination);
+      conversationSidebarRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleConversationSidebarReveal = useCallback((requestId: number) => {
+    setWorkspaceRevealRequest((current) => current?.requestId === requestId && !current.scrollHandled
+      ? { ...current, scrollHandled: true }
+      : current);
+  }, []);
+
+  const revealConversationSidebarTask = useCallback(async (target: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>) => {
+    const requestId = ++workspaceRevealRequestIdRef.current;
+    const found = findConversationTask(conversationSidebarRef.current, target.projectId, target.taskId);
+    const existing = found && (!target.taskUuid || found.taskUuid === target.taskUuid) ? found : null;
+    const request = { ...target, requestId };
+    setWorkspaceRevealRequest(existing ? request : { ...request, status: 'loading' });
+    try {
+      const task = existing ?? await conversationSidebarFlights.run(
+        `summary:${target.projectId}:${target.taskUuid ?? target.taskId}`,
+        () => getConversationTaskSummary(target.projectId, target.taskId, target.taskUuid),
+      );
+      if (workspaceRevealRequestIdRef.current !== requestId) return;
+      setConversationSidebar((current) => {
+        if (workspaceRevealRequestIdRef.current !== requestId) return current;
+        const next = locateConversationSidebarTask(current, task);
+        conversationSidebarRef.current = next;
+        return next;
+      });
+      setWorkspaceRevealRequest((current) => current?.requestId === requestId
+        ? { ...current, taskUuid: task.taskUuid, status: undefined }
+        : current);
+    } catch {
+      if (workspaceRevealRequestIdRef.current !== requestId) return;
+      setWorkspaceRevealRequest((current) => current?.requestId === requestId ? { ...current, status: 'error' } : current);
+    }
+  }, [conversationSidebarFlights]);
+
+  const retryConversationSidebarReveal = useCallback(() => {
+    if (workspaceRevealRequest?.taskId) void revealConversationSidebarTask({
+      projectId: workspaceRevealRequest.projectId,
+      taskId: workspaceRevealRequest.taskId,
+      taskUuid: workspaceRevealRequest.taskUuid,
+    });
+  }, [workspaceRevealRequest, revealConversationSidebarTask]);
+
   const applyConversationSidebarBootstrap = useCallback((bootstrap: ConversationSidebarBootstrapVm, projectId?: string | null) => {
     setConversationSidebar((current) => {
       const merged = mergeConversationSidebarBootstrap(current, bootstrap);
@@ -612,7 +667,7 @@ export function App() {
     });
   }, []);
 
-  const loadConversationWorkspaceTasks = useCallback((projectId: string, cursor?: string | null) => {
+  const loadConversationWorkspaceTasks = useCallback((projectId: string, cursor?: string | null, refresh = false) => {
     const append = Boolean(cursor);
     const flightKey = `workspace:${projectId}`;
     return conversationSidebarFlights.run(flightKey, async () => {
@@ -640,7 +695,7 @@ export function App() {
         });
         throw error;
       }
-    });
+    }, refresh);
   }, [conversationSidebarFlights]);
 
   const loadConversationPinnedTasks = useCallback((cursor?: string | null) => {
@@ -677,6 +732,7 @@ export function App() {
   const loadConversationRunHistory = useCallback((
     task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
     cursor?: string | null,
+    refresh = false,
   ) => {
     const append = Boolean(cursor);
     const flightKey = `runs:${task.projectId}:${task.taskUuid ?? task.taskId}`;
@@ -710,7 +766,7 @@ export function App() {
         });
         throw error;
       }
-    });
+    }, refresh);
   }, [conversationSidebarFlights]);
 
   const loadConversationSidebarBootstrap = useCallback(() => conversationSidebarFlights.run('bootstrap', async () => {
@@ -815,6 +871,7 @@ export function App() {
     ?? 'default';
 
   const rememberConversationWorkspace = useCallback((projectId: string) => {
+    cancelConversationSidebarReveal();
     activeWorkspaceIdRef.current = projectId;
     setActiveWorkspaceId(projectId);
     workspaceRevealRequestIdRef.current += 1;
@@ -829,7 +886,7 @@ export function App() {
     if (taskPageStatus === 'not-loaded' || taskPageStatus === 'error') {
       void loadConversationWorkspaceTasks(projectId).catch(() => {});
     }
-  }, [loadConversationWorkspaceTasks]);
+  }, [loadConversationWorkspaceTasks, cancelConversationSidebarReveal]);
   const activeWorkspace = conversationSidebar.workspaces.find((w) => w.projectId === effectiveWorkspaceId)
     ?? conversationSidebar.workspaces[0];
   const draftWorkspace = conversationSidebar.workspaces.find((w) => w.projectId === draftConversationWorkspaceId)
@@ -1115,6 +1172,7 @@ export function App() {
   useEffect(() => {
     replaceRoute(primaryModule, taskPage, uiMode === 'conversation' ? conversationPage : undefined);
     const onPopState = () => {
+      cancelConversationSidebarReveal();
       const nextRoute = routeFromPath(window.location.pathname);
       setUiMode(nextRoute.uiMode);
       setPrimaryModule(nextRoute.module);
@@ -1181,9 +1239,9 @@ export function App() {
         activeProjectId,
       );
       if (refreshTarget?.kind === 'workspace-tasks') {
-        void loadConversationWorkspaceTasks(refreshTarget.projectId).catch(() => {});
+        void loadConversationWorkspaceTasks(refreshTarget.projectId, null, true).catch(() => {});
       } else if (refreshTarget?.kind === 'task-runs') {
-        void loadConversationRunHistory(refreshTarget.task).catch(() => {});
+        void loadConversationRunHistory(refreshTarget.task, null, true).catch(() => {});
       }
       if (!task || task.taskUuid !== event.taskUuid) return;
       setConversationSidebar((current) => {
@@ -1307,6 +1365,33 @@ export function App() {
     getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
   }, [conversationShellReady, loadProfiles]);
 
+  // multica 被动安装（runtime-assets push-install）在后台落库：上方两份列表只在会话壳就绪时
+  // 拉一次，装完不重拉会「列表里找不到刚装的资产」（M5-cr 内网反馈）。按 assetType 只重拉
+  // 对应领域（data-loading §6 最小作用域）；best-effort 吞错，与首拉同约定。
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void subscribeRuntimeAssetInstalled((event) => {
+      if (!active) return;
+      if (event.assetType === 'workflow') {
+        getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
+      } else if (event.assetType === 'role') {
+        // best-effort 吞错（data-loading §3/§6）：后台重拉失败不得清空已加载的基础数据。
+        loadProfiles().catch(() => {});
+      }
+    }).then((dispose) => {
+      if (active) {
+        unlisten = dispose;
+      } else {
+        dispose();
+      }
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [loadProfiles]);
+
   useEffect(() => {
     if (!conversationShellReady || !defaultProjectId) return;
     void loadConversationRunMode(defaultProjectId);
@@ -1334,17 +1419,11 @@ export function App() {
     conversationNavigationRequestRef.current = requestId;
     let cancelled = false;
     getConversationRun(projectId, taskId, runId, requestedSelectedSessionKey)
-      .then(async (run) => {
-        if (!roundId) return { run, explicitSelectedSessionKey: null };
-        const leaf = findConversationLeafForPage(run.sessionTree, conversationPage);
-        if (!leaf) return { run, explicitSelectedSessionKey: null };
-        const selectedSessionKey = conversationSessionKeyFromParts(leaf);
-        if (run.sessionTree.selectedSessionKey === selectedSessionKey && run.selectedSession) {
-          return { run, explicitSelectedSessionKey: selectedSessionKey };
-        }
+      .then((run) => {
+        const leaf = roundId ? findConversationLeafForPage(run.sessionTree, conversationPage) : null;
         return {
-          run: await getConversationRun(projectId, taskId, runId, selectedSessionKey),
-          explicitSelectedSessionKey: selectedSessionKey,
+          run,
+          explicitSelectedSessionKey: leaf ? conversationSessionKeyFromParts(leaf) : null,
         };
       })
       .then(({ run, explicitSelectedSessionKey }) => {
@@ -1394,7 +1473,6 @@ export function App() {
           selectedSessionKey: selectionPlan.selectedSessionKey,
           preserveSelectedSession: selectionPlan.preserveSelectedSession,
         });
-        void preloadConversationTurnFileChangeSets(run);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -1613,16 +1691,30 @@ export function App() {
         ).length ?? 0,
         followPending,
       });
+      const runtimeSnapshot = {
+        projectId: event.projectId,
+        taskId: event.taskId,
+        taskUuid: event.taskUuid,
+        runId: event.runId,
+        roundId: event.roundId,
+        nodeId: event.nodeId,
+        attemptId: event.attemptId,
+        outerNodeId: event.outerNodeId,
+        outerAttemptId: event.outerAttemptId,
+        sessionId: event.session?.sessionId,
+        sessionStartedAt: event.session?.sessionStartedAt,
+        lifecycle: event.lifecycle,
+      };
       if (hasRuntimeSnapshot && updatePlan.patchSelectedSession) {
         setConversationRun((current) => {
-          const patched = applyConversationSelectedSessionSnapshot(current, event);
+          const patched = applyConversationSelectedSessionSnapshot(current, runtimeSnapshot);
           conversationRunRef.current = patched;
           return patched;
         });
       }
       if (hasRuntimeSnapshot && updatePlan.patchBackgroundSession) {
         setConversationRun((current) => {
-          const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, event);
+          const patched = applyConversationBackgroundSessionRuntimeSnapshot(current, runtimeSnapshot);
           conversationRunRef.current = patched;
           return patched;
         });
@@ -2205,6 +2297,7 @@ export function App() {
   }, []);
 
   function onSelectConversation(page: ConversationPage) {
+    cancelConversationSidebarReveal(page.kind === 'conversation-run' ? page : undefined);
     setWorkspacePickerOpen(false);
     setUiMode('conversation');
     if (conversationRunRef.current) {
@@ -2378,6 +2471,7 @@ export function App() {
         .catch((err) => setError(displayAppError(t, err)));
     },
     onConversationDeleteTask: (projectId, taskId, taskUuid) => {
+      cancelConversationSidebarReveal();
       const deletionTarget = { projectId, taskId, taskUuid };
       invalidateConversationSidebarLoad(`workspace:${projectId}`);
       invalidateConversationSidebarLoad(`runs:${projectId}:${taskUuid ?? taskId}`);
@@ -2454,6 +2548,7 @@ export function App() {
       }).catch(() => {});
     },
     onConversationRemoveWorkspace: (projectId) => {
+      cancelConversationSidebarReveal();
       invalidateConversationSidebarLoad(`workspace:${projectId}`);
       invalidateConversationSidebarLoad('pinned');
       invalidateConversationSidebarLoad('bootstrap');
@@ -2501,6 +2596,8 @@ export function App() {
       activeWorkspaceId={conversationWorkspaceContextId}
       defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
       workspaceRevealRequest={workspaceRevealRequest}
+      onConversationRetryReveal={retryConversationSidebarReveal}
+      onConversationRevealHandled={handleConversationSidebarReveal}
       conversationTaskUuid={
         presentedConversationPage.kind === 'conversation-run'
         && conversationPageMatchesRun(presentedConversationPage, conversationRun)
@@ -2576,7 +2673,10 @@ export function App() {
         onOpenChange={setConversationSearchOpen}
         onSelectResult={(result) => {
           const page = conversationPageForSearchResult(result);
-          if (page) onSelectConversation(page);
+          if (page) {
+            onSelectConversation(page);
+            if (page.kind === 'conversation-run') void revealConversationSidebarTask(page);
+          }
         }}
       />
     </Shell>
@@ -2960,8 +3060,9 @@ export function App() {
             });
           }}
           onLifecycleSnapshot={(snapshot) => {
+            if (!sameConversationRunEntity(conversationPage, snapshot)) return;
             applyConversationLifecycleSnapshotToSidebar(
-              conversationPage.projectId,
+              snapshot.projectId,
               snapshot.taskId,
               snapshot.runId,
               snapshot.lifecycle,

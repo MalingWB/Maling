@@ -9,7 +9,37 @@ const baseTauriConfig = JSON.parse(
 
 const MAIN_BINARY_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
-export function readChannelConfig(channel) {
+const WB_BASE_URL_ENV = 'GOLD_BAND_WB_BASE_URL';
+const WB_MULTICA_URL_ENV = 'GOLD_BAND_WB_MULTICA_URL';
+const BASE_TOKEN = '${GOLD_BAND_WB_BASE_URL}';
+const MULTICA_TOKEN = '${GOLD_BAND_WB_MULTICA_URL}';
+
+function readOrigin(env, name) {
+  const raw = env[name];
+  try {
+    if (typeof raw !== 'string' || !/^https?:\/\/[^\/?#@\\\s]+\/?$/i.test(raw)) throw new Error();
+    const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
+        url.pathname !== '/' || url.search || url.hash || raw.includes('?') || raw.includes('#')) throw new Error();
+    return url.origin;
+  } catch {
+    throw new Error(`Missing or invalid ${name}: expected an HTTP(S) origin without credentials, path, query or fragment.`);
+  }
+}
+
+function resolveWbConfig(config, env) {
+  const origin = readOrigin(env, WB_BASE_URL_ENV);
+  const multicaOrigin = readOrigin(env, WB_MULTICA_URL_ENV);
+  const replace = (value) => {
+    if (typeof value === 'string') return value.replaceAll(BASE_TOKEN, origin).replaceAll(MULTICA_TOKEN, multicaOrigin);
+    if (Array.isArray(value)) return value.map(replace);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replace(item)]));
+    return value;
+  };
+  return replace(config);
+}
+
+export function readChannelConfig(channel, env = process.env) {
   const configPath = join(repoRoot, 'configs', 'channels', `${channel}.json`);
   let config;
   try {
@@ -28,8 +58,9 @@ export function readChannelConfig(channel) {
     throw new Error(`Channel ${channel} must set mainBinaryName to a lowercase executable name without extension.`);
   }
 
-  return config;
+  return channel === 'wb' ? resolveWbConfig(config, env) : config;
 }
+
 
 export function channelEnvPrefix(channel) {
   return channel.toUpperCase().replace(/[^A-Z0-9]/g, '_');

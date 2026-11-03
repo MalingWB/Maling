@@ -8,6 +8,7 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  GOLD_BAND_RELEASE_CHANNEL: wb
 
 permissions:
   contents: write
@@ -70,6 +71,10 @@ jobs:
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-22.04
 
+    env:
+      GOLD_BAND_WB_BASE_URL: ${{ secrets.GOLD_BAND_WB_BASE_URL }}
+      GOLD_BAND_WB_MULTICA_URL: ${{ secrets.GOLD_BAND_WB_MULTICA_URL }}
+
     steps:
       - name: Checkout release commit
         uses: actions/checkout@v4
@@ -123,6 +128,11 @@ jobs:
     env:
       RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
       RELEASE_SHA: ${{ needs.release-please.outputs.sha }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.WB_TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.WB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      GOLD_BAND_METRICS_API_KEY: ${{ secrets.GOLD_BAND_METRICS_API_KEY }}
+      GOLD_BAND_WB_BASE_URL: ${{ secrets.GOLD_BAND_WB_BASE_URL }}
+      GOLD_BAND_WB_MULTICA_URL: ${{ secrets.GOLD_BAND_WB_MULTICA_URL }}
 
     steps:
       - name: Checkout release commit
@@ -158,6 +168,13 @@ jobs:
         shell: bash
         run: npm run version:sync -- "${RELEASE_TAG#v}"
 
+      - name: Check repository for WB service domain
+        run: node scripts/check-wb-domain.mjs
+
+      - name: Validate release credentials and prepare channel config
+        id: channel
+        run: node scripts/prepare-release-build.mjs src-tauri/target/channel/tauri.release.conf.json
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -169,12 +186,6 @@ jobs:
         with:
           workspaces: |
             . -> target
-
-      - name: Generate default Tauri channel config
-        shell: bash
-        run: |
-          node scripts/channel-config.mjs default src-tauri/target/channel/tauri.default.conf.json
-          test -f src-tauri/target/channel/tauri.default.conf.json
 
       - name: Ensure Tauri action npm script
         run: npm pkg set scripts.tauri=tauri
@@ -194,13 +205,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GOLD_BAND_RELEASE_CHANNEL: default
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.DEFAULT_TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.DEFAULT_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          args: --config src-tauri/target/channel/tauri.default.conf.json
+          args: --config src-tauri/target/channel/tauri.release.conf.json
           tagName: ${{ env.RELEASE_TAG }}
-          releaseName: Gold Band ${{ env.RELEASE_TAG }}
+          releaseName: ${{ steps.channel.outputs.release_name }}
           releaseDraft: true
           prerelease: false
 
@@ -246,16 +254,19 @@ jobs:
         run: gh release download "${RELEASE_TAG}" --dir release-assets --clobber
 
       - name: Generate localized updater manifests and release body
+        env:
+          GOLD_BAND_WB_BASE_URL: ${{ secrets.GOLD_BAND_WB_BASE_URL }}
+          GOLD_BAND_WB_MULTICA_URL: ${{ secrets.GOLD_BAND_WB_MULTICA_URL }}
         shell: bash
         run: node scripts/generate-release-assets.mjs release-assets release-output --version "${RELEASE_TAG#v}"
 
       - name: Generate release checksums
         run: node scripts/generate-release-checksums.mjs release-assets
 
-      - name: Upload updater manifests, macOS installer, and release checksums
+      - name: Upload updater manifests and release checksums
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${RELEASE_TAG}" release-output/latest*.json scripts/install-gold-band-macos.sh release-assets/*.sha256 --clobber
+        run: gh release upload "${RELEASE_TAG}" release-output/latest*.json release-assets/*.sha256 --clobber
 
       - name: Update bilingual draft release body
         env:

@@ -6,7 +6,7 @@ const [assetDirArg, outputArg, ...rest] = process.argv.slice(2);
 const assetDir = assetDirArg ?? 'release-assets';
 const outputPath = outputArg ?? 'latest.json';
 
-// ── local mode (--base-url + --version) ──
+// ── custom download base (--base-url + --version) ──
 const baseUrlFlagIdx = rest.indexOf('--base-url');
 const versionFlagIdx = rest.indexOf('--version');
 const notesFileFlagIdx = rest.indexOf('--notes-file');
@@ -16,23 +16,25 @@ const version = versionFlagIdx >= 0 ? rest[versionFlagIdx + 1] : process.env.REL
 const notesFile = notesFileFlagIdx >= 0 ? rest[notesFileFlagIdx + 1] : undefined;
 
 if (baseUrl) {
-  // local mode: use custom base URL, skip GitHub deps
+  // Channel downloads can be hosted separately from GitHub release assets.
   if (!version) {
-    console.error('--version is required in local mode.');
+    console.error('--version is required with a custom download base URL.');
     process.exit(1);
   }
   await generateLocal(baseUrl, version, assetDir, outputPath);
 } else {
-  // CI mode: GitHub Releases
+  // Without a custom download base, use GitHub Releases.
   await generateGitHub(assetDir, outputPath);
 }
 
 async function generateLocal(baseUrl, version, assetDir, outputPath) {
   const normalizedBase = baseUrl.replace(/\/+$/, '');
   const files = await readdir(assetDir);
-  const exactVersionFiles = files.filter((file) => file.includes(version));
-  const candidateFiles = exactVersionFiles.some((file) => file.endsWith('.sig'))
-    ? exactVersionFiles
+  const hasVersionedSignatures = files.some((file) => file.includes(version) && file.endsWith('.sig'));
+  // Native macOS updater archives omit the version from their filenames.
+  // Keep them alongside this version's installers while excluding older versioned packages.
+  const candidateFiles = hasVersionedSignatures
+    ? files.filter((file) => file.includes(version) || extractSemver(file) === null)
     : files;
   const signatures = new Map(
     candidateFiles.filter((f) => f.endsWith('.sig')).map((f) => [f.slice(0, -4), f]),
@@ -77,7 +79,7 @@ async function generateLocal(baseUrl, version, assetDir, outputPath) {
   }
 
   await writeFile(outputPath, `${JSON.stringify(latest, null, 2)}\n`);
-  const selectionScope = candidateFiles === exactVersionFiles ? `version=${version}` : 'all-files';
+  const selectionScope = hasVersionedSignatures ? `version=${version}+unversioned` : 'all-files';
   console.log(`Wrote ${outputPath} (base: ${normalizedBase}, scope: ${selectionScope}) platforms: ${Object.keys(platforms).join(', ')} (changelog: ${changelog ? 'yes' : 'no'})`);
 }
 

@@ -301,8 +301,7 @@ impl McpManager {
     }
 
     fn save_settings(&self, settings: &SettingsConfig) -> Result<()> {
-        crate::storage::save_settings_file(&self.settings_path, settings)
-            .map(|_| ())
+        crate::storage::save_settings_file(&self.settings_path, settings).map(|_| ())
     }
 }
 

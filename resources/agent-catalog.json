@@ -3,13 +3,13 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-11-03T02:43:20.181Z"
+    "fetchedAt": "2026-11-03T09:32:03.543Z"
   },
   "agents": [
     {
       "id": "claude-acp",
       "label": "Claude",
-      "version": "0.87.0",
+      "version": "0.90.0",
       "description": "ACP wrapper for Anthropic's Claude",
       "repository": "https://github.com/agentclientprotocol/claude-agent-acp",
       "website": null,
@@ -18,7 +18,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.87.0"
+        "@agentclientprotocol/claude-agent-acp@0.90.0"
       ],
       "localLaunch": {
         "command": "claude-agent-acp",

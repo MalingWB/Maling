@@ -21,7 +21,9 @@ use crate::commands::{
     command_error, schedule_agent_command_catalog_refresh,
 };
 use crate::conversation_workspace::workspace_entry_for_project;
-use crate::multica::client::{MULTICA_ISSUE_IN_PROGRESS_STATUS, MulticaClient, WorkspaceInfo};
+use crate::multica::client::{
+    MULTICA_ISSUE_IN_PROGRESS_STATUS, MulticaClient, RemoteTask, TaskIssueStatus, WorkspaceInfo,
+};
 use crate::multica::config::{
     MulticaSettingsVm, get_daemon_id, get_pat, multica_base_url, multica_settings,
 };
@@ -29,10 +31,11 @@ use crate::multica::error::MulticaError;
 use crate::multica::local_skills::{
     assemble_pulled_skill_md, multica_skill_dir_name, own_global_skill_dir,
 };
-use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
+use crate::multica::state::{ActiveRemoteRun, SharedMulticaState, UpstreamPullDecision};
 use crate::multica::vm::{
-    MulticaPullItemResultVm, MulticaPullReportVm, MulticaSkillListItemVm,
-    RemoteConversationSidebarVm, RemoteTaskVm, remote_task_hidden_section,
+    AttachmentFailure, MulticaPullItemResultVm, MulticaPullReportVm, MulticaSkillListItemVm,
+    MulticaUpstreamPullPendingVm, RemoteConversationSidebarVm, RemoteTaskVm,
+    remote_task_hidden_section,
 };
 use crate::remote::remote_task_source;
 use crate::state::DesktopState;
@@ -44,6 +47,10 @@ use crate::view_models_conversation::{
 /// multica resume 判定前等待启动恢复管线的超时（P2）：正常管线为秒级；超时按 best-effort 继续
 /// 判定（不永久阻塞用户发送，不劣于无等待语义），下一轮重试自愈。
 const MULTICA_RESUME_STARTUP_GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `batch-status` 单批 task_id 上限（server 侧硬上限，超出 400）——本地终态历史有界 50，
+/// 当前一批即够；常量锁定分片契约，历史上限调整后仍按 server 上限分批。
+const BATCH_STATUS_MAX_IDS: usize = 500;
 
 /// 远程任务列表（按 workspace 分组，对齐 `ConversationSidebarVm` 形状）。
 ///
@@ -99,6 +106,8 @@ pub async fn get_remote_tasks(
     // 远程任务（running + pending + 终态）按 workspace 分组：每个 workspace 单次取锁取在飞 running 行
     // （active_runs，改动七）与 runtime_id，再按 runtime_id 拉 server pending，最后并入本地终态行
     // （按 remote_task_id 去重：running > pending > terminal，避免同一任务同时显多个状态）。
+    // 终态行先经 rerun 血缘退场过滤（[`filter_rerun_retired_terminal`]，移动语义：有活跃排队
+    // 后继的源终态行不进响应）。
     let mut tasks_by_workspace: BTreeMap<String, Vec<RemoteTaskVm>> = BTreeMap::new();
     for workspace in &workspaces {
         // 单次取锁：在飞 running 行（active_runs，改动七：执行中任务不再从侧栏消失）+ workspace 的 runtime_id。
@@ -137,9 +146,17 @@ pub async fn get_remote_tasks(
             .get(&workspace.id)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
+        // 移动语义兜底：rerun 血缘活跃的源终态行不进本次响应（纯视图过滤，不写回——读命令不顺便
+        // 执行维护写，data-loading 规则 §5）。持久退场两路：rerun 命令 202 后本机真删除；他端
+        // 发起的 rerun 由「此处记入观察备忘 + 心跳循环排空真删除」（#4，见
+        // record_observed_rerun_lineage / bridge::drain_observed_rerun_retirements）补齐——否则
+        // 后继被领取/完成后 pending 不再回传血缘，源行在本机回现且永不过时。pending 拉取失败
+        // → 血缘集合为空 → 不过滤（失败安全，不误删显示）。
+        record_observed_rerun_lineage(&shared, &pending);
+        let terminal = filter_rerun_retired_terminal(&pending, terminal);
         tasks_by_workspace.insert(
             workspace.id.clone(),
-            merge_workspace_tasks(running, pending, terminal),
+            merge_workspace_tasks(running, pending, &terminal),
         );
     }
 
@@ -174,6 +191,43 @@ fn merge_workspace_tasks(
         }
     }
     running
+}
+
+/// rerun 血缘退场过滤（移动语义，纯逻辑可单测）：pending 行的 `rerun_of_task_id` 指回源任务，
+/// 命中的终态行已过时（该任务链 server 侧重新排队为后继任务）——从本次响应排除，看板呈现
+/// 「任务移回待办」的单行移动语义。与 [`merge_workspace_tasks`] 的同 id 三源去重互补：本过滤
+/// 处理跨 id 的血缘退场。源行的持久删除由 [`rerun_remote_task`] 在 202 后执行，本过滤只管
+/// 显示正确性（兜底他端发起的 rerun 与删除瞬时失败）。
+fn filter_rerun_retired_terminal(
+    pending: &[RemoteTaskVm],
+    terminal: &[RemoteTaskVm],
+) -> Vec<RemoteTaskVm> {
+    let rerun_sources: HashSet<&str> = pending
+        .iter()
+        .filter_map(|task| task.rerun_of_task_id.as_deref())
+        .collect();
+    terminal
+        .iter()
+        .filter(|task| !rerun_sources.contains(task.id.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// 把 pending 观察到的 rerun 血缘记入共享内存态（#4，纯记录不写回）。
+///
+/// pending 行的 `rerun_of_task_id` 是 server 事实——源任务链已重新排队。读命令只记备忘，
+/// 持久退场由心跳循环排空（[`crate::multica::bridge::drain_observed_rerun_retirements`]）。
+/// claim-at-send 的 UI 入口即本列表（发送前必有本命令观察到血缘），故无需在 claim 时点
+/// 另设记录。锁中毒静默跳过——最坏延迟一个观察周期（下一次列表刷新重记）。
+fn record_observed_rerun_lineage(shared: &SharedMulticaState, pending: &[RemoteTaskVm]) {
+    let Ok(mut guard) = shared.lock() else {
+        return;
+    };
+    guard.observed_rerun_sources.extend(
+        pending
+            .iter()
+            .filter_map(|task| task.rerun_of_task_id.clone()),
+    );
 }
 
 /// 断点续跑判定结果（开发设计 改动三）。
@@ -596,6 +650,56 @@ async fn fail_after_run_start_failure(client: &MulticaClient, task_id: &str) {
 /// 码灵作为中介用自身 PAT 补这条流转，把卡片移到「进行中」列。最佳努力：失败仅 `warn!`，不让 run 失败
 /// （start_task 已成功，issue 列推进是看板一致性，由 server 失败路径 in_progress→todo 兜底）。
 /// issue 关联缺失（非 issue 来源任务）则跳过。与 `bridge.rs` done 路径同构。
+/// M5-cl：DPMS story 记忆播种——claim 载荷 `system_story_id` 非空（issue 已链接 DPMS 需求，
+/// rerun / 同步来源场景）时，把它种进新本地任务的记忆 [`DPMS_STORY_MEMORY_KEY`]，供角色核实
+/// 复用（不重复创建）与 CICD 等后续节点直接读取。与 `dpms_required` 无关：回写成功后的 rerun
+/// `dpms_required` 已是 false，播种仍要发生。
+///
+/// upsert 语义（读-改-写经 MemoryService 文件锁串行）：同值已存在 → no-op；异值/新建 → 带正确
+/// revision 写入。任何失败仅记日志——播种缺失时角色按证据链回落询问用户，不阻断任务启动。
+fn seed_dpms_story_memory(app: &App, project_id: &str, task_id: &str, story_id: i64) {
+    use gold_band::memory::{Entry, MemoryService, Scope, WriteCommand};
+
+    use crate::multica::state::DPMS_STORY_MEMORY_KEY;
+
+    let service = match MemoryService::new(app.paths.clone(), project_id, Some(task_id.to_string()))
+    {
+        Ok(service) => service,
+        Err(error) => {
+            warn!(%error, task = %task_id, "multica dpms story memory seed: service init failed");
+            return;
+        }
+    };
+    let snapshot = match service.read() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            warn!(%error, task = %task_id, "multica dpms story memory seed: read failed");
+            return;
+        }
+    };
+    let value = story_id.to_string();
+    let current = snapshot
+        .task
+        .iter()
+        .find(|record| record.entry.key == DPMS_STORY_MEMORY_KEY);
+    if current.is_some_and(|record| record.entry.value == value) {
+        return; // 已是同值（本地任务重建的重复播种）：no-op，不动 revision。
+    }
+    let command = WriteCommand {
+        scope: Scope::Task,
+        key: DPMS_STORY_MEMORY_KEY.to_string(),
+        expected_revision: current.map(|record| record.revision.clone()),
+        entry: Some(Entry {
+            key: DPMS_STORY_MEMORY_KEY.to_string(),
+            value,
+            desc: "已创建的 DPMS 系统需求（claim 载荷播种）".to_string(),
+        }),
+    };
+    if let Err(error) = service.write(command) {
+        warn!(%error, task = %task_id, "multica dpms story memory seed: write failed");
+    }
+}
+
 async fn mark_issue_in_progress(
     client: &MulticaClient,
     workspace_id: &str,
@@ -603,7 +707,7 @@ async fn mark_issue_in_progress(
 ) {
     if let Some(issue) = in_progress_target(issue_id) {
         if let Err(e) = client
-            .update_issue_status(workspace_id, issue, MULTICA_ISSUE_IN_PROGRESS_STATUS, None)
+            .update_issue_status(workspace_id, issue, MULTICA_ISSUE_IN_PROGRESS_STATUS)
             .await
         {
             warn!(
@@ -706,12 +810,10 @@ pub async fn start_remote_conversation_run(
         .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
     let mut input = input;
     input.project_id = resolved_project_id.clone();
-    // 远程任务上下文隐式注入（改动四十八 + 二次修正 + 三次调整）：claim 响应构建仅含「完成输出协议」
-    // 的隐藏区段，随首条 prompt 隐式下发；DPMS 溯源块、上游交付说明块与需求正文都在可见预填侧
-    // （`get_remote_task_requirement` → `detail_prefill`），故**不**重复进区段。claim 时刻数据即执行
-    // 依据（multica 设计：领取即定版），前端不感知该字段。
-    input.first_prompt_hidden_sections =
-        remote_task_hidden_section(&task, context.config.desktop_language).map(|s| vec![s]);
+    // 远程任务上下文隐式注入（改动四十八 + 二次修正 + 三次调整）在 Fresh 分支（⑥ 之后）执行：
+    // 区段现含「完成输出协议 + 附件软失败清单」两块，后者依赖下方附件中转下载结果；续跑不发首条
+    // prompt、不消费该字段。DPMS 溯源块、上游交付说明块与需求正文都在可见预填侧
+    // （`get_remote_task_requirement` → `detail_prefill`），不重复进区段。
     // 先算 emitter（借 workspace_app）再 move——避免在 with_acp_live_update 表达式内同时借与 move。
     let live_update = acp_live_update_emitter_for_app(
         &workspace_app,
@@ -849,9 +951,23 @@ pub async fn start_remote_conversation_run(
                             // 本次请求选定（M5-bt 修复：原样快照 input.run_mode 会与实际执行
                             // 模式不一致——direct 门控误判完成/永不完成）。
                             run_mode: resume_run_mode.clone(),
+                            // M5-cl：DPMS 回写条件快照（claim 响即定版）。续跑不播种——被续
+                            // 本地任务的记忆随其首次 claim 已播种/由角色写入。
+                            dpms_required: task.dpms_required == Some(true),
+                            claim_system_story_id: task.system_story_id,
+                            last_dpms_report: None,
                         },
                     );
                 }
+                // M5-cn 可观测性：claim 快照即定版的 DPMS 回写条件落日志——「为何没回写」
+                // 无需再靠日志往返反推（内网实例：dpms_required=false 导致回写休眠）。
+                info!(
+                    task = %remote_task_id,
+                    issue = issue_id.as_deref().unwrap_or(""),
+                    dpms_required = task.dpms_required == Some(true),
+                    system_story_id = ?task.system_story_id,
+                    "multica claim snapshot (resume): DPMS write-back conditions fixed at claim"
+                );
                 // 通知 server dispatched→running（续跑与 Fresh 都 false；force_fresh 仅整任务重跑）。
                 if let Err(start_err) = client.start_task(&remote_task_id, false).await {
                     // start 响应可能在传输层丢失而 server 已 running：盲目 release 会致任务永久卡 running
@@ -912,6 +1028,49 @@ pub async fn start_remote_conversation_run(
         }
     }
 
+    // ⑥ issue 需求附件中转下载（M5-bu，Fresh 分支专属——续跑不发新首条 prompt，无新建任务的
+    //    附件通道）：claim 时刻的 issue_attachments 即执行依据（领取即定版）。成功文件并入
+    //    input.attachment_paths 走**原生 attachment 通道**（create 时 fs::copy 进任务
+    //    authoring/inputs，agent 以 task-inputs 文件引用消费——chips/重试/重跑全复用，零新增
+    //    prompt 与前端通路）；逐文件下载失败为软失败（局部失败隔离），仅中转目录创建失败为
+    //    硬失败 → release 回滚。先取既有占用名（composer 本地附件 basename）参与消歧。
+    let mut used_attachment_names = input
+        .attachment_paths
+        .iter()
+        .flatten()
+        .filter_map(|path| {
+            std::path::Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        })
+        .collect::<HashSet<_>>();
+    let staging = match stage_issue_attachments(&client, &task, &mut used_attachment_names).await {
+        Ok(staging) => staging,
+        Err(error) => {
+            // claim 已成功、中转目录不可建（磁盘满/权限）→ 回滚（dispatched→queued）。
+            release_after_run_start_failure(&client, &runtime_id, &remote_task_id).await;
+            return Err(command_error(error.into()));
+        }
+    };
+    if !staging.paths.is_empty() {
+        input
+            .attachment_paths
+            .get_or_insert_with(Vec::new)
+            .extend(staging.paths.iter().cloned());
+    }
+    // 远程任务上下文隐式注入（原 ③ 处移此）：完成输出协议块（**direct 模式** + issue 关联，
+    // M5-cg 收敛——编排形态的协议按节点身份在装配时注入，任务级冻结段不再承载）+ 附件软失败
+    // 清单块（有失败才渲染）。claim 时刻数据即执行依据（multica 设计：领取即定版），前端不
+    // 感知该字段。run_mode 与 ActiveRemoteRun 快照同源（下方 register 同字段）。
+    input.first_prompt_hidden_sections = remote_task_hidden_section(
+        &task,
+        context.config.desktop_language,
+        &staging.failures,
+        &input.run_mode,
+    )
+    .map(|section| vec![section]);
+
     // 搬运到 spawn_blocking 闭包的 multica 簿记数据。
     let remote = remote_task_id.clone();
     let ws_id = workspace_id.clone();
@@ -933,18 +1092,34 @@ pub async fn start_remote_conversation_run(
                     &remote,
                     ActiveRemoteRun {
                         workspace_id: ws_id,
-                        local_project_id: local_project,
+                        local_project_id: local_project.clone(),
                         local_task_id: run.task_id.clone(),
                         local_run_id: run.run_id.clone(),
-                        issue_id: issue,
+                        issue_id: issue.clone(),
                         title,
                         started_at: chrono::Utc::now().to_rfc3339(),
                         issue_kind: task.issue_kind.clone(),
                         // M5-bp：run 模式快照（bridge 完成/issue 门控的事实源）。
                         run_mode: input.run_mode.clone(),
+                        // M5-cl：DPMS 回写条件快照（claim 响应即定版）+ 记忆播种（已链接
+                        // system_story_id → storyId，核实复用不重复创建）。
+                        dpms_required: task.dpms_required == Some(true),
+                        claim_system_story_id: task.system_story_id,
+                        last_dpms_report: None,
                     },
                 );
                 // 建成 run + 登记 active_run（claim-at-send 无 lease 需释放）。
+            }
+            // M5-cn 可观测性：同续跑路径——claim 快照的 DPMS 回写条件落日志。
+            info!(
+                task = %remote,
+                issue = issue.as_deref().unwrap_or(""),
+                dpms_required = task.dpms_required == Some(true),
+                system_story_id = ?task.system_story_id,
+                "multica claim snapshot (fresh): DPMS write-back conditions fixed at claim"
+            );
+            if let Some(story_id) = task.system_story_id {
+                seed_dpms_story_memory(&app, &local_project, &run.task_id, story_id);
             }
             // 落断点续跑索引（home-repo StateConfig）：新 run 的 local ids + work_dir；session_id 待 bridge 回填。
             // RMW 经 with_state 原子化：与 bridge NodeCompleted/终态收尾并发 save 互不覆盖（lost-update）。
@@ -972,6 +1147,19 @@ pub async fn start_remote_conversation_run(
     )
     .await
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?;
+
+    // 附件中转目录使命完成：成功文件已复制进任务 authoring/inputs（create_conversation_run 的
+    // fs::copy），源文件不再需要 → best-effort 清理（失败仅记日志；create 失败路径同样清理——
+    // 任务已回滚，下次重试按新 claim 重新下载）。
+    if let Some(staging_dir) = &staging.dir {
+        if let Err(error) = std::fs::remove_dir_all(staging_dir) {
+            warn!(
+                error = %error,
+                dir = %staging_dir.display(),
+                "multica attachment staging cleanup failed"
+            );
+        }
+    }
 
     match result {
         Ok(created) => {
@@ -1090,6 +1278,11 @@ pub async fn cancel_remote_task(
             }
         }
     }
+    // M5-cl 建立取消路径回写；M5-cm 改走统一入口（自建 client）：取消也是 failed 终态——角色
+    // 可能在取消前已创建 DPMS 需求并写入记忆，链接事实照样要落。teardown 前执行（本地收尾后
+    // active_runs 即清，条件快照与 last_dpms_report 去重都依赖在飞映射）。
+    crate::multica::bridge::report_dpms_story_if_changed(&context, shared.inner(), &task_id, &run)
+        .await;
 
     let local_task_id = run.local_task_id.clone();
     let local_run_id = run.local_run_id.clone();
@@ -1138,6 +1331,239 @@ pub fn remove_remote_completed_task(
         crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
     }
     Ok(())
+}
+
+/// 决策字符串（前端 → 命令）与 [`UpstreamPullDecision`] 的字面量约定。
+const UPSTREAM_DECISION_RETRY: &str = "retry";
+const UPSTREAM_DECISION_MANUAL: &str = "manual";
+const UPSTREAM_DECISION_SKIP: &str = "skip";
+
+/// 上游拉取决策（M5-ch 决策点）：拉取解析器首拉空值发 pending 事件后，用户三选一的
+/// 提交端——写入决策槽并唤醒等待中的 resolve（`retry` 恢复轮询 / `manual` 用用户提供文本
+/// / `skip` 跳过拉取直接继续）。
+///
+/// `task_id`/`node_id` 与 pending 事件载荷一致（node_id 为引擎节点 display id）。决策迟到
+/// （resolve 已收口或 run 已终态）→ 结构化错误 `multica.upstream-pull-not-pending`（前端
+/// 通常已随 settled 事件关弹窗，此为竞态兜底）。载荷非法（manual 空文本 / 未知字面量）→
+/// `multica.upstream-pull-invalid-decision`（槽未写入、等待方仍在，前端保留卡片重选）。
+#[tauri::command]
+pub async fn decide_upstream_pull(
+    shared: State<'_, SharedMulticaState>,
+    task_id: String,
+    node_id: String,
+    decision: String,
+    manual_text: Option<String>,
+) -> CommandResult<()> {
+    let decision = match decision.as_str() {
+        UPSTREAM_DECISION_RETRY => UpstreamPullDecision::Retry,
+        UPSTREAM_DECISION_SKIP => UpstreamPullDecision::Skip,
+        UPSTREAM_DECISION_MANUAL => {
+            // manual 必须携带非空文本（trim 后）；空文本前端已禁提交，此处兜底拒绝。
+            // 校验失败用 invalid-decision（≠ not-pending）：槽未写入、等待方仍在——前端
+            // 按 not-pending 会幂等收卡，静默丢掉等待中的拉取决策。
+            let text = manual_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or(MulticaError::UpstreamPullInvalidDecision)
+                .map_err(|e| command_error(e.into()))?;
+            UpstreamPullDecision::Manual(text.to_string())
+        }
+        // 未知决策字面量：不改槽（防手滑毁掉等待中的拉取），直接报错（invalid-decision，
+        // 前端保留卡片重选）。
+        other => {
+            warn!(task = %task_id, node = %node_id, decision = %other, "multica decide_upstream_pull: unknown decision literal");
+            return Err(command_error(
+                MulticaError::UpstreamPullInvalidDecision.into(),
+            ));
+        }
+    };
+    // 锁中毒 → runtime-offline（统一锁策略 #9：状态不可用、可重试；不折叠网络域错误）。
+    let mut guard = crate::multica::state::MulticaRuntimeState::lock_degraded(&shared)
+        .ok_or(MulticaError::RuntimeOffline)
+        .map_err(|e| command_error(e.into()))?;
+    // task_id → 在飞 run → run 级键（决策槽键含 local_run_id，不直接用 task_id）。
+    let Some((_, run)) = guard.find_active_run_by_task(&task_id) else {
+        return Err(command_error(MulticaError::UpstreamPullNotPending.into()));
+    };
+    // 锁内写决策取 notify，锁外 notify_one 唤醒 select 等待方（resolve 持锁仅短临界区）。
+    let Some(notify) = guard.decide_upstream_pull(&run.local_run_id, &node_id, decision) else {
+        return Err(command_error(MulticaError::UpstreamPullNotPending.into()));
+    };
+    drop(guard);
+    notify.notify_one();
+    info!(task = %task_id, node = %node_id, "multica upstream pull decision submitted");
+    Ok(())
+}
+
+/// 待决上游拉取槽列表（M5-cj 卡片水合）：重进会话后恢复决策卡片/等待态的数据源。
+///
+/// 输入是本地任务 display id（前端对话归属键），run 内的槽按 `list_upstream_pull_pendings`
+/// 枚举；无在飞 run（任务已终态 / 普通本地会话）→ 空列表（常态出口，不报错）——终态时
+/// `drop_active_run` 已清全部槽，空列表与「无待决」一致。
+#[tauri::command]
+pub async fn list_upstream_pull_pendings(
+    shared: State<'_, SharedMulticaState>,
+    task_id: String,
+) -> CommandResult<Vec<MulticaUpstreamPullPendingVm>> {
+    // 锁中毒 → runtime-offline（统一锁策略 #9，同 decide_upstream_pull）。
+    let guard = crate::multica::state::MulticaRuntimeState::lock_degraded(&shared)
+        .ok_or(MulticaError::RuntimeOffline)
+        .map_err(|e| command_error(e.into()))?;
+    // task_id → 在飞 run → run 级槽枚举（与 decide_upstream_pull 同一归属口径）。
+    let Some((_, run)) = guard.find_active_run_by_task(&task_id) else {
+        return Ok(Vec::new());
+    };
+    let pendings = guard
+        .list_upstream_pull_pendings(&run.local_run_id)
+        .into_iter()
+        .map(|row| MulticaUpstreamPullPendingVm {
+            task_id: task_id.clone(),
+            run_id: run.local_run_id.clone(),
+            node_id: row.node_id,
+            parent_issue_id: row.parent_issue_id,
+            task_title: run.title.clone(),
+            retried: row.retried,
+        })
+        .collect();
+    Ok(pendings)
+}
+
+// ===== 状态对账 + 任务重新执行（multica 任务重试改造）=====
+
+/// 终态任务 issue 状态对账（页面 mount / 30s 周期 / 手动刷新驱动）。
+///
+/// 收集本地终态历史（`remote_completed_tasks`，有界 50）全部 task id，按 server 上限
+/// （[`BATCH_STATUS_MAX_IDS`]）分批调 `batch-status`，把回执的 issue 状态分类/自定义名 diff 写回
+/// 历史条目；有变更才落盘 + 广播 `remote-tasks-updated`（前端 re-fetch 即见 issue 状态标记与
+/// 「重新执行」入口）。返回变更条数（0 = 无变化 / 无终态历史 / 未连接 / 单飞退出 / 本轮失败）。
+///
+/// **静默降级**：任何失败（旧 server 无端点 → 404、网络抖动、读盘失败）只 warn 返回 0——
+/// 对账是刷新路径的增强，失败不影响基础列表（下一次周期自然重试），不得弹错误打扰用户。
+#[tauri::command]
+pub async fn reconcile_remote_task_statuses(
+    state: State<'_, DesktopState>,
+    shared: State<'_, SharedMulticaState>,
+    app_handle: AppHandle,
+) -> CommandResult<u64> {
+    let context = state.context().map_err(command_error)?;
+    if !multica_settings(&context.config).connected {
+        return Ok(0);
+    }
+    // 对账单飞：在飞期间的后续触发（mount/周期/手动刷新叠合）整体退出，结果由在飞方广播。
+    // 锁中毒按放行处理——对账本身幂等（值 diff 后写），认领只是防重复扇出。
+    let claimed = shared
+        .lock()
+        .map(|mut guard| guard.begin_reconcile())
+        .unwrap_or(true);
+    if !claimed {
+        return Ok(0);
+    }
+    // 认领必须释放（成功/失败皆然）：主体包进 async 块，出口统一 end_reconcile。
+    let outcome = async {
+        let task_ids: Vec<String> = context
+            .app()
+            .load_state()
+            .map_err(command_error)?
+            .remote_completed_tasks
+            .iter()
+            .map(|c| c.remote_task_id.clone())
+            .collect();
+        if task_ids.is_empty() {
+            return Ok(0);
+        }
+        let base_url = multica_base_url(&context.config).unwrap_or_default();
+        let pat = get_pat(&context.config).unwrap_or_default();
+        let client =
+            MulticaClient::new(base_url, Some(pat)).map_err(|e| command_error(e.into()))?;
+        let mut rows: Vec<TaskIssueStatus> = Vec::new();
+        for chunk in task_ids.chunks(BATCH_STATUS_MAX_IDS) {
+            match client.batch_task_statuses(chunk).await {
+                Ok(batch) => rows.extend(batch),
+                Err(MulticaError::TaskNotFound) => {
+                    // 旧 server 无此端点（404）→ 静默降级：无对账数据，前端不渲染新标记。
+                    warn!("multica reconcile: batch-status 404 (legacy server? skip round)");
+                    return Ok(0);
+                }
+                Err(error) => {
+                    warn!(%error, "multica reconcile: batch-status failed (skip round)");
+                    return Ok(0);
+                }
+            }
+        }
+        let changed = context
+            .app()
+            .with_state(|state_cfg| {
+                let changed =
+                    crate::multica::bridge::apply_reconciled_issue_status(state_cfg, &rows);
+                (changed > 0, changed as u64)
+            })
+            .map_err(command_error)?;
+        if changed > 0 {
+            crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
+            info!(changed, "multica reconcile updated issue statuses");
+        }
+        Ok(changed)
+    }
+    .await;
+    if let Ok(mut guard) = shared.lock() {
+        guard.end_reconcile();
+    }
+    outcome
+}
+
+/// 重新执行终态任务（multica 任务重试改造，移动语义）。
+///
+/// `POST /api/daemon/tasks/{task_id}/rerun`：server 克隆出新任务（新 id、`status=queued`、同
+/// issue、`attribution.rerun_of_task_id` 指回源任务）——源任务与 issue 状态都不被修改。成功
+/// 后广播 `remote-tasks-updated`：前端 re-fetch 列表，新任务自然进 pending（server pending
+/// 是唯一事实源，按 id 天然去重；服务端 (issue, agent) pending 槽唯一保证重复点击幂等）。
+/// 返回新任务 id（调用方测试断言用；进板走 re-fetch，不做本地注入）。
+///
+/// 移动语义（202 后源终态行退场）：server 侧该任务链重新排队，本地终态历史行已过时——真删除
+/// （复用 [`bridge::remove_completed_task_entry`]，旧会话本体不动、悬空可从会话列表直达），看板
+/// 呈现「已完成的任务移回待办」。删除失败不阻断 rerun（202 已成事实），读取侧由
+/// [`filter_rerun_retired_terminal`] 的血缘过滤兜底显示，仅记 warn。
+///
+/// 错误透传：400 的业务 message（如「任务未绑定 issue」）已由 client 提取进
+/// `NetworkFailed(msg)` → 前端经错误码 params `{{message}}` 原样展示，可重试。
+#[tauri::command]
+pub async fn rerun_remote_task(
+    state: State<'_, DesktopState>,
+    app_handle: AppHandle,
+    task_id: String,
+) -> CommandResult<String> {
+    let context = state.context().map_err(command_error)?;
+    if !multica_settings(&context.config).connected {
+        return Err(command_error(MulticaError::NotConfigured.into()));
+    }
+    let base_url = multica_base_url(&context.config).unwrap_or_default();
+    let pat = get_pat(&context.config).unwrap_or_default();
+    let client = MulticaClient::new(base_url, Some(pat)).map_err(|e| command_error(e.into()))?;
+    let new_task = client
+        .rerun_task(&task_id)
+        .await
+        .map_err(|e| command_error(e.into()))?;
+    // 先落盘后广播（状态规则 §5）：源终态历史行真删除；with_state 原子 RMW，未删到（本就不在
+    // 历史，如他端执行的任务）不落盘。删除失败仅降级为 warn——不把已成事实的 rerun 报成失败。
+    let retired = match context.app().with_state(|state_cfg| {
+        let removed = crate::multica::bridge::remove_completed_task_entry(state_cfg, &task_id);
+        (removed, removed)
+    }) {
+        Ok(removed) => removed,
+        Err(error) => {
+            warn!(%error, source = %task_id, "multica retire rerun source row failed");
+            false
+        }
+    };
+    crate::multica::bridge::emit_remote_tasks_updated(&app_handle);
+    info!(
+        source = %task_id,
+        rerun = %new_task.id,
+        retired,
+        "multica rerun accepted (new queued task)"
+    );
+    Ok(new_task.id)
 }
 
 // ===== M3.5 / M5-c：multica workspace 绑定 CRUD（开发设计 2.2.1 / 2.5）=====
@@ -1577,9 +2003,223 @@ fn resumed_run_mode(task_dir: &camino::Utf8Path, fallback: &str) -> String {
     }
 }
 
+/// issue 附件中转下载结果（M5-bu）。
+#[derive(Debug, Default)]
+struct IssueAttachmentStaging {
+    /// 中转目录（实际建过才有值；run 创建后 best-effort 清理）。
+    dir: Option<std::path::PathBuf>,
+    /// 下载成功的文件绝对路径（已消歧文件名，待并入 `input.attachment_paths`）。
+    paths: Vec<String>,
+    /// 逐文件软失败清单（渲染进首条 prompt 隐式区段，告知 agent 缺失情况）。
+    failures: Vec<AttachmentFailure>,
+}
+
+/// issue 需求附件中转下载（M5-bu）：claim 响应的 `issue_attachments` 经任务级 mat_ 令牌逐个下载
+/// 到系统临时目录（`gold-band-multica-attachments-<task_id>`），供调用方并入原生 attachment 通道。
+///
+/// 逐文件下载失败为**软失败**（局部失败隔离，state-lifecycle §7：DPMS 同步附件用户不可控，硬失败
+/// 会永久阻塞任务）——成功件照常附带、失败件记入清单告知 agent 与用户确认替代来源；仅中转目录
+/// 创建失败为硬失败（`AttachmentStageFailed`：本地磁盘满/权限，附件既无法下载也无法交代）。
+/// 令牌缺失（server 契约异常，新 server 不发附件或必发令牌）同样按逐件软失败处理，不硬失败。
+///
+/// 性能契约：空附件列表（绝大多数任务）直接返回，不建目录、不取令牌——零开销；有附件时串行
+/// 下载、单次尝试、逐文件 120s 超时（client 常量），流式落盘不进内存。
+async fn stage_issue_attachments(
+    client: &MulticaClient,
+    task: &RemoteTask,
+    used_names: &mut HashSet<String>,
+) -> Result<IssueAttachmentStaging, MulticaError> {
+    if task.issue_attachments.is_empty() {
+        // 诊断信号（info 落运行日志）：区分「server claim 响应未携带 issue_attachments」与
+        // 「携带但下载失败」——内网排查依赖本行（bug-fix-verification 外部系统例外的替代证据）。
+        info!(
+            task_id = %task.id,
+            "multica issue attachments: claim response carried none"
+        );
+        return Ok(IssueAttachmentStaging::default());
+    }
+    // 令牌缺失：全部附件记软失败（不建目录——无令牌一个也下载不了）。
+    let Some(token) = task.auth_token.as_deref() else {
+        warn!(
+            task_id = %task.id,
+            count = task.issue_attachments.len(),
+            "multica issue attachments skipped: claim response carried no task token"
+        );
+        return Ok(IssueAttachmentStaging {
+            failures: task
+                .issue_attachments
+                .iter()
+                .map(|a| AttachmentFailure {
+                    filename: a.display_name(),
+                    reason: "task token missing".into(),
+                })
+                .collect(),
+            ..IssueAttachmentStaging::default()
+        });
+    };
+    // task id 同样来自 server，过一遍非法字符归一（纵深防御，正常为 uuid）。
+    let dir = std::env::temp_dir().join(format!(
+        "gold-band-multica-attachments-{}",
+        sanitize_attachment_filename(&task.id, "task")
+    ));
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        MulticaError::AttachmentStageFailed(format!("create staging dir failed: {e}"))
+    })?;
+    let mut staging = IssueAttachmentStaging {
+        dir: Some(dir.clone()),
+        ..IssueAttachmentStaging::default()
+    };
+    for attachment in &task.issue_attachments {
+        // 本地名：先归一（剥路径/非法字符/保留名/限长），再对既有占用名（composer 本地附件
+        // basename + 已下载件）消歧——create 侧 fs::copy 按 basename 落 authoring/inputs，同名
+        // 会互相覆盖。
+        let local_name = disambiguate_attachment_filename(
+            &sanitize_attachment_filename(&attachment.filename, &attachment.id),
+            used_names,
+        );
+        let destination = dir.join(&local_name);
+        match client
+            .download_issue_attachment(&attachment.id, token, &destination)
+            .await
+        {
+            Ok(()) => {
+                // 零字节按软失败处理（服务器异常的常见形态；可疑空文件不交给 agent）。
+                let len = std::fs::metadata(&destination)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                if len == 0 {
+                    warn!(
+                        task_id = %task.id,
+                        attachment_id = %attachment.id,
+                        "multica issue attachment download returned empty body"
+                    );
+                    let _ = std::fs::remove_file(&destination);
+                    staging.failures.push(AttachmentFailure {
+                        filename: attachment.display_name(),
+                        reason: "empty response body".into(),
+                    });
+                } else {
+                    info!(
+                        task_id = %task.id,
+                        attachment_id = %attachment.id,
+                        local_name = %local_name,
+                        bytes = len,
+                        "multica issue attachment downloaded"
+                    );
+                    staging
+                        .paths
+                        .push(destination.to_string_lossy().into_owned());
+                }
+            }
+            Err(error) => {
+                warn!(
+                    task_id = %task.id,
+                    attachment_id = %attachment.id,
+                    error = %error,
+                    "multica issue attachment download failed"
+                );
+                staging.failures.push(AttachmentFailure {
+                    filename: attachment.display_name(),
+                    reason: error.to_string(),
+                });
+            }
+        }
+    }
+    Ok(staging)
+}
+
+/// 附件本地文件名长度上限（按字符计，保扩展名截 stem；server 文件名可能极长）。
+const ATTACHMENT_FILENAME_MAX_CHARS: usize = 180;
+
+/// Windows 保留设备名（stem 命中即非法，大小写不敏感；COM1-9 / LPT1-9）。
+const WINDOWS_RESERVED_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// 归一 server 提供的附件文件名为安全本地文件名（M5-bu）：剥路径成分（防目录穿越——server 数据
+/// 不受信）、替换 Windows 非法字符与控制字符、去尾部点/空格、规避保留设备名、限长保扩展名；
+/// 全程清洗后为空回退 fallback（附件 id），仍为空用 "attachment"。唯一性由调用方消歧保证。
+fn sanitize_attachment_filename(raw: &str, fallback: &str) -> String {
+    // ① 只取最后一段非空路径成分（`..\evil\name.txt` → `name.txt`；`a//b` → `b`）。
+    let last_segment = raw
+        .rsplit(['/', '\\'])
+        .map(str::trim)
+        .find(|segment| !segment.is_empty())
+        .unwrap_or("");
+    let mut cleaned = replace_invalid_filename_chars(last_segment);
+    // ② Windows 要求 basename 不以点/空格结尾。
+    cleaned = cleaned.trim_end_matches(['.', ' ']).to_string();
+    // ③ 保留设备名规避（含带扩展名变体：`Com1.txt` 的 stem 命中即非法）→ 前置下划线。
+    let stem = &cleaned[..cleaned.find('.').unwrap_or(cleaned.len())];
+    if WINDOWS_RESERVED_NAMES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(stem))
+    {
+        cleaned = format!("_{cleaned}");
+    }
+    // ④ 限长保扩展名（按字符截断，避开多字节边界；超长“扩展名”视为无扩展名乱串不保留）。
+    if cleaned.chars().count() > ATTACHMENT_FILENAME_MAX_CHARS {
+        let ext = cleaned
+            .rfind('.')
+            .map(|dot| &cleaned[dot..])
+            .filter(|ext| ext.chars().count() <= 40)
+            .map(str::to_string);
+        let stem_budget =
+            ATTACHMENT_FILENAME_MAX_CHARS - ext.as_ref().map_or(0, |e| e.chars().count());
+        cleaned = format!(
+            "{}{}",
+            cleaned.chars().take(stem_budget).collect::<String>(),
+            ext.unwrap_or_default()
+        );
+    }
+    // ⑤ 清洗后为空（原名为纯路径分隔/纯非法字符）→ 回退 id；id 也空 → 兜底常量。
+    if cleaned.is_empty() {
+        cleaned = replace_invalid_filename_chars(fallback);
+    }
+    if cleaned.is_empty() {
+        cleaned = "attachment".to_string();
+    }
+    cleaned
+}
+
+/// 替换 Windows 非法字符（`< > : " / \ | ? *`）与控制字符为下划线。
+fn replace_invalid_filename_chars(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+                || (c as u32) < 0x20
+                || c as u32 == 0x7f
+            {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// 已占用名集合内消歧：重名在扩展名前加 `-2`/`-3`… 序号重试直到唯一（首个空闲序号）。
+fn disambiguate_attachment_filename(name: &str, used: &mut HashSet<String>) -> String {
+    if used.insert(name.to_string()) {
+        return name.to_string();
+    }
+    let (stem, ext) = match name.rfind('.') {
+        // dotfile（`.gitignore`）整体视为 stem，不带扩展名拆分。
+        Some(dot) if dot > 0 => (&name[..dot], &name[dot..]),
+        _ => (name, ""),
+    };
+    (2..)
+        .map(|n| format!("{stem}-{n}{ext}"))
+        .find(|candidate| used.insert(candidate.clone()))
+        .expect("filename disambiguation cannot exhaust u64 sequence")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::multica::client::IssueAttachment;
 
     // ---- 改动三：断点续跑判定（classify_resume_from 纯逻辑固化）----
     use gold_band::domain::{PauseReason, RunStatus};
@@ -2095,6 +2735,37 @@ mod tests {
         );
     }
 
+    // ---- 移动语义：rerun 血缘退场过滤（filter_rerun_retired_terminal 纯逻辑固化）----
+    #[test]
+    fn filter_rerun_retired_terminal_excludes_rows_with_active_rerun_successor() {
+        // pending 后继 rerun_of_task_id=rt-1 → 源终态行 rt-1 退场（移回待办的显示语义）；
+        // 无后继的 rt-2 保留。
+        let pending = vec![
+            RemoteTaskVm {
+                rerun_of_task_id: Some("rt-1".into()),
+                ..task_vm("rt-9", "queued")
+            },
+            task_vm("rt-8", "queued"),
+        ];
+        let terminal = vec![task_vm("rt-1", "completed"), task_vm("rt-2", "failed")];
+        let kept = filter_rerun_retired_terminal(&pending, &terminal);
+        assert_eq!(
+            kept.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
+            vec!["rt-2"]
+        );
+    }
+
+    #[test]
+    fn filter_rerun_retired_terminal_keeps_all_when_no_lineage() {
+        // 无血缘 pending（普通排队任务）与 pending 拉取失败（空列表）都不退场任何终态行
+        // ——失败安全：只有后继在场的正面证据才触发退场。
+        let terminal = vec![task_vm("rt-1", "completed"), task_vm("rt-2", "completed")];
+        let kept = filter_rerun_retired_terminal(&[task_vm("rt-8", "queued")], &terminal);
+        assert_eq!(kept.len(), 2);
+        let kept = filter_rerun_retired_terminal(&[], &terminal);
+        assert_eq!(kept.len(), 2);
+    }
+
     /// 构造最小 RemoteTaskVm（仅 id + status 影响 merge 判定）。
     fn task_vm(id: &str, status: &str) -> RemoteTaskVm {
         RemoteTaskVm {
@@ -2110,6 +2781,11 @@ mod tests {
             project_id: None,
             kind: None,
             readiness: None,
+            attachments: Vec::new(),
+            issue_status_category: None,
+            issue_status_name: None,
+            rerun_of_task_id: None,
+            dpms_link_pending: false,
         }
     }
 
@@ -2162,5 +2838,232 @@ mod tests {
             decide_start_failure_action(Some("not-running")),
             StartFailureAction::RollbackRelease
         );
+    }
+
+    // ---- M5-bu：issue 附件文件名归一 / 消歧 / 中转 staging（纯逻辑固化）----
+
+    #[test]
+    fn sanitize_attachment_filename_strips_path_and_invalid_chars() {
+        // server 文件名是不可信输入：路径成分剥离（防穿越）+ Windows 非法字符/控制字符替换。
+        assert_eq!(
+            sanitize_attachment_filename("..\\evil\\多值测试样本.zip", "id-1"),
+            "多值测试样本.zip"
+        );
+        assert_eq!(
+            sanitize_attachment_filename("../../etc/passwd", "id-1"),
+            "passwd"
+        );
+        assert_eq!(
+            sanitize_attachment_filename("a<b>c:d\"e|f?g*h.png", "id-1"),
+            "a_b_c_d_e_f_g_h.png"
+        );
+        assert_eq!(
+            sanitize_attachment_filename("bad\u{0007}name.txt", "id-1"),
+            "bad_name.txt"
+        );
+        // 尾部点/空格（Windows 要求 basename 不以此结尾）。
+        assert_eq!(sanitize_attachment_filename("report..  ", "id-1"), "report");
+    }
+
+    #[test]
+    fn sanitize_attachment_filename_avoids_windows_reserved_names() {
+        // 保留设备名（含带扩展名变体，stem 命中即非法）→ 前置下划线；大小写不敏感。
+        assert_eq!(sanitize_attachment_filename("CON", "id-1"), "_CON");
+        assert_eq!(
+            sanitize_attachment_filename("Com1.txt", "id-1"),
+            "_Com1.txt"
+        );
+        assert_eq!(
+            sanitize_attachment_filename("lpt9.log", "id-1"),
+            "_lpt9.log"
+        );
+        // 近似名不受影响（stem 未精确命中保留表）。
+        assert_eq!(
+            sanitize_attachment_filename("console.txt", "id-1"),
+            "console.txt"
+        );
+        assert_eq!(
+            sanitize_attachment_filename("config.json", "id-1"),
+            "config.json"
+        );
+    }
+
+    #[test]
+    fn sanitize_attachment_filename_falls_back_and_caps_length() {
+        // 空 / 纯路径分隔 / 纯非法字符 → 回退附件 id；id 也空 → 兜底常量。
+        assert_eq!(sanitize_attachment_filename("", "att-id-1"), "att-id-1");
+        assert_eq!(
+            sanitize_attachment_filename("///\\\\", "att-id-1"),
+            "att-id-1"
+        );
+        assert_eq!(sanitize_attachment_filename("...", ""), "attachment");
+        assert_eq!(sanitize_attachment_filename("", ""), "attachment");
+        // 超长限截保扩展名（180 字符上限；stem 截断、.zip 保留）。
+        let long = format!("{}.zip", "很".repeat(200));
+        let capped = sanitize_attachment_filename(&long, "id-1");
+        assert_eq!(capped.chars().count(), ATTACHMENT_FILENAME_MAX_CHARS);
+        assert!(capped.ends_with(".zip"));
+        // 超长“扩展名”（>40 字符的 dot 后缀）视为乱串不保留，直接截断。
+        let no_ext = sanitize_attachment_filename(&"a".repeat(300), "id-1");
+        assert_eq!(no_ext.chars().count(), ATTACHMENT_FILENAME_MAX_CHARS);
+        assert!(!no_ext.contains('.'));
+    }
+
+    #[test]
+    fn disambiguate_attachment_filename_dedupes_with_sequence() {
+        // create 侧 fs::copy 按 basename 落 authoring/inputs，同名互相覆盖 → 并入前必须唯一：
+        // 首个直接占用；重名在扩展名前加 -2/-3；与既有占用名（composer 本地附件）同样消歧。
+        let mut used = HashSet::new();
+        assert_eq!(
+            disambiguate_attachment_filename("样本.zip", &mut used),
+            "样本.zip"
+        );
+        assert_eq!(
+            disambiguate_attachment_filename("样本.zip", &mut used),
+            "样本-2.zip"
+        );
+        assert_eq!(
+            disambiguate_attachment_filename("样本.zip", &mut used),
+            "样本-3.zip"
+        );
+        // 序号插在扩展名前；无扩展名整体为 stem。
+        let mut used2 = HashSet::from(["本地已有.txt".to_string()]);
+        assert_eq!(
+            disambiguate_attachment_filename("本地已有.txt", &mut used2),
+            "本地已有-2.txt"
+        );
+        let mut used3 = HashSet::new();
+        assert_eq!(
+            disambiguate_attachment_filename("README", &mut used3),
+            "README"
+        );
+        assert_eq!(
+            disambiguate_attachment_filename("README", &mut used3),
+            "README-2"
+        );
+    }
+
+    #[tokio::test]
+    async fn stage_issue_attachments_empty_list_is_zero_cost_noop() {
+        // 兼容性契约：无附件（绝大多数任务：issue 无附件 / 非 issue 任务 / 旧 server 缺键）→
+        // 不建目录、不取令牌、无失败——发送路径零行为变化。
+        let client = MulticaClient::new("http://127.0.0.1:9", Some("pat".to_string())).unwrap();
+        let task = RemoteTask {
+            id: "t-no-att".into(),
+            status: "queued".into(),
+            auth_token: None,
+            issue_attachments: Vec::new(),
+            ..minimal_remote_task()
+        };
+        let staging = stage_issue_attachments(&client, &task, &mut HashSet::new())
+            .await
+            .unwrap();
+        assert!(staging.dir.is_none());
+        assert!(staging.paths.is_empty());
+        assert!(staging.failures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stage_issue_attachments_missing_token_records_soft_failures() {
+        // 令牌缺失（server 契约异常：新 server 发附件必发令牌）→ 全部附件软失败、不建目录、
+        // 不硬失败（任务仍可启动，agent 据清单与用户确认替代来源）。
+        let client = MulticaClient::new("http://127.0.0.1:9", Some("pat".to_string())).unwrap();
+        let task = RemoteTask {
+            id: "t-no-token".into(),
+            status: "queued".into(),
+            auth_token: None,
+            issue_attachments: vec![
+                IssueAttachment {
+                    id: "a1".into(),
+                    filename: "多值测试样本.zip".into(),
+                    content_type: None,
+                },
+                IssueAttachment {
+                    id: "a2".into(),
+                    filename: "  ".into(),
+                    content_type: None,
+                },
+            ],
+            ..minimal_remote_task()
+        };
+        let staging = stage_issue_attachments(&client, &task, &mut HashSet::new())
+            .await
+            .unwrap();
+        assert!(staging.dir.is_none());
+        assert!(staging.paths.is_empty());
+        assert_eq!(staging.failures.len(), 2);
+        assert_eq!(staging.failures[0].filename, "多值测试样本.zip");
+        assert_eq!(staging.failures[0].reason, "task token missing");
+        // 空白文件名回退附件 id（清单可辨识）。
+        assert_eq!(staging.failures[1].filename, "a2");
+    }
+
+    #[tokio::test]
+    async fn stage_issue_attachments_download_failure_is_soft() {
+        // 逐文件下载失败（连接拒绝模拟网络失败）→ 软失败记录原因、不阻断其余附件、不报错：
+        // 局部失败隔离（state-lifecycle §7）。
+        let client = MulticaClient::new("http://127.0.0.1:9", Some("pat".to_string())).unwrap();
+        let task = RemoteTask {
+            id: "t-dl-fail".into(),
+            status: "queued".into(),
+            auth_token: Some("mat_x".into()),
+            issue_attachments: vec![IssueAttachment {
+                id: "a1".into(),
+                filename: "需求说明.pdf".into(),
+                content_type: None,
+            }],
+            ..minimal_remote_task()
+        };
+        let staging = stage_issue_attachments(&client, &task, &mut HashSet::new())
+            .await
+            .unwrap();
+        assert!(staging.paths.is_empty());
+        assert_eq!(staging.failures.len(), 1);
+        assert_eq!(staging.failures[0].filename, "需求说明.pdf");
+        // 路由契约（webank file.go：/api/attachments/{id} 是元数据 JSON，文件本体在
+        // /download 子路径）——错误串与真实请求共用同一 path 变量，此处即钉住请求路由。
+        assert!(
+            staging.failures[0]
+                .reason
+                .contains("GET /api/attachments/a1/download")
+        );
+        // 中转目录已建（硬失败边界之外）→ 清理交调用方，stage 自身不删。
+        let dir = staging.dir.expect("staging dir created for downloads");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn stage_issue_attachments_dir_creation_failure_is_hard() {
+        // 硬失败边界：中转目录路径被同名文件占用（磁盘/权限异常的确定性模拟）→
+        // AttachmentStageFailed（调用方 release 回滚），不吞错。
+        let client = MulticaClient::new("http://127.0.0.1:9", Some("pat".to_string())).unwrap();
+        let task = RemoteTask {
+            id: "t-dir-clash".into(),
+            status: "queued".into(),
+            auth_token: Some("mat_x".into()),
+            issue_attachments: vec![IssueAttachment {
+                id: "a1".into(),
+                filename: "spec.pdf".into(),
+                content_type: None,
+            }],
+            ..minimal_remote_task()
+        };
+        let blocked = std::env::temp_dir().join("gold-band-multica-attachments-t-dir-clash");
+        std::fs::write(&blocked, b"not a dir").unwrap();
+        let error = stage_issue_attachments(&client, &task, &mut HashSet::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, MulticaError::AttachmentStageFailed(_)));
+        assert_eq!(error.code(), "multica.attachment-stage-failed");
+        std::fs::remove_file(&blocked).unwrap();
+    }
+
+    /// 构造最小 RemoteTask（staging 只消费 id / status? / auth_token / issue_attachments，
+    /// 其余字段不参与；用 JSON 反序列化免去逐字段字面量，也顺带锁 wire 兼容）。
+    fn minimal_remote_task() -> RemoteTask {
+        serde_json::from_str(
+            r#"{"id":"t-min","status":"queued","auth_token":null,"issue_attachments":[]}"#,
+        )
+        .unwrap()
     }
 }

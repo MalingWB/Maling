@@ -112,6 +112,10 @@ pub struct TimelineUsageProjection {
     pub used: Option<u64>,
     pub size: Option<u64>,
     pub cost_amount_usd: Option<f64>,
+    /// Sticky: once background Agent work was observed, the attempt token
+    /// totals no longer cover all consumption.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub token_totals_exclude_background: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -549,11 +553,19 @@ pub struct TimelineBranchProjection {
     pub latest_seq: Option<u64>,
     pub latest_timestamp: Option<String>,
     pub has_completion_evidence: bool,
+    pub latest_agent_state: Option<TimelineAgentStateProjection>,
     pub latest_plan_entries: Vec<Value>,
     pub agent_launches: Vec<AcpUiEvent>,
     pub prompt_turns: Vec<TimelinePromptTurnProjection>,
     /// Latest accepted background stop (seq, timestamp) on this timeline.
     pub latest_background_cancel: Option<(u64, String)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TimelineAgentStateProjection {
+    pub seq: u64,
+    pub timestamp: String,
+    pub status: String,
 }
 
 /// Lightweight prompt-turn boundaries derived from the canonical root
@@ -1845,6 +1857,10 @@ fn legacy_timing_state_snapshot(
         user_wait_seconds: previous
             .map(|snapshot| snapshot.user_wait_seconds)
             .unwrap_or_default(),
+        // Legacy patches predate background segments.
+        background_started_at: None,
+        background_last_activity_at: None,
+        background_running_tool_ids: Vec::new(),
     }
 }
 
@@ -1927,6 +1943,8 @@ fn apply_lightweight_projection(index: &mut TimelineMaterializedIndex, item: &Ac
                 if cost_amount_usd.is_some() {
                     usage.cost_amount_usd = cost_amount_usd;
                 }
+                usage.token_totals_exclude_background |=
+                    crate::acp::events::usage_token_totals_exclude_background(raw);
             }
             _ => {}
         }
@@ -2520,7 +2538,19 @@ fn runtime_context_is_active(event: &AcpUiEvent) -> bool {
 /// Prompt locators are enough for usage recovery and provider history anchors;
 /// only the small prompt records are read and their raw Blob references remain
 /// untouched.
-pub fn read_indexed_prompt_starts(path: &Utf8Path) -> Result<Vec<(String, u64, String)>> {
+/// A Gold Band prompt anchor as the usage journal needs it: `event_id` is the
+/// canonical prompt event, which prefixes every usage transaction id of its
+/// RPCs; `prompt_id` is the logical prompt identity used to name a start the
+/// journal never recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexedPromptStart {
+    pub event_id: String,
+    pub prompt_id: String,
+    pub seq: u64,
+    pub timestamp: String,
+}
+
+pub fn read_indexed_prompt_starts(path: &Utf8Path) -> Result<Vec<IndexedPromptStart>> {
     let policy = TimelineCheckpointPolicy::default();
     let index_path = timeline_index_path(path);
     with_jsonl_file_lock(path, || {
@@ -2534,12 +2564,11 @@ pub fn read_indexed_prompt_starts(path: &Utf8Path) -> Result<Vec<(String, u64, S
         starts.sort_by_key(|(_, locator)| (locator.started_seq, locator.seq));
         Ok(starts
             .into_iter()
-            .map(|(item_id, locator)| {
-                (
-                    locator.prompt_id.clone().unwrap_or(item_id),
-                    locator.started_seq,
-                    locator.timestamp.clone(),
-                )
+            .map(|(item_id, locator)| IndexedPromptStart {
+                prompt_id: locator.prompt_id.clone().unwrap_or_else(|| item_id.clone()),
+                event_id: item_id,
+                seq: locator.started_seq,
+                timestamp: locator.timestamp.clone(),
             })
             .collect())
     })
@@ -2753,6 +2782,21 @@ pub fn read_indexed_timeline_projection(path: &Utf8Path) -> Result<TimelineBranc
                     .unwrap_or_else(|| locator.timestamp.clone())
             }),
             has_completion_evidence: execution.iter().any(|locator| locator.agent_result),
+            latest_agent_state: execution
+                .iter()
+                .filter(|locator| locator.kind == "agentState")
+                .max_by_key(|locator| locator.ended_seq)
+                .map(|locator| TimelineAgentStateProjection {
+                    seq: locator.ended_seq,
+                    timestamp: locator
+                        .ended_at
+                        .clone()
+                        .unwrap_or_else(|| locator.timestamp.clone()),
+                    status: locator
+                        .status
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                }),
             latest_plan_entries,
             agent_launches: index.agent_launches.into_values().collect(),
             prompt_turns,
@@ -3500,6 +3544,26 @@ mod tests {
             super::INDEX_DISK_LOADS.get(),
             1,
             "ordinary append uses tail replay"
+        );
+    }
+
+    #[test]
+    fn native_agent_state_is_indexed_without_occupying_a_chat_page() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        let mut state = event("native-state-1", 1, "");
+        state.kind = "agentState".to_string();
+        state.content = None;
+        state.raw = Some(json!({ "source": "nativeSubagentState" }));
+        store.upsert(1, &state).unwrap();
+        let projection = read_indexed_timeline_projection(&path).unwrap();
+        assert_eq!(projection.latest_agent_state.unwrap().status, "completed");
+        let page = read_indexed_timeline_page(&path, None, None, None, 1).unwrap();
+        assert!(
+            page.events.is_empty(),
+            "lifecycle facts must not create empty transcript pages"
         );
     }
 

@@ -635,19 +635,32 @@ impl ManagedAgentConfig {
         if let Some(path) = &self.executable_path {
             let path = std::path::Path::new(path);
             if !path.is_absolute() || !path.is_file() {
-                return Err(crate::onboarding::model::SetupError::new("setup.executable-path-invalid").into());
+                return Err(crate::onboarding::model::SetupError::new(
+                    "setup.executable-path-invalid",
+                )
+                .into());
             }
-            adapter.command = dunce::canonicalize(path)?.to_str()
-                .ok_or_else(|| crate::onboarding::model::SetupError::new("setup.executable-path-invalid"))?.to_string();
+            adapter.command = dunce::canonicalize(path)?
+                .to_str()
+                .ok_or_else(|| {
+                    crate::onboarding::model::SetupError::new("setup.executable-path-invalid")
+                })?
+                .to_string();
         } else if let Some(local) = crate::agent_catalog::builtin_agent(agent_id.as_str())
             .and_then(|entry| entry.local_launch.as_ref())
         {
-            let path = crate::process::resolved_child_path(adapter.env.get("PATH").map(std::ffi::OsStr::new));
-            if let Some(executable) = crate::process::find_executable_in_paths(&local.command, path.as_deref()) {
+            let path = crate::process::resolved_child_path(
+                adapter.env.get("PATH").map(std::ffi::OsStr::new),
+            );
+            if let Some(executable) =
+                crate::process::find_executable_in_paths(&local.command, path.as_deref())
+            {
                 adapter.command = executable.to_string_lossy().into_owned();
                 adapter.args = local.args.clone();
                 if let Some(path) = path {
-                    adapter.env.insert("PATH".into(), path.to_string_lossy().into_owned());
+                    adapter
+                        .env
+                        .insert("PATH".into(), path.to_string_lossy().into_owned());
                 }
             }
         }
@@ -927,6 +940,9 @@ pub struct SettingsConfig {
     pub scheduled_keep_awake_enabled: Option<bool>,
     pub scheduled_completion_notifications_enabled: Option<bool>,
     pub scheduled_occurrence_retention_days: Option<u16>,
+    /// Whether "send now" on a queued prompt asks before interrupting the
+    /// running reply. Absent means the default (ask).
+    pub confirm_queued_prompt_interrupt: Option<bool>,
     #[serde(default)]
     pub im_integrations: crate::im::ImIntegrationSettings,
     #[serde(default)]
@@ -1508,8 +1524,7 @@ pub struct ImAppConfig {
 #[serde(rename_all = "camelCase")]
 pub struct FeishuScanAuthConfig {
     pub source: String,
-    pub app_name: String,
-    pub app_description: String,
+    pub app_description_suffix: String,
 }
 
 impl FeishuScanAuthConfig {
@@ -1520,9 +1535,9 @@ impl FeishuScanAuthConfig {
                 "Feishu scan auth source must be non-empty ASCII with at most 64 bytes"
             ));
         }
-        if self.app_name.trim().is_empty() || self.app_description.trim().is_empty() {
+        if self.app_description_suffix.trim().is_empty() {
             return Err(anyhow!(
-                "Feishu scan auth app name and description must be non-empty"
+                "Feishu scan auth app description suffix must be non-empty"
             ));
         }
         Ok(())
@@ -1945,6 +1960,7 @@ pub struct RuntimeConfig {
     pub scheduled_keep_awake_enabled: bool,
     pub scheduled_completion_notifications_enabled: bool,
     pub scheduled_occurrence_retention_days: u16,
+    pub confirm_queued_prompt_interrupt: bool,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
     pub workspace_layout: WorkspaceLayoutConfig,
     pub workspace_files: WorkspaceFilesConfig,
@@ -2021,6 +2037,7 @@ impl Default for RuntimeConfig {
             notification_auto_dismiss_target_secs: DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS,
             scheduled_keep_awake_enabled: false,
             scheduled_completion_notifications_enabled: true,
+            confirm_queued_prompt_interrupt: true,
             scheduled_occurrence_retention_days: DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS,
             permission_mode_mapping: BTreeMap::new(),
             workspace_layout: WorkspaceLayoutConfig::default(),
@@ -2115,6 +2132,9 @@ impl RuntimeConfig {
         {
             self.scheduled_completion_notifications_enabled =
                 scheduled_completion_notifications_enabled;
+        }
+        if let Some(confirm) = settings.confirm_queued_prompt_interrupt {
+            self.confirm_queued_prompt_interrupt = confirm;
         }
         if let Some(scheduled_occurrence_retention_days) =
             settings.scheduled_occurrence_retention_days
@@ -2312,8 +2332,8 @@ mod tests {
         DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
         DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
         ManagedAgentId, MulticaAccountRef, PersonalizationPreference, ProjectAppConfig,
-        ProjectIdentityConfig, RemoteCompletedTask, RemoteTaskConversation, RuntimeConfig,
-        RuntimeLogLevel, RemoteWorkspaceRef, SettingsConfig, StateConfig, SystemPromptDelivery,
+        ProjectIdentityConfig, RemoteCompletedTask, RemoteTaskConversation, RemoteWorkspaceRef,
+        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
         TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
         catalog_agent_default_config, project_identity_config,
     };
@@ -3222,9 +3242,13 @@ mod tests {
     }
 
     #[test]
-    fn embedded_app_config_defines_wecom_scan_source() {
+    fn embedded_app_config_defines_scan_sources_and_feishu_description_suffix() {
         assert_eq!(super::wecom_scan_auth_config().source, "maling");
         assert!(super::wecom_scan_auth_config().validate().is_ok());
+        assert_eq!(
+            super::feishu_scan_auth_config().app_description_suffix,
+            "remote intervention"
+        );
         assert!(super::feishu_scan_auth_config().validate().is_ok());
     }
 
@@ -3734,8 +3758,8 @@ mod tests {
     fn apply_settings_propagates_multica_fields_with_provider_fallback() {
         let config = RuntimeConfig::default().apply_settings(&SettingsConfig {
             desktop_multica_enabled: Some(true),
-            desktop_multica_base_url: Some("http://maling.weoa.com".to_string()),
-            desktop_multica_app_url: Some("http://maling.weoa.com".to_string()),
+            desktop_multica_base_url: Some("http://example.invalid".to_string()),
+            desktop_multica_app_url: Some("http://example.invalid".to_string()),
             desktop_multica_default_provider: None,
             desktop_multica_workspaces: Some(vec![RemoteWorkspaceRef {
                 id: "ws-1".to_string(),
@@ -3748,7 +3772,7 @@ mod tests {
         assert!(config.desktop_multica_enabled);
         assert_eq!(
             config.desktop_multica_base_url.as_deref(),
-            Some("http://maling.weoa.com")
+            Some("http://example.invalid")
         );
         // default_provider=None 时 fallback 到 claude-acp（与 Default 一致）。
         assert_eq!(config.desktop_multica_default_provider, "claude-acp");
@@ -3767,7 +3791,7 @@ mod tests {
     fn settings_config_multica_fields_roundtrip_json() {
         let settings = SettingsConfig {
             desktop_multica_enabled: Some(true),
-            desktop_multica_base_url: Some("http://maling.weoa.com".to_string()),
+            desktop_multica_base_url: Some("http://example.invalid".to_string()),
             desktop_multica_pat: Some("secret-token".to_string()),
             desktop_multica_daemon_id: Some("daemon-1".to_string()),
             desktop_multica_workspaces: Some(vec![RemoteWorkspaceRef {
@@ -3850,7 +3874,8 @@ mod tests {
         );
 
         // 升级路径：不含新键的旧 settings.json 反序列化不崩，两指针回落 None（apply_settings 再归一 multica）。
-        let legacy: SettingsConfig = serde_json::from_str(r#"{"desktopMulticaEnabled": true}"#).unwrap();
+        let legacy: SettingsConfig =
+            serde_json::from_str(r#"{"desktopMulticaEnabled": true}"#).unwrap();
         assert_eq!(legacy.desktop_remote_task_source, None);
         assert_eq!(legacy.desktop_remote_skill_source, None);
     }
@@ -3896,6 +3921,10 @@ mod tests {
                 status: "completed".to_string(),
                 title: "Fix bug".to_string(),
                 completed_at: "2026-08-06T01:00:00Z".to_string(),
+                issue_status_category: None,
+                issue_status_name: None,
+                dpms_required: false,
+                dpms_story_id: None,
             }],
             ..StateConfig::default()
         };
@@ -4087,6 +4116,25 @@ pub struct RemoteCompletedTask {
     pub status: String,
     pub title: String,
     pub completed_at: String,
+    /// 终态时关联 issue 的状态分类（`todo`|`backlog`|`in_progress`|`done`|`canceled`，对账
+    /// `batch-status` 回填）。写入时（finalize）不知 server 侧 issue 状态 → 恒 None，由
+    /// `reconcile_remote_task_statuses` 周期对账首填/更新。旧历史条目无此字段 → serde 缺省
+    /// None（无对账数据时前端不渲染 issue 状态标记、不渲染「重新执行」入口）。
+    #[serde(default)]
+    pub issue_status_category: Option<String>,
+    /// 自定义状态名（仅 server issue 用自定义状态时 `batch-status` 才回填；标准分类无值）。
+    /// 展示优先于分类（更精确），旧条目同样缺省 None。
+    #[serde(default)]
+    pub issue_status_name: Option<String>,
+    /// DPMS 需求创建要求快照（finalize 时从 `ActiveRemoteRun.dpms_required` 快照，claim 定版）。
+    /// 与 `dpms_story_id` 组成终态行「待回传 DPMS」徽标判定：`dpms_required && dpms_story_id.is_none()`。
+    /// 旧历史条目无此字段 → serde 缺省 false，不渲染徽标。
+    #[serde(default)]
+    pub dpms_required: bool,
+    /// 终态时已回传的 DPMS story id（`ActiveRemoteRun::last_dpms_report` 载荷快照；成功与 409
+    /// 已链接都算已回传——两种情况关联都已在服务端成立）。None = 未回传。旧历史条目缺省 None。
+    #[serde(default)]
+    pub dpms_story_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

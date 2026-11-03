@@ -1,7 +1,9 @@
 import { getRuntimeApi } from './api/client';
+export function resolveRightWorkspaceFileTarget(source: import('./types').PromptWorkspaceFileRef) { return getRuntimeApi().resolveRightWorkspaceFileTarget(source); }
+export function revealRightWorkspaceFile(source: import('./types').PromptWorkspaceFileRef) { return getRuntimeApi().revealRightWorkspaceFile(source); }
 import { AGENT_MODEL_CONFIG_UPDATED_EVENT } from './lib/agent-diagnostic-update';
 import type { RuntimeApi } from './api/client';
-import type { CreateWorkspaceEntryInput, ResolvedColorScheme, WorkspaceRootRef } from './types';
+import type { CreateWorkspaceEntryInput, FeishuScanMode, ResolvedColorScheme, RuntimeAssetInstalledEventVm, WorkspaceRootRef } from './types';
 
 export { isTauriRuntime } from './api/shared';
 export function readProjectMemory(projectId: string) { return getRuntimeApi().readProjectMemory(projectId); }
@@ -118,6 +120,10 @@ export function createProfile(input: Parameters<ReturnType<typeof getRuntimeApi>
 
 export function importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean) {
   return getRuntimeApi().importProfilesFromFolder(folderPath, dynamicTemplate);
+}
+
+export function importProfilesFromFiles(filePaths: string[], dynamicTemplate: boolean) {
+  return getRuntimeApi().importProfilesFromFiles(filePaths, dynamicTemplate);
 }
 
 export function updateProfile(id: string, input: Parameters<ReturnType<typeof getRuntimeApi>['updateProfile']>[1]) {
@@ -312,6 +318,10 @@ export function getGitComparison(projectId: string, source: Parameters<ReturnTyp
   return getRuntimeApi().getGitComparison(projectId, source);
 }
 
+export function prepareGitPush(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['prepareGitPush']>[2]) {
+  return getRuntimeApi().prepareGitPush(projectId, workspacePath, input);
+}
+
 export function startGitOperation(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['startGitOperation']>[2]) {
   return getRuntimeApi().startGitOperation(projectId, workspacePath, input);
 }
@@ -460,8 +470,8 @@ export function cancelWeComScanAuthorization(sessionId: string) {
   return getRuntimeApi().cancelWeComScanAuthorization(sessionId);
 }
 
-export function startFeishuScanAuthorization(sessionId: string, reauthorize: boolean) {
-  return getRuntimeApi().startFeishuScanAuthorization(sessionId, reauthorize);
+export function startFeishuScanAuthorization(sessionId: string, mode: FeishuScanMode) {
+  return getRuntimeApi().startFeishuScanAuthorization(sessionId, mode);
 }
 
 export function completeFeishuScanAuthorization(sessionId: string) {
@@ -521,8 +531,44 @@ export function deleteConversationQueuedPrompt(projectId: string | null | undefi
   return getRuntimeApi().deleteConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
 }
 
-export function useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
+export function useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, interruptActive?: boolean, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, interruptActive, outerNodeId, outerAttemptId);
+}
+
+export function setConversationPromptQueueMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, mode: 'auto' | 'manual', outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().setConversationPromptQueueMode(projectId, taskId, runId, roundId, nodeId, attemptId, mode, outerNodeId, outerAttemptId);
+}
+
+export function resumeConversationPromptQueue(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().resumeConversationPromptQueue(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
+}
+
+export function listConversationComposerDrafts(projectId: string | null | undefined, taskId: string) {
+  return getRuntimeApi().listConversationComposerDrafts(projectId, taskId);
+}
+
+export function saveConversationComposerDraft(projectId: string | null | undefined, taskId: string, input: import('./types').ConversationPromptInput, attachmentPaths?: string[]) {
+  return getRuntimeApi().saveConversationComposerDraft(projectId, taskId, input, attachmentPaths);
+}
+
+export function getConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string) {
+  return getRuntimeApi().getConversationComposerDraft(projectId, taskId, draftId);
+}
+
+export function deleteConversationComposerDraft(projectId: string | null | undefined, taskId: string, draftId: string) {
+  return getRuntimeApi().deleteConversationComposerDraft(projectId, taskId, draftId);
+}
+
+export function getPromptQueueSettings() {
+  return getRuntimeApi().getPromptQueueSettings();
+}
+
+export function savePromptQueueSettings(input: import('./types').PromptQueueSettingsVm) {
+  return getRuntimeApi().savePromptQueueSettings(input);
+}
+
+export function clearConversationQueuedPrompts(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().clearConversationQueuedPrompts(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
 
 export function setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -685,6 +731,14 @@ export function removeRemoteCompletedTask(remoteTaskId: string) {
   return getRuntimeApi().removeRemoteCompletedTask(remoteTaskId);
 }
 
+export function reconcileRemoteTaskStatuses() {
+  return getRuntimeApi().reconcileRemoteTaskStatuses();
+}
+
+export function rerunRemoteTask(taskId: string) {
+  return getRuntimeApi().rerunRemoteTask(taskId);
+}
+
 export function listServerMulticaWorkspaces() {
   return getRuntimeApi().listServerMulticaWorkspaces();
 }
@@ -739,6 +793,10 @@ export function getConversationSidebarBootstrap() {
 
 export function getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number) {
   return getRuntimeApi().getConversationTaskPage(projectId, cursor, limit);
+}
+
+export function getConversationTaskSummary(projectId: string, taskId: string, taskUuid?: string | null) {
+  return getRuntimeApi().getConversationTaskSummary(projectId, taskId, taskUuid);
 }
 
 export function getConversationPinnedTaskPage(cursor?: string | null, limit?: number) {
@@ -971,6 +1029,24 @@ export function subscribeRemoteTaskUpdates(listener: () => void) {
 
 export function subscribeRemoteSourceSettingsUpdates(listener: () => void) {
   return getRuntimeApi().subscribeRemoteSourceSettingsUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+/// multica 被动安装落地（M5-cr）：按 event.assetType 重拉对应列表（App.tsx 消费）。
+export function subscribeRuntimeAssetInstalled(listener: (event: RuntimeAssetInstalledEventVm) => void) {
+  return getRuntimeApi().subscribeRuntimeAssetInstalled?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeUpstreamPullEvents(listener: Parameters<NonNullable<RuntimeApi['subscribeUpstreamPullEvents']>>[0]) {
+  return getRuntimeApi().subscribeUpstreamPullEvents?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function decideUpstreamPull(taskId: string, nodeId: string, decision: Parameters<RuntimeApi['decideUpstreamPull']>[2], manualText?: string | null) {
+  return getRuntimeApi().decideUpstreamPull(taskId, nodeId, decision, manualText);
+}
+
+export function listUpstreamPullPendings(taskId: string) {
+  // 可选方法兜底空列表（mock runtime api 未实现 = 无 multica 链路，与 browser stub 语义一致）。
+  return getRuntimeApi().listUpstreamPullPendings?.(taskId) ?? Promise.resolve([]);
 }
 
 export function workspaceFilePreviewUrl(token: string, staticFrame = false) {
