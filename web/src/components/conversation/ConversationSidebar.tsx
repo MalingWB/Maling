@@ -455,63 +455,9 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) cancelPendingTaskReveal();
           }}
         >
-        {/* Cross-workspace recent section: always visible; with a single
-            workspace it simply mirrors that workspace's recent tasks. */}
-        <div className="my-1.5 border-y border-border/55 py-2">
-            <button
-              type="button"
-              data-conversation-sidebar-heading="recent"
-              className="sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1 text-left text-sm font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
-              onClick={() => setRecentCollapsed((collapsed) => !collapsed)}
-            >
-              <ChevronDown className={cn('size-3 transition-transform', recentCollapsed && '-rotate-90')} />
-              {t('conversation.sidebar.recent')}
-            </button>
-            {!recentCollapsed ? (
-              <div className="mt-1 space-y-0.5">
-                {(vm.recentTasks ?? []).map((row) => (
-                  <RecentTaskRow
-                    key={`recent-${conversationSidebarTaskKey(row.projectId, row.taskId, row.taskUuid)}`}
-                    row={row}
-                    isActive={active.kind === 'conversation-run' && active.projectId === row.projectId && active.taskId === row.taskId}
-                    onSelect={onSelect}
-                    t={t}
-                  />
-                ))}
-                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'loading' ? (
-                  <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
-                    <Loader2 className="size-3 animate-spin" />
-                    {t('conversation.sidebar.loadingRecent')}
-                  </div>
-                ) : null}
-                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'error' ? (
-                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestRecentTasks())}>
-                    {t('conversation.sidebar.retryRecent')}
-                  </Button>
-                ) : null}
-                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && (vm.recentTasks ?? []).length === 0 && !vm.recentTaskPage?.nextCursor ? (
-                  <div className="px-2 py-1 text-xs text-muted-foreground">{t('conversation.sidebar.noRecent')}</div>
-                ) : null}
-                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && vm.recentTaskPage?.nextCursor ? (
-                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestRecentTasks(vm.recentTaskPage?.nextCursor))}>
-                    {t('conversation.sidebar.loadMoreRecent')}
-                  </Button>
-                ) : null}
-                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && !vm.recentTaskPage?.nextCursor
-                  && (vm.recentTasks ?? []).length >= CONVERSATION_TASK_PAGE_SIZE ? (
-                  <div className="px-2 py-1 text-xs text-muted-foreground/70">{t('conversation.sidebar.allRecentShown')}</div>
-                ) : null}
-                <LoadMoreSentinel
-                  marker="recent"
-                  enabled={(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && Boolean(vm.recentTaskPage?.nextCursor)}
-                  onLoadMore={() => onRequestRecentTasks(vm.recentTaskPage?.nextCursor)}
-                />
-              </div>
-            ) : null}
-        </div>
         {vm.pinRefs.length > 0 || vm.pinnedTasks.length > 0 ? (
-
-          <div className="my-1.5 border-y border-border/55 py-2">
+          <>
+          <div className="py-2">
             <button
               type="button"
               data-conversation-sidebar-heading="pinned"
@@ -584,9 +530,11 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               </div>
             ) : null}
           </div>
-        ) : (
-          <Separator className="mx-1 my-1.5 opacity-45" />
-        )}
+          {/* One separator per adjacent section boundary — never parallel
+              lines from both section wrappers. */}
+          <Separator data-conversation-sidebar-separator className="mx-1 my-1.5 opacity-45" />
+          </>
+        ) : null}
 
         {/* Workspace sections — scrollable with sticky headers */}
           <div className="pt-2">
@@ -737,6 +685,67 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             ) : null}
           </div>
         </ScrollArea>
+
+        {/* Cross-workspace recent section pinned at the sidebar tail so any
+            number of workspaces can never push it out of reach; a bounded
+            internal scroll keeps long recent lists from stealing the
+            workspace area. Always visible — with a single workspace it simply
+            mirrors that workspace's recent tasks. */}
+        <div data-conversation-sidebar-region="recent" className="shrink-0">
+          <Separator data-conversation-sidebar-separator className="mx-1 my-1.5 opacity-45" />
+          <ScrollArea className="max-h-[min(40vh,20rem)]">
+            <button
+              type="button"
+              data-conversation-sidebar-heading="recent"
+              className="sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1 text-left text-sm font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
+              onClick={() => setRecentCollapsed((collapsed) => !collapsed)}
+            >
+              <ChevronDown className={cn('size-3 transition-transform', recentCollapsed && '-rotate-90')} />
+              {t('conversation.sidebar.recent')}
+            </button>
+            {!recentCollapsed ? (
+              <div className="mt-1 space-y-0.5">
+                {(vm.recentTasks ?? []).map((row) => (
+                  <RecentTaskRow
+                    key={`recent-${conversationSidebarTaskKey(row.projectId, row.taskId, row.taskUuid)}`}
+                    row={row}
+                    isActive={active.kind === 'conversation-run' && active.projectId === row.projectId && active.taskId === row.taskId}
+                    onSelect={onSelect}
+                    t={t}
+                  />
+                ))}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'loading' ? (
+                  <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
+                    <Loader2 className="size-3 animate-spin" />
+                    {t('conversation.sidebar.loadingRecent')}
+                  </div>
+                ) : null}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'error' ? (
+                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestRecentTasks())}>
+                    {t('conversation.sidebar.retryRecent')}
+                  </Button>
+                ) : null}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && (vm.recentTasks ?? []).length === 0 && !vm.recentTaskPage?.nextCursor ? (
+                  <div className="px-2 py-1 text-xs text-muted-foreground">{t('conversation.sidebar.noRecent')}</div>
+                ) : null}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && vm.recentTaskPage?.nextCursor ? (
+                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestRecentTasks(vm.recentTaskPage?.nextCursor))}>
+                    {t('conversation.sidebar.loadMoreRecent')}
+                  </Button>
+                ) : null}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && !vm.recentTaskPage?.nextCursor
+                  && (vm.recentTasks ?? []).length >= CONVERSATION_TASK_PAGE_SIZE ? (
+                  <div className="px-2 py-1 text-xs text-muted-foreground/70">{t('conversation.sidebar.allRecentShown')}</div>
+                ) : null}
+                <LoadMoreSentinel
+                  marker="recent"
+                  enabled={(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && Boolean(vm.recentTaskPage?.nextCursor)}
+                  onLoadMore={() => onRequestRecentTasks(vm.recentTaskPage?.nextCursor)}
+                />
+              </div>
+            ) : null}
+          </ScrollArea>
+        </div>
 
 
         {/* Settings */}

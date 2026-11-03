@@ -1414,8 +1414,9 @@ pub const CONVERSATION_TASK_PAGE_DEFAULT_LIMIT: usize = 10;
 /// Run history pages moved to the same documented 10-row page (plan 需求 3.1:
 /// Task/Run 分页 24/20 统一降为 10).
 pub const CONVERSATION_RUN_PAGE_DEFAULT_LIMIT: usize = 10;
-/// The pinned section keeps its original 24-row page (plan 需求 3.1: 置顶区不变).
-pub const CONVERSATION_PINNED_TASK_PAGE_DEFAULT_LIMIT: usize = 24;
+/// The pinned section pages at the same documented 10-row size (plan 需求 3.1,
+/// unified 2026-11-03).
+pub const CONVERSATION_PINNED_TASK_PAGE_DEFAULT_LIMIT: usize = 10;
 pub const CONVERSATION_SIDEBAR_PAGE_MAX_LIMIT: usize = 100;
 
 fn entity_sequence(id: &str, prefix: &str) -> Option<u32> {

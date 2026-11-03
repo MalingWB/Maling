@@ -12,8 +12,8 @@ import { parseTimestamp } from '@/lib/datetime';
 
 export const CONVERSATION_TASK_PAGE_SIZE = 10;
 export const CONVERSATION_RUN_PAGE_SIZE = 10;
-/** The pinned section keeps its original 24-row page (plan 需求 3.1: 置顶区不变). */
-export const CONVERSATION_PINNED_TASK_PAGE_SIZE = 24;
+/** Every sidebar section pages at the same documented 10-row size (plan 需求 3.1, 2026-11-03 统一). */
+export const CONVERSATION_PINNED_TASK_PAGE_SIZE = 10;
 export const CONVERSATION_SIDEBAR_TASK_WINDOW = 120;
 export const CONVERSATION_SIDEBAR_RUN_WINDOW = 100;
 

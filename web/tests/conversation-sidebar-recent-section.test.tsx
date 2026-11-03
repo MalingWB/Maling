@@ -9,7 +9,9 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/components/ui/scroll-area', () => ({
-  ScrollArea: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  ScrollArea: ({ children, ...props }: { children: React.ReactNode } & Record<string, unknown>) => (
+    <div {...props}>{children}</div>
+  ),
 }));
 
 import { ConversationSidebar } from '@/components/conversation/ConversationSidebar';
@@ -70,6 +72,48 @@ afterEach(() => {
 });
 
 describe('ConversationSidebar recent section', () => {
+  it('sits below the workspace groups with exactly one separator per boundary', () => {
+    // Codex-style recency placement: workspaces first, recent conversations
+    // last; every adjacent section boundary carries exactly one separator.
+    const vm = recentSidebar('cursor-2');
+    vm.workspaces = [
+      { projectId: 'project-a', workspacePath: '/a', name: 'Workspace A' },
+      { projectId: 'project-b', workspacePath: '/b', name: 'Workspace B' },
+    ];
+    const { container, root } = mount(vm, () => {});
+    try {
+      const recentHeading = container.querySelector('[data-conversation-sidebar-heading="recent"]')!;
+      const groups = container.querySelectorAll('[data-conversation-workspace-group]');
+      expect(groups.length).toBeGreaterThan(0);
+      expect(
+        (groups[groups.length - 1] as Node).compareDocumentPosition(recentHeading as Node)
+          & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+      // The recent section lives in its own pinned tail region with internal
+      // scrolling — any number of workspaces can never push it out of reach.
+      const scrollRegion = container.querySelector('[data-conversation-sidebar-region="scrollable-conversations"]')!;
+      const recentRegion = container.querySelector('[data-conversation-sidebar-region="recent"]')!;
+      expect(scrollRegion.contains(recentHeading)).toBe(false);
+      expect(recentRegion.contains(recentHeading)).toBe(true);
+      // No pinned section: only the workspaces|recent boundary carries one.
+      expect(container.querySelectorAll('[data-conversation-sidebar-separator]').length).toBe(1);
+    } finally {
+      act(() => root.unmount());
+    }
+
+    // A pinned section adds its own single boundary separator — never a
+    // second parallel line from the section wrappers themselves.
+    const withPins = recentSidebar(null);
+    withPins.pinRefs = [{ projectId: 'project-a', taskId: 'task-1', taskUuid: 'uuid-1' } as never];
+    const pinned = mount(withPins, () => {});
+    try {
+      expect(pinned.container.querySelector('[data-conversation-sidebar-heading="pinned"]')).toBeTruthy();
+      expect(pinned.container.querySelectorAll('[data-conversation-sidebar-separator]').length).toBe(2);
+    } finally {
+      act(() => pinned.root.unmount());
+    }
+  });
+
   it('renders with a single workspace (always visible)', () => {
     const vm = {
       ...recentSidebar(null),
