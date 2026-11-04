@@ -479,7 +479,18 @@ describe('workflow editor interaction contracts', () => {
     // canvas fit excludes the sidebar strip instead of centering under it.
     expect(workspaceShellSource).toContain('--workspace-left-panel-width');
     expect(workspaceShellSource).toContain("root.style.removeProperty('--workspace-left-panel-width')");
-    expect(editorSource).toContain("{ left: 'var(--workspace-left-panel-width, 0px)' }");
+    expect(editorSource).toContain("{ left: 'var(--workspace-left-panel-width, 0px)', top: 'var(--workspace-top-offset, 0px)' }");
+  });
+
+  it('starts the fullscreen surface below the workspace shell top', () => {
+    // WebKit clips a fixed element nested in the panel tree to the group
+    // box (below the 36px title bar): the canvas toolbar at m-3 lost its
+    // upper half to that clip. The shell publishes the group's live top
+    // offset and the fullscreen surface starts there — inside the clip box
+    // on WebKit, below the title bar on every engine, no clipping either
+    // way.
+    expect(workspaceShellSource).toContain('--workspace-top-offset');
+    expect(workspaceShellSource).toContain("root.style.removeProperty('--workspace-top-offset')");
   });
 
   it('refits the viewport when fullscreen toggles', () => {

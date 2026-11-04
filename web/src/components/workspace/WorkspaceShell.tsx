@@ -599,22 +599,31 @@ function WorkspaceShellLayout({
     return () => cancelAnimationFrame(frame);
   }, [active.kind, autoCollapse.left, autoCollapse.right, recordPanelSnapshot, showLeft, showRightDock, sidebarWidth, workspace.requestedOpen, workspace.scopeKey, workspace.width]);
 
-  // Publish the live navigation-panel width for surfaces that must yield to
-  // the sidebar (the fullscreen editor overlay starts at its right edge, so
-  // the sidebar stays visible and clickable instead of being painted over).
-  // Set only while this shell is mounted; removed on unmount so other shells
-  // (workbench) never read a stale width.
+  // Publish the live workspace layout edges for surfaces that must yield to
+  // the shell: the navigation-panel width (the fullscreen editor overlay
+  // starts at its right edge, so the sidebar stays visible and clickable
+  // instead of being painted over) and the panel group's top offset (the
+  // overlay starts below the title bar — WebKit clips a fixed element nested
+  // in the panel tree to the group box, which sheared the canvas toolbar's
+  // upper half). Set only while this shell is mounted; removed on unmount so
+  // other shells (workbench) never read stale values.
   useEffect(() => {
     const panel = document.getElementById('workspace-navigation');
-    if (!panel) return undefined;
+    const group = panelGroupElementRef.current;
+    if (!panel || !group) return undefined;
     const root = document.documentElement;
-    const publish = () => root.style.setProperty('--workspace-left-panel-width', `${Math.round(panel.getBoundingClientRect().width)}px`);
+    const publish = () => {
+      root.style.setProperty('--workspace-left-panel-width', `${Math.round(panel.getBoundingClientRect().width)}px`);
+      root.style.setProperty('--workspace-top-offset', `${Math.round(group.getBoundingClientRect().top)}px`);
+    };
     publish();
     const observer = new ResizeObserver(publish);
     observer.observe(panel);
+    observer.observe(group);
     return () => {
       observer.disconnect();
       root.style.removeProperty('--workspace-left-panel-width');
+      root.style.removeProperty('--workspace-top-offset');
     };
   }, []);
 
