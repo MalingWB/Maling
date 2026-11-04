@@ -225,13 +225,13 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
             <ul className="mt-3 divide-y">
               {Object.values(repairs).map((repair) => <li key={repair.agentId} className="py-3 first:pt-0 last:pb-0">
                 <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1 basis-64">
                     <div className="break-words text-sm font-medium">{repair.label}</div>
                     <p className="mt-1 break-words text-xs text-muted-foreground">{message(repair.code)}</p>
                   </div>
-                  <div className="flex shrink-0 flex-wrap gap-2">
-                    <Button size="sm" variant="outline" disabled={busy || detecting || Boolean(repairBusyId)} onClick={() => void repairAgent(repair.agentId, false)}>{repairBusyId === repair.agentId && <Loader2 className="size-4 animate-spin" />}{t('onboarding.retryAgent')}</Button>
-                    <Button size="sm" variant="ghost" disabled={busy || detecting || Boolean(repairBusyId)} onClick={() => void repairAgent(repair.agentId, true)}>{t('onboarding.chooseProgram')}</Button>
+                  <div className="flex w-full min-w-0 max-w-full flex-wrap gap-2 sm:w-auto">
+                    <Button size="sm" variant="outline" className="h-auto min-h-8 max-w-full whitespace-normal" disabled={busy || detecting || Boolean(repairBusyId)} onClick={() => void repairAgent(repair.agentId, false)}>{repairBusyId === repair.agentId && <Loader2 className="size-4 animate-spin" />}{t('onboarding.retryAgent')}</Button>
+                    <Button size="sm" variant="ghost" className="h-auto min-h-8 max-w-full whitespace-normal" disabled={busy || detecting || Boolean(repairBusyId)} onClick={() => void repairAgent(repair.agentId, true)}>{t('onboarding.chooseProgram')}</Button>
                     {repair.helpUrl && <Button size="icon" variant="ghost" className="size-8" aria-label={t('onboarding.installGuide')} onClick={() => void openExternalUrl(repair.helpUrl!)}><ExternalLink className="size-4" /></Button>}
                   </div>
                 </div>

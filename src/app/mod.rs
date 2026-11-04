@@ -3984,7 +3984,7 @@ impl App {
             updated_at: now,
         };
         store.templates.push(template.clone());
-        self.save_workflow_template_store(&store)?;
+        self.save_workflow_template_store(&mut store)?;
         tracing::info!(
             template_id = %template.id,
             name = %template.name,
@@ -4040,7 +4040,7 @@ impl App {
             updated_at: now,
         });
         store.last_used_template_id = Some(id);
-        self.save_workflow_template_store(&store)?;
+        self.save_workflow_template_store(&mut store)?;
         Ok(store)
     }
 
@@ -4113,7 +4113,7 @@ impl App {
         template.model_bindings = model_bindings;
         template.updated_at = now_rfc3339_like();
         store.last_used_template_id = Some(template_id.to_string());
-        self.save_workflow_template_store(&store)?;
+        self.save_workflow_template_store(&mut store)?;
         Ok(store)
     }
 
@@ -4154,7 +4154,7 @@ impl App {
         template.model_bindings = model_bindings;
         template.updated_at = now_rfc3339_like();
         store.last_used_template_id = Some(template_id.to_string());
-        self.save_workflow_template_store(&store)?;
+        self.save_workflow_template_store(&mut store)?;
         Ok(store)
     }
 
@@ -4182,7 +4182,7 @@ impl App {
         if store.last_used_template_id.as_deref() == Some(template_id) {
             store.last_used_template_id = Some("default".to_string());
         }
-        self.save_workflow_template_store(&store)?;
+        self.save_workflow_template_store(&mut store)?;
         Ok(store)
     }
 
@@ -4304,9 +4304,9 @@ impl App {
 
     fn load_workflow_template_store(&self) -> Result<WorkflowTemplateStore> {
         crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
-            let (store, changed) = self.prepare_workflow_template_store_unlocked(true)?;
+            let (mut store, changed) = self.prepare_workflow_template_store_unlocked(true)?;
             if changed {
-                self.save_workflow_template_store(&store)?;
+                self.save_workflow_template_store(&mut store)?;
             }
             Ok(store)
         })
@@ -4472,14 +4472,20 @@ impl App {
         }
     }
 
-    fn save_workflow_template_store(&self, store: &WorkflowTemplateStore) -> Result<()> {
-        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
-            crate::storage::configuration::verify_revision(
-                &self.paths.workflow_templates_file(),
-                &store.storage_revision,
-            )?;
-            write_json(&self.paths.workflow_templates_file(), store)
-        })
+    fn save_workflow_template_store(&self, store: &mut WorkflowTemplateStore) -> Result<()> {
+        let revision = crate::storage::configuration::with_configuration(
+            &self.paths.user_gold_band_dir(),
+            || {
+                crate::storage::configuration::verify_revision(
+                    &self.paths.workflow_templates_file(),
+                    &store.storage_revision,
+                )?;
+                write_json(&self.paths.workflow_templates_file(), store)?;
+                crate::storage::configuration::revision(&self.paths.workflow_templates_file())
+            },
+        )?;
+        store.storage_revision = revision;
+        Ok(())
     }
 
     pub fn task_authoring_workflow(&self, task_id: &str) -> Result<TaskAuthoringWorkflow> {
@@ -4575,7 +4581,7 @@ impl App {
         if let Some(template_id) = template_id.filter(|value| !value.trim().is_empty()) {
             store.last_used_template_id = Some(template_id);
         }
-        self.save_workflow_template_store(&store)
+        self.save_workflow_template_store(&mut store)
     }
 
     pub fn managed_agent(&self, provider: &str) -> Result<(ManagedAgentId, &ManagedAgentConfig)> {
@@ -8106,6 +8112,28 @@ mod tests {
             unreachable!();
         };
         assert_eq!(model.as_deref(), Some("gpt-5.4"));
+    }
+
+    #[test]
+    fn workflow_template_seed_returns_the_written_revision_for_immediate_save() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+
+        let mut store = app.workflow_templates().unwrap();
+        assert_eq!(
+            store.storage_revision,
+            crate::storage::configuration::revision(&app.paths.workflow_templates_file()).unwrap(),
+            "the seeded store must carry the revision written to disk"
+        );
+
+        store.last_used_template_id =
+            Some(super::DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID.to_string());
+        app.save_workflow_template_store(&mut store).unwrap();
+        assert_eq!(
+            store.storage_revision,
+            crate::storage::configuration::revision(&app.paths.workflow_templates_file()).unwrap(),
+            "every workflow template write must return the committed revision"
+        );
     }
 
     #[test]

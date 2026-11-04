@@ -669,7 +669,6 @@ fn setup_fresh_install_prepares_an_adapter_for_an_installed_agent_cli() {
         .into_iter()
         .find(|candidate| candidate.id.as_str() == "claude-acp")
         .unwrap();
-    candidate.config.executable_path = Some(npx.to_string_lossy().into());
     candidate
         .config
         .adapter
@@ -694,7 +693,7 @@ fn setup_fresh_install_discovers_standard_npm_cache_without_a_global_cli() {
     use sha2::{Digest, Sha512};
 
     let temp = tempfile::tempdir().unwrap();
-    let npx = local_program(temp.path(), "npx");
+    local_program(temp.path(), "npx");
     let npm = local_program(temp.path(), "npm");
     let cache = temp.path().join("cache with spaces");
     let npm_source = if cfg!(windows) {
@@ -713,7 +712,6 @@ fn setup_fresh_install_discovers_standard_npm_cache_without_a_global_cli() {
         .into_iter()
         .find(|candidate| candidate.id.as_str() == "codebuddy-code")
         .unwrap();
-    candidate.config.executable_path = Some(npx.to_string_lossy().into());
     candidate
         .config
         .adapter

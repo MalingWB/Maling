@@ -271,6 +271,21 @@ it('shows failed Agents with retry and executable-path repair actions', async ()
   expect(retry).toHaveBeenCalledWith('generation-1', 'broken', expect.any(Function), 'C:\\Tools\\broken-agent.exe');
 });
 
+it('keeps long localized Agent repair actions inside the narrow content width', async () => {
+  await thirdStep();
+  await act(async () => { await i18n.changeLanguage('pt-BR'); });
+  await act(async () => receive({ type: 'repair', generation: 'generation-1', agentId: 'broken', label: 'Broken Agent', code: 'setup.agent-preparation-required', helpUrl: null }));
+
+  const choose = button('Escolher programa');
+  const actions = choose.parentElement!;
+  const retry = Array.from(actions.querySelectorAll('button')).find((item) => item.textContent?.includes('Verificar novamente'))!;
+  expect(actions.className).toContain('w-full');
+  expect(actions.className).toContain('max-w-full');
+  expect(actions.className).not.toContain('shrink-0');
+  expect(choose.className).toContain('whitespace-normal');
+  expect(retry.className).toContain('whitespace-normal');
+});
+
 it('streams only saved healthy Agents into the selector and applies a reviewed request', async () => {
   await thirdStep();
   await act(async () => receive({ type: 'repair', generation: 'generation-1', agentId: 'broken', label: 'Broken Agent', code: 'setup.agent-preparation-required', helpUrl: null }));

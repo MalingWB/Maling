@@ -632,6 +632,8 @@ impl ManagedAgentConfig {
     pub fn executable_adapter(&self, agent_id: &ManagedAgentId) -> Result<AcpAdapterConfig> {
         let mut adapter = self.adapter.clone();
         adapter.apply_catalog_launch(agent_id);
+        let local_launch = crate::agent_catalog::builtin_agent(agent_id.as_str())
+            .and_then(|entry| entry.local_launch.as_ref());
         if let Some(path) = &self.executable_path {
             let path = std::path::Path::new(path);
             if !path.is_absolute() || !path.is_file() {
@@ -646,9 +648,10 @@ impl ManagedAgentConfig {
                     crate::onboarding::model::SetupError::new("setup.executable-path-invalid")
                 })?
                 .to_string();
-        } else if let Some(local) = crate::agent_catalog::builtin_agent(agent_id.as_str())
-            .and_then(|entry| entry.local_launch.as_ref())
-        {
+            if let Some(local) = local_launch {
+                adapter.args = local.args.clone();
+            }
+        } else if let Some(local) = local_launch {
             let path = crate::process::resolved_child_path(
                 adapter.env.get("PATH").map(std::ffi::OsStr::new),
             );
@@ -2337,9 +2340,10 @@ mod tests {
         TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
         catalog_agent_default_config, project_identity_config,
     };
-    use crate::agent_catalog::builtin_agent_catalog;
+    use crate::agent_catalog::{builtin_agent, builtin_agent_catalog};
     use std::collections::BTreeMap;
     use std::str::FromStr;
+    use tempfile::tempdir;
     use tracing::Level;
 
     fn custom_personalization(
@@ -3625,6 +3629,33 @@ mod tests {
             }
             expected_project_reads.extend(entry.compatible_agent_dirs.iter().cloned());
             assert_eq!(policy.project.read_dir_names, expected_project_reads);
+        }
+    }
+
+    #[test]
+    fn explicit_catalog_executable_uses_local_launch_arguments() {
+        let temp = tempdir().unwrap();
+
+        for agent_id in ["gemini", "codebuddy-code", "qwen-code"] {
+            let executable = temp.path().join(format!("{agent_id}.exe"));
+            std::fs::write(&executable, "fixture").unwrap();
+            let entry = builtin_agent(agent_id).unwrap();
+            let local = entry.local_launch.as_ref().unwrap();
+            let id = ManagedAgentId::from_str(agent_id).unwrap();
+            let mut config = ManagedAgentConfig::from_catalog(entry);
+            config.executable_path = Some(executable.to_string_lossy().into_owned());
+
+            let adapter = config.executable_adapter(&id).unwrap();
+
+            assert_eq!(
+                std::path::Path::new(&adapter.command),
+                dunce::canonicalize(&executable).unwrap()
+            );
+            assert_eq!(
+                adapter.args.as_slice(),
+                local.args.as_slice(),
+                "{agent_id} must use local ACP arguments for an explicitly selected executable"
+            );
         }
     }
 
