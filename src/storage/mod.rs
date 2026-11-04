@@ -1,3 +1,4 @@
+pub mod configuration;
 pub mod core_state;
 pub mod sqlite;
 
@@ -1084,6 +1085,13 @@ where
 }
 
 pub fn write_json<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
+    if let Some(root) = configuration::root_for_target(path) {
+        return configuration::with_configuration(&root, || write_json_unlocked(path, value));
+    }
+    write_json_unlocked(path, value)
+}
+
+fn write_json_unlocked<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
     ensure_parent_dir(path)?;
     let content = serde_json::to_vec_pretty(value)?;
     atomic_write_file(path.as_std_path(), |file| -> Result<()> {
@@ -1093,6 +1101,13 @@ pub fn write_json<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
 }
 
 pub fn read_json<T: serde::de::DeserializeOwned>(path: &Utf8Path) -> Result<T> {
+    if let Some(root) = configuration::root_for_target(path) {
+        return configuration::with_configuration(&root, || read_json_unlocked(path));
+    }
+    read_json_unlocked(path)
+}
+
+fn read_json_unlocked<T: serde::de::DeserializeOwned>(path: &Utf8Path) -> Result<T> {
     const MAX_ATTEMPTS: usize = 5;
     for attempt in 0..MAX_ATTEMPTS {
         let content = std::fs::read_to_string(path)?;
@@ -1110,15 +1125,41 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Utf8Path) -> Result<T> {
 }
 
 pub fn load_settings_file(path: &Utf8Path) -> Result<SettingsConfig> {
+    let root = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("settings parent required"))?;
+    configuration::with_configuration(root, || load_settings_file_unlocked(path))
+}
+
+fn load_settings_file_unlocked(path: &Utf8Path) -> Result<SettingsConfig> {
     if !path.exists() {
-        return Ok(SettingsConfig::default());
+        return Ok(SettingsConfig {
+            storage_revision: configuration::FileRevision::Missing,
+            ..SettingsConfig::default()
+        });
     }
     let value: serde_json::Value = read_json(path)?;
-    let (settings, migrated) = SettingsConfig::from_json_value_with_migration(value)?;
+    let (mut settings, migrated) = SettingsConfig::from_json_value_with_migration(value)?;
     if migrated {
         write_json(path, &settings)?;
     }
+    settings.storage_revision = configuration::revision(path)?;
     Ok(settings)
+}
+
+/// Returns the revision committed under the same lock, for subsequent edits or conditional rollback.
+pub fn save_settings_file(
+    path: &Utf8Path,
+    settings: &SettingsConfig,
+) -> Result<configuration::FileRevision> {
+    let root = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("settings parent required"))?;
+    configuration::with_configuration(root, || {
+        configuration::verify_revision(path, &settings.storage_revision)?;
+        write_json(path, settings)?;
+        configuration::revision(path)
+    })
 }
 
 fn should_retry_json_read(content: &str, error: &serde_json::Error) -> bool {
@@ -2005,5 +2046,34 @@ mod tests {
         assert_ne!(paths.scheduler_db_path(), paths.sqlite_db_path());
         assert_eq!(paths.scheduler_db_path(), paths.core_db_path());
         assert_eq!(paths.scheduler_db_path().file_name(), Some("core.db"));
+    }
+
+    #[test]
+    fn saved_settings_revision_supports_conditional_rollback_without_overwriting_later_edits() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = camino::Utf8Path::from_path(temp.path())
+            .unwrap()
+            .join("settings.json");
+        let mut original = super::load_settings_file(&path).unwrap();
+        let mut edited = original.clone();
+        edited.use_local_claude = Some(false);
+        original.storage_revision = super::save_settings_file(&path, &edited).unwrap();
+        super::save_settings_file(&path, &original).unwrap();
+        assert_eq!(
+            super::load_settings_file(&path).unwrap().use_local_claude,
+            None
+        );
+
+        let mut original = super::load_settings_file(&path).unwrap();
+        let mut edited = original.clone();
+        edited.use_local_claude = Some(false);
+        original.storage_revision = super::save_settings_file(&path, &edited).unwrap();
+        let mut later = super::load_settings_file(&path).unwrap();
+        later.desktop_language = Some(crate::config::DesktopLanguage::En);
+        super::save_settings_file(&path, &later).unwrap();
+        assert!(super::save_settings_file(&path, &original).is_err());
+        let actual = super::load_settings_file(&path).unwrap();
+        assert_eq!(actual.use_local_claude, Some(false));
+        assert_eq!(actual.desktop_language, later.desktop_language);
     }
 }

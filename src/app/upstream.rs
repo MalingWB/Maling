@@ -193,9 +193,7 @@ pub trait CompletionProtocolSectionResolver: Send + Sync {
 /// 位置锚定、不以裸子串匹配——附件失败清单会把用户侧文件名 / 失败原因原文插进同一区段，
 /// `completion-output` 子串出现在清单里不代表协议已冻结。M5-cg 前的旧任务冻结段对所有
 /// 节点写入了通用协议正文（且协议在首块），同一判据仍正确识别。
-fn frozen_carries_completion_protocol(
-    sections: &[crate::provider::PromptHiddenSection],
-) -> bool {
+fn frozen_carries_completion_protocol(sections: &[crate::provider::PromptHiddenSection]) -> bool {
     sections.iter().any(|section| {
         completion_protocol_document_openers()
             .iter()
@@ -206,21 +204,24 @@ fn frozen_carries_completion_protocol(
 /// 协议文档开头行（zh / en 模板空上下文渲染后取首行；协议为恒定文案无变量），惰性计算一次。
 fn completion_protocol_document_openers() -> &'static [String] {
     static OPENERS: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
-        [crate::config::DesktopLanguage::ZhCn, crate::config::DesktopLanguage::En]
-            .iter()
-            .map(|&language| {
-                let template = crate::prompts::prompt_by_language(
-                    language,
-                    crate::prompts::RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
-                );
-                crate::prompts::render(template, serde_json::json!({}))
-                    .expect("remote task completion protocol renders")
-                    .lines()
-                    .next()
-                    .unwrap_or_default()
-                    .to_string()
-            })
-            .collect()
+        [
+            crate::config::DesktopLanguage::ZhCn,
+            crate::config::DesktopLanguage::En,
+        ]
+        .iter()
+        .map(|&language| {
+            let template = crate::prompts::prompt_by_language(
+                language,
+                crate::prompts::RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
+            );
+            crate::prompts::render(template, serde_json::json!({}))
+                .expect("remote task completion protocol renders")
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
     });
     &OPENERS
 }

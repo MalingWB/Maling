@@ -98,7 +98,6 @@ import {
 import { Breadcrumbs } from './components/Breadcrumbs';
 import { Button } from '@/components/ui/button';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { WindowCloseCoordinator } from '@/components/WindowCloseCoordinator';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ReleaseNotesDialog } from '@/components/update/ReleaseNotesDialog';
 import { UpdateDialog } from '@/components/update/UpdateDialog';
@@ -2643,7 +2642,6 @@ export function App() {
       onConversationAddWorkspace={shellCommands.onConversationAddWorkspace}
       onConversationRemoveWorkspace={shellCommands.onConversationRemoveWorkspace}
     >
-      <WindowCloseCoordinator platform={bootstrap?.platform} />
       <AlertDialog open={Boolean(error)} onOpenChange={(open) => { if (!open) setError(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>

@@ -531,12 +531,11 @@ async fn execute_complete_run(
     // 映射：映射已落 = 他方已终态收尾 → 本作业整体退出（终态上报/历史/刷新均由认领方完成），
     // 防对已终态任务二次 complete。复验后、认领前的窗口仍由 begin_completion 兜底。
     let mapping_alive = shared_multica_state(app).is_some_and(|shared| {
-        MulticaRuntimeState::lock_degraded(&shared)
-            .is_some_and(|guard| {
-                guard
-                    .find_active_run_by_local(&run.local_task_id, &run.local_run_id)
-                    .is_some()
-            })
+        MulticaRuntimeState::lock_degraded(&shared).is_some_and(|guard| {
+            guard
+                .find_active_run_by_local(&run.local_task_id, &run.local_run_id)
+                .is_some()
+        })
     });
     if !mapping_alive {
         info!(task = %remote_task_id, "multica complete-run job skip: run already finalized");
@@ -601,8 +600,9 @@ async fn execute_complete_run(
                 log_workflow_completion_delivery(remote_task_id, issue, &scan.attempt_probe);
             }
             let designated = shared_multica_state(app).is_some_and(|shared| {
-                MulticaRuntimeState::lock_degraded(&shared)
-                    .is_some_and(|guard| guard.is_designated_output_node(&run.local_run_id, node_id))
+                MulticaRuntimeState::lock_degraded(&shared).is_some_and(|guard| {
+                    guard.is_designated_output_node(&run.local_run_id, node_id)
+                })
             });
             let scanned_block = scan.attempt_probe.block;
             let stripped = issue.is_some() && !designated && scanned_block.is_some();
@@ -1447,10 +1447,16 @@ pub(crate) fn apply_observed_rerun_retirements(
 /// 残余边界（诚实标注）：本机整个离线期间错过 pending 观察窗口（后继从排队到终态全程未见）
 /// 时源行保留——与修复前行为一致，仅显示过时行，不产生错误数据。
 pub(crate) fn drain_observed_rerun_retirements<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    let Some(shared) = app.try_state::<SharedMulticaState>().map(|s| s.inner().clone()) else {
+    let Some(shared) = app
+        .try_state::<SharedMulticaState>()
+        .map(|s| s.inner().clone())
+    else {
         return;
     };
-    let Some(context) = app.try_state::<DesktopState>().and_then(|s| s.context().ok()) else {
+    let Some(context) = app
+        .try_state::<DesktopState>()
+        .and_then(|s| s.context().ok())
+    else {
         return;
     };
     let observed: std::collections::HashSet<String> = match shared.lock() {
@@ -1466,7 +1472,9 @@ pub(crate) fn drain_observed_rerun_retirements<R: tauri::Runtime>(app: &tauri::A
         Ok(removed) => {
             // 排空成功（含 0 命中）：只清本批观察，保留排空期间新记入的观察（retain 而非 clear）。
             if let Ok(mut guard) = shared.lock() {
-                guard.observed_rerun_sources.retain(|id| !observed.contains(id));
+                guard
+                    .observed_rerun_sources
+                    .retain(|id| !observed.contains(id));
             }
             if removed > 0 {
                 emit_remote_tasks_updated(app);

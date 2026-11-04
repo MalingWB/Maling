@@ -46,6 +46,7 @@ import { AvatarSettings } from '@/components/settings/AvatarSettings';
 import { WallpaperSettings } from '@/components/settings/WallpaperSettings';
 import { ImIntegrationSettings } from '@/components/settings/ImIntegrationSettings';
 import { BrowserSettings } from '@/components/settings/BrowserSettings';
+import { OnboardingSettings } from '@/components/settings/OnboardingSettings';
 import { RemoteImageTrustSettings } from '@/components/settings/RemoteImageTrustSettings';
 import { PromptQueueSettings } from '@/components/settings/PromptQueueSettings';
 import { UpdateDownloadProgress } from '@/components/update/UpdateDownloadProgress';
@@ -336,6 +337,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   onSave(appearance, personalization, language, useLocalClaude, verboseLogging, next);
                 }}
               />
+            </SettingsSection>
+            <SettingsSection title={t('onboarding.settingsTitle')} divided>
+              <OnboardingSettings />
             </SettingsSection>
             {!readOnly && <SettingsSection title={t('scheduled.settings.title')} divided>
               <ScheduledRuntimeSettings />

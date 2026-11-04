@@ -28,10 +28,12 @@ const iconDir = join(repoRoot, 'web', 'public', 'agent-icons');
 const overrides = {
   'claude-acp': {
     label: 'Claude', iconKey: 'claude', primaryAgentDir: '.claude', compatibleAgentDirs: [],
+    localCommand: 'claude-agent-acp', installedCommand: 'claude',
     supportsSystemPrompt: true,
   },
   'codex-acp': {
     label: 'Codex', iconKey: 'codex', primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'],
+    localCommand: 'codex-acp', installedCommand: 'codex',
   },
   cursor: {
     label: 'Cursor', iconKey: 'cursor', command: 'cursor-agent', args: ['acp'],
@@ -39,9 +41,11 @@ const overrides = {
   },
   gemini: {
     label: 'Gemini', iconKey: 'gemini', primaryAgentDir: '.gemini', compatibleAgentDirs: ['.agents'],
+    localCommand: 'gemini',
   },
   'codebuddy-code': {
     label: 'CodeBuddy', iconKey: 'codebuddy-code', primaryAgentDir: '.codebuddy', compatibleAgentDirs: [],
+    localCommand: 'codebuddy',
   },
   goose: {
     label: 'Goose', iconKey: 'goose', command: 'goose', args: ['acp'],
@@ -49,6 +53,7 @@ const overrides = {
   },
   'qwen-code': {
     label: 'Qwen Code', iconKey: 'qwen-code', primaryAgentDir: '.qwen', compatibleAgentDirs: [],
+    localCommand: 'qwen',
   },
   opencode: {
     label: 'OpenCode', iconKey: 'opencode', command: 'opencode', args: ['acp'],
@@ -64,6 +69,7 @@ const overrides = {
   },
   'pi-acp': {
     label: 'Pi', iconKey: 'pi-acp', primaryAgentDir: '.pi/agent',
+    localCommand: 'pi-acp', installedCommand: 'pi',
     projectPrimaryAgentDir: '.pi', compatibleAgentDirs: ['.agents'],
   },
 };
@@ -118,6 +124,8 @@ export function buildAgentCatalog(registry, fetchedAt = new Date().toISOString()
       iconUrl: agent.icon,
       command: override.command ?? distribution.command,
       args: override.args ?? distribution.args,
+      localLaunch: override.localCommand ? { command: override.localCommand, args: agent.distribution?.npx?.args ?? [] } : null,
+      installedCommand: override.installedCommand ?? null,
       env: distribution.env,
       primaryAgentDir: override.primaryAgentDir ?? null,
       projectPrimaryAgentDir: override.projectPrimaryAgentDir ?? null,

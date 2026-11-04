@@ -2682,6 +2682,8 @@ fn ensure_no_active_acp_prompts_for_provider(agent_id: &ManagedAgentId) -> Comma
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentInput {
+    #[serde(default)]
+    pub executable_path: Option<String>,
     pub display_name: String,
     #[serde(default)]
     pub icon: String,
@@ -2704,7 +2706,7 @@ pub struct ManagedAgentInput {
 }
 
 impl ManagedAgentInput {
-    fn into_config_for_agent(
+    pub(crate) fn into_config_for_agent(
         mut self,
         agent_id: &ManagedAgentId,
         system_prompt_delivery: gold_band::config::SystemPromptDelivery,
@@ -2753,6 +2755,7 @@ impl ManagedAgentInput {
             }
         }
         Ok(ManagedAgentConfig {
+            executable_path: self.executable_path,
             adapter: AcpAdapterConfig {
                 command,
                 args: self.args,
@@ -2782,7 +2785,7 @@ fn system_prompt_delivery_for_new_agent(
         .unwrap_or_default()
 }
 
-fn default_icon_for_agent(agent_id: &ManagedAgentId) -> String {
+pub(crate) fn default_icon_for_agent(agent_id: &ManagedAgentId) -> String {
     gold_band::config::catalog_agent_default_config(agent_id.as_str())
         .map(|config| config.icon)
         .unwrap_or_else(|| DEFAULT_CUSTOM_AGENT_ICON.to_string())
@@ -2924,6 +2927,9 @@ pub fn create_agent(
     let config_commit_guard = state
         .agent_config_diagnostic_commit_guard()
         .map_err(command_error)?;
+    app_handle
+        .state::<crate::onboarding::SetupController>()
+        .invalidate_agent(&agent_id);
     let app = state.app().map_err(command_error)?;
     let settings = app
         .save_managed_agent(
@@ -2970,6 +2976,9 @@ pub fn update_agent(
     let config_commit_guard = state
         .agent_config_diagnostic_commit_guard()
         .map_err(command_error)?;
+    app_handle
+        .state::<crate::onboarding::SetupController>()
+        .invalidate_agent(&agent_id);
     let app = state.app().map_err(command_error)?;
     let settings = app
         .save_managed_agent(
@@ -2992,6 +3001,7 @@ pub fn update_agent(
 
 #[tauri::command]
 pub fn delete_agent(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     agent_type: String,
 ) -> CommandResult<AgentRegistryVm> {
@@ -3002,6 +3012,9 @@ pub fn delete_agent(
     let _config_commit_guard = state
         .agent_config_diagnostic_commit_guard()
         .map_err(command_error)?;
+    app_handle
+        .state::<crate::onboarding::SetupController>()
+        .invalidate_agent(&agent_id);
     let app = state.app().map_err(command_error)?;
     let settings = app.remove_managed_agent(&agent_id).map_err(command_error)?;
     state
@@ -10138,6 +10151,20 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
 }
 
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
+    if let Some(error) = error.downcast_ref::<gold_band::onboarding::model::SetupError>() {
+        return CommandErrorVm::new(error.code, error.params.clone());
+    }
+    if let Some(error) =
+        error.downcast_ref::<gold_band::storage::configuration::ConfigurationError>()
+    {
+        let value = serde_json::to_value(error).unwrap_or_default();
+        return CommandErrorVm::new(
+            value["code"]
+                .as_str()
+                .unwrap_or("setup.configuration-conflict"),
+            value["params"].clone(),
+        );
+    }
     if error
         .downcast_ref::<gold_band::acp::client::ModelConfigUnavailable>()
         .is_some()
@@ -13286,6 +13313,7 @@ mod tests {
         let template_authoring = bound_authoring("agent-a", "template-workflow");
         let dynamic_template_authoring = dynamic_authoring("agent-a", "template-dynamic-workflow");
         let templates = WorkflowTemplateStore {
+            storage_revision: Default::default(),
             version: gold_band::domain::VERSION.to_string(),
             last_used_template_id: None,
             last_created_workflow: None,
@@ -13488,6 +13516,7 @@ mod tests {
         let usage = collect_agent_binding_usage(
             &ManagedAgentId::from_str("agent-a").unwrap(),
             &WorkflowTemplateStore {
+                storage_revision: Default::default(),
                 version: gold_band::domain::VERSION.to_string(),
                 last_used_template_id: None,
                 last_created_workflow: None,
@@ -14418,6 +14447,7 @@ mod tests {
     #[test]
     fn managed_agent_input_preserves_user_editable_fields_and_uses_internal_capability() {
         let input = ManagedAgentInput {
+            executable_path: None,
             display_name: "Claude Custom".to_string(),
             icon: String::new(),
             command: "  npx  ".to_string(),
@@ -14494,6 +14524,7 @@ mod tests {
     #[test]
     fn managed_agent_input_requires_display_name_and_command_at_the_command_boundary() {
         let missing_name = ManagedAgentInput {
+            executable_path: None,
             display_name: "  ".to_string(),
             icon: String::new(),
             command: "agent-acp".to_string(),
@@ -14513,6 +14544,7 @@ mod tests {
         assert_eq!(missing_name.code, "agent.display-name-required");
 
         let missing_command = ManagedAgentInput {
+            executable_path: None,
             display_name: "Custom Agent".to_string(),
             icon: String::new(),
             command: "  ".to_string(),

@@ -3316,8 +3316,7 @@ pub fn provider_from_agent(
     acp_raw_target_size_bytes: u64,
     runtime_policy: client::AcpRuntimePolicy,
 ) -> Result<Box<dyn ProviderAdapter>> {
-    let mut adapter = config.adapter.clone();
-    adapter.apply_catalog_launch(agent_id);
+    let adapter = config.executable_adapter(agent_id)?;
     Ok(Box::new(
         AcpProvider::new(
             agent_id.as_str(),
