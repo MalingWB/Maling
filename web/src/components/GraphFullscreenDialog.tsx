@@ -38,7 +38,11 @@ export function GraphFullscreenDialog({
           backgroundImage: 'none',
           backdropFilter: 'none',
         }}
-        className="flex h-screen w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none border-0 p-0 sm:max-w-none [&>button]:z-10"
+        // The default zoom-in-95 open animation frames this viewport-sized
+        // layer against the dark overlay (black edges during the animation,
+        // amplified by slow software rendering); a plain fade keeps the open
+        // transition free of the black flash.
+        className="flex h-screen w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none border-0 p-0 sm:max-w-none data-[state=open]:zoom-in-100 data-[state=closed]:zoom-out-100 [&>button]:z-10"
         aria-describedby={undefined}
       >
         <DialogHeader className="sr-only">

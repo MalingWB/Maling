@@ -44,6 +44,11 @@ describe('GraphFullscreenDialog surface', () => {
     expect(props.style?.backgroundColor).toBe('var(--background)');
     expect(props.style?.backgroundImage).toBe('none');
     expect(props.style?.backdropFilter).toBe('none');
+    // Fade-only open/close: the default zoom-in-95 animation frames this
+    // viewport-sized layer against the dark overlay, flashing black edges.
+    const cls = String(props.className);
+    expect(cls).toContain('data-[state=open]:zoom-in-100');
+    expect(cls).not.toContain('zoom-in-95');
     React.act(() => root.unmount());
   });
 });

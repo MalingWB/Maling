@@ -1352,7 +1352,19 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
           <DialogFooter><Button onClick={() => closeValidationDialog(false)}>{t('workflowEditor.validationDialogClose')}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
-      <div ref={setEditorContainerRef} className={cn('@container/workflow-editor h-[clamp(520px,calc(100dvh-11rem),760px)] min-h-0', className)} data-workflow-editor-layout={isCompact ? 'compact' : 'split'}>
+      <div
+        ref={setEditorContainerRef}
+        className={cn(
+          '@container/workflow-editor h-[clamp(520px,calc(100dvh-11rem),760px)] min-h-0',
+          // Native fullscreen paints the element over a user-agent black
+          // canvas: without its own background and unclamped height the
+          // editor would float as a strip on black. The fullscreen pseudo
+          // class restores the app surface and fills the screen.
+          '[:fullscreen]:h-screen [:fullscreen]:max-h-none [:fullscreen]:bg-background [:fullscreen]:text-foreground',
+          className,
+        )}
+        data-workflow-editor-layout={isCompact ? 'compact' : 'split'}
+      >
         {isCompact ? (
           <div className="flex size-full min-h-0 flex-col gap-2">
             <Tabs value={compactPane} onValueChange={(value) => setCompactPane(value as 'canvas' | 'inspector')} className="shrink-0">
