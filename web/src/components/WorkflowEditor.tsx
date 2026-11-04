@@ -518,9 +518,10 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     window.addEventListener('keydown', exitOnEscape, true);
     const previousBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    // The conversation workspace keeps the center panel in a z-10 stacking
-    // context (right dock z-10 later sibling, separators z-20); the global
-    // rule keyed on this attribute lifts the panel — and the fullscreen
+    // The conversation workspace renders this editor as a right-dock
+    // resource panel (#workspace-right, a z-10 stacking context with the
+    // center panel and separators as higher-stacking siblings); the global
+    // rule keyed on this attribute lifts the dock — and the fullscreen
     // overlay inside it — above every shell sibling while fullscreen.
     document.documentElement.setAttribute('data-workspace-editor-fullscreen', '');
     return () => {
@@ -1117,6 +1118,19 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     return viewport;
   }, [flowInstance, graphLayout, layoutDirection]);
 
+  // A fullscreen toggle resizes the canvas without changing the layout; the
+  // stable-viewport guard would otherwise carry the previous canvas's framing
+  // (a narrow-dock viewport parked in the corner of the fullscreen surface,
+  // and back on exit). Like a direction flip, the toggle is an explicit
+  // framing action: reset the guard and let the fit effect reframe the same
+  // layout for the resized canvas. Must run before the fit effect below.
+  const previousFullscreenRef = useRef(false);
+  useEffect(() => {
+    if (previousFullscreenRef.current === editorFullscreen) return;
+    previousFullscreenRef.current = editorFullscreen;
+    hasStableViewportRef.current = false;
+  }, [editorFullscreen]);
+
   // Only the first finished layout fits; later relayouts keep the user's viewport.
   // A pending direction flip must not fit the stale pre-flip bounds: wait for a
   // layout whose direction matches, otherwise the one-shot fit consumes the old
@@ -1129,7 +1143,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     viewportRef.current = viewport;
     hasStableViewportRef.current = true;
     setViewportRevision((revision) => revision + 1);
-  }, [fitLayoutViewport, graphLayout, layoutDirection]);
+  }, [editorFullscreen, fitLayoutViewport, graphLayout, layoutDirection]);
 
   const handleMoveEnd = useCallback((_: MouseEvent | TouchEvent | null, viewport: Viewport) => {
     viewportRef.current = viewport;

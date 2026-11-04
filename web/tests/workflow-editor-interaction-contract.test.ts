@@ -455,15 +455,28 @@ describe('workflow editor interaction contracts', () => {
     expect(editorSource).toMatch(/\{editorFullscreen \? null : \(\s*<CardHeader/);
   });
 
-  it('lifts the workspace center panel above the shell while fullscreen', () => {
-    // The conversation workspace traps the center panel in a z-10 stacking
-    // context — the right dock (z-10, later sibling) and both resize
-    // separators (z-20) would paint over the fullscreen overlay that lives
-    // inside it. While fullscreen, the editor marks the document root and a
-    // global rule raises #workspace-center above every shell sibling; the
-    // overlay portal host (z-50, after #root) still shades it for dialogs.
+  it('lifts the right workspace dock above the shell while fullscreen', () => {
+    // The editor mounts as a right-dock resource panel (RightWorkspaceDock
+    // renders ConversationRunWorkspaceResourcePanel), so the fullscreen
+    // overlay lives inside #workspace-right — a z-10 stacking context whose
+    // siblings (center panel z-10, separators z-20) would paint over it.
+    // While fullscreen, the editor marks the document root and a global rule
+    // raises #workspace-right above every shell sibling; the overlay portal
+    // host (z-50, after #root) still shades it for dialogs.
     expect(editorSource).toContain('data-workspace-editor-fullscreen');
-    expect(stylesSource).toContain(':root[data-workspace-editor-fullscreen] #workspace-center');
+    expect(stylesSource).toContain(':root[data-workspace-editor-fullscreen] #workspace-right');
+    expect(stylesSource).not.toContain(':root[data-workspace-editor-fullscreen] #workspace-center');
+  });
+
+  it('refits the viewport when fullscreen toggles', () => {
+    // The stable-viewport guard means a canvas resize never reframes the
+    // graph: entering fullscreen carried the narrow dock's viewport into the
+    // huge canvas, parking the graph in a corner. A fullscreen toggle is an
+    // explicit framing action (same contract as a direction flip): the guard
+    // resets and the layout is refitted for the resized canvas on both
+    // enter and exit.
+    expect(editorSource).toContain('previousFullscreenRef.current === editorFullscreen');
+    expect(editorSource).toMatch(/\}, \[editorFullscreen, fitLayoutViewport, graphLayout, layoutDirection\]\);/);
   });
 
   it('exits the fullscreen overlay on Escape while fullscreen stays editor-local state', () => {
