@@ -503,6 +503,16 @@
     @apply h-screen;
   }
 
+  /* The conversation workspace traps its center panel in a z-10 stacking
+     context: the right dock (z-10, later sibling) and both resize separators
+     (z-20) would paint over a fullscreen editor overlay living inside the
+     panel. While an editor is fullscreen the document root is marked and the
+     panel rises above every shell sibling; dialogs portaled to the overlay
+     host (z-50, after #root) still shade it. */
+  :root[data-workspace-editor-fullscreen] #workspace-center {
+    z-index: 40;
+  }
+
   #gold-band-overlay-portal-host {
     overflow: visible;
     contain: none;

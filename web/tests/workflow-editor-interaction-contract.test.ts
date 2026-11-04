@@ -437,6 +437,17 @@ describe('workflow editor interaction contracts', () => {
     expect(editorSource).not.toContain('fullscreenchange');
   });
 
+  it('lifts the workspace center panel above the shell while fullscreen', () => {
+    // The conversation workspace traps the center panel in a z-10 stacking
+    // context — the right dock (z-10, later sibling) and both resize
+    // separators (z-20) would paint over the fullscreen overlay that lives
+    // inside it. While fullscreen, the editor marks the document root and a
+    // global rule raises #workspace-center above every shell sibling; the
+    // overlay portal host (z-50, after #root) still shades it for dialogs.
+    expect(editorSource).toContain('data-workspace-editor-fullscreen');
+    expect(stylesSource).toContain(':root[data-workspace-editor-fullscreen] #workspace-center');
+  });
+
   it('exits the fullscreen overlay on Escape while fullscreen stays editor-local state', () => {
     // The editor is a stateful work surface: fullscreen drives the editor
     // container itself (toolbars, inspector and drafts travel along)

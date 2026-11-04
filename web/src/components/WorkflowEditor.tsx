@@ -518,9 +518,15 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     window.addEventListener('keydown', exitOnEscape, true);
     const previousBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    // The conversation workspace keeps the center panel in a z-10 stacking
+    // context (right dock z-10 later sibling, separators z-20); the global
+    // rule keyed on this attribute lifts the panel — and the fullscreen
+    // overlay inside it — above every shell sibling while fullscreen.
+    document.documentElement.setAttribute('data-workspace-editor-fullscreen', '');
     return () => {
       window.removeEventListener('keydown', exitOnEscape, true);
       document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.removeAttribute('data-workspace-editor-fullscreen');
     };
   }, [editorFullscreen]);
   const toggleEditorFullscreen = useCallback(() => {
