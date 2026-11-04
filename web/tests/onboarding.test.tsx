@@ -172,6 +172,21 @@ it('does not classify an interrupted Agent scan as an empty result', async () =>
   expect(host.textContent).toContain('Agent detection failed');
 });
 
+it('shows a newer unverified version instead of telling the user to downgrade', async () => {
+  const report = {
+    runtimeReady: false,
+    checks: [{ tool: 'npm' as const, status: 'unverified' as const, version: '13.0.0', executablePath: 'C:\\npm\\npm.cmd', nodeExecutablePath: null, error: { code: 'setup.runtime-version-unverified', params: { tool: 'npm', version: '13.0.0' } } }],
+  };
+  vi.spyOn(api, 'environment').mockResolvedValue(report);
+  await act(async () => root.render(<OnboardingPage api={api} status={status} onDone={done} onExit={() => {}} initialStep={2} />));
+  expect(api.start).not.toHaveBeenCalled();
+  expect(host.textContent).toContain('npm 13.0.0');
+  expect(host.textContent).toContain('Unverified version');
+  expect(host.textContent).toContain('newer than the verified range');
+  expect(host.textContent).not.toContain('Unsupported version');
+  expect(button('Preview changes').disabled).toBe(true);
+});
+
 it('rechecks a blocked runtime once and resumes Agent detection while rejecting the old run', async () => {
   const environment = vi.spyOn(api, 'environment');
   await thirdStep(); const old = receive;

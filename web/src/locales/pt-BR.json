@@ -3361,6 +3361,7 @@
       "ready": "Pronto",
       "missing": "Não instalado",
       "unsupported": "Versão incompatível",
+      "unverified": "Versão não verificada",
       "incompatible": "Ambiente inconsistente",
       "failed": "Falha na verificação",
       "timeout": "Tempo esgotado",
@@ -3401,6 +3402,7 @@
     "environmentHelp": {
       "missing": "Esta ferramenta não foi encontrada. Siga o guia oficial de instalação e verifique novamente.",
       "unsupported": "Instale uma versão compatível seguindo o guia oficial e verifique novamente.",
+      "unverified": "Esta versão é mais recente que a faixa verificada e ainda não foi validada. Use uma versão recomendada ou aguarde o suporte e verifique novamente.",
       "incompatible": "A combinação de ambiente detectada é incompatível. Confira os caminhos de instalação e tente novamente.",
       "failed": "Não foi possível concluir a verificação. Confira o caminho do executável, as permissões de acesso e a instalação e tente novamente.",
       "timeout": "A verificação excedeu o tempo limite. Tente novamente; se persistir, confira se a ferramenta inicia corretamente.",

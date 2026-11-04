@@ -3361,6 +3361,7 @@
       "ready": "Listo",
       "missing": "No instalado",
       "unsupported": "Versión no compatible",
+      "unverified": "Versión no verificada",
       "incompatible": "Entorno inconsistente",
       "failed": "Error de comprobación",
       "timeout": "Tiempo agotado",
@@ -3401,6 +3402,7 @@
     "environmentHelp": {
       "missing": "No se encontró esta herramienta. Sigue la guía oficial de instalación y vuelve a comprobar.",
       "unsupported": "Instala una versión compatible siguiendo la guía oficial y vuelve a comprobar.",
+      "unverified": "Esta versión es más reciente que el rango verificado y aún no se ha validado. Usa una versión recomendada o espera al soporte y vuelve a comprobar.",
       "incompatible": "La combinación de entorno detectada es incompatible. Revisa las rutas de instalación y vuelve a intentarlo.",
       "failed": "No se pudo completar la comprobación. Revisa la ruta del ejecutable, los permisos de acceso y la instalación y vuelve a intentarlo.",
       "timeout": "Se agotó el tiempo de comprobación. Reintenta; si persiste, comprueba si la herramienta se inicia correctamente.",

@@ -34,7 +34,7 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 | --- | --- | --- |
 | Git | 最低 `2.36.0` | 复用 `src/git.rs::MINIMUM_SUPPORTED_GIT_VERSION`，这是项目能力门槛，不代表该旧版本仍获官方安全维护 |
 | Node.js | 初版候选支持 `>=22.20.0 <23` 或 `>=24.0.0 <25` | 22、24 是调研日的 LTS 系列；采用 22.20 起点参考其 OpenSSL 升级，最终补丁下限由发布兼容矩阵收紧 |
-| npm | 初版候选最低 `10.9.0`，验证 10.x／11.x | 同时检查实际 npm 的 Node.js engines，以及所选 npm ACP 包的 engines；此数值是产品候选基线，并非上游统一要求 |
+| npm | 初版候选最低 `10.9.0`，验证 10.x／11.x／12.x | 同时检查实际 npm 的 Node.js engines，以及所选 npm ACP 包的 engines；此数值是产品候选基线，并非上游统一要求。npm 12 由 engines 限定 Node `^22.22.2` 或 `^24.15.0` 以上，组合不满足时按 engines 不兼容报告 |
 | 推荐新装 | Node.js 24 LTS 与其配套 npm | 调研日官方索引列出 `24.22.0`，附带 npm `11.19.1`；发版重新核实，不把“最新版”写进业务逻辑 |
 | npx | 必须存在且可启动 | 检查与选定 Node/npm 的执行环境一致，不通过运行远程包做版本探测 |
 
@@ -43,6 +43,10 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 版本策略集中在打包的 `configs/onboarding-environment-policy.json`，由状态 IPC 返回只读摘要；Git 门槛引用现有 Git 领域常量，不复制第二份。包含允许的 major 范围、最低版本、推荐安装版本、官方帮助目标和策略版本。离线检测使用打包策略，联网与否不改变版本比较结果。未知新 major 显示“未验证版本”，提供推荐版本，不能静默判为兼容。
 
 版本比较复用已有 Rust `semver`，不按字符串比较；正式门槛不接受预发布版本。npm engines 的范围语法在构建兼容矩阵时使用 npm 生态的标准解析器处理，不能假定它与 Rust 版本范围语法完全相同。安装器下载成功不等于检测成功，必须重新解析实际使用的本机工具链。
+
+2026-11-04 npm 12 策略复核：npm 12.2.1 是官方 `latest`，engines 为 `^22.22.2 || ^24.15.0 || >=26.0.0`，`npx -y` 仍可用且 `_npx` 缓存布局未变，因此加入已验证 major 窗口。窗口只声明 npx 行为契约，不承担 Node 兼容性判断；Node 组合兼容仍由实际 npm 包的 engines 与实际 Node 版本交叉校验。不改成单纯的 `>=10.9` 下限，因为未验证的更高 major 会在发布第一天被静默接受，而 Agent 启动依赖 npx 的 exec 语义。
+
+2026-11-04 版本状态区分：`EnvironmentStatus` 增加 `unverified`，与 `unsupported` 分离。低于最小已验证 major、落在已验证 major 的接收区间外或预发布版本仍为 `unsupported`；高于或不属于任何已验证 major 的新版本为 `unverified`，返回 `setup.runtime-version-unverified`，提示使用推荐版本或等待后续支持。两类状态都阻断 `runtimeReady`，不会静默判为兼容；`verifiedMajors` 与 `ranges` 同属打包策略，并以测试固定每个区间的下界 major 已登记。
 
 ## 3. 现状、根因与复用边界
 
@@ -277,7 +281,7 @@ DefaultExecutionProfile
 | 接口 | 输入 | 返回／边界 |
 | --- | --- | --- |
 | `get_onboarding_status` | 无 | 状态、策略摘要、渠道；不运行 Doctor、不读历史或模板正文 |
-| `check_setup_environment` / `cancel_setup_environment` | request ID | 返回并保留 4 项检查的完整报告；同页主动重测替换旧请求与报告，退出引导释放；每项最多 5 秒 |
+| `check_setup_environment` / `cancel_setup_environment` | request ID | 返回并保留 4 项检查的完整报告；同页主动重测替换旧请求与报告，退出引导释放；原生 `git`／`node` 每项最多 5 秒，`npm`／`npx` launcher 每项最多 15 秒 |
 | `skip_setup_git` | 当前引导意图 | 更新 skip 意图并返回权威状态；没有 npm skip 接口 |
 | `start_setup_agent_detection` / `cancel_setup_detection` | after cursor、refresh、事件 channel／generation | 校验本次后端环境报告，不启动环境命令；编排只读发现、有界诊断和成功后自动配置；不创建或迁移模板与默认配置；逐项返回正式健康 Agent 与进度 |
 | `discovery::candidates`（内部） | 已配置实例、after cursor | 11 个 Catalog 候选与每批至多 50 个自定义实例；当前产品验收规模不超过 50 个自定义 Agent，after cursor 只是有界防御边界；不隐式下载或登录 |
@@ -292,7 +296,7 @@ DefaultExecutionProfile
 错误采用结构化 enum，IPC 返回 `{code, params}`，前端将其映射为本地化 `msg` 与动作；后端不返回对客中文／英文句子。建议错误覆盖：
 
 ```text
-setup.runtime-missing / setup.runtime-version-unsupported
+setup.runtime-missing / setup.runtime-version-unsupported / setup.runtime-version-unverified
 setup.runtime-incompatible / setup.probe-timeout
 setup.agent-auth-required / setup.agent-protocol-unsupported
 setup.model-config-invalid / setup.preview-stale
@@ -358,7 +362,7 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 ### 11.2 性能预算与测量范围
 
 - 引导空壳与 loading 在触发后 100ms 内可见；状态 IPC 不等待外部进程，参考验收机 p95 ≤200ms。
-- 本地版本命令每项建议 5 秒截止时间，结果立即投影；异常慢命令不会阻塞其它项。
+- 本地版本命令按工具类别使用有界截止时间：原生 `git`／`node` 5 秒，经 Windows shim 冷启动的 `npm`／`npx` 15 秒；结果立即投影，异常慢命令不会阻塞其它项。两类预算必须来自同一环境策略，不得在探测实现里按名称特判。
 - Doctor 沿用既有 3 分钟总预算和 4 个全局并发上限，不强行缩短为几秒；单个慢 Agent 不影响可见列表和其它可用选择。
 - 全局发现进程数量有界，不启动 11 个远程 npm 下载；首屏检测网络请求为 0。
 - 以 1,000 个用户模板、约 10 MiB 模板存储作为初始压力样本，预览／提交在后台执行，记录解析、校验、写入、锁持有时间；参考机目标分别 ≤1 秒。若超标，先拆分纯读取／维护路径或内置模板投影，不先加缓存。
@@ -367,6 +371,8 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 2026-10-21 Windows release 存储样本：1,000 个用户模板、14,419,075 bytes，预览 146ms、应用 514ms，均通过各 1 秒预算。测试使用注入的环境健康结果，外部进程、UI p95、独立解析／锁持有时间及跨平台数据尚未作为此结果验收；详见开发计划中的命令和范围说明。
 
 2026-11-03 将模板初始化与升级从 Agent 检测入口移到无副作用的内存预览后，Windows release 复测 1,000 个用户模板、14,419,075 bytes：预览 205ms、应用 426ms，均通过各 1 秒预算。Debug 构建同一样本预览 796ms，说明只读预览已避开整份模板的持久化差异序列化；应用仍只在最终确认时执行完整迁移、校验与两文件提交。测试继续使用注入的环境健康结果，不覆盖外部进程、UI p95、独立锁持有时间及跨平台数据。
+
+2026-11-04 超时预算复核：统一 5 秒预算把“工具不可用”和“Windows `npm.cmd`／`npx.cmd` 冷启动较慢”混为一类，属于探测策略的数据模型缺陷。本机实测 `npm.cmd --version` 约 6.8 秒，真实探针因此稳定把可用工具判为超时；改为按工具类别拆分 policy 预算后，`npm`／`npx` 恢复 ready。该调整不新增自动重试、缓存或后台轮询，最坏失败等待仅在 `npm`／`npx` 单项从 5 秒增至 15 秒，四项仍并行且逐项渐进展示，正常路径耗时不变。
 
 评审结论：主要风险来自外部进程冷启动、npx 按需下载和已有单文件模板存储，不是三步 UI 本身。自动诊断只覆盖已准备的本地候选，沿用有限并发且成功一项展示一项；每个新 Agent 至多一次配置写入，重复成功只更新诊断，不重复注册。保持首屏隔离与短提交边界，不引入长驻预热进程、无界缓存或额外轮询。
 

@@ -4,7 +4,9 @@ use std::sync::Mutex;
 struct FixtureRunner {
     results: Vec<(EnvironmentTool, Option<ProbeOutput>)>,
     failure: Option<(EnvironmentTool, EnvironmentStatus)>,
+    minimum_timeouts: Vec<(EnvironmentTool, Duration)>,
     calls: Mutex<Vec<EnvironmentTool>>,
+    timeouts: Mutex<Vec<(EnvironmentTool, Duration)>>,
 }
 
 impl FixtureRunner {
@@ -53,7 +55,9 @@ impl FixtureRunner {
                 (EnvironmentTool::Npx, Some(output(EnvironmentTool::Npx))),
             ],
             failure: None,
+            minimum_timeouts: vec![],
             calls: Mutex::new(vec![]),
+            timeouts: Mutex::new(vec![]),
         }
     }
     fn output(&mut self, tool: EnvironmentTool) -> &mut ProbeOutput {
@@ -84,10 +88,11 @@ impl EnvironmentRunner for FixtureRunner {
         &self,
         tool: EnvironmentTool,
         _: &Path,
-        _: Duration,
+        timeout: Duration,
         cancelled: &AtomicBool,
     ) -> Result<ProbeOutput, EnvironmentStatus> {
         self.calls.lock().unwrap().push(tool);
+        self.timeouts.lock().unwrap().push((tool, timeout));
         if cancelled.load(Ordering::Acquire) {
             return Err(EnvironmentStatus::Cancelled);
         }
@@ -95,6 +100,13 @@ impl EnvironmentRunner for FixtureRunner {
             && failed == tool
         {
             return Err(status);
+        }
+        if self
+            .minimum_timeouts
+            .iter()
+            .any(|(candidate, minimum)| *candidate == tool && timeout < *minimum)
+        {
+            return Err(EnvironmentStatus::Timeout);
         }
         Ok(self
             .results
@@ -104,6 +116,48 @@ impl EnvironmentRunner for FixtureRunner {
             .1
             .clone()
             .unwrap())
+    }
+}
+
+/// Windows npm/npx launchers start node and resolve the npm package before printing a
+/// version, so their cold start can exceed a native `--version`. Keep a separate,
+/// larger but still bounded budget instead of relaxing the native tools.
+#[test]
+fn javascript_launchers_receive_a_cold_start_budget_separate_from_native_tools() {
+    let mut runner = FixtureRunner::healthy();
+    runner.minimum_timeouts = vec![
+        (EnvironmentTool::Npm, Duration::from_secs(10)),
+        (EnvironmentTool::Npx, Duration::from_secs(10)),
+    ];
+
+    let report = runner.report();
+
+    assert!(report.runtime_ready, "{:#?}", report.checks);
+    let policy = environment_policy();
+    assert!(
+        policy.probe_timeouts.package_manager_command_ms > policy.probe_timeouts.native_command_ms
+    );
+    let timeouts = runner.timeouts.lock().unwrap();
+    let timeout_of = |tool| {
+        timeouts
+            .iter()
+            .find(|(candidate, _)| *candidate == tool)
+            .unwrap()
+            .1
+    };
+    for tool in [EnvironmentTool::Git, EnvironmentTool::Node] {
+        assert_eq!(
+            timeout_of(tool),
+            Duration::from_millis(policy.probe_timeouts.native_command_ms),
+            "{tool:?}"
+        );
+    }
+    for tool in [EnvironmentTool::Npm, EnvironmentTool::Npx] {
+        assert_eq!(
+            timeout_of(tool),
+            Duration::from_millis(policy.probe_timeouts.package_manager_command_ms),
+            "{tool:?}"
+        );
     }
 }
 
@@ -167,8 +221,11 @@ fn node_and_npm_boundaries_reject_unknown_majors_and_prereleases() {
         ("10.8.9", false),
         ("10.9.0", true),
         ("11.0.0", true),
-        ("12.0.0", false),
+        ("12.0.0", true),
+        ("12.2.1", true),
         ("11.0.0-rc.1", false),
+        ("12.0.0-rc.1", false),
+        ("13.0.0", false),
     ] {
         assert_eq!(
             matches_policy(
@@ -202,6 +259,76 @@ fn each_failed_tool_keeps_its_reason_without_masking_other_successes() {
             report.checks[3].error.as_ref().unwrap().params["tool"],
             "npx"
         );
+    }
+}
+
+#[test]
+fn newer_unverified_major_is_reported_separately_from_unsupported() {
+    for (tool, newer, older) in [
+        (EnvironmentTool::Node, "25.0.0", "20.19.0"),
+        (EnvironmentTool::Npm, "13.0.0", "9.9.0"),
+        (EnvironmentTool::Npx, "13.0.0", "9.9.0"),
+    ] {
+        let mut runner = FixtureRunner::healthy();
+        runner.output(tool).stdout = newer.into();
+        let check = runner
+            .report()
+            .checks
+            .into_iter()
+            .find(|check| check.tool == tool)
+            .unwrap();
+        assert_eq!(
+            check.status,
+            EnvironmentStatus::Unverified,
+            "{tool:?} {newer}"
+        );
+        assert_eq!(
+            check.error.as_ref().unwrap().code,
+            "setup.runtime-version-unverified"
+        );
+        assert_eq!(
+            serde_json::to_value(&check).unwrap()["status"],
+            "unverified"
+        );
+
+        let mut runner = FixtureRunner::healthy();
+        runner.output(tool).stdout = older.into();
+        let check = runner
+            .report()
+            .checks
+            .into_iter()
+            .find(|check| check.tool == tool)
+            .unwrap();
+        assert_eq!(
+            check.status,
+            EnvironmentStatus::Unsupported,
+            "{tool:?} {older}"
+        );
+        assert_eq!(
+            check.error.as_ref().unwrap().code,
+            "setup.runtime-version-unsupported"
+        );
+    }
+}
+
+#[test]
+fn policy_verified_majors_cover_every_range_lower_bound() {
+    let policy = environment_policy();
+    for (ranges, verified_majors) in [
+        (&policy.node.ranges, &policy.node.verified_majors),
+        (&policy.npm.ranges, &policy.npm.verified_majors),
+    ] {
+        for range in ranges {
+            let lower = range
+                .split_whitespace()
+                .find(|part| part.starts_with(">="))
+                .expect("policy range has an inclusive lower bound");
+            let version = Version::parse(lower.trim_start_matches(">=")).unwrap();
+            assert!(
+                verified_majors.contains(&version.major),
+                "{range} lower-bound major must be listed in verifiedMajors"
+            );
+        }
     }
 }
 

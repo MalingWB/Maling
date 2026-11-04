@@ -3361,6 +3361,7 @@
       "ready": "Ready",
       "missing": "Not installed",
       "unsupported": "Unsupported version",
+      "unverified": "Unverified version",
       "incompatible": "Inconsistent environment",
       "failed": "Check failed",
       "timeout": "Timed out",
@@ -3401,6 +3402,7 @@
     "environmentHelp": {
       "missing": "This tool was not found. Follow the official installation guide, then check again.",
       "unsupported": "Install a supported version using the official guide, then check again.",
+      "unverified": "This version is newer than the verified range and has not been validated yet. Use a recommended version or wait for support, then check again.",
       "incompatible": "The detected runtime combination is incompatible. Check the installation paths and try again.",
       "failed": "The check could not finish. Check the executable path, access permissions and installation, then retry.",
       "timeout": "The check timed out. Retry; if it keeps timing out, check whether this tool starts correctly.",
