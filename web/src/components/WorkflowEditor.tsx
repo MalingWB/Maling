@@ -1360,7 +1360,10 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
           // canvas: without its own background and unclamped height the
           // editor would float as a strip on black. The fullscreen pseudo
           // class restores the app surface and fills the screen.
-          '[:fullscreen]:h-screen [:fullscreen]:max-h-none [:fullscreen]:bg-background [:fullscreen]:text-foreground',
+          // h-full (not h-screen/100vh): fractional-DPI displays size 100vh a few
+          // pixels off the real fullscreen height, leaking a bottom strip; 100%
+          // matches the user agent's own fullscreen box exactly.
+          '[:fullscreen]:h-full [:fullscreen]:max-h-none [:fullscreen]:bg-background [:fullscreen]:text-foreground',
           className,
         )}
         data-workflow-editor-layout={isCompact ? 'compact' : 'split'}

@@ -503,6 +503,18 @@
     @apply h-screen;
   }
 
+  /* Native-fullscreen backdrop: engines disagree on the default (::backdrop
+     is spec-black, WebKit can leave the window clear color), which flashes a
+     white strip while entering/leaving element fullscreen. Paint the themed
+     surface behind every fullscreen element instead. */
+  :fullscreen {
+    background-color: var(--background);
+  }
+
+  :fullscreen::backdrop {
+    background-color: var(--background);
+  }
+
   #gold-band-overlay-portal-host {
     overflow: visible;
     contain: none;

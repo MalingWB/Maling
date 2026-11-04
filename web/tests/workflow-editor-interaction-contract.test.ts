@@ -425,7 +425,7 @@ describe('workflow editor interaction contracts', () => {
     // Native fullscreen composites the element over a user-agent black
     // canvas: the editor container must carry its own background and drop
     // the clamped height, or it floats as a strip on black.
-    expect(editorSource).toContain('[:fullscreen]:h-screen [:fullscreen]:max-h-none [:fullscreen]:bg-background [:fullscreen]:text-foreground');
+    expect(editorSource).toContain('[:fullscreen]:h-full [:fullscreen]:max-h-none [:fullscreen]:bg-background [:fullscreen]:text-foreground');
   });
 
   it('offers fullscreen editing through the element-level Fullscreen API', () => {
