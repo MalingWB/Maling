@@ -3,7 +3,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -25,8 +25,8 @@ use gold_band::app::{
     App, NotificationDedup, ProviderDoctorProbe, RuntimeLifecycleEvent, RuntimeRecoveryCoordinator,
 };
 use gold_band::config::{
-    DiagnosticError, ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig,
-    SettingsConfig, StateConfig,
+    ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig,
+    StateConfig,
 };
 use gold_band::process::recover_persisted_process_group;
 use gold_band::provider::DoctorResult;
@@ -92,6 +92,7 @@ impl DesktopContext {
         let needs_workspace = resolved_repo_root.is_none();
         let repo_root = resolved_repo_root.unwrap_or(repo_root);
         let paths = GoldBandPaths::new(repo_root.clone());
+        gold_band::onboarding::initialization::initialize(&paths)?;
         let (settings, mut state) = load_configs(&paths)?;
         WorkspaceIdentityMigrator::new(&paths)
             .execute(
@@ -259,16 +260,35 @@ pub(crate) struct AgentDiagnosticGuard<'a> {
 
 impl AgentDiagnosticRuns {
     fn acquire(&self, agent_id: &ManagedAgentId) -> Result<AgentDiagnosticGuard<'_>> {
-        let active = self
+        self.acquire_cancellable(agent_id, &AtomicBool::new(false))
+    }
+
+    fn acquire_cancellable(
+        &self,
+        agent_id: &ManagedAgentId,
+        cancelled: &AtomicBool,
+    ) -> Result<AgentDiagnosticGuard<'_>> {
+        let mut active = self
             .active
             .lock()
             .map_err(|_| anyhow::anyhow!("agent diagnostic lock poisoned"))?;
-        let mut active = self
-            .available
-            .wait_while(active, |active| {
-                active.contains(agent_id) || active.len() >= MAX_CONCURRENT_AGENT_DIAGNOSTICS
-            })
-            .map_err(|_| anyhow::anyhow!("agent diagnostic lock poisoned"))?;
+        while active.contains(agent_id) || active.len() >= MAX_CONCURRENT_AGENT_DIAGNOSTICS {
+            if cancelled.load(Ordering::Acquire) {
+                anyhow::bail!(gold_band::onboarding::model::SetupError::new(
+                    "setup.probe-cancelled"
+                ));
+            }
+            active = self
+                .available
+                .wait_timeout(active, std::time::Duration::from_millis(100))
+                .map_err(|_| anyhow::anyhow!("agent diagnostic lock poisoned"))?
+                .0;
+        }
+        if cancelled.load(Ordering::Acquire) {
+            anyhow::bail!(gold_band::onboarding::model::SetupError::new(
+                "setup.probe-cancelled"
+            ));
+        }
         active.insert(agent_id.clone());
         Ok(AgentDiagnosticGuard {
             runs: self,
@@ -289,7 +309,10 @@ impl Drop for AgentDiagnosticGuard<'_> {
     }
 }
 
-fn for_each_diagnostic_agent(agent_ids: &[ManagedAgentId], probe: impl Fn(&ManagedAgentId) + Sync) {
+pub(crate) fn for_each_diagnostic_agent(
+    agent_ids: &[ManagedAgentId],
+    probe: impl Fn(&ManagedAgentId) + Sync,
+) {
     let next = AtomicUsize::new(0);
     std::thread::scope(|scope| {
         for _ in 0..agent_ids.len().min(MAX_CONCURRENT_AGENT_DIAGNOSTICS) {
@@ -303,8 +326,18 @@ fn for_each_diagnostic_agent(agent_ids: &[ManagedAgentId], probe: impl Fn(&Manag
 }
 
 pub struct DesktopState {
+    pub(crate) setup_active: AtomicBool,
+    pub(crate) business_runtime_started: AtomicBool,
     context: Mutex<DesktopContext>,
     scheduled_service: Mutex<Option<Arc<crate::scheduled_service::ScheduledTaskService>>>,
+    /// 上游交付引用解析器（M5-cf，`$upstream.completion-output` 令牌消费端）。setup 后装入，
+    /// `app()` 组装时挂载——引擎回调式介入的既有模式（同 lifecycle_bus 共享件）。
+    upstream_output_resolver:
+        Mutex<Option<Arc<dyn gold_band::app::upstream::UpstreamOutputResolver>>>,
+    /// 完成输出协议区段解析器（M5-cg 产出侧门禁，按节点身份的协议变体渲染端）。同上游
+    /// 解析器的装入 / 挂载模式。
+    completion_protocol_section_resolver:
+        Mutex<Option<Arc<dyn gold_band::app::upstream::CompletionProtocolSectionResolver>>>,
     scheduler_coordinator: Mutex<Option<crate::scheduled_runtime::SchedulerCoordinatorHandle>>,
     scheduled_power: Mutex<
         crate::scheduled_runtime::power::ScheduledPowerManager<
@@ -349,8 +382,12 @@ impl DesktopState {
             GoldBandPaths::new(context.repo_root.clone()).core_db_path(),
         );
         Self {
+            setup_active: AtomicBool::new(false),
+            business_runtime_started: AtomicBool::new(false),
             context: Mutex::new(context),
             scheduled_service: Mutex::new(None),
+            upstream_output_resolver: Mutex::new(None),
+            completion_protocol_section_resolver: Mutex::new(None),
             scheduler_coordinator: Mutex::new(None),
             scheduled_power: Mutex::new(
                 crate::scheduled_runtime::power::ScheduledPowerManager::new(
@@ -532,7 +569,7 @@ impl DesktopState {
         let diagnostics = self.agent_diagnostics.clone();
         let model_catalogs = self.agent_model_catalogs.clone();
         let metrics_enabled = crate::metrics::core_metrics_collection_enabled(&context.config);
-        Ok(App::with_config(context.repo_root, context.config)
+        let app = App::with_config(context.repo_root, context.config)
             .with_lifecycle_bus(self.lifecycle_bus.clone())
             .with_observability_states(self.observability_states.clone())
             .with_active_metric_turns(self.active_metric_turns.clone())
@@ -543,7 +580,28 @@ impl DesktopState {
                     .into_iter()
                     .map(|(agent_type, diagnostic)| (agent_type.as_str().to_string(), diagnostic))
                     .collect())
-            })))
+            }));
+        // M5-cf：上游交付解析器非必装（装入前/未装时组装 App 不应失败），装了才挂。
+        let resolver = self
+            .upstream_output_resolver
+            .lock()
+            .map_err(|_| anyhow::anyhow!("upstream resolver lock poisoned"))?
+            .clone();
+        let app = match resolver {
+            Some(resolver) => app.with_upstream_output_resolver(resolver),
+            None => app,
+        };
+        // M5-cg：完成输出协议区段解析器同模式挂载。
+        let protocol_resolver = self
+            .completion_protocol_section_resolver
+            .lock()
+            .map_err(|_| anyhow::anyhow!("completion protocol resolver lock poisoned"))?
+            .clone();
+        let app = match protocol_resolver {
+            Some(resolver) => app.with_completion_protocol_section_resolver(resolver),
+            None => app,
+        };
+        Ok(app)
     }
 
     pub fn recover_interrupted_conversation_workspaces(
@@ -708,6 +766,32 @@ impl DesktopState {
             .scheduled_service
             .lock()
             .map_err(|_| anyhow::anyhow!("scheduled service lock poisoned"))? = Some(service);
+        Ok(())
+    }
+
+    /// 装入上游交付引用解析器（M5-cf）：main.rs setup 在 AppHandle 可用后调用一次，
+    /// [`Self::app`] 组装引擎 App 时挂载。重复装入覆盖前值（幂等，实际只装一次）。
+    pub fn install_upstream_output_resolver(
+        &self,
+        resolver: Arc<dyn gold_band::app::upstream::UpstreamOutputResolver>,
+    ) -> Result<()> {
+        *self
+            .upstream_output_resolver
+            .lock()
+            .map_err(|_| anyhow::anyhow!("upstream resolver lock poisoned"))? = Some(resolver);
+        Ok(())
+    }
+
+    /// 装入完成输出协议区段解析器（M5-cg 产出侧门禁）：同上游解析器的装入模式。
+    pub fn install_completion_protocol_section_resolver(
+        &self,
+        resolver: Arc<dyn gold_band::app::upstream::CompletionProtocolSectionResolver>,
+    ) -> Result<()> {
+        *self
+            .completion_protocol_section_resolver
+            .lock()
+            .map_err(|_| anyhow::anyhow!("completion protocol resolver lock poisoned"))? =
+            Some(resolver);
         Ok(())
     }
 
@@ -1075,6 +1159,84 @@ impl DesktopState {
         self.agent_diagnostic_runs.acquire(agent_id)
     }
 
+    pub(crate) fn setup_diagnostic_guard(
+        &self,
+        agent_id: &ManagedAgentId,
+        cancelled: &AtomicBool,
+    ) -> Result<AgentDiagnosticGuard<'_>> {
+        self.agent_diagnostic_runs
+            .acquire_cancellable(agent_id, cancelled)
+    }
+
+    pub(crate) fn persist_setup_success(
+        &self,
+        candidate: &gold_band::onboarding::discovery::SetupCandidate,
+        diagnostic: AgentDiagnosticState,
+        cancelled: &AtomicBool,
+    ) -> Result<()> {
+        let app = self.app()?;
+        let settings = gold_band::onboarding::discovery::register_success(
+            &app.paths,
+            candidate,
+            &diagnostic,
+            cancelled,
+        )?;
+        // The persisted snapshot already exists before any in-memory/UI publication.
+        self.agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("diagnostic lock poisoned"))?
+            .insert(candidate.id.clone(), diagnostic);
+        self.update_settings_config(&settings)
+    }
+
+    pub(crate) fn record_setup_model(
+        &self,
+        agent_id: &ManagedAgentId,
+        options: &serde_json::Value,
+    ) -> Result<()> {
+        self.record_model_bound_observation(agent_id, options)
+            .map(|_| ())
+    }
+
+    pub(crate) fn invalidate_setup_diagnostic(
+        &self,
+        candidate: &gold_band::onboarding::discovery::SetupCandidate,
+        error: &anyhow::Error,
+    ) -> Result<()> {
+        let app = self.app()?;
+        let actual = app
+            .managed_agents()
+            .get(&candidate.id)
+            .map(gold_band::onboarding::model::fingerprint)
+            .transpose()?;
+        if actual.is_none() || actual != candidate.expected_fingerprint {
+            return Ok(());
+        }
+        let mut next = self.agent_diagnostics()?;
+        let error = error
+            .downcast_ref::<gold_band::onboarding::model::SetupError>()
+            .map(|error| gold_band::config::DiagnosticError {
+                code: error.code.to_owned(),
+                params: error.params.clone(),
+                raw: None,
+            })
+            .unwrap_or_else(|| gold_band::acp::client::doctor_diagnostic_error(error));
+        let failed = ProviderDiagnosticSnapshot {
+            config_fingerprint: actual,
+            available: false,
+            error: Some(error),
+            checked_at: chrono::Utc::now().to_rfc3339(),
+            capabilities: None,
+        };
+        next.insert(candidate.id.clone(), failed.clone());
+        self.persist_agent_diagnostics(&next)?;
+        self.agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("diagnostic lock poisoned"))?
+            .insert(candidate.id.clone(), failed);
+        Ok(())
+    }
+
     pub fn agent_config_diagnostic_commit_guard(&self) -> Result<MutexGuard<'_, ()>> {
         self.agent_config_diagnostic_commit_lock
             .lock()
@@ -1175,7 +1337,12 @@ impl DesktopState {
         if probe.doctor.available {
             self.record_agent_commands(agent_id, &app.paths.repo_root, probe.commands.clone())?;
         }
-        let diagnostic = diagnostic_state_from_result(probe.doctor);
+        let mut diagnostic = diagnostic_state_from_result(probe.doctor);
+        diagnostic.config_fingerprint = app
+            .managed_agents()
+            .get(agent_id)
+            .map(gold_band::onboarding::model::fingerprint)
+            .transpose()?;
         // Only a successful probe can prove a model is gone; failures leave the catalogs alone.
         let catalogs = match diagnostic.capabilities.as_ref() {
             Some(capabilities) if diagnostic.available => {
@@ -1212,6 +1379,14 @@ impl DesktopState {
         &self,
         on_completed: impl Fn(&ManagedAgentId) + Sync,
     ) -> Result<()> {
+        if self.setup_active.load(Ordering::Acquire)
+            || matches!(
+                self.context()?.config.onboarding,
+                Some(gold_band::onboarding::model::OnboardingState::Pending { .. })
+            )
+        {
+            return Ok(());
+        }
         let app = self.app()?;
         let agent_ids = app.managed_agents().keys().cloned().collect::<Vec<_>>();
         let scheduled = self
@@ -1430,6 +1605,14 @@ impl DesktopState {
     }
 
     pub fn refresh_agent_command_catalogs_for_active_workspaces(&self) -> Result<()> {
+        if self.setup_active.load(Ordering::Acquire)
+            || matches!(
+                self.context()?.config.onboarding,
+                Some(gold_band::onboarding::model::OnboardingState::Pending { .. })
+            )
+        {
+            return Ok(());
+        }
         let context = self.context()?;
         let app = context.app();
         let persisted_state = app.load_state()?;
@@ -1535,6 +1718,7 @@ impl DesktopState {
 
 fn diagnostic_state_from_result(result: DoctorResult) -> AgentDiagnosticState {
     ProviderDiagnosticSnapshot {
+        config_fingerprint: None,
         available: result.available,
         error: result.error,
         checked_at: current_timestamp(),
@@ -1676,7 +1860,7 @@ fn load_configs(paths: &GoldBandPaths) -> Result<(SettingsConfig, StateConfig)> 
         }
     }
     if settings_changed {
-        write_json(&paths.user_settings_file(), &settings)?;
+        gold_band::storage::save_settings_file(&paths.user_settings_file(), &settings)?;
     }
     if avatar_migrated {
         complete_legacy_avatar_personalization(&paths.user_gold_band_dir())
@@ -1701,6 +1885,7 @@ fn recent_workspaces(state: &StateConfig, repo_root: &Utf8Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gold_band::config::DiagnosticError;
     use gold_band::domain::{NodeOutcome, NodeType, PauseReason, RoundTrigger, RunStatus, VERSION};
     use gold_band::runtime::{
         NodeState, RoundState, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase,
@@ -2458,6 +2643,7 @@ mod tests {
             diagnostics.insert(
                 agent_id.clone(),
                 ProviderDiagnosticSnapshot {
+                    config_fingerprint: None,
                     available: true,
                     error: None,
                     checked_at: "100Z".into(),

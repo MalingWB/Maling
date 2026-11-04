@@ -15,12 +15,8 @@ use super::{
 pub const IM_INBOUND_QUEUE_CAPACITY: usize = 128;
 pub const IM_LIFECYCLE_QUEUE_CAPACITY: usize = 256;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ImLocale {
-    #[default]
-    ZhCn,
-    En,
-}
+/// IM copy always follows the desktop language.
+pub type ImLocale = crate::config::DesktopLanguage;
 
 /// `Default` is a channel without any capability (no connector registered).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -131,6 +127,13 @@ pub struct ImConnectionIdentity {
     pub display_name: String,
 }
 
+/// Authorized owner as resolved by the platform at connect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImOwnerProfile {
+    pub actor_id: String,
+    pub display_name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImObservedBinding {
@@ -138,6 +141,8 @@ pub struct ImObservedBinding {
     pub conversation_id: String,
     pub actor_id: String,
     pub is_private: bool,
+    /// Platform display name of the actor, resolved once per connection.
+    pub display_name: Option<String>,
 }
 
 /// Serialized as [`ImErrorCode::as_str`], the single wire form shared with the frontend.
@@ -321,6 +326,9 @@ pub enum ImConnectorEvent {
     Connected {
         generation: u64,
         identity: ImConnectionIdentity,
+        /// Profile of the authorized owner when the platform resolved it at
+        /// connect; lets an existing binding adopt the current name.
+        owner: Option<ImOwnerProfile>,
     },
     ReconnectScheduled {
         generation: u64,

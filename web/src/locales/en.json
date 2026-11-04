@@ -998,7 +998,10 @@
         "folder-not-found": "Selected folder could not be found",
         "folder-not-directory": "Selected path is not a folder",
         "folder-read-failed": "Selected folder could not be read completely",
-        "no-markdown-files": "No Markdown files found in the selected folder"
+        "no-markdown-files": "No Markdown files found in the selected folder",
+        "file-not-found": "Selected file could not be found",
+        "file-not-markdown": "Selected file is not a Markdown file",
+        "no-files": "No files selected"
       }
     },
     "manual-check": {
@@ -1145,6 +1148,8 @@
       "runtime-offline": "Runtime is not ready. Please try again shortly.",
       "session-resume-failed": "Session resume failed. It will rerun as a new task.",
       "task-not-found": "This multica task could not be found.",
+      "upstream-pull-invalid-decision": "Invalid decision. Please check and try again.",
+      "upstream-pull-not-pending": "This pull has already finished; no choice is needed.",
       "workspace-already-bound": "This workspace is already bound.",
       "workspace-not-found": "This workspace binding could not be found."
     },
@@ -1341,7 +1346,6 @@
     "builtInSectionDescription": "Fixed roles that can be opened as drafts and saved as new custom roles.",
     "customSectionTitle": "Custom Roles",
     "customSectionDescription": "Custom roles you created are listed here.",
-    "customProfilesPageRange": "Custom roles {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "Built-in roles cannot be saved directly. Save them as a new role instead.",
     "emptyContent": "No role content yet",
     "profileRequired": "Name and summary are required.",
@@ -1474,10 +1478,12 @@
       }
     },
     "importProfile": "Import Roles",
-    "importSettingsDescription": "Batch import role Markdown files from a folder. Missing names and summaries are filled automatically.",
+    "importSettingsDescription": "Batch import from a folder or select role Markdown files directly. Missing names and summaries are filled automatically.",
     "importDynamicTemplateDescription": "When enabled, all imported roles are treated as dynamic templates; invalid bodies are downgraded to static.",
     "importPickFolder": "Choose folder and import",
     "importPickFolderTitle": "Choose a folder containing role Markdown files",
+    "importPickFiles": "Choose files and import",
+    "importPickFilesTitle": "Choose role Markdown files",
     "importResultTitle": "Import Results",
     "importResultSummary": "Scanned {{total}} files: {{success}} succeeded, {{failed}} failed.",
     "importResultImported": "Imported",
@@ -2623,6 +2629,7 @@
       "receiverAccount": "Recipient account",
       "robotName": "Bot name",
       "privateBinding": "Private chat: {{name}}",
+      "privateBindingUnnamed": "Private chat bound",
       "notificationKinds": "Notification types",
       "notificationGroups": {
         "needsAction": "Needs your action",
@@ -2670,6 +2677,7 @@
             "send": "Send you messages",
             "receive": "Read private messages you send to the bot",
             "update": "Update cards sent by the bot",
+            "profile": "Read your name to show the receiving account",
             "confirm": "Agree and generate QR code"
           },
           "resetBinding": {
@@ -3023,6 +3031,8 @@
         "removeTask": "Remove from list",
         "removeTaskHint": "Removed on this side only; refresh restores it",
         "removeTaskTerminalHint": "Removes the local completion record; it will not reappear on refresh",
+        "rerunTask": "Re-run",
+        "rerunBadge": "Re-run",
         "addWorkspace": "Add Workspace",
         "noWorkspacesBound": "No workspaces bound",
         "status": {
@@ -3257,16 +3267,38 @@
         "dev": "Dev",
         "test": "Test"
       },
+      "searchPlaceholder": "Search task name…",
       "readiness": {
-        "notReady": "Not ready",
-        "notReadyHint": "The matching dev task is not done yet; consider waiting for it"
+        "ready": "Ready",
+        "readyHint": "The matching dev task is done; this test task can start now"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "This task must create a DPMS story and report its link; the badge clears once reported"
+      },
+      "issueStatus": {
+        "todo": "To do",
+        "backlog": "Backlog"
       },
       "column": {
         "empty": "No tasks"
       },
       "account": {
         "connected": "Connected"
-      }
+      },
+      "openPlatform": "Open {{source}} platform"
+    },
+    "upstreamPull": {
+      "title": "Upstream deliverable not pulled yet",
+      "description": "Node {{node}} of \"{{task}}\" has not pulled the deliverable handoff from upstream work item {{issue}}.",
+      "fallbackNote": "If no choice is made within 60 seconds, polling resumes automatically.",
+      "retry": "Keep waiting",
+      "manual": "Provide manually",
+      "skip": "Skip pull",
+      "manualLabel": "Deliverable handoff",
+      "manualPlaceholder": "Key facts such as built artifacts and deployed environments…",
+      "manualSubmit": "Continue with this",
+      "waitingNote": "Still waiting for the upstream completion note to update. You can provide it manually or skip at any time."
     },
     "connection": {
       "title": "Connection address settings",
@@ -3282,6 +3314,125 @@
       "confirm": "Connect",
       "connecting": "Connecting…",
       "cancelConnect": "Cancel connection"
+    }
+  },
+  "onboarding": {
+    "loading": "Loading",
+    "loadFailed": "Unable to read startup settings. Try again.",
+    "retry": "Retry",
+    "language": "Language",
+    "theme": "Switch theme",
+    "exit": "Exit setup",
+    "progress": "Setup progress",
+    "checking": "Checking environment…",
+    "runtimeVersion": "Recommended Node.js {{version}}; supported {{ranges}}",
+    "recheck": "Check again",
+    "installGuide": "Official installation guide",
+    "discovering": "Checking local Agents…",
+    "discovered": "{{count}} available Agents detected",
+    "noAgents": "No available Agent was detected. Install or sign in to an Agent, then check again.",
+    "agentRepairs": "Agents that need attention",
+    "retryAgent": "Check again",
+    "chooseProgram": "Choose program",
+    "defaultAgent": "Default Agent",
+    "chooseAgent": "Choose an available Agent",
+    "defaultModel": "Default model",
+    "chooseModel": "Choose a model",
+    "providerDefault": "This Agent uses the provider’s default model.",
+    "checkingModel": "Reading model configuration…",
+    "permission": "Permission mode",
+    "choosePermission": "Choose a permission mode",
+    "preview": "Review changes",
+    "previewSummary": "Update {{slots}} execution configurations across {{count}} built-in workflows.",
+    "slots": "{{count}} configurations",
+    "loadMore": "Load more",
+    "back": "Back",
+    "help": "Help",
+    "skipGit": "Skip Git for now",
+    "next": "Next",
+    "apply": "Apply and finish",
+    "review": "Preview changes",
+    "repairHint": "Follow the provider’s installation or sign-in guide, then check again.",
+    "settingsTitle": "Setup and workflows",
+    "rerunTitle": "First-run setup",
+    "rerunDescription": "Check Git, the runtime, and local Agent availability again.",
+    "defaultsTitle": "Default workflows",
+    "defaultsDescription": "Set the Agent, model, and permissions for built-in workflows. Custom workflows stay unchanged.",
+    "configureDefaults": "Configure defaults",
+    "rerun": "Run setup again",
+    "steps": {
+      "git": "Git",
+      "runtime": "Runtime",
+      "agent": "Agent"
+    },
+    "titles": {
+      "git": "Prepare Git",
+      "runtime": "Check the Node.js runtime",
+      "agent": "Connect an Agent and choose your default model"
+    },
+    "descriptions": {
+      "git": "Git provides version control. You can install it later.",
+      "runtime": "Node.js, npm and npx must all pass before continuing. Check again after installation.",
+      "agent": "Ready Agents are saved automatically. Choose your default model, then review and apply it to all built-in workflows."
+    },
+    "status": {
+      "ready": "Ready",
+      "missing": "Not installed",
+      "unsupported": "Unsupported version",
+      "incompatible": "Inconsistent environment",
+      "failed": "Check failed",
+      "timeout": "Timed out",
+      "cancelled": "Cancelled",
+      "skipped": "Skipped",
+      "pending": "Not checked",
+      "checking": "Checking"
+    },
+    "errors": {
+      "setup": {
+        "agent-preparation-required": "Follow the provider’s installation or sign-in guide, then check again.",
+        "probe-failed": "The check failed. Check again to retry.",
+        "probe-cancelled": "The check was cancelled. Check again to continue.",
+        "runtime-incompatible": "Node.js, npm or npx does not meet the requirements. Check the runtime environment.",
+        "environment-check-required": "Complete the runtime environment check first.",
+        "configuration-conflict": "This configuration changed elsewhere. Check Agents again and review the latest changes.",
+        "preview-stale": "The selected model or built-in workflows changed. Preview the changes again.",
+        "agent-unavailable": "This Agent is no longer ready. Check it again or choose another Agent.",
+        "model-config-invalid": "The selected model options are no longer valid. Choose the model again.",
+        "model-selection-required": "Choose a model before continuing.",
+        "permission-selection-required": "Choose a permission mode before continuing.",
+        "git-decision-required": "Install a supported Git version or explicitly skip Git.",
+        "recovery-required": "The previous save could not be recovered. Restore access to the settings folder and restart.",
+        "executable-path-invalid": "Choose an existing executable using its full path.",
+        "commit-failed": "Could not save the changes. Check folder permissions and free space, then retry.",
+        "operation-id-invalid": "The save request is invalid. Preview the changes again.",
+        "templates-initialization-required": "Built-in workflows are not initialized. Check Agents again."
+      }
+    },
+    "gitVersion": "Git {{version}} or later is required.",
+    "previousBindings": "Current bindings to replace",
+    "previousBinding": "{{slot}}: {{agent}} / {{model}}",
+    "defaultModelLabel": "Provider default",
+    "runtimeBlocked": "Runtime check did not pass",
+    "detectionFailed": "Agent detection failed. Try again.",
+    "recheckRuntime": "Check runtime again",
+    "viewRuntime": "View runtime",
+    "environmentHelp": {
+      "missing": "This tool was not found. Follow the official installation guide, then check again.",
+      "unsupported": "Install a supported version using the official guide, then check again.",
+      "incompatible": "The detected runtime combination is incompatible. Check the installation paths and try again.",
+      "failed": "The check could not finish. Check the executable path, access permissions and installation, then retry.",
+      "timeout": "The check timed out. Retry; if it keeps timing out, check whether this tool starts correctly.",
+      "cancelled": "The check was cancelled. Check again to continue."
+    },
+    "environmentReasons": {
+      "probe-unavailable": "The runtime actually used could not be confirmed. Check the installation and try again.",
+      "node-mismatch": "A different Node.js installation was used. Expected: {{expectedNodePath}}; actual: {{actualNodePath}}.",
+      "node-version-mismatch": "Node.js versions differ. Expected: {{expectedVersion}}; actual: {{actualVersion}}.",
+      "node-path-mismatch": "The Node.js launch path differs. Expected: {{expectedNodePath}}; actual: {{actualNodePath}}.",
+      "npm-metadata-missing": "The npm installation metadata could not be confirmed. Repair the Node.js/npm installation and check again.",
+      "npm-engines-incompatible": "This npm does not support the current Node.js. Required: {{nodeRange}}.",
+      "npm-version-mismatch": "npm version information differs. Output: {{expectedVersion}}; package: {{actualVersion}}.",
+      "npm-package-mismatch": "npm and npx belong to different installations. npm: {{expectedNpmRoot}}; this tool: {{actualNpmRoot}}."
     }
   }
 }

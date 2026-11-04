@@ -3,7 +3,7 @@ export function resolveRightWorkspaceFileTarget(source: import('./types').Prompt
 export function revealRightWorkspaceFile(source: import('./types').PromptWorkspaceFileRef) { return getRuntimeApi().revealRightWorkspaceFile(source); }
 import { AGENT_MODEL_CONFIG_UPDATED_EVENT } from './lib/agent-diagnostic-update';
 import type { RuntimeApi } from './api/client';
-import type { CreateWorkspaceEntryInput, FeishuScanMode, ResolvedColorScheme, WorkspaceRootRef } from './types';
+import type { CreateWorkspaceEntryInput, FeishuScanMode, ResolvedColorScheme, RuntimeAssetInstalledEventVm, WorkspaceRootRef } from './types';
 
 export { isTauriRuntime } from './api/shared';
 export function readProjectMemory(projectId: string) { return getRuntimeApi().readProjectMemory(projectId); }
@@ -120,6 +120,10 @@ export function createProfile(input: Parameters<ReturnType<typeof getRuntimeApi>
 
 export function importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean) {
   return getRuntimeApi().importProfilesFromFolder(folderPath, dynamicTemplate);
+}
+
+export function importProfilesFromFiles(filePaths: string[], dynamicTemplate: boolean) {
+  return getRuntimeApi().importProfilesFromFiles(filePaths, dynamicTemplate);
 }
 
 export function updateProfile(id: string, input: Parameters<ReturnType<typeof getRuntimeApi>['updateProfile']>[1]) {
@@ -731,6 +735,14 @@ export function removeRemoteCompletedTask(remoteTaskId: string) {
   return getRuntimeApi().removeRemoteCompletedTask(remoteTaskId);
 }
 
+export function reconcileRemoteTaskStatuses() {
+  return getRuntimeApi().reconcileRemoteTaskStatuses();
+}
+
+export function rerunRemoteTask(taskId: string) {
+  return getRuntimeApi().rerunRemoteTask(taskId);
+}
+
 export function listServerMulticaWorkspaces() {
   return getRuntimeApi().listServerMulticaWorkspaces();
 }
@@ -1021,6 +1033,24 @@ export function subscribeRemoteTaskUpdates(listener: () => void) {
 
 export function subscribeRemoteSourceSettingsUpdates(listener: () => void) {
   return getRuntimeApi().subscribeRemoteSourceSettingsUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+/// multica 被动安装落地（M5-cr）：按 event.assetType 重拉对应列表（App.tsx 消费）。
+export function subscribeRuntimeAssetInstalled(listener: (event: RuntimeAssetInstalledEventVm) => void) {
+  return getRuntimeApi().subscribeRuntimeAssetInstalled?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeUpstreamPullEvents(listener: Parameters<NonNullable<RuntimeApi['subscribeUpstreamPullEvents']>>[0]) {
+  return getRuntimeApi().subscribeUpstreamPullEvents?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function decideUpstreamPull(taskId: string, nodeId: string, decision: Parameters<RuntimeApi['decideUpstreamPull']>[2], manualText?: string | null) {
+  return getRuntimeApi().decideUpstreamPull(taskId, nodeId, decision, manualText);
+}
+
+export function listUpstreamPullPendings(taskId: string) {
+  // 可选方法兜底空列表（mock runtime api 未实现 = 无 multica 链路，与 browser stub 语义一致）。
+  return getRuntimeApi().listUpstreamPullPendings?.(taskId) ?? Promise.resolve([]);
 }
 
 export function workspaceFilePreviewUrl(token: string, staticFrame = false) {

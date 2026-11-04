@@ -2498,6 +2498,7 @@ fn turn_file_change_set_event(
 struct AcpRuntime<'a> {
     direct: Option<Arc<direct::DirectRuntime>>,
     doctor_deadline: Option<DoctorDeadline>,
+    doctor_cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     paths: AcpAttemptPaths,
     lifecycle_owner: Option<AcpLifecycleOwner>,
     connection_key: Option<AdapterConnectionKey>,
@@ -2915,6 +2916,83 @@ fn probe_in_dir(
     deadline: DoctorDeadline,
     model: Option<&str>,
 ) -> Result<AcpDoctorProbe> {
+    probe_in_dir_with_control(
+        agent_id,
+        config,
+        cwd,
+        use_local_claude,
+        require_local_claude_executable,
+        doctor_acp_dir,
+        deadline,
+        model,
+        None,
+    )
+}
+
+pub fn doctor_prepared_with_control(
+    agent_id: &ManagedAgentId,
+    config: &AcpAdapterConfig,
+    cwd: Utf8PathBuf,
+    diagnostic_dir: Utf8PathBuf,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<AcpDoctorProbe> {
+    probe_in_dir_with_control(
+        agent_id,
+        config,
+        cwd,
+        false,
+        false,
+        diagnostic_dir,
+        DoctorDeadline::default(),
+        None,
+        Some(cancelled),
+    )
+}
+
+pub fn probe_prepared_model_with_control(
+    agent_id: &ManagedAgentId,
+    config: &AcpAdapterConfig,
+    cwd: Utf8PathBuf,
+    diagnostic_dir: Utf8PathBuf,
+    model: &str,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<Value> {
+    let result = probe_in_dir_with_control(
+        agent_id,
+        config,
+        cwd,
+        false,
+        false,
+        diagnostic_dir,
+        DoctorDeadline::default(),
+        Some(model),
+        Some(cancelled),
+    )?;
+    result
+        .capabilities
+        .get("configOptions")
+        .cloned()
+        .ok_or_else(|| ModelConfigUnavailable.into())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn probe_in_dir_with_control(
+    agent_id: &ManagedAgentId,
+    config: &AcpAdapterConfig,
+    cwd: Utf8PathBuf,
+    use_local_claude: bool,
+    require_local_claude_executable: bool,
+    doctor_acp_dir: Utf8PathBuf,
+    deadline: DoctorDeadline,
+    model: Option<&str>,
+    cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<AcpDoctorProbe> {
+    if cancelled
+        .as_ref()
+        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+    {
+        return Err(crate::onboarding::model::SetupError::new("setup.probe-cancelled").into());
+    }
     deadline.remaining("adapter/start")?;
     cleanup_doctor_acp_dir_before_run(&doctor_acp_dir);
     let mut runtime = AcpRuntime::start_standalone(
@@ -2930,6 +3008,7 @@ fn probe_in_dir(
         None,
     )?;
     runtime.doctor_deadline = Some(deadline);
+    runtime.doctor_cancelled = cancelled;
     let result = (|| {
         let mut capabilities =
             runtime.initialize_with_timeout(Some(deadline.remaining("initialize")?))?;
@@ -4215,6 +4294,7 @@ impl<'a> AcpRuntime<'a> {
         Ok(Self {
             direct: None,
             doctor_deadline: None,
+            doctor_cancelled: None,
             paths,
             lifecycle_owner,
             connection_key,
@@ -5356,6 +5436,7 @@ impl<'a> AcpRuntime<'a> {
     fn wait_for_available_commands(&mut self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         loop {
+            self.check_doctor_cancellation()?;
             if let Some(doctor_deadline) = self.doctor_deadline {
                 doctor_deadline.remaining("session/available_commands")?;
             }
@@ -5786,6 +5867,17 @@ impl<'a> AcpRuntime<'a> {
         self.request_with_progress(method, params, timeout, None, true)
     }
 
+    fn check_doctor_cancellation(&self) -> Result<()> {
+        if self
+            .doctor_cancelled
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return Err(crate::onboarding::model::SetupError::new("setup.probe-cancelled").into());
+        }
+        Ok(())
+    }
+
     fn doctor_or_transport_interrupt(&self, method: &str) -> anyhow::Error {
         if self.doctor_deadline.is_some() {
             let exit_code = self
@@ -5817,6 +5909,7 @@ impl<'a> AcpRuntime<'a> {
         title_refresh: Option<(&Utf8Path, &str, bool, Option<String>, &Value)>,
         observe_attempt_cancellation: bool,
     ) -> Result<Value> {
+        self.check_doctor_cancellation()?;
         if let Some(deadline) = self.doctor_deadline {
             deadline.remaining(method)?;
         }
@@ -5842,6 +5935,10 @@ impl<'a> AcpRuntime<'a> {
         let started_at = Instant::now();
         let mut last_title_refresh_at = Instant::now();
         loop {
+            if let Err(error) = self.check_doctor_cancellation() {
+                self.connection.cancel_pending(request.id);
+                return Err(error);
+            }
             let doctor_remaining = match self
                 .doctor_deadline
                 .map(|deadline| deadline.remaining(method))
@@ -5891,6 +5988,7 @@ impl<'a> AcpRuntime<'a> {
             let wait_for = doctor_remaining.map_or(wait_for, |remaining| remaining.min(wait_for));
             match request.recv_timeout(wait_for) {
                 Ok(value) => {
+                    self.check_doctor_cancellation()?;
                     if let Some(deadline) = self.doctor_deadline {
                         deadline.remaining(method)?;
                     }
@@ -10626,6 +10724,44 @@ mod tests {
 
     const DOCTOR_FIXTURE_STAGE_TIMEOUT: Duration = Duration::from_secs(5);
     const DOCTOR_FIXTURE_RESCUE_DELAY: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn onboarding_cancel_reclaims_a_stalled_doctor_without_sending_a_prompt() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let worker_cwd = cwd.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
+        let worker = std::thread::spawn(move || {
+            super::doctor_prepared_with_control(
+                &"onboarding-cancel-fixture".parse().unwrap(),
+                &doctor_fixture_config("initialize"),
+                worker_cwd.clone(),
+                worker_cwd.join("doctor"),
+                worker_cancelled,
+            )
+        });
+        let started = Instant::now();
+        while !cwd.join("fixture-address").exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "fixture did not start"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let started = Instant::now();
+        cancelled.store(true, Ordering::Release);
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(format!("{error:#}").contains("setup.probe-cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let address = std::fs::read_to_string(cwd.join("fixture-address")).unwrap();
+        assert!(std::net::TcpStream::connect(address).is_err());
+        assert!(!cwd.join("doctor/provider.pid").exists());
+    }
 
     #[test]
     fn doctor_session_new_timeout_reclaims_adapter_and_retains_evidence() {

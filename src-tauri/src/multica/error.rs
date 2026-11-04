@@ -43,6 +43,20 @@ pub enum MulticaError {
     #[allow(dead_code)]
     #[error("multica session resume failed, will rerun")]
     SessionResumeFailed,
+    /// 上游拉取决策无对应等待槽（M5-ch）：决策迟到（resolve 已收口或 run 已终态）。
+    /// 前端通常已随 settled 事件关闭弹窗，此错误用于兜底（如弹窗与收口竞态的迟到提交）。
+    #[error("multica upstream pull decision has no pending slot")]
+    UpstreamPullNotPending,
+    /// 上游拉取决策载荷非法（M5-ch）：manual 空文本（trim 后）或未知决策字面量。
+    /// 与 [`MulticaError::UpstreamPullNotPending`]（槽不存在，前端幂等收卡）严格区分——
+    /// 本错误槽未被写入、等待方仍在，前端须保留卡片让用户重选；字面量细节进后端日志。
+    #[error("multica upstream pull decision payload invalid")]
+    UpstreamPullInvalidDecision,
+    /// DPMS 需求回写冲突（M5-cl）：issue 已链接不同 DPMS story（`POST /api/daemon/issues/{id}/dpms-story`
+    /// HTTP 409）。服务端该路径已把 `dpms_required` 两半置 false（告警熄灭），调用方记日志后不再发送、
+    /// 不重试。仅回写通道内部使用，不进前端错误码消费。
+    #[error("multica issue already linked to a different DPMS story")]
+    IssueLinkConflict,
 }
 
 impl MulticaError {
@@ -61,6 +75,9 @@ impl MulticaError {
             Self::ConnectCancelled => "multica.connect-cancelled",
             Self::AttachmentStageFailed(_) => "multica.attachment-stage-failed",
             Self::SessionResumeFailed => "multica.session-resume-failed",
+            Self::UpstreamPullNotPending => "multica.upstream-pull-not-pending",
+            Self::UpstreamPullInvalidDecision => "multica.upstream-pull-invalid-decision",
+            Self::IssueLinkConflict => "multica.issue-link-conflict",
         }
     }
 
@@ -119,6 +136,14 @@ mod tests {
         assert_eq!(
             MulticaError::SessionResumeFailed.code(),
             "multica.session-resume-failed"
+        );
+        assert_eq!(
+            MulticaError::UpstreamPullNotPending.code(),
+            "multica.upstream-pull-not-pending"
+        );
+        assert_eq!(
+            MulticaError::UpstreamPullInvalidDecision.code(),
+            "multica.upstream-pull-invalid-decision"
         );
     }
 

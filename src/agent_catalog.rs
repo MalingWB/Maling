@@ -32,6 +32,10 @@ pub struct AgentCatalogEntry {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Already installed ACP executable; its arguments exclude the npm launcher/package.
+    pub local_launch: Option<LocalAgentLaunch>,
+    /// Local Agent CLI whose ACP adapter may be prepared by the controlled setup probe.
+    pub installed_command: Option<String>,
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
     pub primary_agent_dir: Option<String>,
@@ -43,6 +47,14 @@ pub struct AgentCatalogEntry {
     pub supports_system_prompt: bool,
     #[serde(default)]
     pub supports_external_session_sync: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAgentLaunch {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 pub fn builtin_agent_catalog() -> &'static AgentCatalog {

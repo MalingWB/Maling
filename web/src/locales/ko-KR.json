@@ -998,7 +998,10 @@
         "folder-not-found": "선택한 폴더를 찾을 수 없습니다",
         "folder-not-directory": "선택한 경로가 폴더가 아닙니다",
         "folder-read-failed": "선택한 폴더를 완전히 읽을 수 없습니다",
-        "no-markdown-files": "선택한 폴더에 Markdown 파일이 없습니다"
+        "no-markdown-files": "선택한 폴더에 Markdown 파일이 없습니다",
+        "file-not-found": "선택한 파일을 찾을 수 없습니다",
+        "file-not-markdown": "선택한 파일이 Markdown 파일이 아닙니다",
+        "no-files": "파일이 선택되지 않았습니다"
       }
     },
     "manual-check": {
@@ -1142,6 +1145,8 @@
       "runtime-offline": "런타임이 아직 준비되지 않았습니다. 잠시 후 다시 시도하세요.",
       "session-resume-failed": "세션 재개에 실패했습니다. 새 작업으로 다시 실행됩니다.",
       "task-not-found": "이 Multica 작업을 찾을 수 없습니다.",
+      "upstream-pull-invalid-decision": "선택이 올바르지 않습니다. 확인 후 다시 시도하세요.",
+      "upstream-pull-not-pending": "이 가져오기는 이미 종료되었습니다. 선택이 필요하지 않습니다.",
       "workspace-already-bound": "이 워크스페이스는 이미 바인딩되어 있습니다.",
       "workspace-not-found": "이 워크스페이스 바인딩을 찾을 수 없습니다."
     },
@@ -1341,7 +1346,6 @@
     "builtInSectionDescription": "초안으로 열어 새 사용자 정의 역할로 저장할 수 있는 고정 역할입니다.",
     "customSectionTitle": "사용자 정의 역할",
     "customSectionDescription": "사용자 역할이 여기에 페이지로 표시됩니다.",
-    "customProfilesPageRange": "사용자 정의 역할 {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "내장 역할은 직접 저장할 수 없습니다. 새 역할로 저장하세요.",
     "emptyContent": "역할 내용 없음",
     "profileRequired": "이름과 요약은 필수입니다.",
@@ -1474,10 +1478,12 @@
       }
     },
     "importProfile": "역할 가져오기",
-    "importSettingsDescription": "폴더에서 역할 Markdown 파일을 일괄 가져옵니다. 이름과 요약이 없으면 자동으로 채웁니다.",
+    "importSettingsDescription": "폴더에서 일괄 가져오거나 역할 Markdown 파일을 직접 선택하여 가져옵니다. 이름과 요약이 없으면 자동으로 채웁니다.",
     "importDynamicTemplateDescription": "활성화하면 가져온 모든 역할을 동적 템플릿으로 처리합니다. 본문이 유효하지 않으면 정적으로 다운그레이드됩니다.",
     "importPickFolder": "폴더 선택 후 가져오기",
     "importPickFolderTitle": "역할 Markdown 파일이 있는 폴더 선택",
+    "importPickFiles": "파일 선택 후 가져오기",
+    "importPickFilesTitle": "역할 Markdown 파일 선택",
     "importResultTitle": "가져오기 결과",
     "importResultSummary": "파일 {{total}}개 스캔, 성공 {{success}}, 실패 {{failed}}.",
     "importResultImported": "가져옴",
@@ -2623,6 +2629,7 @@
       "receiverAccount": "수신 계정",
       "robotName": "봇 이름",
       "privateBinding": "1:1 채팅: {{name}}",
+      "privateBindingUnnamed": "1:1 채팅 바인딩됨",
       "notificationKinds": "알림 유형",
       "notificationGroups": {
         "needsAction": "조치 필요",
@@ -2670,6 +2677,7 @@
             "send": "나에게 메시지 보내기",
             "receive": "내가 봇에 보낸 개인 메시지 읽기",
             "update": "봇이 보낸 카드 업데이트",
+            "profile": "받는 계정을 표시하기 위해 이름 읽기",
             "confirm": "동의하고 QR 코드 생성"
           },
           "resetBinding": {
@@ -3039,7 +3047,9 @@
         "emptyTitle": "{{source}}에 연결되지 않음",
         "removeTask": "목록에서 제거",
         "removeTaskHint": "이 쪽 목록에서만 제거되며, 새로 고치면 다시 나타납니다",
-        "removeTaskTerminalHint": "로컬 완료 기록을 함께 삭제하며, 새로 고쳐도 다시 나타나지 않습니다"
+        "removeTaskTerminalHint": "로컬 완료 기록을 함께 삭제하며, 새로 고쳐도 다시 나타나지 않습니다",
+        "rerunTask": "다시 실행",
+        "rerunBadge": "다시 실행"
       },
       "keepResident": "세션 상시 유지",
       "releaseResident": "상시 유지 해제",
@@ -3254,6 +3264,7 @@
       "account": {
         "connected": "연결됨"
       },
+      "openPlatform": "{{source}} 플랫폼 열기",
       "column": {
         "empty": "작업 없음"
       },
@@ -3278,10 +3289,150 @@
         "label": "유형",
         "test": "테스트"
       },
+      "searchPlaceholder": "작업 이름 검색…",
       "readiness": {
-        "notReady": "준비되지 않음",
-        "notReadyHint": "해당 개발 작업이 아직 완료되지 않았습니다. 완료될 때까지 기다려 보세요"
+        "ready": "준비됨",
+        "readyHint": "해당 개발 작업이 완료되어 실행을 시작할 수 있습니다"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "이 작업은 DPMS 요구사항 생성 후 연결을 보고해야 합니다. 보고가 완료되면 이 레이블은 자동으로 사라집니다"
+      },
+      "issueStatus": {
+        "todo": "할 일",
+        "backlog": "백로그"
       }
+    },
+    "upstreamPull": {
+      "title": "업스트림 산출물 설명 미수신",
+      "description": "\"{{task}}\"의 {{node}} 노드가 업스트림 작업 항목 {{issue}}의 산출물 설명을 아직 가져오지 못했습니다.",
+      "fallbackNote": "60초 내에 선택하지 않으면 자동으로 폴링을 재개합니다.",
+      "retry": "계속 대기",
+      "manual": "직접 입력",
+      "skip": "가져오기 건너뛰기",
+      "manualLabel": "산출물 설명",
+      "manualPlaceholder": "빌드 산출물, 배포 환경 등 핵심 정보…",
+      "manualSubmit": "이 내용으로 계속",
+      "waitingNote": "업스트림 산출물 메모 업데이트를 계속 기다리는 중입니다. 대기 중 언제든 수동 입력하거나 건너뛸 수 있습니다."
+    }
+  },
+  "onboarding": {
+    "loading": "불러오는 중",
+    "loadFailed": "시작 설정을 읽을 수 없습니다. 다시 시도하세요.",
+    "retry": "다시 시도",
+    "language": "언어",
+    "theme": "테마 전환",
+    "exit": "설정 종료",
+    "progress": "설정 진행 상황",
+    "checking": "환경 확인 중…",
+    "runtimeVersion": "권장 Node.js {{version}}; 지원 {{ranges}}",
+    "recheck": "다시 확인",
+    "installGuide": "공식 설치 안내",
+    "discovering": "로컬 Agent 확인 중…",
+    "discovered": "사용 가능한 Agent {{count}}개 감지됨",
+    "noAgents": "사용 가능한 Agent를 찾지 못했습니다. Agent 설치 또는 로그인을 완료한 후 다시 확인하세요.",
+    "agentRepairs": "확인이 필요한 Agent",
+    "retryAgent": "다시 확인",
+    "chooseProgram": "프로그램 선택",
+    "defaultAgent": "기본 Agent",
+    "chooseAgent": "사용 가능한 Agent 선택",
+    "defaultModel": "기본 모델",
+    "chooseModel": "모델 선택",
+    "providerDefault": "이 Agent는 공급자의 기본 모델을 사용합니다.",
+    "checkingModel": "모델 설정 읽는 중…",
+    "permission": "권한 모드",
+    "choosePermission": "권한 모드 선택",
+    "preview": "변경 검토",
+    "previewSummary": "기본 워크플로 {{count}}개의 실행 설정 {{slots}}개를 업데이트합니다.",
+    "slots": "설정 {{count}}개",
+    "loadMore": "더 불러오기",
+    "back": "이전",
+    "help": "도움말",
+    "skipGit": "Git 건너뛰기",
+    "next": "다음",
+    "apply": "적용 및 완료",
+    "review": "변경 미리 보기",
+    "repairHint": "공급자 안내에 따라 설치하거나 로그인한 후 다시 확인하세요.",
+    "settingsTitle": "설정 및 워크플로",
+    "rerunTitle": "최초 설정",
+    "rerunDescription": "Git, 실행 환경 및 로컬 Agent를 다시 확인합니다.",
+    "defaultsTitle": "기본 워크플로",
+    "defaultsDescription": "기본 제공 워크플로의 Agent, 모델 및 권한을 일괄 설정합니다. 사용자 지정 워크플로는 변경하지 않습니다.",
+    "configureDefaults": "기본값 설정",
+    "rerun": "설정 다시 실행",
+    "steps": {
+      "git": "Git",
+      "runtime": "실행 환경",
+      "agent": "Agent"
+    },
+    "titles": {
+      "git": "Git 준비",
+      "runtime": "Node.js 실행 환경 확인",
+      "agent": "Agent 연결 및 기본 모델 선택"
+    },
+    "descriptions": {
+      "git": "Git은 버전 관리에 사용됩니다. 나중에 설치할 수 있습니다.",
+      "runtime": "Node.js, npm, npx 모두 확인을 통과해야 합니다. 설치 후 다시 확인하세요.",
+      "agent": "사용 가능한 Agent는 자동 저장됩니다. 기본 모델을 선택하고 모든 기본 워크플로에 적용할 변경을 확인하세요."
+    },
+    "status": {
+      "ready": "준비됨",
+      "missing": "미설치",
+      "unsupported": "지원하지 않는 버전",
+      "incompatible": "환경 불일치",
+      "failed": "확인 실패",
+      "timeout": "시간 초과",
+      "cancelled": "취소됨",
+      "skipped": "건너뜀",
+      "pending": "검사 전",
+      "checking": "검사 중"
+    },
+    "errors": {
+      "setup": {
+        "agent-preparation-required": "공급자 안내에 따라 설치하거나 로그인한 후 다시 확인하세요.",
+        "probe-failed": "검사에 실패했습니다. 다시 검사하세요.",
+        "probe-cancelled": "확인이 취소되었습니다. 계속하려면 다시 확인하세요.",
+        "runtime-incompatible": "Node.js, npm 또는 npx가 요구 사항을 충족하지 않습니다. 실행 환경을 확인하세요.",
+        "environment-check-required": "먼저 실행 환경 확인을 완료하세요.",
+        "configuration-conflict": "다른 곳에서 설정이 변경되었습니다. Agent를 다시 확인하고 최신 변경 사항을 미리 보세요.",
+        "preview-stale": "선택한 모델 또는 기본 Workflow가 변경되었습니다. 다시 미리 보세요.",
+        "agent-unavailable": "이 Agent를 더 이상 사용할 수 없습니다. 다시 확인하거나 다른 Agent를 선택하세요.",
+        "model-config-invalid": "모델 옵션이 유효하지 않습니다. 모델을 다시 선택하세요.",
+        "model-selection-required": "먼저 모델을 선택하세요.",
+        "permission-selection-required": "먼저 권한 모드를 선택하세요.",
+        "git-decision-required": "지원되는 Git을 설치하거나 Git 건너뛰기를 선택하세요.",
+        "recovery-required": "이전 저장을 복구하지 못했습니다. 설정 폴더 접근 권한을 복원하고 다시 시작하세요.",
+        "executable-path-invalid": "기존 실행 파일의 전체 경로를 선택하세요.",
+        "commit-failed": "저장하지 못했습니다. 폴더 권한과 디스크 여유 공간을 확인한 후 다시 시도하세요.",
+        "operation-id-invalid": "저장 요청이 유효하지 않습니다. 다시 미리 보세요.",
+        "templates-initialization-required": "기본 Workflow가 초기화되지 않았습니다. Agent를 다시 확인하세요."
+      }
+    },
+    "gitVersion": "Git {{version}} 이상이 필요합니다.",
+    "previousBindings": "교체할 현재 설정",
+    "previousBinding": "{{slot}}: {{agent}} / {{model}}",
+    "defaultModelLabel": "공급자 기본 모델",
+    "runtimeBlocked": "실행 환경 검사를 통과하지 못했습니다",
+    "detectionFailed": "Agent 감지에 실패했습니다. 다시 시도하세요.",
+    "recheckRuntime": "실행 환경 다시 검사",
+    "viewRuntime": "실행 환경 보기",
+    "environmentHelp": {
+      "missing": "이 도구를 찾을 수 없습니다. 공식 안내에 따라 설치한 후 다시 검사하세요.",
+      "unsupported": "공식 안내에 따라 지원되는 버전을 설치한 후 다시 검사하세요.",
+      "incompatible": "감지된 실행 환경 조합이 호환되지 않습니다. 설치 경로를 확인한 후 다시 시도하세요.",
+      "failed": "검사를 완료할 수 없습니다. 실행 파일 경로, 접근 권한 및 설치 상태를 확인한 후 다시 시도하세요.",
+      "timeout": "검사 시간이 초과되었습니다. 다시 시도하고, 계속되면 이 도구가 정상적으로 실행되는지 확인하세요.",
+      "cancelled": "검사가 취소되었습니다. 다시 검사하세요."
+    },
+    "environmentReasons": {
+      "probe-unavailable": "실제로 사용된 실행 환경을 확인할 수 없습니다. 설치 상태를 확인하고 다시 시도하세요.",
+      "node-mismatch": "다른 Node.js 설치가 사용되었습니다. 예상: {{expectedNodePath}}; 실제: {{actualNodePath}}.",
+      "node-version-mismatch": "Node.js 버전이 다릅니다. 예상: {{expectedVersion}}; 실제: {{actualVersion}}.",
+      "node-path-mismatch": "Node.js 실행 경로가 다릅니다. 예상: {{expectedNodePath}}; 실제: {{actualNodePath}}.",
+      "npm-metadata-missing": "npm 설치 정보를 확인할 수 없습니다. Node.js/npm 설치를 복구한 후 다시 검사하세요.",
+      "npm-engines-incompatible": "이 npm은 현재 Node.js를 지원하지 않습니다. 요구 사항: {{nodeRange}}.",
+      "npm-version-mismatch": "npm 버전 정보가 다릅니다. 출력: {{expectedVersion}}; 패키지: {{actualVersion}}.",
+      "npm-package-mismatch": "npm과 npx가 서로 다른 설치에 속합니다. npm: {{expectedNpmRoot}}; 현재 도구: {{actualNpmRoot}}."
     }
   }
 }

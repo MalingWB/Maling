@@ -24,10 +24,13 @@ use crate::channel::current_channel_config;
 use crate::conversation_workspace::workspace_entry_for_project;
 use crate::metrics::get_system_username;
 use crate::multica::bridge::{emit_remote_tasks_updated, teardown_active_run};
-use crate::multica::client::{HeartbeatAck, MulticaClient, RegisterRequest, RuntimeSpec};
+use crate::multica::client::{
+    HeartbeatAck, MulticaClient, PendingRuntimeAssetsRef, RegisterRequest, RuntimeSpec,
+};
 use crate::multica::config::{get_daemon_id, get_pat, multica_base_url, multica_settings};
 use crate::multica::error::MulticaError;
 use crate::multica::local_skills;
+use crate::multica::runtime_assets;
 use crate::multica::state::SharedMulticaState;
 use crate::state::DesktopState;
 
@@ -233,6 +236,14 @@ async fn run_heartbeat_loop<R: Runtime>(app: AppHandle<R>) {
                         if ack_signals_readiness_change(&ack) {
                             emit_remote_tasks_updated(&app);
                         }
+                        // 角色共享工单（通道 B）与 skill 待办同模型派发；不需要 provider（上报 body
+                        // 不含 provider 字段），先于 ack 的 move 取引用分发。
+                        dispatch_pending_runtime_assets(
+                            &app,
+                            &client,
+                            runtime_id,
+                            ack.pending_runtime_assets.as_ref(),
+                        );
                         dispatch_pending_skill_work(&app, &client, workspace_id, runtime_id, ack)
                     }
                     Err(error) => {
@@ -259,6 +270,13 @@ async fn run_heartbeat_loop<R: Runtime>(app: AppHandle<R>) {
                 }
             }
             trace_stage("heartbeat", stage);
+
+            // ②.5 rerun 血缘退场排空（#4）：读路径（get_remote_tasks）观察到的血缘在此持久化
+            //     （读命令不写回，data-loading §5——维护写归心跳生命周期）。空集零开销（锁内
+            //     判空即返回）；命中本地终态历史即真删除并广播，源行不再随后继离场回现。
+            let stage = Instant::now();
+            crate::multica::bridge::drain_observed_rerun_retirements(&app);
+            trace_stage("rerun_retire", stage);
 
             // ③ 取消检测：active run 的 remote terminal -> 作废本地（接入方案 C5）。
             let stage = Instant::now();
@@ -461,6 +479,27 @@ fn ack_signals_readiness_change(ack: &HeartbeatAck) -> bool {
     ack.pending_readiness_changes
         .as_ref()
         .is_some_and(|changes| !changes.is_empty())
+}
+
+/// 心跳 ack 待办分发（runtime-assets 角色共享工单，通道 B）：无待办零开销，有待办 spawn 独立任务。
+///
+/// 与 skill 待办同模型：**绝不阻塞心跳 tick**——详情 GET（权威 action 判定）在 spawn 任务内
+/// 完成，本地角色读写与上报的耗时/失败都不影响 runtime 在线维持；上报失败由服务端 60s running
+/// 超时终态化兜底。ack 里的 `action` 只是建议，处理侧不依赖它（server 每次 beat 最多派一个）。
+fn dispatch_pending_runtime_assets<R: Runtime>(
+    app: &AppHandle<R>,
+    client: &MulticaClient,
+    runtime_id: &str,
+    pending: Option<&PendingRuntimeAssetsRef>,
+) {
+    if let Some(pending) = pending {
+        tauri::async_runtime::spawn(runtime_assets::handle_runtime_assets_request(
+            app.clone(),
+            client.clone(),
+            runtime_id.to_string(),
+            pending.id.clone(),
+        ));
+    }
 }
 
 /// 绑定配置中 workspace 的 provider（发现/导入上报 body 字段；绑定已删则 None）。

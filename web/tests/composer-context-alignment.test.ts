@@ -6,6 +6,10 @@ const quickComposerSource = readFileSync(
   fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)),
   'utf8',
 );
+const leadingAdornmentSource = readFileSync(
+  fileURLToPath(new URL('../src/components/conversation/ComposerLeadingAdornment.tsx', import.meta.url)),
+  'utf8',
+);
 const acpDialogSource = readFileSync(
   fileURLToPath(new URL('../src/components/acp/ACPChatDialog.tsx', import.meta.url)),
   'utf8',
@@ -35,7 +39,7 @@ describe('composer context horizontal alignment', () => {
   it('aligns quick-conversation context items, command tags, and text to one edge', () => {
     expect(quickComposerSource).toContain('data-conversation-composer="quick"');
     expect(quickComposerSource).toContain('className={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaClassName}');
-    expect(quickComposerSource).toContain('className={`${COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME} left-0 top-2`}');
+    expect(leadingAdornmentSource).toContain('className={`${COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME} left-0 top-2 max-w-full`}');
     expect(quickComposerSource).toContain("slashCommands.isOpen && 'z-50'");
     expect(composerLayoutSource).toContain("textareaClassName: `${COMPOSER_TEXTAREA_BASE_CLASS_NAME} w-full overflow-y-hidden px-0`");
     expect(composerLayoutSource).toContain("promptInputClassName: 'relative rounded-2xl border-border bg-card/60 px-2.5 py-2 shadow-sm'");

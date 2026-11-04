@@ -90,6 +90,7 @@ pub const PROFILE_DEV_TEST: LocalizedText = localized_prompt!("profile/dev-test.
 pub const PROFILE_REVIEW: LocalizedText = localized_prompt!("profile/review.md");
 pub const PROFILE_TEST: LocalizedText = localized_prompt!("profile/test.md");
 pub const PROFILE_CICD: LocalizedText = localized_prompt_zh_en!("profile/cicd.md");
+pub const PROFILE_WEAPM: LocalizedText = localized_prompt_zh_en!("profile/weapm.md");
 pub const PROFILE_ACCEPT: LocalizedText = localized_prompt!("profile/accept.md");
 pub const PROFILE_CLEAN: LocalizedText = localized_prompt!("profile/clean.md");
 pub const PROFILE_INTERVIEW: LocalizedText = localized_prompt!("profile/interview.md");
@@ -111,8 +112,14 @@ pub const RUNTIME_REMOTE_TASK_PARENT_OUTPUT: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_parent_output.md");
 pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_completion_protocol.md");
+pub const RUNTIME_REMOTE_TASK_DPMS_GATE: LocalizedText =
+    localized_prompt_zh_en!("runtime/remote_task_dpms_gate.md");
+pub const RUNTIME_REMOTE_TASK_NODE_PROTOCOL: LocalizedText =
+    localized_prompt_zh_en!("runtime/remote_task_node_protocol.md");
 pub const RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES: LocalizedText =
     localized_prompt_zh_en!("runtime/remote_task_attachment_failures.md");
+pub const RUNTIME_REMOTE_TASK_UPSTREAM_PULL: LocalizedText =
+    localized_prompt_zh_en!("runtime/remote_task_upstream_pull.md");
 pub const RUNTIME_ARTIFACT_FINALIZE: LocalizedText =
     localized_prompt!("runtime/artifact_finalize.md");
 pub const RUNTIME_CONTROL_RESUME: LocalizedText =
@@ -162,6 +169,8 @@ pub const PROFILE_TEST_ZH_CN: &str = PROFILE_TEST.zh_cn;
 pub const PROFILE_TEST_EN: &str = PROFILE_TEST.en;
 pub const PROFILE_CICD_ZH_CN: &str = PROFILE_CICD.zh_cn;
 pub const PROFILE_CICD_EN: &str = PROFILE_CICD.en;
+pub const PROFILE_WEAPM_ZH_CN: &str = PROFILE_WEAPM.zh_cn;
+pub const PROFILE_WEAPM_EN: &str = PROFILE_WEAPM.en;
 pub const PROFILE_ACCEPT_ZH_CN: &str = PROFILE_ACCEPT.zh_cn;
 pub const PROFILE_ACCEPT_EN: &str = PROFILE_ACCEPT.en;
 pub const PROFILE_CLEAN_ZH_CN: &str = PROFILE_CLEAN.zh_cn;
@@ -194,6 +203,10 @@ pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_ZH_CN: &str =
     RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL.zh_cn;
 pub const RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL_EN: &str =
     RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL.en;
+pub const RUNTIME_REMOTE_TASK_DPMS_GATE_ZH_CN: &str = RUNTIME_REMOTE_TASK_DPMS_GATE.zh_cn;
+pub const RUNTIME_REMOTE_TASK_DPMS_GATE_EN: &str = RUNTIME_REMOTE_TASK_DPMS_GATE.en;
+pub const RUNTIME_REMOTE_TASK_NODE_PROTOCOL_ZH_CN: &str = RUNTIME_REMOTE_TASK_NODE_PROTOCOL.zh_cn;
+pub const RUNTIME_REMOTE_TASK_NODE_PROTOCOL_EN: &str = RUNTIME_REMOTE_TASK_NODE_PROTOCOL.en;
 pub const RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES_ZH_CN: &str =
     RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES.zh_cn;
 pub const RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES_EN: &str =
@@ -243,6 +256,7 @@ pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
     ("profile/review.md", PROFILE_REVIEW),
     ("profile/test.md", PROFILE_TEST),
     ("profile/cicd.md", PROFILE_CICD),
+    ("profile/weapm.md", PROFILE_WEAPM),
     ("profile/accept.md", PROFILE_ACCEPT),
     ("profile/clean.md", PROFILE_CLEAN),
     ("profile/interview.md", PROFILE_INTERVIEW),
@@ -279,8 +293,20 @@ pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
         RUNTIME_REMOTE_TASK_COMPLETION_PROTOCOL,
     ),
     (
+        "runtime/remote_task_dpms_gate.md",
+        RUNTIME_REMOTE_TASK_DPMS_GATE,
+    ),
+    (
+        "runtime/remote_task_node_protocol.md",
+        RUNTIME_REMOTE_TASK_NODE_PROTOCOL,
+    ),
+    (
         "runtime/remote_task_attachment_failures.md",
         RUNTIME_REMOTE_TASK_ATTACHMENT_FAILURES,
+    ),
+    (
+        "runtime/remote_task_upstream_pull.md",
+        RUNTIME_REMOTE_TASK_UPSTREAM_PULL,
     ),
     ("runtime/artifact_finalize.md", RUNTIME_ARTIFACT_FINALIZE),
     ("runtime/runtime_control_resume.md", RUNTIME_CONTROL_RESUME),
@@ -476,23 +502,30 @@ mod tests {
     fn remote_task_context_templates_render_all_and_partial_fields() {
         // 远程任务 DPMS 溯源块（multica 预填 composer / 会话起始输入）：全字段与部分字段
         // （其余 null，对应 wire 缺省键）都需完整渲染，且中文标签锁定（发布计划 ID / 业务需求 ID / 需求链接）。
+        // M5-cl 起新增产品 ID / 已创建 DPMS 需求 ID 两行（推荐值预填）。
         let full = json!({
             "release_plan_id": 538181,
             "dev_user": "alice,bob",
             "test_user": "carol",
             "business_story_id": 674290,
-            "origin_url": "https://dpms.example.com/story/674290"
+            "origin_url": "https://dpms.example.com/story/674290",
+            "dpms_product_id": 100943,
+            "system_story_id": 889001
         });
         let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN, full.clone());
         assert!(zh.contains("- 发布计划 ID: 538181"));
         assert!(zh.contains("- 开发负责人: alice,bob"));
         assert!(zh.contains("- 业务需求 ID: 674290"));
         assert!(zh.contains("- 需求链接: https://dpms.example.com/story/674290"));
+        assert!(zh.contains("- 产品 ID（任务指定）: 100943"));
+        assert!(zh.contains("- 已创建 DPMS 需求 ID: 889001"));
 
         let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_EN, full);
         assert!(en.contains("- Release plan ID: 538181"));
         assert!(en.contains("- Business story ID: 674290"));
         assert!(en.contains("- Requirement link: https://dpms.example.com/story/674290"));
+        assert!(en.contains("- Product ID (task-specified): 100943"));
+        assert!(en.contains("- Created DPMS story ID: 889001"));
 
         // 部分字段（其余 null）：仅渲染存在的行，缺席字段不出行、无空行残留。
         let partial = json!({
@@ -500,14 +533,49 @@ mod tests {
             "dev_user": null,
             "test_user": null,
             "business_story_id": null,
-            "origin_url": null
+            "origin_url": null,
+            "dpms_product_id": null,
+            "system_story_id": null
         });
         let zh_partial = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_ZH_CN, partial.clone());
         assert!(zh_partial.contains("- 发布计划 ID: 538181"));
         assert!(!zh_partial.contains("开发负责人"));
+        assert!(!zh_partial.contains("产品 ID"));
+        assert!(!zh_partial.contains("已创建 DPMS 需求 ID"));
         assert!(!zh_partial.contains("\n\n"));
         let en_partial = assert_fully_rendered(RUNTIME_REMOTE_TASK_CONTEXT_EN, partial);
         assert!(!en_partial.contains("Dev owner"));
+        assert!(!en_partial.contains("Product ID"));
+    }
+
+    #[test]
+    fn remote_task_dpms_gate_templates_render_creation_contract() {
+        // DPMS 创建门块（M5-cl 建立；M5-cn 契约收缩为关联；M5-cu 补产品 ID）：恒定文案无变量
+        // （空上下文渲染即原文）；锁定关键语义——runtime 回传 `storyId` + `dpms.productId`
+        // 两项关联（productId 是 join key 的另一半，必须写实际使用值；其余字段由工作项平台从
+        // DPMS 拉取）、其余信息键按角色定义写、已有 storyId 先核实复用不重复创建、溯源值是
+        // 推荐值仍需用户确认、回写由 runtime 承担（不调工作项平台接口，职责铁律）。
+        let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_DPMS_GATE_ZH_CN, json!({}));
+        assert!(zh.contains("DPMS 系统需求创建环节"));
+        assert!(zh.contains("`storyId`"));
+        assert!(zh.contains("`dpms.productId`"));
+        assert!(zh.contains("只回传这两项关联"));
+        assert!(zh.contains("不能照抄推荐值"));
+        assert!(zh.contains("`storyName` 等其余信息键"));
+        assert!(zh.contains("不重复创建"));
+        assert!(zh.contains("推荐值"));
+        assert!(zh.contains("不要调用工作项平台接口"));
+
+        let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_DPMS_GATE_EN, json!({}));
+        assert!(en.contains("DPMS system story creation"));
+        assert!(en.contains("`storyId`"));
+        assert!(en.contains("`dpms.productId`"));
+        assert!(en.contains("reports only these two linkage values"));
+        assert!(en.contains("not a copy of the recommendation"));
+        assert!(en.contains("`storyName`"));
+        assert!(en.contains("reuse it instead of creating again"));
+        assert!(en.contains("prefilled recommendations"));
+        assert!(en.contains("do not call work-item platform APIs"));
     }
 
     #[test]
@@ -589,16 +657,182 @@ mod tests {
         assert!(zh.contains("同一行"));
         assert!(en.contains("```completion-output"));
         assert!(en.contains("on the same line"));
-        // 工作流分支（开发设计 §12.59）：提取只读终态节点 attempt，但协议此前未赋予该节点
-        // 「整体交付总结」职责——收尾节点只写自己节点的产物（如仅一条 SQL），真正的构建/
-        // 部署/测试要点被覆盖丢失。必须锁定：整个工作项的综合总结 + 优先构建/部署/测试要点 +
-        // 不可得时简要总结兜底 + 不得只写本节点产物。两语言均锁定。
+        // 整体总结口径（§12.59 直面对应）：块总结整个工作项（会话全部产出与附件），不得只写
+        // 最后一轮；不可得时简要总结兜底。两语言均锁定。
         assert!(zh.contains("整个工作项"));
-        assert!(zh.contains("不得只写你自己节点的产物"));
+        assert!(zh.contains("不得只写最后一轮的内容"));
         assert!(zh.contains("简要总结"));
         assert!(en.contains("entire work item"));
-        assert!(en.contains("do not limit the block to your own node's output"));
+        assert!(en.contains("do not limit it to the last turn's content"));
         assert!(en.contains("brief summary"));
+        // M5-bw（开发设计 §12.65）：覆盖清单由平铺改为分级——构建包名/制品名与部署环境是
+        // 最重要输出（含「不涉及构建部署时明确说明」防歧义条款），测试要点/变更范围降为
+        // 锦上添花。两语言均锁定。（编排面的「前序 CI/CD 产出携带进块」条款随 M5-cg 移至
+        // remote_task_node_protocol——direct 会话无前序节点。）
+        assert!(zh.contains("构建出的包名/制品名"));
+        assert!(zh.contains("部署的环境"));
+        assert!(zh.contains("不涉及构建或部署"));
+        assert!(en.contains("the built artifact/package name"));
+        assert!(en.contains("the environment it was deployed to"));
+        assert!(en.contains("no build or deployment"));
+        // M5-by（开发设计 §12.67）：核心信息三项化——改动范围（极其精简）升为第三核心项；
+        // 新增完成后修订条款——任务完成后用户在会话中要求调整时重新输出完整新块（整块覆盖
+        // 非增量、核心信息保留），只更新远程侧存储内容、不改变任务完成状态。完成门控语义不变
+        // （首次块判定完成，后续块走迟到补写通道幂等覆盖）。两语言均锁定。
+        assert!(zh.contains("极其精简"));
+        assert!(zh.contains("重新输出完整的新块"));
+        assert!(zh.contains("不改变任务的完成状态"));
+        assert!(en.contains("extremely brief"));
+        assert!(en.contains("complete new block"));
+        assert!(en.contains("does not change the task's completion status"));
+        // M5-cg（开发设计 改动七十六）：direct 协议收窄为纯 direct 语义——编排形态的产出
+        // 规则移至 remote_task_node_protocol（按节点身份指定）。direct 模板不得再含编排分支
+        // 文案（收尾节点 / 阶段性上送 / 交付上传角色），防止两套产出规则并存。
+        assert!(!zh.contains("阶段性"));
+        assert!(!zh.contains("交付上传"));
+        assert!(!zh.contains("收尾节点"));
+        assert!(!en.contains("staged snapshot"));
+        assert!(!en.contains("deliverable-upload"));
+        assert!(!en.contains("finishing node"));
+    }
+
+    #[test]
+    fn remote_task_node_protocol_templates_designation_contract() {
+        // 编排面完成输出协议（M5-cg 产出侧门禁，开发设计 改动七十六）：产出资格由运行时按节点
+        // 身份指定（收尾/验收节点 → 最终交付；标记声明节点 → 阶段性上送；其余 → 禁止产出），
+        // 模板按 `designation` 单变量三分支渲染。三态都必须锁定：指定权声明 + 各自身份指令；
+        // final/staged 另锁共享交付规则（核心信息分级、前序 CI/CD 携带、整体总结、≤2000、
+        // JSON 裁决前置、精确围栏格式）；prohibited 必须短且不含围栏示例与产出规则。
+        for language in [
+            RUNTIME_REMOTE_TASK_NODE_PROTOCOL_ZH_CN,
+            RUNTIME_REMOTE_TASK_NODE_PROTOCOL_EN,
+        ] {
+            for designation in ["final", "staged", "prohibited"] {
+                let rendered =
+                    assert_fully_rendered(language, json!({ "designation": designation }));
+                assert!(rendered.contains("completion-output"));
+            }
+        }
+        let zh = RUNTIME_REMOTE_TASK_NODE_PROTOCOL_ZH_CN;
+        let en = RUNTIME_REMOTE_TASK_NODE_PROTOCOL_EN;
+
+        // final：收尾节点产出最终交付说明。
+        let zh_final = assert_fully_rendered(zh, json!({ "designation": "final" }));
+        assert!(zh_final.contains("收尾节点"));
+        assert!(zh_final.contains("最终交付说明"));
+        let en_final = assert_fully_rendered(en, json!({ "designation": "final" }));
+        assert!(en_final.contains("finishing node"));
+        assert!(en_final.contains("final deliverable handoff"));
+
+        // staged：被指定承担阶段性上送的节点（角色 / 声明标记），须注明阶段性口径。
+        let zh_staged = assert_fully_rendered(zh, json!({ "designation": "staged" }));
+        assert!(zh_staged.contains("阶段性上送"));
+        assert!(zh_staged.contains("「交付上传」角色"));
+        assert!(zh_staged.contains("声明标记"));
+        assert!(zh_staged.contains("阶段性快照"));
+        assert!(zh_staged.contains("尚未最终完成"));
+        assert!(zh_staged.contains("在工作流结束前拉取"));
+        let en_staged = assert_fully_rendered(en, json!({ "designation": "staged" }));
+        assert!(en_staged.contains("staged upload"));
+        assert!(en_staged.contains("deliverable-upload role"));
+        assert!(en_staged.contains("declaration marker"));
+        assert!(en_staged.contains("staged snapshot"));
+        assert!(en_staged.contains("with work still pending"));
+        assert!(en_staged.contains("pull before the workflow finishes"));
+
+        // final/staged 共享交付规则：核心信息分级（含前序 CI/CD 携带）、整体总结（不得只写本
+        // 节点产物）、JSON 裁决前置、篇幅与围栏格式契约。
+        for rendered in [zh_final.clone(), zh_staged.clone()] {
+            assert!(rendered.contains("构建出的包名/制品名"));
+            assert!(rendered.contains("尤其是 CI/CD 节点"));
+            assert!(rendered.contains("携带进你的块"));
+            assert!(rendered.contains("整个工作项"));
+            assert!(rendered.contains("不得只写你自己节点的产物"));
+            assert!(rendered.contains("简要总结"));
+            assert!(rendered.contains("JSON 裁决"));
+            assert!(rendered.contains("2000 字符"));
+            assert!(rendered.contains("```completion-output"));
+            assert!(rendered.contains("同一行"));
+        }
+        for rendered in [en_final.clone(), en_staged.clone()] {
+            assert!(rendered.contains("especially those of CI/CD nodes"));
+            assert!(rendered.contains("carry that information forward into your block"));
+            assert!(rendered.contains("entire work item"));
+            assert!(rendered.contains("do not limit the block to your own node's output"));
+            assert!(rendered.contains("brief summary"));
+            assert!(rendered.contains("JSON verdict"));
+            assert!(rendered.contains("2,000 characters"));
+            assert!(rendered.contains("```completion-output"));
+            assert!(rendered.contains("on the same line"));
+        }
+
+        // prohibited：明确禁止产出，不含围栏示例与篇幅/核心信息规则（无产出即无格式契约）。
+        let zh_prohibited = assert_fully_rendered(zh, json!({ "designation": "prohibited" }));
+        assert!(zh_prohibited.contains("不要输出 `completion-output` 块"));
+        assert!(!zh_prohibited.contains("```completion-output"));
+        assert!(!zh_prohibited.contains("2000 字符"));
+        let en_prohibited = assert_fully_rendered(en, json!({ "designation": "prohibited" }));
+        assert!(en_prohibited.contains("do not output a `completion-output` block"));
+        assert!(!en_prohibited.contains("```completion-output"));
+        assert!(!en_prohibited.contains("2,000 characters"));
+    }
+
+    #[test]
+    fn remote_task_upstream_pull_templates_render_parent_snapshot() {
+        // 上游交付拉取（M5-cf 读侧；M5-ch 三变体）：`$upstream.completion-output` 令牌的替换
+        // 文本。parent 变体完整渲染 parent_status 与 parent_output 两个变量，并锁定阶段性快照
+        // 口径——父状态可见 + 未完成时是阶段性快照可能被覆盖 + 按当前值执行并在结论注明版本
+        // 口径。manual（用户手动提供，非父快照）与 skipped（跳过 + 不臆测缺失信息）为 M5-ch
+        // 决策点变体。两语言均锁定。
+        let parent_ctx = json!({
+            "source": "parent",
+            "parent_status": "in_progress",
+            "parent_output": "包名：gold-band_0.19.0_x64.msi；部署环境：内网测试环境 http://t.example.com"
+        });
+        let zh = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.zh_cn, parent_ctx.clone());
+        assert!(zh.contains("in_progress"));
+        assert!(zh.contains("gold-band_0.19.0_x64.msi"));
+        assert!(zh.contains("阶段性快照"));
+        assert!(zh.contains("按当前值执行"));
+        assert!(zh.contains("版本口径"));
+
+        let en = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.en, parent_ctx);
+        assert!(en.contains("in_progress"));
+        assert!(en.contains("gold-band_0.19.0_x64.msi"));
+        assert!(en.contains("staged snapshot"));
+        assert!(en.contains("execute against the current value"));
+        assert!(en.contains("version basis"));
+
+        // manual：内容插值 + 标注「用户手动提供，非父工作项快照」。
+        let manual_ctx = json!({
+            "source": "manual",
+            "content": "包名：gold-band_0.19.0_x64.msi；部署环境：内网测试环境 http://t.example.com"
+        });
+        let zh_manual =
+            assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.zh_cn, manual_ctx.clone());
+        assert!(zh_manual.contains("手动提供"));
+        assert!(zh_manual.contains("gold-band_0.19.0_x64.msi"));
+        assert!(
+            !zh_manual.contains("阶段性快照"),
+            "manual 变体不带父快照口径"
+        );
+        let en_manual = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.en, manual_ctx);
+        assert!(en_manual.contains("provided manually by the user"));
+        assert!(en_manual.contains("gold-band_0.19.0_x64.msi"));
+        assert!(
+            !en_manual.contains("staged snapshot"),
+            "manual variant carries no snapshot caveat"
+        );
+
+        // skipped：跳过说明 + 「不要臆测」防线（缺信息时如实说明而非编造）。
+        let skip_ctx = json!({ "source": "skipped" });
+        let zh_skip =
+            assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.zh_cn, skip_ctx.clone());
+        assert!(zh_skip.contains("跳过"));
+        assert!(zh_skip.contains("不要臆测"));
+        let en_skip = assert_fully_rendered(RUNTIME_REMOTE_TASK_UPSTREAM_PULL.en, skip_ctx);
+        assert!(en_skip.contains("skipped by the user"));
+        assert!(en_skip.contains("instead of guessing"));
     }
 
     #[test]

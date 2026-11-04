@@ -381,8 +381,8 @@ channel 字段是**编译期常量**（option_env!，参考 metrics 字段 chann
 
 | 字段 | DesktopChannelConfig（channel.rs:4-22） | default.json | wb.json |
 |---|---|---|---|
-| `multica_base_url` | `&'static str` | `http://localhost:8080` | `WB Multica 服务地址`（nginx 统一入口，见 §12.30） |
-| `multica_app_url` | `&'static str` | `http://localhost:3000` | `WB Multica 服务地址`（前后端同源同入口） |
+| `multica_base_url` | `&'static str` | `http://localhost:8080` | `${GOLD_BAND_WB_MULTICA_URL}` 注入的独立 origin（不再从 WB 服务地址派生端口，见 §12.92） |
+| `multica_app_url` | `&'static str` | `http://localhost:3000` | 同 `${GOLD_BAND_WB_MULTICA_URL}`（前后端同源同入口） |
 | `multica_enabled` | `bool` | `true` | `true` |
 | `multica_toggle_locked` | `bool` | `false` | `true` |
 
@@ -444,7 +444,7 @@ pub struct RemoteTask { pub id: String, pub issue_id: Option<String>, pub status
 pub struct ClaimRequest {}   // 服务端 claim 处理器不解码 body；prior_session_id 是「响应只输出」字段（agent.go:311），客户端消费响应而非塞请求体（§12.14）
 pub struct PinTaskSessionRequest { pub session_id: String, pub work_dir: Option<String> }
 pub struct StartRequest { pub force_fresh_session: bool }          // rerun 时 true（详见 4.4 / 接入方案 3.2.7）
-pub struct CompleteRequest { pub output: String, pub session_id: Option<String>, pub work_dir: Option<String> }
+pub struct CompleteRequest { pub output: String, pub session_id: Option<String>, pub work_dir: Option<String>, pub completion_output: Option<String> }  // M5-cd：issue 交付说明随 complete 同事务回传（multica 协议改造，§12.72）
 pub struct FailRequest { pub error: String, pub failure_reason: String }
 ```
 
@@ -854,7 +854,7 @@ start_multica_runtime()
   │          本期只基础状态（start/complete/fail + 心跳），不上报 step/total 进度
   │          周期 GET /tasks/{tid}/status 检测取消（cancelled/failed/404 → 中断本地 run）
   └─ run outcome（**首轮 run 终结即触发，单轮即完成**；码灵不在单 remote task 多轮，多轮走新 task 续跑同 session，见 4.4）。订阅器穷举 4 分支（见 2.5 终态表）：
-       RunCompleted{Success} → POST /tasks/{tid}/complete {output, session_id=ACP session_id, work_dir=任务级 local_project_id 解析}（重试幂等）→ 清 multica_task_conversations[tid]
+       RunCompleted{Success} → POST /tasks/{tid}/complete {output, session_id=ACP session_id, work_dir=任务级 local_project_id 解析, completion_output=交付说明（M5-cd：issue 任务随 complete 同事务回传，块优先/全文兜底 + 超长 400 立即降级，§12.72）}（重试幂等）→ 清 multica_task_conversations[tid]
        RunCompleted{Failure} → POST /tasks/{tid}/fail {error, failure_reason=agent_error.*}（重试幂等；如实传值供 server 决定 auto-retry）+ 记 issue_id 进 multica_pending_issues（失败回显，供 rerun；M4 实现）
        RunCompleted{Killed}  → fail(timeout)（M4-d：cancel 路径皆经 run_pause→Paused 从不产生 Killed，Killed 必为 agent 真死，unconditional）
        RunPaused/InterventionRequested → **不上报终态**，转本地 elicitation/permission 处理（Paused 盲区，multica 继续 running，见 2.5）
@@ -1804,7 +1804,7 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **根因（好设计、实现可完善）**：§12.22（M5-aj）的独立 chip 方案（与正文解耦、可见可控、删除语义明确）本身正确，但两点实现可完善：① chip 作为 `PromptInput` 的首子节点（block-flow，输入区**上方独立行**），与正文分离，不像「正文的一部分」；② Backspace 删除要求**正文为空**（`visibleContent.trim() === ''`，避免误删正文），体感上「不够直接」——用户希望删 chip 像删正文最前一个字一样自然。
 
 **方案（复用既有 leading adornment 机制 + 提取可测纯函数）**：
-- **chip 内嵌（复用 slash 同款机制）**：chip 从 `PromptInput` 首子节点 block 行移进 textarea 的 `relative` 容器，作为正文最前的 leading adornment——绝对定位左上角（`absolute left-0 top-0 z-10`），正文首行经 `useLeadingAdornmentTextIndent`（`text-indent = chip 宽度 + 0.25rem`）缩进让位；CSS `text-indent` 只作用于首行，换行后正文回到左侧（chip 只占首行高度，不与后续行重叠）。chip 与 slash 命令标签互斥（**slash 优先**——绑定预填的是任务需求文本、非 slash 命令），共用同一套 `leadingAdornmentLayout`（原仅服务 slash 的 `committedInputLayout` 重命名 + `enabled` 泛化为 `committedSlashCommand || multicaChipActive`）。× 关闭按钮保留（点 × 仍删 chip）。
+- **chip 内嵌（复用 slash 同款机制）**：chip 从 `PromptInput` 首子节点 block 行移进 textarea 的 `relative` 容器，作为正文最前的 leading adornment——绝对定位左上角（`absolute left-0 top-0 z-10`），正文首行经 `useLeadingAdornmentTextIndent`（`text-indent = chip 宽度 + 0.25rem`）缩进让位；CSS `text-indent` 只作用于首行，换行后正文回到左侧（chip 只占首行高度，不与后续行重叠）。chip 与 slash 命令标签互斥（**slash 优先**——绑定预填的是任务需求文本、非 slash 命令；⚠️ **此互斥已被 M5-bv（§12.64）取代**：`@role` + 远程绑定是合法发送组合，二者改为同槽并排显示），共用同一套 `leadingAdornmentLayout`（原仅服务 slash 的 `committedInputLayout` 重命名 + `enabled` 泛化为 `committedSlashCommand || multicaChipActive`）。× 关闭按钮保留（点 × 仍删 chip）。
 - **Backspace 删除条件放宽**：从「正文为空」改为「光标停在正文最前且无选区（`selectionStart === 0 && selectionEnd === 0`）」——模拟「chip 是正文首个 token」：文本起点的 Backspace 本就是 no-op，劫持它删 chip；正文非空、光标在中间/末尾（`selectionStart > 0`）或存在选区（`selectionEnd !== 0`，即便起点为 0）时照常删字、不误伤 chip。slash 提交时让位 slash 控制器。
 - **提取纯函数固化交互契约**：把 Backspace 触发条件从 `handleKeyDown` inline 提取为 `web/src/lib/conversation-composer-multica-chip.ts` 的 `shouldBackspaceClearMulticaBinding({key, multicaActive, hasCommittedSlashCommand, selectionStart, selectionEnd})`，单测覆盖 5 维输入分支。home `ConversationComposer` 依赖过重（draft context + agent commands + attachment + slash controller + right workspace）不挂组件测，与既有「纯逻辑 reducer 测 + 容器测」套件策略一致（§12.22 验收同款理由）。
 
@@ -1847,6 +1847,8 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 ---
 
 ### 12.30 改动二十八：wb 渠道 multica 地址修正——默认端口 80 → nginx 统一入口 `:5005`（M5-ar，2026-08-13）
+
+> **已被改动九十（§12.92）取代**：multica 已迁至独立子域（无端口），地址不再从 WB 服务域派生 `:5005`，改由 `GOLD_BAND_WB_MULTICA_URL` 单独注入。本条的「改用编译期渠道配置而非运行期旁路」判断仍然有效。
 
 **背景（跨机器部署）**：将 MALING 客户端打包到非开发机运行、连远程 multica（部署在 172.21.18.88，经 nginx 统一转发，对外入口 `WB Multica 服务地址`，前端 `/login` 与后端 `/api/*` 同源同端口）。核查发现 `configs/channels/wb.json` 的 `multicaBaseUrl`/`multicaAppUrl` 仍是 `WB 服务基础地址`（默认 80 端口，过时）——与服务端实际 nginx 入口不符，连不上。
 
@@ -2668,6 +2670,522 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证结果**：红绿测试（bug-fix-verification）——先改既有软失败测试断言为期待 `GET /api/attachments/a1/download`（错误串与真实请求共用同一 `path` 变量，钉住请求路由），旧代码红、修正后绿；desktop `multica::` 全量定向测试全绿。
 
+### 12.64 改动六十二：composer leading adornment 槽并排化——multica 绑定 chip 不再被 @role 标签挤掉（M5-bv，2026-10-21）
+
+**背景（用户报告）**：需求管理点 multica 任务「执行」进入输入框后，在正文开头输入 `@角色`，开头的 multica 任务标签（绑定 chip）被「覆盖」消失，但任务实际仍关联（发送仍走远程链路）。
+
+**根因（数据显示分层错位）**：数据层无缺陷——`parseCommittedSlashItem` 认定正文开头的 `@role ` 为已提交角色**不会**清 `draft.remote`，`handleSubmit` 原样转发绑定、发送走 `start_remote_conversation_run`；缺陷纯在显示层：§12.28（M5-ap）把绑定 chip 与 slash 标签设计为同一 leading adornment 槽位**互斥**（渲染三元 `committedSlashCommand ? <SlashTag/> : remoteBinding ? <chip/> : null`），依据是「绑定预填的是任务需求文本、非 slash 命令」这一假设。但「远程任务 + 指定执行角色」是合法且有意义的用户组合（发送链路同时转发 role snapshot 与远程绑定），假设与真实用法冲突——slash 提交后 chip 消失，用户误以为绑定丢失。定性：好设计（claim-at-send 绑定生命周期）+ 实现不完善（显示层互斥假设错误）。
+
+**方案（同槽并排，零数据层改动）**：
+- leading adornment 槽抽为独立组件 `web/src/components/conversation/ComposerLeadingAdornment.tsx`：slash 标签在前（锚定正文首个 token）、绑定 chip 随后（`gap-1`），条件并排渲染；`adornmentRef` 挂槽容器，`useLeadingAdornmentTextIndent` 以 ResizeObserver 测**槽总宽**做首行缩进，天然支持多标签。抽取同时解除「home `ConversationComposer` 依赖过重不挂组件测」的历史限制（§12.22/§12.28 同款理由）——adornment 槽成为可独立 DOM 测试单元。
+- `ConversationComposer`：`remoteChipActive = Boolean(remoteBinding) && !committedSlashCommand` 的抑制条件删除，indent 启用改为 `committedSlashCommand || remoteBinding`；顺带清理 5 个随迁移失效的 import（Badge/Globe/SlashCommandInputTag/agentIcon{Src,Class}/SLOT 常量）。
+- **Backspace 让位契约不变**（`shouldBackspaceClearRemoteBinding` 的 `!hasCommittedSlashCommand`）：slash 提交时正文起点 Backspace 先拆角色标签（unwrap），语义正确，非本次缺陷。
+
+**方案自评审**：过度设计——零新增状态/依赖/reducer action，纯渲染条件修正 + 为可测性抽取组件，复用既有缩进测量机制。性能——纯渲染条件变化，ResizeObserver 已存在，无影响。
+
+**验证结果**：红绿流程（bug-fix-verification）——先按互斥行为等价抽出组件并接线（tsc 零错），新增 `web/tests/composer-leading-adornment.test.tsx`（4 测：双标签并存 + × 解绑回调 / 仅 slash / 仅 chip / 双无不渲染槽），并存断言在互斥实现上稳定红（`expected '开发' to contain 'Multica · 修复登录超时'`，与根因一致），改并排后转绿；两个既有源码契约测试锚点迁移——`conversation-composer-remote-chip`（chip 主题对比断言改读组件文件）与 `conversation-composer-autosize`（滚动收口断言改跨文件双断言：消费点在滚动包装层内 + 组件内槽常量）；相邻 composer/slash 10 套件 104 测全绿 + tsc build 范围零错。UI：本地 vite dev 打开 composer 首屏渲染正常、console 零错误；@role 菜单与真实 multica 绑定的完整视觉链路依赖 Tauri IPC + 内网 multica（本地不可达，既有环境约束），逻辑已由 DOM 测试覆盖，并排视觉留内网验收。
+
+---
+
+### 12.65 改动六十三：completion-output 覆盖清单分级——构建包名/部署环境升级为核心必保，收尾节点继承前序 CI/CD 产出（M5-bw，2026-10-21）
+
+**背景（用户需求）**：completion-output 协议的设计初衷是确保下游拿到**构建与部署情况**——具体为构建的包名与部署的环境，这是最重要的输出；测试要点、变更范围等属锦上添花。原提示词把全部字段平铺为「建议覆盖」，无优先级区分；工作流场景中若 CI/CD 节点已输出构建部署信息，收尾节点（如测试/总结节点）可能因「构建部署非本节点产物」而丢掉这些信息，只写自己节点的产出。
+
+**方案（提示词文案分级重写，零代码逻辑改动）**：`src/prompts/{zh-CN,en}/runtime/remote_task_completion_protocol.md` 同构重写（模板无变量，minijinja 空上下文渲染即原文；注入条件不变——issue 关联任务才注入）：
+- 覆盖清单由平铺改两级：**核心必保**＝构建出的包名/制品名（依赖包名、Docker 镜像名、安装包文件名等）+ 部署的环境（环境名及访问地址/命名空间/目标位置），并加防歧义条款——本次交付不涉及构建或部署时明确写一句，区分「确实没有」与「遗漏未写」；**次要锦上添花**＝变更范围、下游测试要点、自测结论与已知边界、环境/数据/账号、验证地址或分支，篇幅允许时补充且不得挤占核心信息。
+- 工作流分支补继承义务：前序节点（尤其 CI/CD 节点）产出中已给出构建包名、部署环境等核心信息时，即使构建部署并非收尾节点本节点执行，也必须携带进自己的块一并输出；仅前序不可得且本工作项确无此类信息时才退化为整体简要总结。
+- 门控语义（direct 双向门控 / workflow 不门控）、≤2000 字符契约、围栏同行格式规则均原样保留。
+
+**方案自评审**：过度设计——纯提示词文案重构，零新增状态/依赖/机制，分级只是把既有平铺列表重组为优先级表述。性能——提示词长度微增（约 +200 字符/语言），注入路径与渲染成本不变，无影响。
+
+**验证结果**：契约测试 `remote_task_completion_protocol_templates_lock_fence_contract`（src/prompts.rs）既有锚点全部保留，新增 M5-bw 锚点两语言各 5 条（构建包名/制品名、部署的环境、不涉及构建或部署、尤其是 CI/CD 节点、携带进你的块 / en 对应），定向测试 + `prompts::tests` 全模块 16/16 绿；相邻 `multica::`（gold-band lib，4 测）与 `multica::bridge`（desktop bin，20 测，含 completion-output 提取与近形态拒绝）全绿。过程中发现并修复本机既有环境污染：260+ 个提示词文件被此前某构建步骤写成 CRLF（git 经 clean 归一化显示 clean，`include_str!` 编译期嵌入原样字节触发 `bundled_prompt_line_endings_are_platform_independent` 失败）——按 `.gitattributes` eol=lf 语义规范化后全绿（工作区重检出重建 stat 缓存，最终真 diff 仅 3 个目标文件）。实际效果依赖内网 agent 行为，留内网验收观察下游是否稳定携带包名/环境字段。
+
+---
+
+### 12.66 改动六十四：需求正文 markdown 转义解码——requirement_text 边界把 tiptap 序列化源码转纯文本（M5-bx，2026-10-21）
+
+**背景（用户报告）**：需求管理点 multica 任务【执行】进入输入框后，正文里每个下划线前多出一个反斜杠（`my\_app` 形态）；multica web 页面上同内容显示正常。
+
+**根因（源码证据）**：multica web issue 编辑器（ContentEditor，tiptap，`contentType: 'markdown'` + `editor.getMarkdown()` 保存）经 `@tiptap/markdown` 序列化，`escapeMarkdownSyntax`（`text.replace(/([\\`*_[\]~])/g, "\\$1")`）把 `\` `` ` `` `*` `_` `[` `]` `~` 转义后存库；web 端展示时再解析 markdown（`\_` → `_`），往返自洽所以 web 视觉正常。码灵拿到的是 server 原样返回的 **markdown 源码**（webank `daemon.go` detail/claim 响应不反转义），而码灵把需求正文当**纯文本**消费（composer 预填 + agent 首轮 prompt，均无 markdown 渲染层）——转义层从未被解掉。这不是码灵链路漏了转义处理（全链路审计确认前端/后端无任何转义逻辑），而是**层语义错配**：markdown 源码 → 纯文本缺一次转换。定性：好设计（server 原样存储往返一致）+ 消费端缺层转换。
+
+**方案（码灵侧解码，方案 A）**：新增纯函数模块 `multica/markdown_source.rs`，`markdown_source_to_plain_text(source) -> String` 按 CommonMark 转义语义反转序列化转义，接线在 `RemoteTask::requirement_text()` 尾部（`.map(markdown_source_to_plain_text)`）——全部来源（quick-create/chat/comment/autopilot/handoff/issue_description/title）统一解码，composer 预填（`detail_prefill` → `vm.requirement`）与 agent 首轮 prompt 单点覆盖。规则：
+- 围栏代码块（``` / ~~~，≤3 空格缩进、≥3 字符开栏、同字符且长度 ≥ 开栏才闭栏）内容逐字保留；
+- 行内代码 span（等长反引号 run 闭合）内容逐字保留；**未闭合的开栏按字面处理、其后照常解码**（前瞻匹配闭合 run，避免单个杂散反引号吞掉全文解码）；代码 span 不跨段落（空行）与围栏配对；
+- 其余位置 `\` + ASCII 标点 → 标点；`\` + 其他（Windows 路径 `\U`、非 ASCII、行尾硬换行）→ 反斜杠原样保留；
+- 只消除转义层，不做 markdown → 文本结构转换（`**`、`#`、链接等语法原样保留，与「码灵把正文当纯文本」的消费语义一致，也避免 pulldown-cmark 全量渲染的过度转换）。
+- 明确不解码：`detail_prefill` 的 DPMS 溯源块与上游交付说明块（`parent_output`）——二者非 tiptap 作者产出（服务端派生 / agent completion-output），保持原样。
+
+**方案自评审**：过度设计——单文件纯函数 + 单点接线，无新增状态/依赖/ crate（未引入 pulldown-cmark）；前瞻匹配是 CommonMark 语义本身要求（未闭合回退字面），非假设性复杂度；文档化简化（4 空格缩进代码块、setext 标题、info 串反引号校验）均有依据：tiptap 代码块序列化为围栏式，不会产出这三类形态。性能——requirement 正文为 KB 级一次性转换，段落级 O(n) 主导、反引号前瞻最坏 O(n²) 仅在病态多反引号文本出现且 n 为段长，可忽略；转换发生在 claim/detail 拉取边界，不在任何热路径。
+
+**验证结果**：红绿流程（bug-fix-verification.md）——先写集成测试 `remote_task_requirement_text_decodes_markdown_escapes`（client.rs，JSON fixture `\\_` 即 tiptap 产出形态），未修复实现上稳定红（`left: Some("包名 my\_app\_1 部署 dev\_cluster")`）；实现后转绿。新模块单测 11 条（标点集/非标点保留/连续转义/代码 span 等长闭合与未闭合回退/跨段与跨围栏不配对/围栏逐字与闭栏条件/≤3 空格缩进/行尾反斜杠/CRLF/纯文本不变）全绿；`multica::` 全套件 191/191 绿（含 client 优先级既有测试、vm requirement 预填、commands/bridge）。真实内网 multica 任务的端到端视觉效果（本机 server 不可达）留内网验收。内网侧根治（tiptap 序列化转义策略）另行整理需求文档交内网团队，不在码灵侧代偿。
+
+---
+
+### 12.67 改动六十五：completion-output 核心信息三项化 + 任务完成后会话内修订（M5-by，2026-10-21）
+
+**背景（用户需求，与其他开发讨论后确定）**：① 交付说明至少简要覆盖三项——构建（打包的包名）、部署（部署的环境）、改动（极其精简的改动范围）；② 任务完成后用户可在会话中继续对话调整交付说明内容（如「加上建议测试点」），agent 重新生成 completion-output 并更新到 multica 侧远程任务；③ 完成判定逻辑不变——仍以首次 completion-output 判定任务完成，后续仅调整内容。
+
+**评估结论（零代码逻辑改动的依据）**：修订链路已由 M5-bl 的「终态后补交」通道（`bridge.rs relay_late_completion_output`）完整承载，语义与本次需求同构——终态后追问 turn（`AcpTurnFinished` 无在飞映射）与终态后 run（`RunCompleted` 反查不到 active run）双触发，按 local_task_id 从 completed 历史找回 issue 关联，从最终回复提取**最后一个** completion-output 块，`PUT /api/issues/{id}` **只带 `completion_output` 键**（服务端字段级 merge，不动 status，issue 被 reopen 也不拉回 done）幂等覆盖；本地状态零改动。缺的只是 agent 行为指引——协议提示词没有「完成后可修订」条款，后续轮用户要求调整时 agent 可能只口头回复不输出块，relay 无内容可送。
+
+**方案（纯提示词，zh/en 同构）**：`src/prompts/{zh-CN,en}/runtime/remote_task_completion_protocol.md`：
+- 核心信息三项化：构建包名/制品名 + 部署环境 + **改动范围（极其精简地说明本次改了什么，一两条即可）**；防歧义条款（不涉及构建部署时明确写一句）保留；变更范围移出次要清单（其余次要项不变）。
+- 新增「任务完成后的修订」段（位于工作流段之后、格式段之前，模式中立）：已输出过完成块后，用户在会话中要求调整交付说明时，回复末尾**重新输出完整的新块**——整块覆盖已存内容、非增量差异，核心信息必须保留；此次输出**只更新远程侧存储的交付说明内容、不改变任务完成状态**；格式与 ≤2000 字符限制不变；用户未要求调整时不主动再输出块（防后续对话把内容意外降级覆盖）。
+- 门控语义（direct 首块门控 / workflow 收尾节点）逐字未动。
+
+**方案自评审**：过度设计——零新增抽象/状态/端点/依赖，修订复用既有迟到补写通道，改动仅为提示词文案 + 契约锚点 + 文档；修订条款是单一新定义（不与门控条款重复表述，条件域不相交：未完成 vs 已完成）。性能——提示词约 +150 字符/语言；relay 逐 turn 触发路径既有（先 state.json 小文件过滤非 multica 任务），无新热路径。
+
+**验证结果**：红绿流程——契约测试先加 M5-by 锚点（zh：极其精简/重新输出完整的新块/不改变任务的完成状态；en 对应）在旧正文上稳定红，改写两语言正文后 `prompts::tests` 全模块 16/16 绿（M5-bw 及更早锚点全部保留）；两文件 LF 行尾无污染。修订的实际端到端效果（agent 在后续轮遵从修订条款、relay 覆盖到 multica）依赖内网 multica 与真实 agent 行为，留内网验收；bridge/relay 侧无改动，其行为已被既有 191 项 multica 套件覆盖。
+
+---
+
+### 12.68 改动六十六：需求正文 HTML 层解码——requirement_text 边界剥离 HTML 标签与实体（M5-bz，2026-10-21）
+
+**背景（用户报告）**：M5-bx 验证通过后，multica 拉取任务在码灵远程任务输入框中仍有大量 `<p></p>` 形态 HTML 要素被直接打印。
+
+**根因（与 M5-bx 同一条序列化链路的第二层）**：tiptap 保存链路对文本节点做 HTML 实体编码（`encodeHtmlEntities`：`&`→`&amp;`、`<`→`&lt;` 等；空段落序列化为 `&nbsp;`），正文以 markdown 存储时混入 HTML 岛屿（本地 webank 版 `<strong>` 等 `htmlReopen` 标签、DPMS 同步的 `<p>` 块正文）；web 端 markdown 渲染器把 HTML 岛屿按 HTML 渲染、实体按文本解码，视觉正常。码灵纯文本消费无渲染层，HTML 标记与实体原样透传。M5-bx 只解了反斜杠转义层，HTML 层未覆盖——定性不变：好设计（server 原样往返）+ 消费端缺层转换，继续在 `requirement_text` 边界补层。
+
+**方案（扩展 `markdown_source_to_plain_text`，单遍扫描无回环）**：解码器在既有围栏/代码 span 保护结构上，段内扫描新增 `<` 与 `&` 两类分支（与 `\`、`` ` `` 分支并列，逐字符单遍、源位置决定先后）：
+- 原始 HTML 标签按 CommonMark 标签语法匹配（开/闭/自闭合/注释；属性区按属性语法校验，引号内 `>` 不终止标签），不匹配（`a<b 且 c>d`、未闭合）→ `<` 按字面。投影：`<br>` → 换行（连续 `<br>` 各自换行，保留空行意图）；块级标签封闭集（p/div/h1-h6/li/table 等）→ 段落分隔换行（行首/紧随换行后不叠加，防裸空行）；行内标签剥壳保留内容；注释消失。
+- HTML 实体：封闭命名集 `amp`/`lt`/`gt`/`quot`/`nbsp`（NBSP）+ 十进制/十六进制数字实体；未知/缺分号/超标量范围 → 按字面。
+- **防误剥关键**：`&lt;p&gt;` 与 `\<p>` 解出的是用户字面文本 `<p>`（实体/转义产物是文本节点，不是源内标记），单遍扫描天然不回环二次剥离；代码块/代码 span 内 HTML 与实体逐字保留。
+
+**方案自评审**：过度设计——零新增依赖/状态/接口，纯函数内新增 4 个私有 helper + 1 个标签分类枚举 + 块级标签封闭集常量（业务常量集中定义）；标签语法校验按 CommonMark 而非「扫到 `>` 即标签」，是 `a<b 且 c>d` 这类中文正文正确性的必要精度，非假设性复杂度；实体只收封闭命名集（HTML 全量实体表 2000+ 条对 tiptap 产出无意义）。性能——与 M5-bx 同为 KB 级一次性转换，段内 O(n) 主导（标签/实体匹配各自常数级前瞻），无回环重扫，claim/detail 边界非热路径。信息有损为文档化边界：`<a href>` URL、无 alt 的 `<img>` 内容丢失（纯文本投影本质）。
+
+**验证结果**：红绿流程——先加 8 条模块测试 + 1 条集成测试（`remote_task_requirement_text_strips_html_and_decodes_entities`，`<p>` 包裹 + `&nbsp;` 空段 + `&amp;` 混合 fixture），旧实现上稳定红（7 赤为 HTML 原样透传、1 为预期笔误修正）；实现后模块 19/19 绿、`multica::` 全套件 200/200 绿；clippy 新代码零告警。字面文本不误剥（`&lt;p&gt;`/`\<p>`）、代码区内保留、畸形尖括号字面均有测试锁定。真实内网任务端到端效果留内网验收。
+
+---
+
+### 12.69 改动六十七：composer 预填新增任务名称首块（M5-ca，2026-10-21）
+
+**背景（用户需求）**：远程任务点【执行】后，输入框预填应以任务名称开头，其后才是 DPMS 溯源、上游交付说明、需求正文——远程任务从 multica 列表点入，输入框自身不带标题展示，用户与 agent 都缺任务身份上下文。
+
+**方案**：
+- 新模板 `src/prompts/{zh-CN,en}/runtime/remote_task_title.md`（`remote_task_*` 按规则只保留两语言）：`任务名称：{{ title }}` / `Task name: {{ title }}`，注册 `RUNTIME_REMOTE_TASK_TITLE`（常量 + BUNDLED_PROMPTS 清单 + 渲染测试）。
+- `detail_prefill` 块序调整为 **[任务名称块, DPMS 溯源块, 上游交付说明块, 需求正文]**；`title_block` 取 `thread_name`，过 `markdown_source_to_plain_text`（与正文同一解码边界——标题同为 web 侧序列化产出，防 `\_`/HTML 残留进首行）+ 空白过滤，缺省/纯空白跳过块。
+- **移除 `requirement_text()` 的「皆空回退 title」**（根因处理，非补丁）：title 原先混进正文槽是因为预填里没有它的专属位置；名称块落地后回退只剩重复（无正文 issue 的预填会把标题输出两遍）。移除后无正文预填 = 名称块 + DPMS/上游块，信息不丢。开发阶段破坏式更新，删除旧回退路径。
+
+**方案自评审**：过度设计——单行模板复用既有 `localized_prompt_zh_en!` 机制与块拼接结构，无新抽象/状态/接口；回退移除是净删代码。性能——预填多一次常数级模板渲染（detail 拉取边界，非热路径）；`thread_name` 解码为单次 KB 级以下转换。
+
+**验证结果**：模板渲染测试（中英标签锁定，`prompts::tests` 17/17 绿）；vm 预填测试更新为四段块序（名称块首行锚点、无正文不重复、空白标题跳过、标题解码、en 渲染），`multica::` 全套件 201/201 绿；clippy 改动文件零告警。输入框真实视觉效果留内网验收。
+
+### 12.70 改动六十八：状态对账与任务重新执行——batch-status 回填 issue 状态 + 终态行 rerun 入口（M5-cb，2026-10-22）
+
+**背景（multica 侧任务重试改造，码灵同步）**：multica 新增两个 daemon API——`POST /api/daemon/tasks/batch-status`（≤500 id/批，回 `{task_id, task_status, issue_id, issue_status, issue_status_category, issue_status_name?}`，`issue_status_category ∈ {todo, backlog, in_progress, done, canceled}` 是客户端开关）与 `POST /api/daemon/tasks/{taskId}/rerun`（202 回全新任务对象：新 id、queued、同 issue、`attribution.rerun_of_task_id` 指回源任务）。码灵侧需要：① 看板终态任务周期对账刷新本地镜像 issue 状态；② 终态且 issue 允许（todo/backlog/done，**in_progress 排除**——multica 按 issue+agent 串行派发）时提供「重新执行」入口；③ 202 后新任务自然进板、按 task id 去重；④ 非 202 错误原样回显可重试；⑤ **移动语义**（内网验收后产品决策修订，2026-10-22）：点击重新执行后源终态行退场、看板呈现「已完成的任务移回待办」的单行移动——旧终态行不得与活跃后继同板，旧会话悬空（本体不动，仅会话列表直达）。
+
+**方案**：
+- **数据**：`RemoteCompletedTask` 增 `issue_status_category` / `issue_status_name`（serde default——旧 `state.json` 缺键即 None，本地终态历史落库时留空、由对账回填）；wire `RemoteTask` 增可选 `attribution.rerun_of_task_id`；`RemoteTaskVm` 三投影字段 `issue_status_category` / `issue_status_name`（仅 `from_completed` 携带）/ `rerun_of_task_id`（仅 `from_remote` 从 attribution 提取）。
+- **接口**：client 增 `batch_task_statuses(task_ids)`（空集短路不发请求、按 500 分批、`LIVENESS_TIMEOUT_SECS` 短超时、无重试——loop/页面驱动天然下一轮重试；404→`TaskNotFound` 供旧 server 降级）与 `rerun_task(task_id)`（网络级重试；非 2xx 经 `extract_error_message` 宽容提取错误体 `error`/`message` 字段、200 字符截断，包进 `NetworkFailed("{path}: HTTP {status}: {message}")` → 前端 `{{message}}` 透传直显）。Tauri 命令 `reconcile_remote_task_statuses`（`reconcile_in_flight` 单飞；TaskNotFound 静默 Ok(0)——旧 server 无该路由即无按钮/标记，前向兼容零协商）与 `rerun_remote_task`（回新 task id；成功即真删除源终态历史行——`with_state` 原子 RMW 复用 `remove_completed_task_entry`，先落盘后 emit `remote-tasks-updated`；删除失败不阻断 rerun（202 已成事实），仅记 warn 由读取侧过滤兜底）。
+- **实现**：bridge 纯函数 `apply_reconciled_issue_status(state, rows)` 按 task_id 反查终态历史、diff 计数，无变更不落盘（`with_state` dirty 语义）；变更 >0 才 emit 事件触发前端重拉。前端**页面驱动对账**（用户决策）：multica + 已连接 + 有工作空间时 mount 即一轮 + 30s 轮询，`document.hidden` 跳过，手动刷新附带一轮（静默失败不打扰）。看板 `canRerunRemoteTask`（终态 + category 闭集）/ `showsIssueStatusChip`（todo/backlog——done 与任务终态一致无提示价值）纯函数判定；「重新执行」按钮（RotateCcw）+ rerun 徽标（queued 且 `rerunOfTaskId` 非空——multica「归组到源行」在扁平 4 列的投影）+ issue 状态 chip（自定义状态名优先于分类 i18n）；202 后**直接重取列表**（用户决策：server pending 单一事实源，不做本地注入，按 id 去重由三源合并既有逻辑保证）。**移动语义（⑤）**：`get_remote_tasks` 三源合并前对终态行做 rerun 血缘退场过滤——纯函数 `filter_rerun_retired_terminal(pending, terminal)` 收集 pending 行 `rerun_of_task_id` 集合，命中的终态行不进本次响应（只过滤不写回——data-loading 规则 §5 读命令不顺便执行维护写；pending 拉取失败集合为空即不过滤，失败安全）。持久退场（rerun 命令 202 后真删除）与视图过滤互补：前者兑现移动语义的数据层，后者兜底他端机器发起的 rerun 与删除瞬时失败的残留。他端 rerun 且他端完成（我端从未见 queued 后继）时旧终态行会重新出现——此时任务链确实回到终态，不算错误展示（罕见：同一 agent runtime 两台机器）。
+
+
+**方案自评审**：过度设计——无新表/新聚合/新后台任务：对账复用终态历史（有界 50）+ 既有 `with_state`/事件通道；rerun 复用 pending 拉取与合并去重；单飞 bool 对齐 `completing` 先例；旧 server 降级走 404→静默，无版本协商；移动语义复用 `remove_completed_task_entry`（remove 命令同款内部件）与 `merge_workspace_tasks` 旁的纯过滤函数（约 15 行），无新状态/新命令/新 IPC/新轮询。性能——对账单批 ≤500 id POST（本地历史上限 50 实际一批）、30s 页面驱动且隐藏即停、无变更零落盘零事件；rerun 是用户点击级低频路径（202 后多一次有界 ≤50 条的本地 RMW 落盘）；血缘过滤 O(P+T) 纯内存集合；前端纯谓词 + 两枚 Badge，无额外渲染层。
+
+**验证结果**：`multica::` 全套件 210/210 绿（新增 attribution 解析 / batch 请求序列化 / 行宽容解析 / `pick_error_message` JSON 优先+截断 / `apply_reconciled_issue_status` 回填与跳过 / `begin_reconcile` 单飞 / `from_completed` 新字段携带 / `filter_rerun_retired_terminal` 血缘退场与失败安全两例）；web `tsc -p web/tsconfig.build.json` 零错误、remote-task-board + remote-task-management-page 59/59 绿、locale-remote-parity 绿（rerun 判定真值表、徽标/chip 渲染、按钮禁用态、容器 rerun 流与错误回显、对账 mount/门控/手动刷新触发）；7 语言 i18n 同步（`rerunTask`/`rerunBadge` + `issueStatus.todo/.backlog`）。看板真实视觉效果与内网联调（对账回填、rerun 202、源终态行退场与新任务进待办）留内网验收。
+
+### 12.71 改动六十九：任务名称块去标签——预填首行即标题本身，模板链路删除（M5-cc，2026-10-22）
+
+**背景（用户需求）**：M5-ca 的名称块带「任务名称：/Task name: 」标签前缀；内网验收后用户要求去掉——输入框开头直接就是任务名称本身，标签是冗余装饰。
+
+**方案**：
+- 标签是模板存在的唯一理由（中英标签差异）；去掉后模板只剩单变量 `{{ title }}`，语言无差异、无装饰文案，模板层失去存在意义。按「杜绝无效抽象 + 开发阶段破坏式更新」删除整条链路：`src/prompts/{zh-CN,en}/runtime/remote_task_title.md`、常量 `RUNTIME_REMOTE_TASK_TITLE`（含 `_ZH_CN`/`_EN` 派生与 BUNDLED_PROMPTS 清单项）及渲染测试。
+- `title_block` 去掉 language 参数与模板渲染，`markdown_source_to_plain_text` 解码 + 空白过滤后直接返回标题文本；`TitleTemplateContext` 删除。块序、解码边界、空白跳过、`requirement_text()` 不回退 title 等既有决策全部不变。
+- 顺带补齐 M5-cb 遗留：`RemoteCompletedTask` 新增两 Option 字段后 `gold-band` lib 测试两处结构体字面量未补字段（当时只跑 `--bins` 目标，lib 测试未编译到），补 `issue_status_category/_name: None`。
+
+**方案自评审**：过度设计——纯删除（模板文件×2/常量×3/清单项/上下文结构/渲染测试净减），无新增抽象。性能——少一次常数级模板渲染，其余不变。
+
+**验证结果**：`multica::` 全套件 210/210 绿（标题断言改为裸标题、标题块的 en 重复断言随语言分支消失而删）；`prompts::` 16/16 绿（标题模板测试随删除移除）；lib `with_state` 6/6、`remote_completed_tasks` roundtrip 1/1 绿；clippy（desktop bins+tests / gold-band lib）零错误（`gold-band --tests` 下 feishu 连接器 2 条既有 deny 与本改动无关）。真实输入框视觉效果留内网验收。
+
+---
+
+### 12.72 改动七十：completion_output 随 /complete 回传——multica 协议改造对接（M5-cd，2026-10-23）
+
+**背景（multica 侧协议改造）**：multica `POST /api/daemon/tasks/{taskId}/complete` body 新增可选 `completion_output`——完成与写输出**同事务**（后写胜、幂等）、≤16,000 Unicode 字符（rune 计数，超长 **400 且任务不置 completed**）、仅 issue-bound 任务生效（其余静默忽略）、旧 server 忽略未知键可安全灰度；test 子任务 claim 的 `parent_output` 即该值（领取侧无需改动）。事故动因：工作流任务完成时 `output` 字段被填节点名（「CRIS-收尾归档」），真实交付说明未送达 multica——旧通道（`update_issue_status(done)` PUT 附带）与 `output` 摘要混用，交付物无独立字段承载。
+
+**方案（multica 改造清单 §2 对接，通道统一 + 采集分级 + 客户端降级）**：
+- **通道统一**：`completion_output` 一律由 `/complete` 携带（daemon 统一回写，改造清单 §2.4 推荐项）；`update_issue_status` 回归纯 status（`UpdateIssueStatusRequest` 删输出键，开发阶段破坏式更新）；`complete_with_issue_done` 三处共用路径只改一处。迟到补发 PATCH（`update_issue_completion_output`，M5-bl/M5-by 修订链路）保留——「后写胜」语义天然兼容。fail 路径不带（改造清单 §2.3，`FailRequest` 本就无该字段）。
+- **采集分级（改造清单 §2.1，用户修正后的落地形态）**：**块仍是首选 payload**——direct 门控命中传围栏块（语义不变）；工作流**块优先、最终回复全文兜底**（`workflow_completion_output`：`completion_output_from_reply` 失败 → `clamp_completion_output(全文)`）——§12.55 形态滑落（info 串另起一行等提取 fail-closed 场景）时块内容原样嵌在全文里送达，交付不落空（本次改造的终极目标）。非 issue 任务不采集不读 timeline（server 忽略该字段，保持「非 issue 不做大文件读」既有优化）。
+- **超长自检 + 降级（改造清单 §2.2，必须项）**：发送前 16k 预截断、尾部截断标记（`[已截断：超出 16000 字符上限]`，**标记计入上限**——发送值恒 ≤16,000 rune，块/全文两路同口径）；`complete_task` 改自建请求回路 `complete_post_once` 四分类（Delivered/Retryable(5xx·传输)/Fatal(401/403/404/409)/Rejected(400 含 server message 透传))——不走 `post_json`+`map_status`（400 被并入 `NetworkFailed`，`with_terminal_retry` 会先盲退避 6 次才轮到降级）；携带字段收 400 → **立即**降级去字段重发一次（无退避，完成优先），降级后仍 400 才按可重试语义走终态重试上抛。
+- **观测**：工作流收尾投递日志分级——near-miss 形态滑落 WARN（指令遵从度信号，全文兜底已送达）、无块正常回复 INFO（兜底送达）、连全文都无内容 WARN（issue 照常 done，fail-open）；direct 门控 miss 日志（§12.55）不变。
+
+**方案自评审**：过度设计——无新增状态/缓存/聚合；`CompletePostOutcome` 四分类是「400 必须先于终态重试被识别」的必要载体（复用 `map_status` 做不到），自建请求沿 `rerun_task` 先例；降级态用 `Arc<AtomicBool>` 承载（`FnMut` 闭包可变捕获不能逃逸 async future）。性能——timeline 读次数不变（`final_reply_and_probe` 单次读共享给门控与兜底，替代原 `completion_output_for_issue_done`）；截断 O(n) 一次；降级重发仅罕见超长路径多一次 HTTP。
+
+**验证结果**：`multica::` 217/217 绿（新增：client socket 集成测试×4——携带字段单请求成功（旧 server 形态）/ 400 降级两请求断言（首请求带键、降级不带且 `output` 不丢）/ 400 分类透传 server message / 404·500 分类；handoff×5——块优先 / §12.55 事故形态全文兜底 / 兜底超长截断带标记 / 空回复 None / 16k 标记计入预算；bridge 采集组合改为 `(reply, probe)` 共享单次读）。clippy 我方改动零新增警告（2 条 collapsible-if 顺手修复，let-chains 与元组匹配为仓库既有风格）。内网验收对照 multica 改造清单验收用例 1-6（工作流带值 / 空串不动 / rerun 覆盖 / 超长截断与降级 / 旧 server 忽略 / 非 issue 忽略）。
+
+### 12.73 改动七十一：工作流 completion_output 采集改 attempt 级找块——裁决 JSON 误上送修复（M5-ce，2026-10-23）
+
+**背景（内网实测事故）**：轻量工作流（grill → dev-test → accept）的 accept 节点启用 AI 输出验证，按协议以 JSON 裁决（`{"reason":"String","result":"boolean"}`，`task-workflow.md` §5.3）作为**最后一条** assistant 消息收尾（provider 侧 `evaluate_output_artifact_from_run` 从终端消息提取该 JSON 判定节点成败）；而 §12.72 的工作流采集只投影**最后一条**消息并做全文兜底——两条协议竞争「最终 assistant 消息」槽位，agent 折中执行（主回复带块 → 裁决 JSON 收尾）后，采集拿到的是裁决 JSON：块提取失败 → 全文兜底把裁决 JSON 整条当交付物写入 `issue.completion_output`。暴露路径：完成后用户在会话内要求补时间，终态后补交通道（最后一条消息口径 + 只认块）写回了正确块内容——两通道行为分叉定位根因。
+
+**方案（采集口径按协议事实分叉 + 删兜底 + 提示词对齐）**：
+- **attempt 级找块（工作流口径）**：`attempt_completion_scan` 在最终 attempt 的**全部** assistant 消息中倒序找块、last-block-wins（与 multica「多次输出整体覆盖，只保留最终结论」同义）——块在哪里就到哪里取，不再假设它在最后一条消息。近似形态探测同步 attempt 级（无块时保留最新一条 near-miss 原因，诊断贴近终态）。
+- **删除全文兜底**：`workflow_completion_output` 移除。机器裁决/报告全文都不是交付物；提不出块 → **不发送该字段**（multica「缺省/空串不动现值」合法行为），near-miss WARN 可观测、终态后补交通道可恢复（本次事故已实测验证该恢复路径）。原文档「形态滑落时交付不落空」目标降级为「形态滑落可观测、可恢复」——兜底保证被证明会发出错误内容，宁可空缺不可错发。
+- **direct 门控 / 终态后补交维持最后一条消息口径**（`final_completion_probe`）：协议语义是「块在最终回复末尾」，direct 门控的扣留设计与补交的「重新输出完整新块」都以最后一条消息为判据，不随工作流口径变化。`AttemptCompletionScan` 一次 timeline 读出双口径（`final_probe` + `attempt_probe`），run 收尾路径零额外 I/O；turn 门控/补交仍单次读只算 final 口径。
+- **提示词对齐**（zh-CN/en `remote_task_completion_protocol.md`，工作流段落并入既有定义）：收尾节点需以 JSON 裁决收尾时，块输出在裁决 JSON **之前**的最后一条人类可读回复末尾——agent 行为与采集口径互相锁定。
+
+**方案自评审**：过度设计——净删除一条代码路径（兜底）与一个启发式候选（跳过纯 JSON 消息的兜底目标判定，评审中否决：结构判定代理「机器裁决」在自定义输出约束下会误伤），无新增状态/聚合/依赖；`AttemptCompletionScan` 双口径是「run 收尾一次读供 direct/工作流两分支」的必要载体。性能——`load_timeline_items` 调用次数不变（run 收尾 1 次、turn 门控/补交各 1 次），attempt 扫描是已物化消息上的内存倒序行扫描，相对文件读可忽略；补交通道仍先小文件过滤再读 timeline。
+
+**验证结果**：先红后绿——双消息 timeline（主回复带块 + 裁决 JSON 收尾）用例在旧实现（`final_assistant_reply` + `workflow_completion_output` 组合）上稳定失败，实际送出 `{"reason":"验收完成","result":true}` 与内网实测一致；修复后 `attempt_completion_scan` 同一 timeline 的 `attempt_probe.block` 命中前置块、`final_probe` 不命中。`multica::` 215/215 绿（handoff 新增 5 用例：裁决 JSON 回归 / 跨消息 last-block-wins / 前置消息 near-miss 只标记不发送 / 无块·缺目录默认 / final 口径仅看最后一条；删除兜底 4 用例与 bridge 采集组合 3 用例——场景由新 API 用例承接）。clippy 我方改动零新增警告。
+
+### 12.74 改动七十二：completion-output 中段上送与主动拉取——`$upstream.completion-output` 令牌 + 外部角色（M5-cf，2026-10-24）
+
+**背景（并行诉求）**：M5-cd/M5-ce 后 `completion_output` 单一写入来源是工作流终态 `/complete` 回传——下游测试任务必须等父 issue done 才能拿到交付说明，开发/测试天然串行。目标：开发工作流的**中段节点**（如构建/部署节点）把阶段性交付提前发布到远程工作项，测试工作流的中段节点在父未 done 时拉到快照提前启动。难点在拉取侧：测试任务要读的是**父工作项**的 completion-output 而非自己的——跨任务读取必须由码灵做中介（agent 无凭证、无全局作用域工具）。
+
+**内网确认（2026-10-24，四项全确认，服务端零改动）**：① `GET /api/issues/{id}` 下发 `completion_output`（`*string` + omitempty，NULL 键省略）；② `PUT /api/issues/{id}` 单键写 `completion_output` **无状态门槛**（仅 ≤16,000 rune 上限；字段级 merge：缺省保留/携带覆盖/显式 null 或空串清空）；③ 子任务的 `parent_output` 派生读条件 = 父字段非空（不看父状态，「字段非空即下发」+ 派生读每轮自愈）；④ `parent_issue_id` 恒下发（无父为 null）。
+
+**方案（写侧复用 + 读侧令牌，两端各一个外部角色）**：
+- **写侧（中段上送通道）**：bridge 在 `NodeCompleted`（图节点成功边界，orchestrator 对工作流/自动编排节点发射，携带会话级 run_id + attempt_dir）后 `push_workflow_completion_snapshot`——复用 M5-ce `attempt_completion_scan` 找本轮 attempt 内最新块（last-block-wins），与 `MulticaRuntimeState.issue_output_pushed`（发送侧去重投影，内存态；`drop_active_run` 随生命周期清除防 rerun 首块误跳过）比较，**值变化才** `PUT` 单键 `completion_output`；失败仅 WARN 忽略（终态 `/complete` 仍是权威写入，后写胜自愈）。只作用于非 direct（workflow/auto 自动编排图）+ issue run（`is_workflow_issue_run`，与 `/complete` Passthrough 采集同口径）；不门控、不改完成判定、direct run 不涉及。**触发事件是 2026-10-25 内网实测回归后的修正**：初版挂在 `AcpTurnFinished` 上，但该事件是会话 prompt 层事件（仅聊天回合发射），图节点回合不经过——中段上送永不触发，multica 侧零写入（revision 停留在 claim 时刻）；同轮回归还发现谓词按字面量只认 "workflow"，漏掉 auto（发送默认模式、执行形态即工作流图）——两处已一并修正并以测试锁定。
+- **读侧（拉取令牌）**：引擎令牌 `$upstream.completion-output`（与 `$end`/`$new-round` 同 `$` 前缀引用语法）可出现在节点 goal 或角色正文；`node_executor` 构建调用时先 `needs_upstream_resolution` 检查（无令牌零成本，测试锁定 resolver 不被调用），命中则经 `App::resolve_upstream_output` 回调（`with_upstream_output_resolver`——`with_prompt_turn_lifecycle` 同款 App 回调注册模式）到桌面侧 `MulticaUpstreamResolver`：自身 issue detail 解析 `parent_issue_id` → **有限退避轮询**（用户决策：15s 起、×1.5、间隔上限 60s、总预算 15 分钟，模块常量集中定义）父 `completion_output` 非空即命中 → 按界面语言渲染 `remote_task_upstream_pull.md`（父状态行 + 「父未完成时是阶段性快照可能被覆盖」口径提示）替换全部令牌出现（2026-10-26 起改为注入隐式隐藏区段并移除令牌，见改动七十四）。**单次快照语义**：值取节点启动时，父后续覆盖不自动刷新，重新进入节点重新解析。错误结构化 `UpstreamResolveError`（NoResolver / NoParentIssue / Timeout / Network）——未绑定远程任务或无父直接结构化失败，不静默空串。
+- **角色交付（外部导入，用户决策：不进内置 profile，成熟后再内置）**：`docs/gold-band/产品设计文档/multica接入/外部角色/`——`导入包/`下「交付上传」（节点目标显式要求上传阶段性交付——completion 协议的显式例外条件由此满足）+「交付拉取」（角色正文嵌令牌，自包含）两角色文件，README 在导入包外（编排示例/使用前提/行为口径；「导入文件夹」递归扫 `.md`，README 混入会被误当角色导入失败）。
+- **提示词协议修订**（zh-CN/en `remote_task_completion_protocol.md` 工作流段并入既有定义，不追加例外句）：其他节点输出的块作为阶段性快照上送、供下游在工作流结束前拉取提前启动（多次输出整体覆盖）；节点目标明确要求上传阶段性交付时即使产出还会被后续加工也输出块并注明阶段性口径；收尾节点的块仍是最终交付说明。新增 `remote_task_upstream_pull.md` 双语模板 + 常量/清单登记 + 渲染契约测试。
+
+**方案自评审**：过度设计——服务端零改动、无新增表/状态机/持久字段；写侧复用 M5-ce attempt 扫描与 M5-by 单键 PUT 通道，读侧复用 App 回调注册模式与 remote_task_* 模板管线；`issue_output_pushed` 是发送侧幂等投影（值比较去重）而非第二事实源（权威值在服务端，重启丢失无害——PUT 幂等）；轮询为用户明确选择的等待策略且 15 分钟预算封顶，不为此引入长连接/推送（服务端无对应能力，不扩协议）；拒绝的替代：MCP 工具（全局作用域无会话身份、扩大写入面信任边界）、DSL schema 字段（连带前端改造）、内置 profile 特判（用户决策外部角色）。性能——上传通道每 turn 一次 attempt 内存倒序行扫描 + 值变化才网络 PUT（去重比较在锁内、PUT 在锁外，不持锁做网络 IO）；拉取仅含令牌节点启动时发生（先检查后解析），轮询最坏 ~17 次 GET（15s/22.5s/33.75s/50.6s/60s×n）预算封顶，阻塞发生在 run 专用 OS 线程（既有 orchestrator 线程模型，`block_on` 桥接为既有模式），不阻塞 UI/事件循环。
+
+**验证结果**：引擎 `upstream` 过滤 7/7（`app::upstream` 令牌检测/替换 2 + `node_executor` goal 替换命中/无 resolver 结构化失败/无令牌零调用 3）、`node_executor` 全量 15/15、`prompts::tests` 17/17（新增 upstream_pull 双语渲染契约——状态与交付内容插值 + 阶段性快照口径锁定；completion 协议契约扩阶段性快照语义 8 断言）；desktop `multica::` 221/221（新增 upstream 渲染插值/口径锁定/轮询常量决策锁定 3、`is_workflow_issue_run` 作用域 1、`drop_active_run` 去重缓存生命周期 1、`IssueDetail` 可选键解码容忍 1）。clippy 我方改动文件零新增警告。**内网回归（2026-10-25）**：双工作流实测暴露写侧两处缺陷——①**主因：触发事件挂错层**。初版把 push 挂在 `AcpTurnFinished` 上，但该事件仅由会话 prompt 路径（`submit_conversation_prompt_inner`）在聊天回合发射，工作流/自动编排的节点回合只产生 `NodeCompleted`，中段上送永不触发；multica 侧证据（issue #1721）：claim 后 revision/updated_at 零变化，PUT 从未到达 issue 更新处理器。修正：push 迁至 `NodeCompleted` 臂（节点成功边界，`outcome == "SUCCESS"`），同一 spawn 内先 pin session 后推快照。②谓词按字面量只认 "workflow"，漏掉 auto（发送默认模式、执行形态即工作流图）——修正为非 direct 判据（与 `/complete` Passthrough 采集同口径），作用域测试先红后绿锁定 auto 命中。下游症状（测试任务拉取节点「卡住」）为①的后果：父字段恒空 → 拉取侧按设计走满 15 分钟有限退避预算后结构化 Timeout。`multica::` 221/221 复绿。**内网复验（2026-10-26）**：写侧双缺陷修复后重测，上传节点中段上送正常、multica 侧正确写入开发任务 completion_output；读侧复盘结论：拉取实际生效（agent 首条回复即引用快照结构与内容、时序吻合），「未生效」为误判——内容被内联进 system prompt 角色正文，消息流不可见；上送逐节点触发与注入位置两项缺陷由改动七十四（§12.76）修复。
+
+### 12.75 改动七十三：completion 协议提示词重排——单一定义合并去冗（2026-10-26）
+
+**背景**：completion 协议（`runtime/remote_task_completion_protocol.md`，隐藏区段注入）经 M5-bs→M5-cf 六轮语义叠加，「多次输出整体覆盖」三处重复、工作流段单段 600+ 字嵌套从句，用户反馈隐藏上下文过于冗长。
+
+**方案**：按 prompt-authoring 规则 2（规则合并为单一定义、同一规则只留一处表述）整体重排，非语义删减：覆盖语义收敛到开头定义一次；内容分级（核心/次要/篇幅）合并为一段列表，CI/CD 携带条款并入核心信息条目；「何时输出」按 direct 门控 / 工作流收尾与阶段性例外 / JSON 裁决摆放 / 整工作项总结 / 完成后修订分段，每规则一处。全部既有语义锚点（围栏同行、门控双向、核心信息三项、阶段性快照口径、修订不改变完成状态等）原样保留——`remote_task_completion_protocol_templates_lock_fence_contract` 契约测试零改动通过，即语义无损的验收证据。两语言（该模板仅 zh-CN/en，属 `remote_task_*` 例外清单）结构对齐。
+
+**验证结果**：`prompts::tests` 17/17（契约测试未改动即通过，锚点全保留）；正文长度约为重排前 60%。
+
+### 12.76 改动七十四：上送语义收紧（节点声明门控）+ 拉取注入位置迁移（隐式隐藏区段）（2026-10-26）
+
+**背景（两项，同日）**：
+1. **上送**：M5-cf 中段上送对非 direct + issue run 的**每个成功节点**触发，而工作流节点普遍产出 completion-output 块——下游会在任意中间节点读到无交付语义的「交付」。用户语义要求：工作流模式下只有被指定承担阶段性上送职责的节点（配「交付上传」角色）或收尾节点产出并上送；direct 模式不变。
+2. **拉取**：内网复验确认拉取实际生效（agent 首条回复即引用快照结构与内容），但内容被内联替换进 system prompt 的角色正文（`runtime/system.md`「当前节点角色」段）——会话消息流不可见、不可审计（用户展开「隐藏运行上下文」找不到交付内容）。按 AGENTS.md system/user prompt 划分，随执行变化的交付数据属 user prompt 区。
+
+**方案**：
+- **上送门控（节点声明制）**：「交付上传」角色正文内置 HTML 注释声明标记 `<!-- gold-band:upstream-upload -->`（常量 `UPSTREAM_UPLOAD_MARKER`，goal 直写等效）；bridge `push_workflow_completion_snapshot` 在 attempt 扫描前经 `node_declares_staged_upload` 判定——数据源为 run 启动时落盘的工作流快照（`current_run_workflow`，run 中途编辑不改变已执行节点语义）+ profile 当前存储，goal / 角色正文任一携带标记才上送；快照不可读 / 节点缺员（AiDynamic 节点无 goal/profile，动态编排 worker 不在任务工作流快照里）/ profile 解析失败一律 fail-closed（误上送会让下游拿到无交付语义的中间产物，宁缺勿滥）。**不做收尾节点检测**：终态 `/complete` 整体携带最后一块已是权威路径，last-node 判定需引入 sink 分析且与 `/complete` 存在竞态，复杂度收益为负。协议提示词同步收紧：工作流例外条件从「节点目标明确要求上传阶段性交付」改为「被指定承担阶段性上送职责的节点（配置了交付上传角色，或目标中带其声明标记）」。
+- **拉取注入位置迁移**：`node_executor` 装配时解析结果不再内联替换令牌，改为追加首条 prompt 的隐式隐藏区段（标题 `Gold Band upstream deliverable`，内容即既有 `remote_task_upstream_pull.md` 渲染块，随「Gold Band runtime context」折叠块可见可审计）；正文中的令牌移除（`strip_upstream_references` 取代内联替换 API）。加载策略与首条隐藏区段完全一致：仅 `SessionMode::New` 解析并注入；Continue 回合只移除令牌不重新解析（快照已随 session 首条 prompt 存在，维持「节点启动时的值」单次快照语义）。拉取角色文件改写：令牌保留为声明开关，正文说明内容到达位置（隐藏运行上下文「上游交付说明」区段）。
+- **部署耦合（内网注意）**：两个角色文件正文均已更新，**升级桌面端后需更新既有角色条目正文**（原地编辑替换，见 §12.77——「导入文件夹」是新建副本不是覆盖）。方向安全：旧桌面端 + 新角色 = 无门控仍逐节点上送（桌面端旧语义）；新桌面端 + 旧上传角色 = 无标记不上送——收紧方向一致，不存在「错误上送」组合。
+
+**方案自评审**：过度设计——无新增持久化/状态机/跨层 identity：门控读既有 run 工作流快照 + profile 存储（节点成功边界、spawn 异步内、仅 multica 工作流 run 触发）；标记是纯文本声明，复用角色导入通道，无 DSL schema/前端改动；拒绝的替代：DSL 新字段（连带前端与旧工作流迁移成本）、last-node 检测（见上）。拉取迁移复用 `extra_hidden_sections` 既有通道与首条加载策略，消除 system prompt 中 ≤2000 字符的重复内联负载。性能——门控每成功节点至多两次小文件读（run 工作流快照 JSON + profile 文件），发生在 spawn 异步路径不阻塞热路径；隐藏区段使首条 user prompt 增量有界（交付块 ≤2000 字符 + 模板头）。
+
+**验证结果**：lib `upstream` 过滤 9/9（令牌检测/无 resolver 结构化失败/无令牌零调用既有 3 + strip 全清除、声明标记谓词（含「前缀片段不算声明」负例）2 新增 + goal 解析→隐藏区段追加且令牌移除、Continue 回合只移除不解析且不触发 resolver 2 改写）；desktop `multica::` 221/221；`prompts::tests` 契约 17/17（协议收紧未触动任何锚点断言）；clippy 我方改动文件零新增警告。
+
+### 12.77 改动七十五：门控数据源修复（动态编排叶子反查）+ 可判定性与部署指引修正（2026-10-26）
+
+> **已被改动七十六（§12.78）取代**：完成边界反查（`completed_node_declaration`）整体删除——产出资格判定迁至装配侧按节点身份进行，与模型所见同源。本条的部署指引（原地编辑角色条目、新建任务验证）仍然有效。
+
+**背景**：改动七十四合入后内网复测（两个工作流）报告两项异常：①每个节点仍产出 completion-output 块；②上报节点未中段上送（旧正文已确认带标记，排除角色未更新）。
+
+**诊断**：
+- ②**主因：门控数据源缺陷（代码缺陷，改动七十四引入的回归）**。两个工作流是 auto 执行形态（multica 默认发送模式）——run 快照编译为单个 `ai-dynamic` 外层节点（`compile_auto_workflow`），实际干活的动态 worker 是运行时编排的叶子，其 goal/profile 记在所属 dynamic graph 的 `DynamicNodeState.task/profile`（dynamic.rs:183），**不在任务工作流快照里**。门控只查快照 → 查无节点 → fail-closed 拦下所有 auto 节点（包括挂「交付上传」角色的）。改动七十四把「动态 worker 不在快照 fail-closed」当设计预期，是把 multica 默认执行形态拦死了的设计错误。
+- ①**协议正文按任务冻结**：首条隐藏区段在任务创建时落盘（`first-prompt-hidden-sections`，node_executor），升级前创建的任务重跑沿用旧协议文本（「每节点上送」口径）——模型照旧文本产出属预期，新建任务才带新口径。
+- **次生发现（部署陷阱）**：`import_profiles_from_folder` 对同名角色经 `resolve_unique_name` **新建副本**（「交付上传-2」，profiles.rs:761）而非覆盖——「重新导入」指引不可靠，须原地编辑既有条目替换正文。
+
+**方案**：
+- **门控数据源按执行形态分派**：lib 新增 `execution_plan::completed_node_declaration`（`App::completed_node_declaration` 薄封装）——workflow DSL 节点取 run 快照（外层 ai-dynamic 节点自身完成时 goal/profile 均空自然按未声明处理）；动态叶子按 round trace **逆序**（最新 attempt 优先）反查外层 `(node_id, attempt_id)` 的 `dynamic_graph_file` → `load_dynamic_graph` → 叶子 `task/profile`，与执行侧喂给 node_executor 的 `profile_show(node.profile)` 同源。查无此节点 `Ok(None)`；IO 失败 `Err`（fail-closed 但可判定）。
+- **门控可判定性**：去静默 return——取数失败记 WARN，查无节点 / profile 引用悬空（含 builtin CI/CD profile 不在存储）记 debug，门控拦截处带 node_id 记 debug（区分「判定未声明」与「触发根本没跑」）。M5-bl 教训：静默 return 让触发缺失不可见。
+- **部署指引修正**（外部角色 README 前提 4）：更新角色正文须**编辑既有条目整体粘贴替换**（条目不变，引用保持有效），禁止盲目重复「导入文件夹」；标记是 HTML 注释、渲染视图不可见需编辑视图确认；验证新语义用新建任务。
+
+**方案自评审**：过度设计——无新增持久化/identity：动态叶子数据读既有 canonical 存储（dynamic graph 状态文件，orchestrator 同款 `load_dynamic_graph` 访问器，含既有版本迁移），返回值是纯读投影；不为单一 UI 竞态复制数据模型。性能——每成功节点至多快照 1 读 + trace 逆序至多每 attempt 一次 graph 存在性检查（workflow 节点无 dynamic 目录零额外读），小 JSON、spawn 异步路径低频，无热路径影响。
+
+**验证结果**：先红后绿——新增 `execution_plan` 测试 4 项锁定（auto 叶子 task/profile 反查命中、同名外层多 attempt 逆序最新优先、workflow 节点走快照分支、查无节点 `Ok(None)`）；desktop `multica::bridge` 既有 20/20 全绿。
+
+### 12.78 改动七十六：产出侧门禁（装配时节点身份指定产出资格）（M5-cg，2026-10-26）
+
+**背景**：改动七十四/七十五的上送门控是**消费侧反查**——节点完成后，bridge 经 run 快照 + round trace + dynamic graph + profile 存储三跳反查该节点的声明再决定是否上送。用户重申根本意图：门禁应在**产出侧**（「在产出 completion-output 的地方做严格门禁」）——direct 模式不变；auto 模式只有最后一个节点（验收）产出；工作流模式只有收尾节点和「交付上传」声明节点产出。反查式门禁与模型实际收到的指令分属两个数据源（模型每节点都收到「产出块」协议、门控却在发送端再判一次），是典型的补丁式修复：判定与所见不同源，注定持续错位（改动七十四内网两轮回归的共同根因）。
+
+**方案**：
+- **指定判定进引擎、渲染进桌面（resolver 回调模式，与 `UpstreamOutputResolver` 同款）**：引擎侧纯函数判定——`workflow_node_designation(workflow, node_id, goal, profile_content)`：节点所有出边指向 `$end`（含无出边）= sink → **Final**；非 sink 且 goal / profile 正文携带 `UPSTREAM_UPLOAD_MARKER` → **Staged**；其余 → **Prohibited**。`dynamic_node_designation(kind)`：`Acceptance`（验收节点）→ **Final**，其余叶子 → **Prohibited**（动态图运行中生长，装配时无法预知谁是最后叶子——auto 的交付统一由 `/complete` 终态路径携带，无中段上送）。新 trait `CompletionProtocolSectionResolver`：`node_executor`（workflow）/`orchestrator`（动态叶子）装配首条 prompt（`SessionMode::New`）时判定 designation 并回调桌面侧 `MulticaCompletionProtocolResolver`——任务在飞映射关联 issue 才注入新隐藏区段「Gold Band remote task protocol」（`runtime/remote_task_node_protocol.md` 按 `designation` 渲染 final / staged / prohibited 三变体，双语）；本地任务静默跳过。
+- **协议模板拆分**：`remote_task_completion_protocol.md` 收回 direct 专属（完成门控 + 整个工作项总结，删除工作流段）；新增 `remote_task_node_protocol.md` 承载图节点协议——final（收尾节点：整个工作项总结）、staged（阶段性上送 + 快照会被覆盖口径）、prohibited（不要输出块、不要复制前序块，短文本）三变体共享 JSON 裁决 / ≤2000 / fence 格式规则。
+- **消费端收窄**：bridge `push_workflow_completion_snapshot` 删除完成边界门控（`node_declares_staged_upload` 与其数据链 `execution_plan::completed_node_declaration`、`App::completed_node_declaration` 整体删除）——scope 收窄为 `run_mode == "workflow"` + issue（auto 退出中段上送，deliverable 走 `/complete`），NodeCompleted SUCCESS + attempt 有块即 PUT，值去重与失败自愈语义不变。
+- **冻结段联动**：claim 时冻结的隐藏区段（`first-prompt-hidden-sections.json`）改为按 run_mode 冻结——协议段仅 direct run 冻结（workflow/auto 只冻结附件失败段）；新协议区段注入前嗅探冻结段是否已含「completion-output」（仅比对冻结段列表——上游拉取区段含父任务任意文本，不得参与嗅探），旧任务沿用冻结正文重放。vm `remote_task_hidden_section` 增加 `run_mode` 参数。（M5-ct 起判据结构化：协议恒为冻结区段首块，判据改为区段以协议模板文档开头、位置锚定——附件失败清单里的 `completion-output` 子串不再误伤，见 §12.90 ①。）
+
+**方案自评审**：过度设计——净删除：完成边界反查三跳（快照/round/graph + profile 存储）整体移除，新判定是装配时纯内存计算（图遍历一次 + goal/profile 字符串扫描，数据已在手）；resolver 复用 `UpstreamOutputResolver` 既定模式，无新增持久化状态/identity。性能——NodeCompleted 路径每节点少 2–3 次小文件读；装配路径 designation 判定 O(出边数) + 模板渲染一次，无 IO 新增。
+
+**验证结果**：lib `prompts` remote_task 6/6（direct 契约改写——编排锚点移入 node 契约、direct 负锚点防两套产出规则并存；node 协议三变体 × 双语契约新增）；`app::upstream` + `app::node_executor` + `execution_plan` 过滤 30/30（新增 designation 判定：sink/标记/new-round 边非 sink/Acceptance 4 + resolver 嗅探 1 + `SessionMode::New` 才注入 1；反查函数与其 4 项测试删除后全绿）+ `orchestrator` 动态叶子指定（Acceptance=final / worker=prohibited）1；desktop `multica::` 222/222（新增 vm 按 run_mode 冻结协议 1、改写 `is_workflow_issue_run` 作用域——auto 退出中段上送 1）。clippy 我方改动文件零新增诊断（feishu/api.rs 两处 `unused_io_amount` 为 1.96 工具链 deny-by-default 存量问题，与本改动无关）。
+
+### 12.79 改动七十七：拉取决策点 + 交付说明结构精简（M5-ch，2026-10-26）
+
+**背景**：M5-cf/cg 在内网工作流全链路复测通过后，用户提出两项优化：①拉取节点首拉未命中时一律预算内轮询直至 Timeout（15 分钟）——父任务耗时长时用户只能干等，不灵活；应首拉空值后把控制权交给用户三选一：继续等待拉取 / 手动提供所需信息 / 跳过拉取直接继续后续步骤。②completion-output 结构中构建与部署信息是核心，产出、测试要点等附加信息应一两行带过，不得喧宾夺主。
+
+**方案**：
+- **拉取决策点（桌面侧 resolver 重构，引擎契约零改动——仍是 `resolve(task_id, node_id) -> String` 同步回调）**：
+  - 首拉立即执行：命中 → 快路径照旧；**成功但空值** → 注册决策槽（`MulticaRuntimeState.upstream_pull_decisions`，键 `"{local_run_id}/{node_id}"`，Notify 唤醒，沿用 `issue_output_pushed` 的 run 级内存态定位与 `drop_active_run` 同生命周期前缀清理）+ 发 `gold-band://multica-upstream-pull-pending` 事件，前端决策 UI 三选一（M5-ci 起为会话内卡片；本版为 App 级全局弹窗）；**首拉网络失败不发决策点**（「拉不到」≠「父未产出」），预算内重试（M5-ci 修正：本版实现与该口径不符——网络失败也发了 pending，且首拉失败后即使后续轮询确认空值也永不开决策点）。
+  - resolve 主循环 `tokio::select!`：决策 notify（manual → 渲染用户文本变体、skip → 渲染跳过变体、retry → 恢复轮询并立即拉取一次）vs 决策窗口 `DECISION_FALLBACK_AFTER`（60s，无人应答自动回落轮询——无人值守语义≈旧口径，不挂死）；轮询期 fetch 命中 → resolved；总预算 15 分钟不变，耗尽仍结构化 Timeout。任意退出路径统一收口：移除槽 + 发 settled 事件（resolved/manual/skipped/timeout）关闭前端弹窗；决策槽在轮询期保留（迟到 manual/skip 仍生效）。
+  - 命令 `decide_upstream_pull`：决策字面量（retry/manual/skip）→ 枚举；manual 强制 trim 非空；锁内写决策取 notify、锁外 notify_one；无槽/无在飞 run/未知字面量 → `multica.upstream-pull-not-pending`（决策迟到竞态兜底，不改槽防手滑毁掉等待中的拉取）。
+  - 前端：App 级 `MulticaUpstreamPullDialog`（纯事件驱动：pending 入队幂等、settled 收口清理、直接关窗=不决策由 60s 回落自愈；多个在飞拉取按到达顺序逐个弹；M5-ci 起整体移除，改为会话内 InterventionLayer 卡片）；模板 `remote_task_upstream_pull.md` 拆三变体（parent/manual/skipped，双语）——manual 明确标注「用户手动提供，非父工作项快照」，skip 带「缺信息如实说明、不要臆测」防线。
+- **交付说明结构精简（协议文本收紧，无逻辑改动）**：`remote_task_{completion,node}_protocol.md` 与交付上传角色正文的次要信息段改为一两行带过且不得挤占核心信息（核心段——构建/部署事实——不动）。
+
+**方案自评审**：过度设计——决策槽是 run 级内存态，复用 `issue_output_pushed` 生命周期口径与 MulticaConnectCancel 的 Notify 先例，无持久化字段/跨层 identity/aggregate；弹窗单组件纯事件驱动，无轮询无全局 store；未引入为单一竞态复制 canonical 数据的机制。性能——快路径（首拉命中）零新增；决策等待期零轮询零请求（旧口径此阶段已在按 15–60s 间隔打请求）；60s 回落保证无人值守带宽行为 ≤ 旧口径；协议文本每区段净减约百字符（首条 prompt 负载下降）。
+
+**验证结果**：lib `prompts` remote_task 6/6（upstream_pull 三变体契约改写：parent/manual/skip 锚点 + manual 不带快照口径负锚点）；desktop `multica::` 228/228（新增：决策槽生命周期 3——注册/决策/取走保留槽、run+node 键隔离、drop_active_run 前缀清理含前缀投影视防；upstream 渲染 manual/skipped × 双语 2 + 决策窗口常量锁 1；错误码断言扩充）；前端 i18n 契约 7/7、locale parity/app-error 18/18、tsc 零错、`web:build` 通过。clippy 我方改动文件零新增诊断。弹窗实机交互需内网真实 multica 工作流验证（本地无法联调，见部署后复测）。
+
+
+### 12.80 改动七十八：决策点收敛为会话内卡片 + 首拉网络失败口径修复（M5-ci，2026-10-26）
+
+**背景**：M5-ch 批次分支自检发现两项问题，叠加用户对决策 UI 形态的拍板：
+
+1. **UI 形态偏离产品先例（用户决策：改为会话内 InterventionLayer 卡片）**：权限请求、表单征询、人工检查等同类「运行中请求用户决策」均为会话内卡片（ACPChatDialog InterventionLayer），M5-ch 的 App 级全局弹窗是孤例——脱离任务上下文（看不到会话现场），且阻塞全局。
+2. **代码与文档口径不符（首拉网络失败也发决策点）**：`upstream.rs` 在首拉 `match` 两分支后**无条件**注册决策槽 + 发 pending 事件，网络失败（`polling = true`）也会弹三选一——与「首拉网络失败不发决策点（『拉不到』≠『父未产出』）」的文档口径直接矛盾。
+3. **根因是设计层缺陷而非实现笔误**：决策点开启绑定在「首拉」这个**时机**上，而正确的不变量应绑定在「首次**确认**父未产出」的**观察**上——拉取成功且空值才算确认。绑定时机导致两个症状：网络失败误开（把「拉不到」当成「父未产出」）；首拉失败后即使后续轮询确认空值也**永不**开决策点，用户在整个 15 分钟预算内无从介入，只能干等到 Timeout。
+4. **死代码**：`handoff.rs::final_assistant_reply` 自 /complete 直传（98afa60a）后无生产调用方，`cargo check` 报 never used。
+
+**方案**：
+
+- **决策点开启口径改为不变量「首次确认父未产出」**：抽出纯分类 `ParentFetchObservation { Produced, ConfirmedNotProduced, Unreachable }`（`observe_parent_fetch` + `opens_decision_point`），首拉与轮询两个拉取点统一由分类驱动：
+  - `Produced` → 快路径返回（不变）；
+  - `ConfirmedNotProduced` 且尚未开过（`decision_open`）→ 注册槽 + 发 pending——无论该确认来自首拉还是后续轮询（修复症状 3 的第二半）；
+  - `Unreachable` → 不开决策点，本地永不唤醒的 `Notify` 占位（select 纯走轮询 sleep），预算内静默重试（修复症状 2）。
+  - 「只开一次」由 `decision_open` 保证：60s 回落后槽保留、迟到决策仍生效，不重复注册/发事件。
+- **前端改会话内卡片**：删除 `MulticaUpstreamPullDialog.tsx` 与 App.tsx 挂载；新增 `web/src/components/conversation/MulticaUpstreamPullCard.tsx`：
+  - `MulticaUpstreamPullIntervention({ taskId, readOnly })` 挂入 ACPChatDialog InterventionLayer（`pendingElicitation` 之后）：订阅 pending/settled，按 `event.taskId === taskId` 过滤（用户看哪个会话，卡片出现在哪；未打开的会话由后端 60s 回落自愈）；pending 入队幂等、settled 按 `{runId}/{nodeId}` 精确移除。
+  - 卡片级 `MulticaUpstreamPullCard`：视觉对齐 PermissionRequestCard（同 `data-theme-role="permission-card"` 复用主题 recipe，图标 + 标题 + 描述 + 动作行），三选一 + manual 内联表单（trim 非空门控提交）；本地出队在**父级队列**而非卡片内部 state——同槽位 pending 再次入队时按 key 重建卡片（测试驱动修复：卡片内 `removed` state 会在实例复用时吞掉重入队的 pending）；`readOnly || useReadOnlyExperience()` 禁用全部决策入口；决策迟到（`multica.upstream-pull-not-pending`）幂等收起，其他错误保留卡片展示。
+  - 卡片无关闭按钮：不阻塞会话，忽略 = 不决策，60s 回落自愈（弹窗时代的 dismiss 按钮随阻塞语义一起删除）。locale 9 key 原样复用（文案不含弹窗措辞，7 语言零改动）。
+- **删除死代码**：`final_assistant_reply` 及其 2 项测试（`assistant_text_items`/`is_assistant_text` 仍有 scan/probe 生产调用方，保留）。
+
+**方案自评审**：过度设计——净删除为主（弹窗文件 + 死代码 + 死代码测试），卡片复用既有事件/命令/locale/主题 role，无新状态机/持久字段/依赖；`ParentFetchObservation` 是三值纯分类、被两个拉取点真实消费（非测试专用抽象）；`decision_open` 是单个布尔守卫，未引入新 aggregate。性能——事件频率不变（每任务每节点至多一对 pending/settled）；卡片状态在最小消费边界（介入组件持有队列、每卡片自持表单态），订阅按 ACPChatDialog 实例一对 listener，无高频路径、无额外请求。
+
+**验证结果**：desktop `multica::` 227/227（228 − 删 2 项死代码测试 + 新增 1：`decision_point_opens_only_on_confirmed_not_produced` 锁定口径——ConfirmedNotProduced 开、Unreachable 不开、trim 空白算未产出；resolve 装配依赖 AppHandle + 真实 client，无测试 harness，按 bug-fix-verification §3 例外以根因分析 + 纯函数契约锁定）；前端新增 `multica-upstream-pull-card.test.tsx` 6 例（taskId 过滤、重复 pending 幂等、settled 按槽位精确移除、retry/skip 决策参数、manual trim 门控与提交参数、not-pending 幂等收起 + 其他错误保留可重试、readOnly 全禁用）；`tsc -p web/tsconfig.build.json` 零错；web 全量 383 文件 2929 例通过；`cargo check` 警告数与改动前持平（20 条均为未触及模块存量）。实机事件链（pending 事件 → 卡片出现 → 决策 → settled 收口）本地无法触发（browser 模式事件订阅为 stub、multica 仅内网），待内网真实工作流复测。
+
+### 12.81 改动七十九：PR 评审五项修复——解析注册竞态宽限、completion_output 写序、上传侧指定门禁、决策卡片水合、等待态保留（M5-cj，2026-10-27）
+
+**背景**：feature_multica 分支 PR 评审确认 3×P1 + 2×P2，全部根因修复（非补丁式）：
+
+1. **resolver 注册竞态（P1）**：`resolve()` 按 local task 反查 `active_runs`；run 启动发生在 `create_conversation_run_vm` 创建事务内，`register_active_run` 在其后（commands.rs fresh/resume 两路径均如此）——注册不是不发生，只可能**迟到**。上游拉取节点启动是引擎回调微秒级，旧实现 miss 即报「找不到在飞任务」直接失败节点。评审点：终态事件（秒级后）早有「先于事件归属反查」的守恒，但 resolver 路径（节点启动瞬间）未覆盖。
+2. **completion_output 乱序覆盖（P1）**：快照 PUT（NodeCompleted spawn）与 `/complete`（RunCompleted spawn，同样携带 completion_output）并发飞；早节点 stalled PUT 晚于终态写入落地 → 服务端后写胜 → 过期内容永久驻留（run 已终态、无后续写入自愈），下游父任务读到旧交付。发送侧去重（`issue_output_pushed`）只防重复发送，不保到达序。用户曾提议「附带发出时间字段」——比较必须发生在**接收侧**（服务端改动，跨团队依赖，内网已确认端点无状态 2026-10-24），客户端侧比较无法撤回在飞 PUT，否决。
+3. **上传侧门禁缺口（P1）**：M5-cg 产出门禁在**提示词侧**（装配时按 designation 注入协议），但协议块本质是自由文本——Prohibited 节点的回复仍可能含块（复述/引用上游交付说明），旧上送逻辑照单全收 → 禁止节点可覆写 issue 交付。
+4. **决策卡片无水合（P2）**：卡片只靠 pending/settled 即时事件，重进会话后已待决的卡片消失（后端槽仍在、60s 回落在跑）。
+5. **「继续等待」移除卡片（P2）**：前端 Retry 后 `onDone()` 收起卡片，但后端槽保留（`take` 不消费，迟到 manual/skip 仍可写入）——用户失去再次介入入口，与后端语义错位。
+
+**方案**：
+
+- **① 注册竞态宽限（#1）**：`resolve()` 反查 miss → `wait_for_active_run_within(MAPPING_GRACE=5s, POLL=50ms)` 轮询；注册到达即命中，宽限耗尽仍 miss 才报错（真异常）。不变量依据：fresh/resume 两路径注册都**无条件**紧跟 run 创建——「迟到毫秒级」是唯一正常形态，「5 秒仍不来」才是不变量被破坏。
+- **② completion_output 写序（#2，状态规则 §6 合规形态）**：
+  - `enum CompletionOutputJob { Snapshot {run,node_id,attempt_dir}, CompleteRun {remote_task_id,run,node_label,attempt_dir} }`；**事件回调内同步入队**（纯 channel send 不阻塞热路径，事件序 = 入队序）+ 全局单消费者 `drive_completion_output_jobs` 顺序执行（scan/dedup/PUT 全在消费者侧，临界区只有 send）。
+  - 入队方：NodeCompleted SUCCESS（**入队侧 workflow+issue 预过滤**——run 在手，auto/direct 的成功节点不产生注定被拒的死 job；预过滤与执行之间 run 可能被 cancel，队列残留作业仍由执行侧会籍门禁权威拒绝）→ Snapshot；RunCompleted Success → CompleteRun（与快照同序——事件序上 RunCompleted 晚于全部 NodeCompleted，FIFO 保证终态内容最后落定）。Failure/Killed 不写 completion_output，保持旁路 spawn。
+  - **不入队方及理由**：turn 收尾完成（direct 无快照写入方，与队列无并发交叠）；迟到补发（run 已终态，该任务队列作业已执行完，冲突仅「分钟级 stalled PUT 晚于补发」极端窗口，下次补发整体覆盖自愈）。
+  - **认领升级 `begin_completion_for_run`**：队列把 CompleteRun 延迟到消费者执行后，与 turn 收尾（旁路 spawn）顺序不再同步——他方可在「复验映射 → 认领」两步间完成并 finalize（认领随 finalize 释放），单纯认领成功 ≠ 无人完成过 → 二次 complete。修复：单锁内完成「映射仍在本 run 名下（remote 键 + 双 local 身份匹配，防同键重注册误放行）+ 认领」；CompleteRun 执行前另有廉价映射复验（他方已收尾则零成本跳过 timeline 扫描）。
+  - 全局单队列足够（不为 per-issue 建队列）：写入频率是节点边界/任务终态粒度，串行即该字段的正确语义；写入方按 run 聚簇，全局 FIFO 已保同 issue 序。
+- **③ 上传侧指定门禁（#3，与模型所见同源）**：`CompletionProtocolSectionResolver` 签名加 `node_id`；装配回调时 Final/Staged 记入 `designated_output_nodes: HashMap<local_run_id, HashSet<node_id>>`（Prohibited 不记）；快照上送前查会籍，非指定（含 frozen 旧 run 无记录）fail-closed 拒绝（info 日志）并**先于** context/timeline 扫描退出（零成本）；随 `drop_active_run` 同生命周期清理。不重开完成边界反查（M5-cf 改动七十四两轮回归的根因——记录时点与模型收到的协议同一装配时点，天然同源）。
+- **④ 卡片水合（#4）**：新命令 `list_upstream_pull_pendings(taskId)` → `find_active_run_by_task` → `list_upstream_pull_pendings(run)` 槽行（`MulticaUpstreamPullPendingVm`：taskId/runId/nodeId/parentIssueId/taskTitle/retried）；无在飞 run → 空列表（终态时槽已随 run 清理，空 = 无待决）。前端挂载时水合合并进既有事件队列，`settledKeys` 集合防护「settled 先于水合响应到达」的在途竞态（迟到行不复活已收口卡片）；失败静默（事件流仍是主数据源，不阻塞挂载）。
+- **⑤ 等待态（#5）**：后端 `decide_upstream_pull` 的 Retry 置槽 `retried=true`（槽不消费）；前端 Retry 成功 → 卡片转 `waiting` 模式而非收起（跳过/手动入口保留——正是后端槽保留的语义；manual 进入后返回回到等待态）；水合 `retried=true` → 初始即等待态。settled 事件仍是唯一收口。
+
+**方案自评审**：过度设计——② 是「事件序 = 执行序」的最小正确结构（unbounded channel + 单消费者，无重试/优先级/持久化队列这类假设性机制；测试执行器注入化后无生产专用抽象）；③ 是一张 HashMap<run, HashSet> 内存表，随 run 生命周期清理、零存储改动，未引入新 aggregate（不变量「只有装配时被指定的节点可写交付」在既有 canonical 状态里无法表达，属必要新增）；①④⑤ 均为单点小改。性能——热路径新增仅一次 channel send（O(1) 无锁快路径）；消费者串行化该字段本就低频（节点边界/终态粒度），快照 PUT 本身秒级 HTTP，串行不构成瓶颈且换来的正是正确性；③ 会籍检查在快照路径**前置于** timeline 大文件读，禁止节点成本反而下降；④ 水合每会话挂载一次、只读内存锁；无新增网络调用、无缓存增长（designated 集与 retried 标记随 run 清理）。
+
+**验证结果**：desktop `multica::` 232/232（新增 5：`completion_output_queue_executes_jobs_in_fifo_order`——慢快照（120ms 挂起）不重排后入队 /complete，固化评审 #2 根因；`begin_completion_for_run_claims_only_on_live_mapping`——含身份不匹配拒绝与映射清除后拒绝；`designated_output_nodes_lifecycle_scoped`——记录幂等/默认 false/终态清理/run 隔离；`upstream_pull_pending_rows_carry_parent_and_retried`——水合行字段与 run 前缀过滤；宽限等待 2 例——120ms 迟到注册命中、宽限耗尽返回 None 且不早退）；lib `upstream` 16 + `node_executor` 18 + `orchestrator` 145 全绿（trait 签名变更消费方）；前端 `multica-upstream-pull-card` 10/10（新增水合恢复 + retried 等待态、settled-水合竞态不复活、水合失败静默、Retry 转等待态不收起且 settled 收口、等待态 manual 提交收口、manual 返回回等待态）；`waitingNote` 7 语言同步；`tsc -p web/tsconfig.build.json` 零错。resolve/快照/认领的 HTTP 端到端依赖内网 server，按 bug-fix-verification §3 以纯函数与注入化执行器契约锁定，实机链路待内网打包复测。
+
+### 12.82 改动八十：需求管理页 multica 平台快捷跳转按钮（M5-ck，2026-10-28）
+
+**背景**：用户反馈在需求管理页无法直接进入 multica 平台（查看/创建工作空间、issue 详情需手动开浏览器敲地址），要求放一个快捷跳转按钮；仅来源为 multica 时展示（当前唯一来源即 multica，门控语义为未来多来源保留）。
+
+**方案**：底部工具条右侧组（账号标识与手动刷新按钮之间）增加 `ExternalLink` ghost icon 按钮（Tooltip + aria-label 同文案，i18n `remote.taskManagement.openPlatform`「打开 {{source}} 平台」，`sourceLabel` 经来源注册表名片插值，不散写品牌名）；点击调既有 `openExternalUrl(settingsVm.multicaAppUrl)`——平台 Web 前端地址（后端登录流程同源字段）本页 `fetchSettings` 已加载，零新增请求；桌面端走 tauri opener 插件（与 Git 下载/GitHub PR 视图同源基础设施），浏览器态 window.open。门控两层：随 footer 既有 `source === 'multica' && connected`（非 multica 来源/未连接不渲染）+ `multicaAppUrl` 非空才渲染。跳转目标为平台根地址，不做 workspace/issue 深链（multica Web 路由结构无本仓可验证真源，不猜路径硬编码）。
+
+**方案自评审**：过度设计——无（零新增状态/请求/组件文件，复用 settings VM、openExternalUrl 与 footer 既有门控，不新增 source 特判）。性能——无（纯静态按钮，数据已在手，无新增渲染路径与数据加载）。
+
+**验证结果**：`remote-task-management-page` 28/28（新增 2：已连接点击按钮调 `openExternalUrl(appUrl)`、`multicaAppUrl` 为 null 不渲染）+ i18n 契约 4 套件 41 例全绿（7 语言 `openPlatform` 同步、占位符一致）；`tsc -p web/tsconfig.build.json` 零错。浏览器实测（vite dev + 临时 mock connected 态，验证后已还原）：footer 右侧组正确渲染按钮与 aria-label「打开 Multica 平台」；本机 agent-browser/CDP 输入派发不可靠（合成与原生点击均不生成 click 事件，仅 pointerdown 到达），点击→打开链路以组件测试固化，桌面端 opener 路径为既有已验证基础设施。
+
+### 12.83 改动八十一：DPMS 需求回传对接——分支门、记忆播种与终态回写（M5-cl，2026-10-29）
+
+**背景**：multica 回传对接（multica 侧已完成开发，对接文档 `.claude/design/dpms_cli/`）。`dpms_required` 任务在码灵执行中由 DPMS 角色创建系统需求后，需求 id 需回链到 multica issue。职责铁律不变：agent 会话只写任务记忆（`storyId` 等），HTTP 由 daemon 侧（码灵中介，自身 PAT）执行。链路三段：**分支门**（提示词侧事实注入）→ **记忆播种**（rerun 复用）→ **终态回写**（HTTP）。
+
+**wire 契约**（claim / pending / detail 三面同构）：`dpms_required`（**非 omitempty bool，缺键 = false 灰度契约**）、`system_story_id`（`*int64` omitempty，issue 已链接的 DPMS story id）、`dpms_product_id`（`*int64` omitempty，溯源 story 行产品）。`RemoteTask` 三键 serde-optional，门条件一律 `== Some(true)`（与 `is_ready` 先例同构）。
+
+**方案**：
+
+- **① 分支门 = 任务级隐式区段块**（`src/prompts/{zh-CN,en}/runtime/remote_task_dpms_gate.md`，恒定文案无变量）：issue 关联且 `dpms_required == Some(true)` 时随首条 prompt 隐式区段注入（`dpms_gate_block`，位于完成协议块之后、附件失败清单之前）。**模式无关**——direct/workflow/auto 三种执行形态都无法按载荷跳转工作流节点（direct 无图、workflow 是用户选定的静态图、auto 动态生长），按载荷做 DSL 条件执行属过度设计；门只承载事实（本任务含创建环节）与写记忆契约（`storyId`/`storyName`/`dpms.storyUrl` 任务范围、已有 `storyId` 先核实复用、溯源值是推荐值仍需用户确认、不调工作项平台接口），创建行为本身由 DPMS 角色定义承载。留在隐式侧的原因与完成输出协议块相同（用户可编辑文本误删即静默断链）。workflow/auto 无任务级协议块，门块独立成立区段。
+- **② 溯源预填新增两行**：`dpms_product_id` / `system_story_id` 进 `remote_task_context.md`（产品 ID（任务指定）/ 已创建 DPMS 需求 ID），用户可见推荐值；两键缺省不渲染（旧载荷行为不变）。
+- **③ 记忆播种**（`seed_dpms_story_memory`）：fresh claim 时 `system_story_id` 非空 → 经 `MemoryService` upsert 任务记忆 `storyId`（键名常量 `DPMS_STORY_MEMORY_KEY`，与角色/CICD 记忆契约同源；读-改-写带 revision，同值 no-op）。与 `dpms_required` **独立**——回写成功后的 rerun 载荷 `dpms_required=false` 但仍播种（角色核实复用、CICD 节点读取）。续跑不播种（被续任务记忆随首次 claim 已在）。任何失败仅 warn 不阻断启动（缺失时角色按证据链回落询问用户）。
+- **④ 终态回写**：`ActiveRemoteRun` 快照 `dpms_required: bool` + `claim_system_story_id: Option<i64>`（claim 时定版，续 `run_mode`/`issue_kind` 快照先例）。触发判定 `should_report_dpms_story`（纯函数）= 三条件与；取值 `dpms_story_to_report` = 守卫命中后读任务记忆 `storyId` 解析正整数（非数字/零/负 → None 不回写，服务端 `dpms_story_missing` 对账告警兜底）；执行 `report_dpms_story` = 单次 `POST /api/daemon/issues/{id}/dpms-story`（body `{"dpms_story_id":N}`，PAT + X-Workspace-ID）。挂点：complete 三处（direct 门控命中 / workflow·auto passthrough / turn 收尾门控，经 `complete_with_issue_done` 尾参）+ `handle_run_failed`（fail 路径——角色可能在失败前已创建）+ `cancel_remote_task`（手动取消同 failed 终态；teardown 前取值，本地收尾后 active_runs 即清）。失败仅 warn 不重试（网络瞬时错由 client 内一般重试兜底）；**409 → `IssueLinkConflict` 确定错误码不重试**——服务端同事务把 `dpms_required` 置 false，下次 claim 载荷条件自然失效，行为等价「永不再发」（不持久化 stop 标记）。
+- **⑤ 修正记录（实现期自检）**：初版 `dpms_story_to_report` 直接用调用方 home context 的 App 读记忆——home App 的 `paths.project_id` ≠ 任务项目，`MemoryService` locator 校验拒绝、回写**静默永不触发**。改为函数内按 `run.local_project_id` → home StateConfig 反查工作区路径 → `app_for_workspace` 构造绑定该目录的 App（与播种/teardown 同一解析路径，单一事实源）。
+
+**方案自评审**：过度设计——无新增持久状态（claim 快照沿 `ActiveRemoteRun` 内存生命周期；409「永不再发」用服务端翻转 + 行为条件替代持久 stop 标记；不建 per-issue 去重表——「各至多一次」由调用点结构性保证：complete 认领单飞（M5-cj `begin_completion_for_run`）、fail/cancel 是一次性路径）；门块为恒定文案模板，无新渲染机制。性能——回写取值全部在 `should_report` 守卫之后（非 DPMS 任务零成本）；DPMS 任务终态边界各一次小文件读（home state.json + 工作区 memory.json）+ 单次 POST，无轮询无缓存。
+
+**验证结果**：desktop `multica::` 240 passed / 0 failed（基线 232 + 新增 8：client 三键解析（显式 true/false rerun 载荷、缺键全 None 灰度契约）+ 回写请求 body 恰 `{"dpms_story_id":N}` + socket 集成 200 路径/头/断言与 409→`IssueLinkConflict` 单请求不重试 + vm 门块（三模式注入、缺键/false/非 issue 不注入、en 同构）与溯源新行（中英行序、缺省不渲染）+ bridge 触发条件穷举（false/已链接/无 issue 不触发）与快照取值（正整数/空白容忍/非数字/零/负/键缺失 → None））；lib `prompts::` 19 passed / 0 failed（溯源两新键中英渲染与缺省不渲染、门模板创建契约锁定）。
+
+**联调注意**（multica 侧交接）：multica 测试需 `DATABASE_URL`（开发库 `postgres://multica:multica@172.21.18.88:5432/multica`）否则静默跳过；既有失败基线 TestListIssues 3 个 + TestDaemon|TestStory|TestClaim 约 40 个（与本改动无关，排查时 stash 对比 HEAD）。
+
+### 12.84 改动八十二：DPMS 回写载荷扩展 + 早回写时机前移（M5-cm，2026-10-30）
+
+**背景**：内网真实 `dpms_required` 任务实测——DPMS 创建成功、multica issue 字段未更新（用户内网包早于 M5-cl 属已知 stale-binary 假回归，真实增量是契约缺口：旧 body 只回链 story id）。multica 6161b33f 把端点 D4 body 扩到 7 字段：`dpms_story_id`（必填正整数）+ 可选 `dev_user`/`test_user`/`release_plan_id`/`origin_url`/`product_id`/`product_name`；**提供即更新**（出现的字段覆盖、缺省逐列 COALESCE 保留现值）、同 id 重放 200 刷新字段并把 `dpms_required` 两半置回 true、**409 不落任何字段**（仍翻 false + `IssueLinkConflict` 不重试）、`product_name` 无 `product_id` → 400、产品映射复用转换规则。码灵侧对应两件事：从任务记忆组装全量 body；回写时机从终态前移到产出边界（「不再等 `/complete` 顺带捎」）。`completion_output` 回归交付文本职责（无代码改动）。
+
+**方案**：
+
+- **① wire body**（client.rs）：`ReportDpmsStoryRequest` 扩 7 字段（`Debug/Clone/PartialEq/Serialize`，可选字段 `skip_serializing_if`——缺省不发，仅 story-id 的 body 与旧契约逐字节等价，灰度安全）；`report_issue_dpms_story` 改收 body 引用；ClaimConflict→`IssueLinkConflict` 映射与「409 不重试」不变。
+- **② 记忆组装**（bridge.rs 纯函数 `dpms_report_body_from_snapshot`）：8 键映射 `storyId→dpms_story_id`、`dpms.devUser→dev_user`、`dpms.testUser→test_user`、`dpms.releasePlanId→release_plan_id`、`dpms.storyUrl→origin_url`、`dpms.productId→product_id`、`dpms.productName→product_name`（键名常量进 state.rs 与 `DPMS_STORY_MEMORY_KEY` 同排）；`storyName` 记忆专用（rerun 复用核对）不进 wire。边界：文本 trim 非空、数值正整数（`storyId` 不可解析 → 整体 None 不回写，沿 M5-cl 口径）；**`product_name` 只在 `product_id` 存在时随行**——服务端 400 守卫前置规避，宁缺毋发。
+- **③ 早回写时机**：`handle_node_completed` 加 outcome 参（订阅器既有载荷透传），节点成功边界触发（workflow/auto 的 DPMS 创建节点成功即回写，平台立即可见）；`handle_turn_completion_gate` 门控判定后、final probe 前触发（direct 的 turn 边界；无块对话继续也先回写再退出）。两钩子都与 pin/完成判定逻辑独立（worker-ref 未就绪/扣留完成不阻断回写）。`complete_with_issue_done` 卸下回写职责（删尾参）——故事链接事实独立于任务终态上报，改由各终态路径在 **finalize 之前**（active_runs 未清，去重与「已收尾不补发」判定成立）兜底调用：complete 路径（execute_complete_run match 后）×1、turn 收尾完成路径 ×1、`handle_run_failed`、`cancel_remote_task`（teardown 前）。
+- **④ 统一入口 `report_dpms_story_if_changed`**：守卫（claim 快照三条件，不变）→ 组装 → 与在飞 run 的 `last_dpms_report` 比较 → 不同才 POST → 成功/409 记录 body。**去重与渐进刷新**：`ActiveRemoteRun.last_dpms_report: Option<ReportDpmsStoryRequest>`（仅内存）同 body 跳过、不同 body 再发——配套服务端「提供即更新」：溯源值经用户确认渐进写入记忆后，下一边界把确认值刷新进早先导入的行；409 同样记录（再发只会再 409）；**网络失败不记录**（下一节点/turn/终态边界自然重试，终态是最后机会）。并发容忍：比较与发送不在同一临界区（锁不覆盖网络调用），节点与 turn 钩子同拍双发由服务端幂等（同 id 重放 200）吸收，最坏一次冗余 POST；run 已被终态收尾清出 → 比较时即整体退出。
+- **⑤ 门提示词**：`remote_task_dpms_gate.md`（zh/en）写记忆契约由 3 键扩为 8 键（含键名与语义），其余锚点（复用不重复创建/推荐值需确认/不调工作项平台接口）不动。
+- **⑥ 修正记录（与角色定义联审发现）**：初版产品键沿用了 multica 交接单转述的 `dpms.product`，而 DPMS 角色定义（写入方，`.claude/design/dpms_cli/`，已在内网创建）实际写 `dpms.productId`——键名不一致会使 `product_id`/`product_name` 永远读不到、静默不回写。**键名以角色定义（写入方）为准**：码灵侧常量/门块/测试/文档统一改读 `dpms.productId`（M5-cm 未提交，零成本）；反向改角色需内网重存，弃。同轮联审补齐角色侧 `dpms.devUser` 缺口（角色记忆表原只有 `dpms.testUser`，`dev_user` 无写入来源），角色设计稿同步修订。
+
+**方案自评审**：过度设计——`last_dpms_report` 复用 `ActiveRemoteRun` 内存生命周期（不建 per-issue 发送史持久表：渐进刷新只需「最近一次」，终态即清理；409「不再发」沿服务端翻转 + claim 条件失效的既有机制）；早回写钩子全部挂在既有事件路径上（NodeCompleted/AcpTurnFinished/终态五路），无新事件无轮询；比较/记录是锁内两次 HashMap 操作。性能——回写组装全部在 `should_report_dpms_story` 守卫之后（非 DPMS 任务零成本）；DPMS 任务每边界一次小文件读（home state.json + 工作区 memory.json，与 M5-cl 终态取值同量级）+ 至多一次 POST；早回写把 POST 从终态提前到产出边界，总发送次数受 body 去重约束（同 body 只发一次，典型 1–2 次），无新增高频路径。
+
+**验证结果**：desktop `multica::` 240 passed / 0 failed（client：全量 body 序列化（7 键 JSON + 仅 story-id 灰度等价）、socket 集成断言路径/鉴权头/全 7 字段、409→`IssueLinkConflict` 单请求不重试；bridge：组装映射穷举（全键→wire 键、trim、`storyName` 不进 body）、`product_name` 无 `product_id` 整列丢弃、文本空白/数值非正 → 列缺省、`storyId` 非数字/零/负/缺失 → 整体 None）；lib `prompts::` 19 passed / 0 failed（门模板 8 键双语契约锁定）。早回写钩子为事件布线（AppHandle/socket harness 不可注入），时机与去重语义以调用点注释 + 纯函数契约锁定，内网真实任务全链路（创建→字段补全→渐进刷新→409）待打包联调验收。
+
+**联调注意**：用户内网包若仍报「字段未更新」，先核实运行版本含 M5-cl+M5-cm（stale-binary 前科：M5-ca）；multica 侧 6161b33f 已合入其 5 项新测试。
+
+**联调结论（2026-10-30/31 补记）**：首跑 issue `dpms_required=false` → 回写按灰度契约静默休眠（runtime.log 全程零 DPMS 痕迹；角色仍建 story 557993、写 8 记忆键——角色行为不经门控）；排查靠日志往返坐实「守卫未命中但不可见」，催生 M5-cn 可观测性。手动置 `dpms_required=true` 重跑 → 需求 id 成功回写 issue，M5-cl/cm 链路端到端验证通过。7 字段载荷随即被 M5-cn 契约收缩替代（multica 2026-10-31 定版：字段镜像由 multica 从 DPMS 拉取）。
+
+---
+
+### 12.85 改动八十三：DPMS 回写契约收缩为单字段关联 + 守卫可观测（M5-cn，2026-10-31）
+
+**背景**：M5-cm 落地并内网验证后设计复盘——码灵不应搬运 DPMS 字段值：值的所有权在 DPMS，multica 作为消费方应自己拉新鲜值（搬运时刻 ≠ 查看时刻，DPMS 侧后续变更码灵永远不知道，回写注定陈旧；「渐进刷新/晚到确认重发」等复杂度全为此而生）。码灵只回传自己独有的事实：**本任务创建出的 story 是哪一个**（join key，只能来自创建方——DPMS 不认识 multica issue，反查必靠模糊匹配）。multica 2026-10-31 契约定版：`POST /api/daemon/issues/{id}/dpms-story` body 只带 `{"dpms_story_id": N}`，字段镜像全部由 multica 从 DPMS 拉取。另以内网排查实例（守卫静默 + claim 快照不落日志 → 需日志往返定位 `dpms_required=false`）为契机补可观测性。
+
+**方案**：
+
+- **① wire body 收缩**（client.rs）：`ReportDpmsStoryRequest` 收缩为 `dpms_story_id` 单字段（`Debug/Clone/PartialEq/Serialize` 保留）；`report_issue_dpms_story` 签名不变（body 引用）；409→`IssueLinkConflict` 不重试、网络重试均不变。
+- **② 组装收缩**（bridge.rs）：`dpms_report_body_from_snapshot` 只读 `storyId`（trim + 正整数，口径不变）；删 state.rs 的 6 个载荷键常量（`dpms.devUser/testUser/releasePlanId/storyUrl/productId/productName`）与逐键映射——这些键退回**角色自身预填/留档语义**（角色定义继续写，runtime 不消费；内网已重存的角色无需改动）。
+- **③ 时机/兜底/去重骨架不动**：早回写钩子（节点成功边界 + direct turn 边界）与终态五路兜底不变——关联尽早落地仍成立；`last_dpms_report` 语义收敛为「同 id 跳过、run 内换新 story 再发」（「渐进刷新」随载荷退役）。
+- **④ 可观测性**：claim 两处登记点（fresh/续跑）落 INFO 快照（`dpms_required`/`system_story_id`/`issue_id` 定版值——「领取即定版」变成事实记录）；`report_dpms_story_if_changed` 守卫未命中从静默 return 改为 debug + 首个未满足原因（`dpms_report_skip_reason` 纯函数：三条件短路序）。
+- **⑤ 门提示词**（`remote_task_dpms_gate.md` zh/en）：写记忆契约收缩为 `storyId` 单键（runtime 只回传该关联；`storyName`/`dpms.*` 按角色定义写入），复用不重复创建/推荐值需确认/不调工作项平台接口锚点不动。
+
+**方案自评审**：过度设计——净删除为主（7 字段组装、6 常量、8 键清单、`product_name` 守卫），零新增抽象（`dpms_report_skip_reason` 是三条件短路的一行化）；保留骨架与拉取设计互补非冲突。性能——回写路径每边界少读 6 个记忆键，无新增 I/O；可观测性日志每任务 claim 一次 INFO + 守卫未命中 debug（DPMS 任务才有），量级可忽略。
+
+**验证结果**：desktop `multica::` 241 passed / 0 failed（client：单字段 body 序列化恰为 `{"dpms_story_id":N}`、socket 断言 body 单字段 + 路径/鉴权头、409→`IssueLinkConflict` 单请求不重试；bridge：组装只读 `storyId`、`storyId` 非数字/零/负/缺失 → 整体 None、`dpms_report_skip_reason` 三条件短路序穷举）；lib `prompts::` 19 passed / 0 failed（门模板单键契约 + 拉取边界双语锁定）。内网全链路（创建→关联回传→multica 从 DPMS 拉字段）待打包联调验收。
+
+**联调注意**：回写侧 multica 已定版单字段；`dpms_required` 标记机制如何覆盖非 story_sync 来源的 issue（首跑 false 的根因）仍待 multica 侧明确——验收用 issue 必须置 true。
+
+---
+
+### 12.86 改动八十四：需求管理看板 DPMS 待回传徽标 + 就绪正向化 + 待办就绪优先（M5-co，2026-10-31）
+
+**背景**：M5-cn 收口后用户提出三项看板体验需求：① 需求管理界面标出哪些任务需要创建 DPMS 需求——红色「DPMS」徽标提醒，回传成功后自动消失（用户关心的是「该任务还有 DPMS 环节未完成」，非「任务是什么类型」）；② 就绪标记反转——开发任务已完成的 test 任务显示绿色「已就绪」徽标，取代 §12.42 的「未就绪」负向提醒（正向确认更显著、更符合用户直觉：挑能做的先做）；③ 待办列内已就绪任务优先靠前展示。
+
+**方案**：
+
+- **① 终态快照补 DPMS 回传状态**（config/mod.rs + bridge.rs）：`RemoteCompletedTask` 增 `dpms_required: bool` + `dpms_story_id: Option<i64>`（均 `#[serde(default)]`，旧历史缺省 → 不渲染徽标；开发阶段破坏式更新无迁移）；`completed_task_from_run` 从 `ActiveRemoteRun` 快照——`dpms_story_id` 取 `last_dpms_report` 载荷（成功与 409 已链接都算已回传，两种情况关联都已在服务端成立）。
+- **② VM 三源合成单字段**（vm.rs）：`RemoteTaskVm.dpms_link_pending`（camelCase `dpmsLinkPending`）——pending/detail 行 = wire `dpms_required == true && system_story_id.is_none()`；active 行 = claim 快照「`dpms_required` + `claim_system_story_id` 空 + `last_dpms_report` 空」（与 bridge 回写守卫同源判定，回传成功后徽标即消）；completed 行 = 快照「`dpms_required && dpms_story_id.is_none()`」。前端只消费这一个 bool，三行来源差异不外露。
+- **③ 看板双徽标**（RemoteTaskBoard.tsx）：`dpmsLinkPending` → 红色「DPMS」徽标（destructive 色系，与 bug 徽标同 token 风格；Tooltip 说明「需创建 DPMS 系统需求并回传关联，回传完成后自动消失」；**全状态列渲染**——提醒覆盖任务全生命周期，queued/running/终态行都可能待回传）。
+- **④ 就绪正向化**：谓词 `isTaskNotReady` → `isTaskReady`（`test && readiness === true`）；queued 且就绪 → 绿色「已就绪」徽标（emerald 色系，与「已完成」列同族）+ Tooltip；未就绪 / 非 test / 缺失（旧 server）→ 无徽标（**无信号不标**——修正原「缺失按未就绪展示」的灰度兜底，反转后缺失自然回到无信号）。仍不阻断执行（入口本就全开）。本改动取代 §12.42「未就绪提醒」产品决策。
+- **⑤ 待办就绪优先排序**：纯函数 `orderQueuedReadyFirst`（导出供单测）对 queued 列稳定排序就绪靠前，其余保持后端顺序（ES2019 稳定排序）；仅待办列，其余列不动。
+- **⑥ i18n（7 语言）**：删 `readiness.notReady/notReadyHint`（破坏式，无兼容层），增 `readiness.ready/readyHint` + `dpms.badge/hint`；DPMS 为专名，`badge` 值 7 语言一致保留拉丁字样。
+
+**方案自评审**：过度设计——零新增抽象：字段复刻 `kind` 徽标的既有链路（wire/claim 快照 → 终态历史 → VM → 徽标），VM 侧三源合成收敛为单 bool；排序是列内一次稳定 sort（列表规模 = active 任务数，个位到几十）。性能——`dpmsLinkPending` 随行返回零新增 I/O；旧历史 serde default 不触发迁移写盘。正向化删除负向文案属破坏式更新，符合开发阶段规约。
+
+**验证结果**：desktop `multica::` **243 passed / 0 failed**（vm：`dpms_link_pending` 三源真值表——wire 缺键/预链接/false、active 回传后即消/claim 已链接、completed 已回传/旧历史；bridge：终态快照来源锁定——`last_dpms_report` 载荷进 `dpms_story_id`；config：DPMS 字段 roundtrip + 旧条目缺省；序列化 camelCase `dpmsLinkPending`）；web vitest 5 套件 **79 passed**（board：正向谓词真值表 + `orderQueuedReadyFirst` 排序不变量 + 红/绿徽标渲染与缺席 + 待办列渲染顺序；i18n：双语精确值 + 7 语言目录契约）。
+
+**联调注意**：徽标视觉（红/绿双主题）与真实数据下的排序效果随 M5-cn 打包联调一并目视验收；本地 multica 不可达，单元/组件测试已覆盖渲染判定与排序不变量。
+
+**修正记录（M5-cp，2026-10-31，内网实测终态行 DPMS 徽标常驻）**：① `dpms_story_id` 终态快照数据源缺陷——回写唯一写入 live 在飞条目（`report_dpms_story_if_changed` 记 `active_runs`），而终态路径持有的 `run` 是事件回调时克隆的旧副本，「同 turn 回写 + 完成」（direct 单轮完成的典型路径）与「终态兜底才回写成功」两窗口内快照恒 None → 终态历史把「已回传」记成「未回传」，徽标常驻（active 行不受影响——VM 直接读 live 映射）。② 修复：`finalize_terminal` 在清映射同一临界区先读 live 条目 `last_dpms_report`，经纯函数 `resolve_terminal_dpms_report` live 优先、快照回退（live 缺席 = 映射已被他方收尾清除的防御路径），覆盖进 `run` 克隆后构造终态历史；三条终态路径（complete/fail/turn-gate）均汇经 `finalize_terminal` 单点收口。③ 验证：最小失败测试（live 有值 + 快照 None → 解析必为 Some）修复前稳定红（读快照恒 None）、修复后绿；desktop `multica::` **244/244**。
+
+### 12.87 改动八十五：multica 角色共享——daemon 工单被动上传/下载（M5-cq，2026-10-31）
+
+**背景**：multica 侧落地「角色管理」页面（角色商店，kind=role，ADR-0008，server 零改动，接口全量就绪，见 `.claude/design/multica-role-management/设计方案与码灵对接说明.md`）。经方案收敛：**码灵只做被动的角色上传和下载**——上传 = multica 网页上传面板经 export 工单到本机提取；下载 = 网页「安装到我的码灵」经 push-install 工单推送落库；码灵唯一主动行为是既有 15s 心跳认领。**零桌面 UI、零通道 A**（multica market API 不接；版本/分类/可见性等发布决策全部由 multica 网页承载）。
+
+**方案**：
+
+- **lib 格式转换真值源**（`src/app/profiles.rs`）：`MulticaRoleExchange {name, description, content, is_builtin}`（wire 字段名即字段名，`is_builtin` 保持 snake）。**slug = 本地 profile.id**（canonical 身份；`pf-{base36}` 天然满足 multica slug 正则 `^[a-z0-9][a-z0-9._-]{0,63}$`；内置角色 id `pf-builtin-*` 恰与 multica 官方保留命名空间对齐）。`profile_to_multica_exchange`：frontmatter 重写为发布校验形态（`name`=slug〔硬校验规则 2〕、`description`=summary〔规则 3 必填〕），display name 无 wire 顶层字段可走（wire `name` 恒为 slug）→ `title` 键往返，id/createdAt/updatedAt/dynamicTemplate 原样保留。`multica_exchange_to_profile_input`：**严格** frontmatter 解析（契约规则 1 要求 content 必带 frontmatter，未闭合/缺失即失败→failed 上报）；display name 回退链 title→name→slug、summary 回退链 wire description→frontmatter summary/description→display name；fence 后单条框架换行归一（交换文档规范示例带空行，本地格式 body 紧贴 fence，保证往返字节一致）；重名 `-{n}` 改名拷贝（`resolve_unique_name`，与文件夹导入同策略）；dynamicTemplate 坏模板降级（`dynamic_template_body_renders` 与导入共用 helper，顺带消除导入处内联循环重复）。
+- **client wire 类型 + API ×3**（`client.rs`）：心跳 ack 增 `pending_runtime_assets: Option<PendingRuntimeAssetsRef>`（id + 建议性 action，**权威 action 在详情**；Option 字段旧 server 缺省 None）；`RuntimeAssetsRequest` 只建模消费字段（action/asset_type/item_id/payload，id/slug/version 信息性字段不承载——serde 未知字段容忍）；payload 形态随工单变化（export=`{asset_key}`、push-install=角色正文）承载 `Value` 由处理侧解析；上报 body `RuntimeAssetsListReport` / `RuntimeAssetsInstallReport`（Option 字段显式 null 不加 skip_serializing_if，与 skill 上报同约定）；API：详情 GET + list 结果 POST + install 结果 POST（daemon PAT，`with_network_retry` 3 次内重试）。
+- **工单处理模块**（`src-tauri/src/multica/runtime_assets.rs`，新）：纯函数 `classify_runtime_assets_request`（list / export{asset_key}〔item_id 空〕/ push-install{exchange}〔item_id 非空〕，结构性失败返回错误文案→failed 上报终态化）+ `asset_summaries`（key=profile.id 映射，`updated_at` 上报层转 RFC3339——multica 反馈 P4，本地存储格式是本地约定不动）+ 入口 `handle_runtime_assets_request`（详情 404/网络失败→放弃不上报〔server 内存态请求已消失，上报同样 404〕）+ 三 handler（list：`app.profiles()` 摘要枚举，非 role 资产类型 `supported:false`；export：`profile_show(asset_key)`→交换文档回传；push-install：转换→`create_profile` 落新用户角色→回报 `installed_name`=新 profile.id〔与 list/export key 同空间，网页可回查〕+ `installed_display_name`=实际落库展示名〔multica 反馈 P3；重名改名拷贝时是「xx-2」，仅市场名兜底拿不到〕）。本地读写走 spawn_blocking（与 skill 待办同模式）；上报失败记日志由服务端 60s running 超时兜底（multica 对迟到/重复上报幂等）。
+- **分发接线**（`loop_.rs` + `mod.rs`）：`dispatch_pending_runtime_assets` 复刻 `dispatch_pending_skill_work` 模式（无待办零开销、有待办 spawn 独立任务、**绝不阻塞心跳 tick**；不需要 provider——上报 body 无该字段）；心跳 tick 内先于 ack move 取引用调用。`local_skills::home_app` 开放 `pub(crate)` 复用（home 作用域 App 获取）。
+- **内置拷贝语义（ADR-0008 D6）**：push-install 落库恒为 `create_profile`（新 id 新用户角色）——内置角色 compile-in 只读天然不被覆盖、用户同名角色经改名拷贝不被覆盖；`is_builtin=true` / slug 撞 `pf-builtin-*` 推送均落用户副本，`installed_name` 回报实际 id。
+- **明确不做**：WS `EventDaemonPendingWork` 唤醒（advisory；15s 心跳在 3min pending 窗口 ≥12 次认领机会，丢失无害）；通道 A market API；版本管理/分类/可见性（multica 网页承载）；wire 顶层 `dynamicTemplate` 字符串字段（其他 runtime 形态，码灵单一事实源在 content frontmatter）。
+
+**方案自评审**：过度设计——零新增持久状态/aggregate（工单无状态消费，requestId 不落盘；三 handler 复用 lib 既有 `profiles()`/`profile_show()`/`create_profile()`，无新状态机）；复刻而非抽象 skill 待办分发骨架（两处并列尚不构成第三重复制点，抽公共层属过早抽象）。性能——心跳 tick 增量 = 一次 Option 判断；list 工单只传摘要（正文仅 export/install 全量传输，工单协议 §5.1）；本地角色目录十级文件扫描 <10ms 且在 spawn_blocking；上报独立任务不占 tick。
+
+**验证结果**：lib `app::profiles` 新增转换真值表 7 例（发布形态 frontmatter 全键、往返还原 display/summary/body/dynamicTemplate、第三方文档多级回退 + 框架换行归一、重名 `-{n}` 拷贝、坏 dynamicTemplate 降级、严格解析拒绝未闭合 fence）；desktop `multica::` 新增（ack 解析 `pending_runtime_assets` + 旧 server 缺省容忍 + action 建议字段缺省、详情三工单形态解析、list/export/install 上报 body 契约〔含显式 null 语义与 install result 双字段〕、分类三路由 + 结构性拒绝、摘要 key=profile.id + is_builtin 透传、RFC3339 转换〔含解析失败原样返回〕）；回归 lib `app::` **366/366**、desktop `multica::` **251/251**。内网网页端到端（上传面板列角色→发布→安装回装）待打包联调验收。
+
+**修正记录（multica 联调反馈，2026-11-01）**：
+1. **P3 install result 可读性**：初版 result 只回 `installed_name`（= profile.id，`pf-mcx1a2` 形态），multica 网页用户看不出装了什么。修复：result 增补 `installed_display_name`（= 实际落库 `entry.name`）——重名改名拷贝场景下它是「xx-2」而非市场原名，multica 侧市场名兜底拿不到此值，必须 daemon 回报；`installed_name` 仍恒 profile.id，key 空间统一（list key = export asset_key = install installed_name）不动。
+2. **P4 updated_at 非 RFC3339**：list 摘要 `updated_at` 原样外发本地存储格式 `2026-10-31 11:00:00`（空格分隔、无时区），multica 前端 `new Date(...)`/zod 解析失败。修复：上报层 `rfc3339_from_local_timestamp` 转换（chrono NaiveDateTime 解析 + 本地时区定位 + `to_rfc3339_opts`，秒级精度带 `±HH:MM` 偏移）；解析失败原样返回（展示降级好于错误时间）；本地存储格式是本地约定不动。export wire 顶层无时间字段，仅 list 受影响。
+
+---
+
+### 12.88 改动八十六：multica 工作流共享——daemon 工单被动上传/下载（M5-cr，2026-11-01）
+
+**背景**：multica「共享」组新增「工作流管理」页面（`/[workspace]/workflows`，与角色管理共用 runtime-assets 通道，见 `.claude/design/multica-workflow-management/码灵对接说明(1).md`）。**server 零改动**——工作流复用 role 的「心跳认领 → 取详情 → 执行 → 回报」框架（12.87 / M5-cq），仅新增 `asset_type=workflow` 分支与工作流特有规则：modelBindings 永不共享（ADR-0008 D3 per-device 配置）、builtin id 推送落改名副本（D6）、§5.5 角色依赖首版不处理。码灵仍**纯被动、零桌面 UI、零通道 A**。
+
+**方案**：
+
+- **lib 格式转换真值源**（`src/app/workflow_share.rs`，新）：`MulticaWorkflowExchange {id, name, isBuiltIn, workflow}`——wire camelCase 四键（§5.1 envelope 定稿；与角色交换的 snake `is_builtin` 不同，两类 envelope 各自跟随 multica 侧定稿形状，不强求统一）。`workflow` 即 `WorkflowDsl` 原生 wire 形态（节点 `"type"` tag / 边 `$end`·`$new-round` 伪节点 / `on` kebab 值 / `executionSlotId` 显式 camel 与其余 Rust 原名混排——两端天然一致，无需自定义 DSL 映射）。**modelBindings 剥离由构造保证**：envelope 结构上没有该字段，序列化不可能带出（multica 发布校验 `MODEL_BINDINGS_PRESENT` 双保险的另一侧）；`optionalEntryStage`/时间戳不进 envelope（前者本地私有、后者无 wire 字段）。
+- **lib 安装入口**（`App::install_workflow_template_from_multica`，`src/app/mod.rs`）：同 id（模板 id）已存在且非 builtin → 跳过返回现有（skip 策略，**skip 判定先于校验**——重复安装幂等，结构问题不二次翻旧账）；`reconcile_authoring_workflow_for_save` 迁移（执行槽指派/worker 绑定搬移进 bindings——注意该副作用会为带 provider 的 worker 生成绑定条目，属本地私有数据，不影响 wire）+ `validate_authoring_workflow` 结构校验（≈multica `INVALID_TEMPLATE`），**跳过 `resolve_workflow_profiles` / `validate_ai_dynamic_allowed_workflows`**（§5.5 角色引用缺失不阻断安装，缺失提示沿用客户端打开/运行时既有交互）；inner `workflow.id` 恒重生成（`next_workflow_id`，防外来 id 撞本地 DuplicateWorkflowId）；payload id 可用作模板 id 时**保留**（list key = export asset_key = 安装去重锚点，同一 key 空间），builtin id 碰撞/空 id → `unique_workflow_template_id` 派生副本 id；不触碰 `last_used_template_id`。
+- **client wire 双形态 payload**（`client.rs`）：`RuntimeAssetPayload`（serde untagged enum Role/Workflow）承载 export/install 上报 body 的 `payload`——两类资产 envelope 形状不同，enum 是最小建模而非新抽象层；其余 wire 类型与 API **零新增**。
+- **工单处理扩展**（`src-tauri/src/multica/runtime_assets.rs`）：`classify_runtime_assets_request` 按详情 `asset_type` 分派——空 = 旧版 role 容忍（role 通道早于该字段），`workflow` → `ExportWorkflow{asset_key}` / `PushInstallWorkflow{exchange}`，**未知类型 → Err（"unsupported runtime-assets asset type"）→ failed 上报**（spec §6 防御：web gate 只挡界面入口，CLI 直连用户 API 同样能触发 install 端点，不得误当 role 处理）。list 工单 `want_role`/`want_workflow` 双类型过滤（`asset_type` 空 = 合并上报逐条带 `type`；非空**只回该类型**——web 弹窗按传入类型渲染，混入另一类显示错乱；未知类型 list → completed + `supported:false` 降级而非错误）。`workflow_asset_summaries`：key = 模板 id、type="workflow"、description 恒空（本地模板无描述字段）、`updated_at` epoch `{secs}Z` → RFC3339 UTC（`rfc3339_from_epoch_timestamp`，解析失败原样返回——与 role 的本地时区格式不同，工作流模板时间戳本就是 epoch 形态）。export 按 asset_key 读模板 → `workflow_template_to_multica_exchange` 回传；push-install → `install_workflow_template_from_multica` → result `{installed_name=落库模板 id, installed_display_name=实际落库名, outcome=created|renamed-copy|reused-existing（M5-ct 安装回报细化，见 §12.90 ⑥）}`。
+- **明确不做**：通道 A market API（同 M5-cq）；multica 侧安装入口 gate 放开（spec §8 multica 配套事项，码灵 ready 后由 multica 侧放开 `runtime-asset-detail-page.tsx` 两处 role gate）；§5.5 角色依赖一并安装提示（multica deps 恒空未实现）。
+
+**方案自评审**：过度设计——零新增端点/持久状态/分发骨架（全量复用 M5-cq 心跳认领-详情-回报框架与 loop 分发器；安装复用 `save_workflow_template` 同一落库管线，无平行写入路径）；`RuntimeAssetPayload` enum 是两类 envelope 并存的最小建模。性能——心跳 tick 零增量（分发器不变）；list 只传摘要（正文仅 export/install 传输，单 artifact ≤8MB 且 serde 一次性序列化）；模板读写 spawn_blocking（与角色/skill 待办同模式）；本地工作流模板数与角色同级（个位~几十），全量读 store 是既有加载路径。
+
+**验证结果**：lib `app::workflow_share` 3 例（envelope 序列化无 modelBindings/optionalEntryStage/时间戳、wire 往返 + 键名锁定 `success_condition`/`prompt_envelope`/`executionSlotId`、缺 workflow 正文拒绝→failed）；lib `app` install 2 例（skip 幂等、builtin 副本 id 派生、payload id 保留、inner id 重生成、缺失角色引用容忍）；desktop `multica::runtime_assets` 新增 3 例（workflow 工单分类路由、未知 asset_type 拒绝 + 空=role 容忍 + workflow envelope 误投 role 通道失败、摘要 key/epoch→RFC3339 映射）+ `multica::client` 上报 body 扩展（Role 包裹 + Workflow payload 形态断言）；回归 lib `app::` **371/371**、desktop `multica::` **254/254**；clippy 两 crate 对改动文件零新告警。内网网页端到端（spec §7 联调验收用例）待打包联调，且需 multica 侧放开 workflow 安装入口（§8）。
+
+**修正记录（M5-cr 内网反馈，2026-11-01）**：内网联调「multica 安装显示成功，但码灵工作流列表看不到新模板」。排查：`workflows.json` 已正确落库（写读同源：daemon `home_app()` 与 UI 命令同为 `App::with_config(context.repo_root, context.config)`），根因是**被动通道缺本地反馈闭环**——前端工作流模板/角色列表只在会话壳就绪时拉取一次（App.tsx `conversationShellReady` effect），后台落库无事件触发重拉；且成功安装路径零日志（仅失败有 warn），排查只能翻 store 文件。属好设计实现不完善，修复补完被动通道的本地感知，不加新状态：
+1. `runtime_assets.rs`：push-install 成功（role/workflow 两 handler）后 emit `gold-band://runtime-asset-installed`（载荷 `{assetType, installedDisplayName}` camelCase；常量模块自持，先例 `upstream.rs`）+ INFO 日志（request_id/asset_type/落库名，工单关联）；emit best-effort，失败不影响工单上报。
+2. 前端六点接线（既有 subscribe* 门面模式：`app-events.ts` 常量 → `types.ts` VM → `client.ts` 接口 → `desktop.ts` 实现 → `browser.ts` 桩 → `api.ts` 门面），App.tsx 订阅后按 `assetType` **最小作用域重拉**（workflow → `getWorkflowTemplates`；role → `loadProfiles`；data-loading §6），异步 unlisten 竞态用 active flag 守卫（防泄漏，同 UPDATE_STATUS_EVENT 模式）；安装事件为用户步频单发，无风暴去重需求，不引 `useEventDrivenRefresh`。
+3. lib `install_workflow_template_from_multica` 补 skip/新增两条 INFO 日志——skip（同 key 已存在跳过）是 spec §4.4 预期语义，排查时要能区分「装了新模板」vs「同 key 跳过」。
+4. 验证：web 契约测试 `runtime-asset-installed-event.test.ts` 2 例（事件名 + 载荷形状）与 Rust `installed_event_serializes_camel_case_wire`（wire 键名）双侧锁跨端契约；tsc 改动文件零错。端到端（multica 网页安装 → 运行中码灵列表即时出现）待内网打包验收——本地无法产生 daemon 工单（依赖 multica server 下发），按 bug-fix-verification §3 例外以跨端契约测试 + INFO 日志为可审计证据。
+
+### 12.89 改动八十七：需求管理页任务名搜索框（M5-cs，2026-11-01）
+
+**背景**：需求管理页此前仅类型过滤（M5-ba 引入）。任务量增长后（pending 随 backlog 增长 + 终态本地历史上限 50 + running 个位数，单工作空间现实几十条、极端低百级），在四列看板中定位具体任务变难，需要按任务名检索。
+
+**方案**：与类型过滤同层的纯客户端过滤，零新增请求/状态源/组件文件。① 纯函数 `filterTasksByTitle(tasks, query)`（`RemoteTaskManagementPage.tsx` 导出）：query `trim().toLowerCase()` 后为空 = 原样引用返回（同 `filterTasksByIssueKind` 的 `all` 约定），非空对 `title` 做大小写不敏感子串匹配（`RemoteTaskVm.title` 恒非空——pending 行标题缺失时后端已回退 remote_task_id，退化标题仍可搜）；② 投影链扩为 类型 ∩ 标题 ∩ 未移出（沿用既有 `selectedTasks` useMemo，看板仍收「选定工作空间的过滤后列表」不变）；③ footer 工具条类型过滤旁渲染搜索框（shadcn `Input` + Search 前缀图标，`h-8` 对齐 sm 控件，ContextManagementPage 同款模式），门控同类型过滤（`hasWorkspaces`）；瞬时 useState 不持久化（ui-interaction §7）；④ i18n `remote.taskManagement.searchPlaceholder` 7 语言同步（placeholder 兼作 aria-label）。
+
+**方案自评审**：过度设计——无（一个纯函数 + 一个 state + 一个输入框，复用既有投影链、组件与 i18n 模式；不引 debounce/虚拟滚动/卡片 memo——数据上限明确 + 人频按键单次 O(n·m) 微秒级，加了属掩盖式复杂度）。性能——无（按键重渲染页面壳（轻量控件）+ 看板（投影消费者，属预期更新）；卡片按 `task.id` key 复用 DOM 不重挂；全程零网络请求；multica 无需服务端过滤——列表已全量在手，类型过滤时已确认同口径）。
+
+**验证结果**：`remote-task-management-page` 33/33（新增 5：容器 1——CJK/拉丁大小写跨列过滤、与类型筛选组合交集、清空恢复、纯客户端零额外拉取；纯函数 4——空/空白查询恒等、大小写不敏感、trim、无匹配空集）+ i18n 契约（i18n-loading / locale-remote-parity）全绿；`tsc -p web/tsconfig.build.json` 零错。浏览器实测（vite dev + browser 桩临时种 connected 样例，验证后已还原；deep link `/chat/remote-tasks`）：『支付』跨列命中待办 + 进行中、大写 `PAYMENT` 命中 test 任务、类型=开发 ∩ PAYMENT 全空、清空恢复 dev 全量；浅色截图 + 深色计算样式（body rgb(15,15,15)、输入框深底浅字，全部语义 token）双主题确认。
+
+### 12.90 改动八十八：feature_multica 分支评审修复九项（M5-ct，2026-11-01）
+
+**背景**：feature_multica 合并 new-origin/main 后做全分支评审（10 项发现，合并本身机械干净），按优先级依次修复九项。九项均为「好设计、实现欠完善」的补全（AGENTS.md 问题解决思路 §2），无设计层改动、无服务端协议破坏（⑥ 为纯增量 wire 字段）。
+
+**方案**：
+
+① **冻结段协议判据结构化**（`src/app/upstream.rs`）：原 `FROZEN_PROTOCOL_SNIPPET = "completion-output"` 裸子串嗅探会误伤——附件失败清单与失败原因原文同处任务级冻结区段，子串命中不代表协议已冻结，误命中即跳过注入会让节点拿不到按节点变体的产出协议。协议正文在冻结区段块序中恒为**首块**（`vm::remote_task_hidden_section`：完成协议（仅 direct）→ DPMS 门 → 附件失败清单），判据改为 `frozen_carries_completion_protocol` 纯函数：区段内容以协议模板文档开头（`completion_protocol_document_openers` 与模板同源渲染 zh/en 首行，`LazyLock` 计算一次）——位置锚定，子串不再参与比对。M5-cg 前旧任务协议同样在首块，同一判据仍正确识别。
+
+② **auto 面上游拉取令牌补齐**（`src/app/orchestrator.rs`）：`$upstream.completion-output` 解析只接了 workflow 面（`node_executor`），auto 动态叶子 `build_dynamic_worker_invocation` 装配时令牌原样留在 goal/角色正文——模型看到未解析引用。auto 面接同一装配：`needs_upstream_resolution` 先行检查（无令牌零成本）→ 命中经 App resolver 解析 → `upstream_hidden_section` 追加隐式区段 + `strip_upstream_references` 移除令牌（与 workflow 面同口径）；continue 续跑只 strip 不再解析（单次快照语义——值取节点启动时）。
+
+③ **终态 `/complete` 会籍门禁**（`multica/bridge.rs`）：M5-cj 上传侧门禁只覆盖中段快照，终态 Passthrough 交付是另一条路径——Prohibited 节点的终态块照带上送可覆写 issue 交付，M5-cg/M5-cj 资格集对 auto/direct 形同虚设。`CompletionOutputJob::CompleteRun` 携带 `RunCompleted` 事件已带的终态 `node_id`（身份在手，无需反查），Passthrough 分支经 `gate_terminal_completion_output` 纯函数与中段快照同判据（`is_designated_output_node`）：issue 已绑定 + 终态节点无会籍 → `completion_output` 剥离不上送（issue 现值保留），INFO 日志可审计。
+
+④ **rerun 退场两段式**（`multica/state.rs` + `commands.rs` + `loop_.rs` + `bridge.rs`）：他端发起的 rerun，本地源终态行此前只能靠 `get_remote_tasks` 视图过滤兜底——永不真删除，终态历史上限 50 被幽灵行占据。读命令不得执行维护写（data-loading 规则 §5），改两段式：读路径把 pending 行 `rerun_of_task_id` 记入共享内存态 `observed_rerun_sources`（有界：单批 ≤ 一次拉取行数，排空即清；进程重启丢失无害——丢失窗口内退化为仅视图过滤，即本机制引入前行为）；心跳循环 ②.5 阶段 `drain_observed_reran_retirements` 排空——命中本地终态历史即 `remove_completed_task_entry` 真删除 + emit，失败下一 tick 重试。残余边界（本机全程离线错过整个排队窗口时源行保留）在代码注释诚实标注。
+
+⑤ **列表行标题解码统一**（`multica/vm.rs`）：终态/running/pending 三处列表行标题拼装各自为政——终态历史行直接 `c.title.clone()`（无 trim/回退），且服务端 `thread_name` 是 markdown 源，看板直接显示原始标记。统一 `display_title`（`markdown_source_to_plain_text` 解码 + trim + 空白/缺失回退 remote_task_id），与 composer 预填首行 `title_block` 同一渲染口径（口径早已在 composer 侧定义，列表侧漏接）。
+
+⑥ **被动安装回报 outcome**（`app/profiles.rs` + `app/mod.rs` + `multica/client.rs` + `runtime_assets.rs`）：安装 result 此前只有 `installed_name`/`installed_display_name`，调用方无法区分「新建 / 改名副本（D6）/ 同 key 复用」——冲突静默不可观测。`MulticaInstallOutcome { Created, RenamedCopy, ReusedExisting }`（`as_wire_str` → "created"/"renamed-copy"/"reused-existing"），重名判定与改名同点 `resolve_unique_name` 单一真源（resolved ≠ display 即 RenamedCopy；workflow 同 key 用户模板 → ReusedExisting）；wire `RuntimeAssetsInstallResult` 增 `outcome` 字段。存量 server 未知字段忽略、向后兼容；服务端如需消费该字段细化安装提示，列入内网需求清单（本仓库不改内网在运行的 multica 服务端）。
+
+⑦ **App.tsx 事件重拉吞错策略**（`web/src/App.tsx`）：runtime-asset-installed 事件重拉 `loadProfiles().catch(() => setProfiles([]))`——重拉失败会把**已加载** profiles 清空，把「后台刷新失败」放大成「数据丢失」，违背 data-loading §3/§6 best-effort 口径。改 `catch(() => {})` 保留已加载数据。
+
+⑧ **上游拉取决策非法载荷独立错误码**（`multica/error.rs` + `commands.rs` + locale 7 语言）：`decide_upstream_pull` 校验失败（manual 空文本 / 未知决策字面量）原折叠为 `UpstreamPullNotPending`——前端 `isDecisionNotPending` 对 not-pending 幂等收卡，会把「槽仍在等待」的卡片无声丢弃（用户失去再次介入入口）。新 `UpstreamPullInvalidDecision`（code `multica.upstream-pull-invalid-decision`）：槽未写入、等待方仍在，前端走通用错误分支（保留卡片 + 展示错误）让用户重选；字面量细节进后端日志。与 not-pending（槽不存在，幂等收卡）语义严格二分。
+
+⑨ **锁中毒策略统一**（`multica/state.rs` 及 6 个消费文件）：`shared_state().expect(...)` 生产 10 处——锁中毒 = panic 穿透事件回调拖垮宿主，与「状态不可用」的严重度不匹配。`MulticaRuntimeState::lock_degraded`（warn + None）统一收编：读路径跳过本 tick、命令路径 `RuntimeOffline`（替代 2 处 `NetworkFailed` 折叠——语义是状态不可达而非网络失败）、`register_upstream_pull` 降级为未登记 Notify、`upstream.rs` 1 处静默 `.ok()?` 一并替换；热路径周期调用维持 `if let Ok` 静默（防 warn 刷屏）。
+
+**方案自评审**：过度设计——九项全部复用既有机制（③ 复用 RunCompleted 已带 node_id 与 `is_designated_output_node`，无新状态/反查链；④ 复用 `remove_completed_task_entry`/`with_state` dirty 语义/既有 emit，内存备忘有界自清；⑥ 重名判定与改名同点，单一真源；⑧ 仅拆分既有错误码语义，无新错误通道）；显式拒绝的替代：④ 心跳加 list_pending 轮询（每 workspace 永久新增 GET 流量）与 ack 携带 lineage（需服务端改动）——读路径观察 + 心跳排空零新增网络；③ 不引入终态节点登记表（身份已在事件中）。性能——① `LazyLock` 一次计算 + `starts_with`（原为 `contains`，更廉）；② 无令牌节点先行零成本检查；③④ 心跳新增阶段为锁内内存操作（④ 仅命中才走 `with_state` 落盘，无命中零 IO）；⑨ 消除 panic 穿透事件循环的风险而非新增开销；⑤⑥⑦⑧ 为纯函数/文案/wire 增量字段，无热路径变化。
+
+**验证结果**：desktop `multica::` 259 通过（新增 `apply_observed_rerun_retirements_removes_only_observed_local_rows`、`gate_terminal_completion_output_strips_block_from_undesignated_node`、`lock_degraded_returns_none_on_poison_instead_of_panicking`、error codes 契约扩展、wire `outcome` 断言）；lib `multica` 13 + `profiles` 42（conflict/复用测试扩 outcome 断言）+ workflow install 2（Created/ReusedExisting 断言）+ `orchestrator` 动态令牌 2（注入追加隐式区段并 strip、continue 只 strip 不再解析）+ `upstream` 冻结判据改写全绿；web i18n 契约 7 通过（invalid-decision 7 语言）；tsc / clippy 触碰文件零告警。③④⑥ 的端到端链路依赖 multica server / 真实工作流，待内网打包验收（本地以单测 + wire 契约锁定，bug-fix-verification §3 例外）。
+
+### 12.91 改动八十九：DPMS 回写载荷补产品 ID 作为 join key（M5-cu，2026-11-02）
+
+**背景**：multica 侧提出回写 body 从 `{"dpms_story_id": N}` 扩展为 `{"dpms_story_id": N, "dpms_product_id": M}`——创建需求时产品 ID 本就已知（不选定产品无法创建），码灵补一个字段即可。
+
+**设计判断（不是 M5-cn 的回退）**：M5-cn 收缩的依据是「值所有权在 DPMS，搬运注定陈旧」；产品 ID 不属字段镜像，原因是 **DPMS 查询按产品隔离**（跨产品 `story detail --id` 返回 `status: -5`）。multica 拿到 story id 后要自行拉取字段，必须知道该需求所在产品——story id 单独不可全局寻址，**(产品 ID, 需求 ID) 才是完整 join key**。该事实只有创建方持有：claim 载荷的 `dpms_product_id` 是 issue 行溯源推荐值，用户确认后角色可能切产品创建，不能替代实际值；DPMS 不认识 multica issue，multica 无法反查。故产品 ID 与 story ID 同属「本任务创建出的哪个需求」这一关联事实，与 M5-cn 原则一致。
+
+**实现**：
+
+- ① **wire**（`client.rs`）：`ReportDpmsStoryRequest` 增 `dpms_product_id: Option<i64>`（`skip_serializing_if = "Option::is_none"`）。带产品时 body = `{"dpms_story_id":N,"dpms_product_id":M}`；缺省时与 M5-cn 单字段契约**逐字节等价**（旧角色未写记忆键的灰度兼容；旧 server 未知字段忽略）。
+- ② **组装**（`bridge.rs` `dpms_report_body_from_snapshot`）：同口径读取任务记忆 `dpms.productId`（trim + 正整数），**可选**——缺失/非法 → 只回传 story id，不阻断关联；`state.rs` 新增键常量 `DPMS_PRODUCT_MEMORY_KEY`，与 `DPMS_STORY_MEMORY_KEY` 同排（键名以角色定义为写入方）。
+- ③ **去重骨架不动**：`last_dpms_report` 比较整个 body——若产品 ID 晚到补齐，下一边界自然重发一次，不新增状态。
+- ④ **门提示词**（`remote_task_dpms_gate.md` zh/en）：运行时契约由 `storyId` 单键扩为两键；明确 `dpms.productId` 必须写确认后**实际使用**的数字产品 ID（不能照抄推荐值），其余锚点不动。
+- ⑤ **角色定义**（`.claude/design/dpms_cli/`）：`dpms.productId` 记忆契约显式要求数字 ID（runtime 消费键，写名称会静默缺失）。
+
+**方案自评审**：过度设计——单 Option 字段 + 一个键常量，去重复用既有 body 比较，无新状态/队列/缓存。性能——同一次记忆快照多一次线性 key 查找（任务记忆键个位数），body 多一个小整数，无新增 I/O、请求或热路径变化。
+
+**验证结果**：desktop `multica::` **260 passed / 0 failed**（client：缺省形态逐字节等价 + 带产品两字段精确 body + socket 断言更新 + 409 语义不变；bridge：storyId+productId 双解析、产品键缺失/非法省略不阻断、storyId 非法整体不回写；vm/bridge 既有 body 字面量同步）；lib `prompts::` **19 passed / 0 failed**（门模板双语两键契约 + `dpms.productId` 实际值锚点）。改动文件 clippy 零新增告警。**待 multica 侧部署接收 `dpms_product_id`**；端到端（创建→关联回传→multica 按产品拉字段）随打包联调验收。
+
+### 12.92 改动九十：wb 渠道 multica 地址解耦为独立构建期注入（M5-cv，2026-11-02）
+
+**背景**：multica 对外入口从「码灵 WB 服务域名 + `:5005`」整体替换为独立子域（与 WB 服务域不同、无端口），客户端编译期默认地址须同步。
+
+**根因（构建期耦合，非地址值过时）**：§12.30 把 multica 地址建模为「WB 服务 origin + `multicaPort`」派生，模板只能用 `${GOLD_BAND_WB_BASE_URL}` 换 origin 再拼端口，只能表达同 origin 换端口。新部署是两个独立 origin，旧模板无法表达；若改为硬编码新域名，又违反「仓库不落真实服务域名」（`check-wb-domain` 强制）。故把 multica 地址升级为独立构建期事实源，而非改常量或加运行期旁路。
+
+**实现**：
+
+- ① `configs/channels/wb.json`：`multicaBaseUrl`/`multicaAppUrl` 改 `${GOLD_BAND_WB_MULTICA_URL}`，删除 `multicaPort` 与端口派生。
+- ② `scripts/channel-config.mjs`：`readOrigin(env, name)` 分别校验两个 HTTP(S) origin（拒绝凭据/路径/查询/片段），`resolveWbConfig` 递归替换两个令牌；错误只回显变量名，不回显值。
+- ③ `src-tauri/build_channel_config.rs`：`WbUrls::new(base, multica)` 双 origin 校验，`resolve()` 各自替换对应令牌（multica 地址不会被误用于基础地址）；`wb_urls()` 分别读取两个变量；`build.rs` 补 `rerun-if-env-changed=GOLD_BAND_WB_MULTICA_URL`。
+- ④ 两条 release workflow（`release.yml`/`release-please.yml`）的 preflight、build、updater-json 三处注入 Secret `GOLD_BAND_WB_MULTICA_URL`。
+- ⑤ `scripts/check-wb-domain.mjs` 同时扫描两个域名，防止新域名被硬编码进仓库。
+- 运行期解析链（`desktop_multica_base_url` 覆盖 → 渠道兜底）与地址变更作废语义（`save_multica_connection_address` 改动地址清 PAT/绑定）不变；default 渠道保持 localhost。
+
+**部署前置（非本仓库代码）**：GitHub Actions 新增 Secret `GOLD_BAND_WB_MULTICA_URL`；内网 multica 侧须同步 nginx `server_name`/端口、桌面端 `apiUrl`、`MULTICA_APP_URL`/`FRONTEND_ORIGIN`/`CORS_ALLOWED_ORIGINS`/OAuth 回调与 CLI 默认 self-host 地址（本地 multica fork 仅参考源码，不作为内网契约）。过渡期旧入口需保持可解析，供已安装客户端升级使用；用户若曾保存运行期连接地址覆盖，需在设置中改为新地址（地址变更会清 PAT 并要求重新登录）。
+
+**方案自评审**：过度设计——仅新增一个构建期变量与令牌并删除 `multicaPort` 派生，无新状态、缓存、队列或运行期分支。性能——构建期字符串替换，运行期零变化。
+
+**验证结果**：`node --test`（channel-config / wb-base-url / check-wb-domain / prepare-release-build / release-please-config / generate-release-assets / dev-channel / dev-static-channel / build-channel-options）**70 passed / 0 failed**（新增 multica origin 独立解析、非法 origin 拒绝、源码令牌断言、release workflow Secret 断言）；`GOLD_BAND_RELEASE_CHANNEL=wb` + 双变量 `cargo check -p gold-band-desktop` 走通 build.rs 实际解析；default 渠道 check 无回归。仅构建期配置，无运行时逻辑、算法或 I/O 变化。
+
+**文件**：`configs/channels/wb.json`、`scripts/channel-config.mjs`(+test)、`scripts/wb-base-url.test.mjs`、`scripts/check-wb-domain.mjs`、`scripts/prepare-release-build.test.mjs`、`scripts/release-please-config.test.mjs`、`scripts/generate-release-assets.test.mjs`、`src-tauri/build_channel_config.rs`、`src-tauri/build.rs`、`.github/workflows/{release,release-please}.yml`；文档 `interaction/app/overview.md`、`接入方案.md`、本文件 §2.2.4/§12.30/§12.92。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检
@@ -2686,4 +3204,4 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ### WB 服务地址构建注入
 
-WB 渠道以 `GOLD_BAND_WB_BASE_URL` 为服务地址的构建期事实源，配置模板使用 `${GOLD_BAND_WB_BASE_URL}` 引用该地址。本地开发和构建须设置该变量，正式发布由同名 GitHub Actions Secret 注入；缺失或不是不含路径、凭据、查询和片段的 HTTP(S) origin 时构建失败。更新、发布资源、指标、MCP、帮助信息和官网书签从基础地址派生；Multica 使用渠道配置的端口。地址会进入客户端和发布产物，注入不提供运行时保密性。默认渠道不要求该变量。
+WB 渠道以 `GOLD_BAND_WB_BASE_URL` 为服务地址、`GOLD_BAND_WB_MULTICA_URL` 为 Multica 地址的构建期事实源，配置模板分别使用 `${GOLD_BAND_WB_BASE_URL}` 与 `${GOLD_BAND_WB_MULTICA_URL}` 引用。本地开发和构建须同时设置这两个变量，正式发布由同名 GitHub Actions Secret 注入；缺失或不是不含路径、凭据、查询和片段的 HTTP(S) origin 时构建失败。更新、发布资源、指标、MCP、帮助信息和官网书签从基础地址派生；Multica 使用独立注入的地址，不再从基础地址派生端口。地址会进入客户端和发布产物，注入不提供运行时保密性。默认渠道不要求这两个变量。

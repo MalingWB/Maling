@@ -1,7 +1,7 @@
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Folders, Globe, ListFilter, Loader2, Plus, RotateCw, Settings, Trash2, User, Wifi, WifiOff } from 'lucide-react';
+import { ChevronDown, ExternalLink, Folders, Globe, ListFilter, Loader2, Plus, RotateCw, Search, Settings, Trash2, User, Wifi, WifiOff } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -20,6 +20,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -37,8 +38,11 @@ import {
   getMulticaSettings,
   getRemoteTaskRequirement,
   getRemoteTasks,
+  openExternalUrl,
+  reconcileRemoteTaskStatuses,
   removeMulticaWorkspace,
   removeRemoteCompletedTask,
+  rerunRemoteTask,
   setActiveMulticaWorkspace,
   subscribeRemoteSourceSettingsUpdates,
   subscribeRemoteTaskUpdates,
@@ -62,6 +66,11 @@ import type {
 const ISSUE_KIND_FILTERS = ['all', 'dev', 'test'] as const;
 type IssueKindFilter = (typeof ISSUE_KIND_FILTERS)[number];
 
+/// 终态对账轮询周期（毫秒，multica 状态对账改造）：页面驱动——mount 即一轮 + 周期轮询，
+/// document 隐藏时跳过。30s 在「issue 状态及时性」与「无谓 batch 请求」间取衡（本地终态
+/// 历史有界 50，单批即达；后端单飞防叠发）。
+const REMOTE_TASK_RECONCILE_INTERVAL_MS = 30_000;
+
 /// 纯函数：按类型过滤任务（接口层可单测）。`all` 原样返回；dev/test 仅保留该类型。
 /// 未知/缺失 kind 只在「全部」出现——旧 server 不发类型字段时所有任务都是 `null`，
 /// 此时选开发/测试会把任务**全部过滤掉**（四列皆空）。这是版本解耦下的既定行为（默认「全部」
@@ -69,6 +78,17 @@ type IssueKindFilter = (typeof ISSUE_KIND_FILTERS)[number];
 export function filterTasksByIssueKind(tasks: RemoteTaskVm[], filter: IssueKindFilter): RemoteTaskVm[] {
   if (filter === 'all') return tasks;
   return tasks.filter((task) => task.kind === filter);
+}
+
+/// 纯函数：按任务名过滤（任务多了之后的检索入口）——大小写不敏感子串匹配，query trim 后
+/// 为空 = 不过滤（原样引用返回，与 `filterTasksByIssueKind` 的 `all` 同约定）。
+/// 纯客户端过滤已加载列表（O(n·m)，n = 单工作空间任务数：pending 随 backlog 增长 + 终态
+/// 硬上限 50 + running 个位数；人频按键单次执行），无新请求。退化兜底：pending 行 title
+/// 缺失时后端已回退为 remote_task_id，退化标题仍可被搜索。导出供单测固化匹配语义。
+export function filterTasksByTitle(tasks: RemoteTaskVm[], query: string): RemoteTaskVm[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return tasks;
+  return tasks.filter((task) => task.title.toLowerCase().includes(needle));
 }
 
 interface RemoteTaskManagementPageProps {
@@ -108,6 +128,9 @@ export function RemoteTaskManagementPage({
   const [refreshing, setRefreshing] = useState(false);
   const [source, setSource] = useState<RemoteTaskSource>('multica');
   const [issueKindFilter, setIssueKindFilter] = useState<IssueKindFilter>('all');
+  // 任务名搜索（列表检索增强）：与类型筛选同层的纯客户端过滤，见 `filterTasksByTitle`。
+  // 瞬时 UI 状态（useState），不持久化（ui-interaction §7：不记忆临时业务输入）。
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('');
   const [addWorkspaceOpen, setAddWorkspaceOpen] = useState(false);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
@@ -148,6 +171,9 @@ export function RemoteTaskManagementPage({
 
   const handleManualRefresh = useCallback(() => {
     setRefreshing(true);
+    // 手动刷新附带一轮终态对账（静默——列表/设置错误照常回显，对账是增强路径失败不打扰；
+    // 后端有变更会 emit remote-tasks-updated，经事件通道再触发一次合并刷新）。
+    reconcileRemoteTaskStatuses().catch(() => undefined);
     Promise.all([fetchTasks(), fetchSettings()]).finally(() => {
       if (mountRef.current) setRefreshing(false);
     });
@@ -195,14 +221,30 @@ export function RemoteTaskManagementPage({
   }, [workspaces, selectedWorkspaceId, vm?.lastActiveWorkspaceId]);
 
   const hasWorkspaces = workspaces.length > 0;
+
+  // 终态对账轮询（multica 状态对账改造，页面驱动）：mount 即一轮 + 30s 周期，document 隐藏时
+  // 跳过（frontend-performance §5：不可见不刷新）。后端单飞（叠发触发整体退出）+ 静默降级
+  // （旧 server 404 / 网络失败返回 0），故前端 catch 后无事可做；有变更时后端 emit
+  // remote-tasks-updated → useEventDrivenRefresh 合并触发列表刷新（issue 状态标记与
+  // 「重新执行」入口随 re-fetch 到达）。
+  useEffect(() => {
+    if (source !== 'multica' || !connected || !hasWorkspaces) return;
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return;
+      reconcileRemoteTaskStatuses().catch(() => undefined);
+    };
+    tick();
+    const timer = window.setInterval(tick, REMOTE_TASK_RECONCILE_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [source, connected, hasWorkspaces]);
   const workspaceTasks = vm?.tasksByWorkspace[effectiveWorkspaceId] ?? [];
-  // 投影 = 类型过滤 ∩ 未移出：两级都是纯客户端过滤，不触碰数据源。
+  // 投影 = 类型过滤 ∩ 标题过滤 ∩ 未移出：三级都是纯客户端过滤，不触碰数据源。
   const selectedTasks = useMemo(
     () =>
-      filterTasksByIssueKind(workspaceTasks, issueKindFilter).filter(
+      filterTasksByTitle(filterTasksByIssueKind(workspaceTasks, issueKindFilter), searchQuery).filter(
         (task) => !removedTaskIds.has(task.id),
       ),
-    [workspaceTasks, issueKindFilter, removedTaskIds],
+    [workspaceTasks, issueKindFilter, searchQuery, removedTaskIds],
   );
   const activeWorkspaceName = workspaces.find((w) => w.id === effectiveWorkspaceId)?.name ?? '';
 
@@ -243,6 +285,23 @@ export function RemoteTaskManagementPage({
     try {
       await cancelRemoteTask(task.id);
       fetchTasks();
+    } catch (err) {
+      setError(displayAppError(t, err));
+    } finally {
+      setBusyTaskId(null);
+    }
+  }
+
+  // 重新执行（multica 任务重试改造）：rerun 202 后直接重取列表（server pending 单一事实源，
+  // 新任务按 id 天然去重，不做本地注入）。非 202/网络错误按错误码原样回显（可重试）；
+  // 400 的业务 message 已由后端透传进错误 params。
+  async function handleRerun(task: RemoteTaskVm) {
+    if (readOnly) return;
+    setBusyTaskId(task.id);
+    setError(null);
+    try {
+      await rerunRemoteTask(task.id);
+      await fetchTasks();
     } catch (err) {
       setError(displayAppError(t, err));
     } finally {
@@ -394,6 +453,7 @@ export function RemoteTaskManagementPage({
             busyTaskId={busyTaskId}
             onPrepare={(task) => void handlePrepareRemoteTask(task)}
             onCancel={(task) => void handleCancel(task)}
+            onRerun={(task) => void handleRerun(task)}
             onRemove={handleRemoveTask}
             onSelectRun={onSelectRun}
           />
@@ -491,6 +551,21 @@ export function RemoteTaskManagementPage({
                   </SelectContent>
                 </Select>
               )}
+
+              {/* 任务名搜索（列表检索增强）：纯客户端大小写不敏感子串过滤，瞬时状态不持久化。 */}
+              {hasWorkspaces && (
+                <div className="relative w-[180px]">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    className="h-8 pl-8"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder={t('remote.taskManagement.searchPlaceholder')}
+                    aria-label={t('remote.taskManagement.searchPlaceholder')}
+                    data-testid="task-search-input"
+                  />
+                </div>
+              )}
             </div>
 
             <div className="flex items-center gap-2">
@@ -500,6 +575,27 @@ export function RemoteTaskManagementPage({
                 <User className="size-3.5 shrink-0" />
                 <span className="truncate">{accountLabel}</span>
               </span>
+
+              {/* 快捷跳转 multica 平台（app_url = 平台 Web 前端地址，settings VM 已加载）：
+                  footer 已受 source === 'multica' 门控；地址未配置（null）时不渲染。 */}
+              {settingsVm?.multicaAppUrl && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-7"
+                      aria-label={t('remote.taskManagement.openPlatform', { source: sourceLabel })}
+                      onClick={() => void openExternalUrl(settingsVm.multicaAppUrl!)}
+                    >
+                      <ExternalLink className="size-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="text-xs">
+                    {t('remote.taskManagement.openPlatform', { source: sourceLabel })}
+                  </TooltipContent>
+                </Tooltip>
+              )}
 
               {/* 手动刷新 */}
               <Tooltip>

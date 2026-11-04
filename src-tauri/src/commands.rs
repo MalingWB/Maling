@@ -27,9 +27,9 @@ use gold_band::app::intervention::{
 use gold_band::app::{
     AcpPromptLifecycleEvent, AcpTurnBatchProgress, AcpTurnOutcome, App, AutoTemplate,
     AutoTemplateStore, CreateTaskInput, DirectTurnLifecycleEvent, DirectTurnLifecycleTransition,
-    ImportProfilesInput, ImportProfilesResult, MetricsInterventionSourceEvent, ProfileCommandError,
-    ProfileEntry, ProfileInput, ProfileList, RuntimeInterventionKind, RuntimeLifecycleEvent,
-    WorkflowTemplateStore,
+    ImportProfileFilesInput, ImportProfilesInput, ImportProfilesResult,
+    MetricsInterventionSourceEvent, ProfileCommandError, ProfileEntry, ProfileInput, ProfileList,
+    RuntimeInterventionKind, RuntimeLifecycleEvent, WorkflowTemplateStore,
 };
 use gold_band::domain::{
     NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode, TurnControlMode,
@@ -120,7 +120,7 @@ use crate::view_models::{
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, ConversationTaskActivityVm, PROMPT_CONTENT_PREVIEW_CHARS,
     conversation_attempt_lifecycle_vm, conversation_is_orchestrated, conversation_run_mode,
-    conversation_session_successor, conversation_task_activity_from_prompt,
+    conversation_session_successor,
 };
 use crate::wallpaper::{
     ImportDesktopWallpaperInput, RestoreThemeDesktopWallpaperInput,
@@ -2338,8 +2338,20 @@ fn intervention_timeline_path(app: &App, locator: &InterventionLocator) -> Utf8P
     }
 }
 
+#[cfg(test)]
 fn desktop_intervention_source_event_id(
     app: &App,
+    command: &InterventionCommand,
+) -> Option<String> {
+    let attempt_dir = intervention_timeline_path(app, &command.locator)
+        .parent()?
+        .to_owned();
+    desktop_intervention_source_event_id_at(&attempt_dir, command)
+}
+
+/// Reads the request's pending file, so it must run off the async runtime.
+fn desktop_intervention_source_event_id_at(
+    attempt_dir: &camino::Utf8Path,
     command: &InterventionCommand,
 ) -> Option<String> {
     let locator = &command.locator;
@@ -2356,26 +2368,18 @@ fn desktop_intervention_source_event_id(
             ));
         }
         InterventionRequestIdentity::Permission { request_id } => {
-            let attempt_dir = intervention_timeline_path(app, locator)
-                .parent()?
-                .to_owned();
             let pending: gold_band::acp::permission::PendingPermissionState = read_json(
-                &gold_band::acp::permission::pending_permission_file(&attempt_dir, request_id),
+                &gold_band::acp::permission::pending_permission_file(attempt_dir, request_id),
             )
             .ok()?;
             let item_id = pending.timeline_identity?.item_id;
             format!("{PERMISSION_REQUESTED_DEDUP_SUFFIX}:{item_id}")
         }
         InterventionRequestIdentity::Elicitation { elicitation_id } => {
-            let attempt_dir = intervention_timeline_path(app, locator)
-                .parent()?
-                .to_owned();
-            let pending: gold_band::acp::elicitation::PendingElicitationState =
-                read_json(&gold_band::acp::elicitation::pending_elicitation_file(
-                    &attempt_dir,
-                    elicitation_id,
-                ))
-                .ok()?;
+            let pending: gold_band::acp::elicitation::PendingElicitationState = read_json(
+                &gold_band::acp::elicitation::pending_elicitation_file(attempt_dir, elicitation_id),
+            )
+            .ok()?;
             let item_id = pending.timeline_identity?.item_id;
             format!("{ELICITATION_REQUESTED_DEDUP_SUFFIX}:{item_id}")
         }
@@ -2405,7 +2409,8 @@ impl DesktopInterventionProjection {
     }
 }
 
-fn project_desktop_intervention_resolution(
+/// Writes the desktop winner to the IM outbox on the blocking pool (SQLite).
+async fn project_desktop_intervention_resolution(
     state: &DesktopState,
     projection: Option<DesktopInterventionProjection>,
 ) {
@@ -2415,15 +2420,28 @@ fn project_desktop_intervention_resolution(
     let Some(runtime) = state.im_runtime() else {
         return;
     };
-    let source_event_id = projection.source_event_id.as_str();
-    match runtime.project_intervention_resolution(&InterventionResolution {
-        source_event_id,
-        notification_kind: projection.notification_kind,
-        locator: &projection.locator,
-        resolved_by: gold_band::im::ImResolvedBy::Desktop,
-        source_delivery_id: None,
-        outcome: projection.outcome,
-    }) {
+    let source_event_id = projection.source_event_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        runtime.project_intervention_resolution(&InterventionResolution {
+            source_event_id: &projection.source_event_id,
+            notification_kind: projection.notification_kind,
+            locator: &projection.locator,
+            resolved_by: gold_band::im::ImResolvedBy::Desktop,
+            source_delivery_id: None,
+            outcome: projection.outcome,
+        })
+    })
+    .await;
+    let Ok(result) = result else {
+        warn!(
+            canonical_event_id = source_event_id,
+            error_code = "IM_RUNTIME_UNAVAILABLE",
+            "desktop intervention resolution projection task failed"
+        );
+        return;
+    };
+    let source_event_id = source_event_id.as_str();
+    match result {
         Ok(result) => info!(
             canonical_event_id = source_event_id,
             inserted = result.inserted,
@@ -2439,8 +2457,29 @@ fn project_desktop_intervention_resolution(
     }
 }
 
-fn desktop_intervention_projection(
+/// Captures the IM source identity before the command consumes the pending
+/// request. Skipped entirely when IM is not running; the pending-file read
+/// runs on the blocking pool.
+async fn desktop_intervention_projection(
+    state: &DesktopState,
     app: &App,
+    command: &InterventionCommand,
+) -> Option<DesktopInterventionProjection> {
+    state.im_runtime()?;
+    let attempt_dir = intervention_timeline_path(app, &command.locator)
+        .parent()?
+        .to_owned();
+    let command = command.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_intervention_projection_at(&attempt_dir, &command)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn desktop_intervention_projection_at(
+    attempt_dir: &camino::Utf8Path,
     command: &InterventionCommand,
 ) -> Option<DesktopInterventionProjection> {
     let notification_kind = match &command.request {
@@ -2453,7 +2492,7 @@ fn desktop_intervention_projection(
         InterventionRequestIdentity::ManualCheck => gold_band::im::ImNotificationKind::ManualCheck,
     };
     Some(DesktopInterventionProjection {
-        source_event_id: desktop_intervention_source_event_id(app, command)?,
+        source_event_id: desktop_intervention_source_event_id_at(attempt_dir, command)?,
         notification_kind,
         locator: command.locator.clone(),
         outcome: gold_band::im::ImResolutionOutcome::from(&command.action),
@@ -2648,6 +2687,8 @@ fn ensure_no_active_acp_prompts_for_provider(agent_id: &ManagedAgentId) -> Comma
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentInput {
+    #[serde(default)]
+    pub executable_path: Option<String>,
     pub display_name: String,
     #[serde(default)]
     pub icon: String,
@@ -2670,7 +2711,7 @@ pub struct ManagedAgentInput {
 }
 
 impl ManagedAgentInput {
-    fn into_config_for_agent(
+    pub(crate) fn into_config_for_agent(
         mut self,
         agent_id: &ManagedAgentId,
         system_prompt_delivery: gold_band::config::SystemPromptDelivery,
@@ -2719,6 +2760,7 @@ impl ManagedAgentInput {
             }
         }
         Ok(ManagedAgentConfig {
+            executable_path: self.executable_path,
             adapter: AcpAdapterConfig {
                 command,
                 args: self.args,
@@ -2748,7 +2790,7 @@ fn system_prompt_delivery_for_new_agent(
         .unwrap_or_default()
 }
 
-fn default_icon_for_agent(agent_id: &ManagedAgentId) -> String {
+pub(crate) fn default_icon_for_agent(agent_id: &ManagedAgentId) -> String {
     gold_band::config::catalog_agent_default_config(agent_id.as_str())
         .map(|config| config.icon)
         .unwrap_or_else(|| DEFAULT_CUSTOM_AGENT_ICON.to_string())
@@ -2890,6 +2932,9 @@ pub fn create_agent(
     let config_commit_guard = state
         .agent_config_diagnostic_commit_guard()
         .map_err(command_error)?;
+    app_handle
+        .state::<crate::onboarding::SetupController>()
+        .invalidate_agent(&agent_id);
     let app = state.app().map_err(command_error)?;
     let settings = app
         .save_managed_agent(
@@ -2936,6 +2981,9 @@ pub fn update_agent(
     let config_commit_guard = state
         .agent_config_diagnostic_commit_guard()
         .map_err(command_error)?;
+    app_handle
+        .state::<crate::onboarding::SetupController>()
+        .invalidate_agent(&agent_id);
     let app = state.app().map_err(command_error)?;
     let settings = app
         .save_managed_agent(
@@ -2958,6 +3006,7 @@ pub fn update_agent(
 
 #[tauri::command]
 pub fn delete_agent(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     agent_type: String,
 ) -> CommandResult<AgentRegistryVm> {
@@ -2968,6 +3017,9 @@ pub fn delete_agent(
     let _config_commit_guard = state
         .agent_config_diagnostic_commit_guard()
         .map_err(command_error)?;
+    app_handle
+        .state::<crate::onboarding::SetupController>()
+        .invalidate_agent(&agent_id);
     let app = state.app().map_err(command_error)?;
     let settings = app.remove_managed_agent(&agent_id).map_err(command_error)?;
     state
@@ -3337,6 +3389,21 @@ pub async fn import_profiles_from_folder(
         context
             .app()
             .import_profiles_from_folder(input)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn import_profiles_from_files(
+    state: State<'_, DesktopState>,
+    input: ImportProfileFilesInput,
+) -> CommandResult<ImportProfilesResult> {
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        context
+            .app()
+            .import_profiles_from_files(input)
             .map_err(command_error)
     })
     .await
@@ -5186,12 +5253,13 @@ pub async fn submit_manual_check(
         action: InterventionAction::ManualCheck { outcome },
         expires_at_ms: snapshot.expires_at_ms,
     };
-    let im_projection = desktop_intervention_projection(&app, &command);
+    let im_projection = desktop_intervention_projection(state.inner(), &app, &command).await;
     let (result, run) = execute_manual_check_intervention(state.inner(), app, command).await?;
     project_desktop_intervention_resolution(
         state.inner(),
         im_projection.and_then(|p| p.for_result(&result)),
-    );
+    )
+    .await;
     Ok(run_summary_vm(run))
 }
 
@@ -9209,14 +9277,15 @@ pub async fn respond_acp_permission(
         action: InterventionAction::PermissionOption { option_id },
         expires_at_ms: snapshot.expires_at_ms,
     };
-    let im_projection = desktop_intervention_projection(&app, &command);
+    let im_projection = desktop_intervention_projection(state.inner(), &app, &command).await;
     let (result, session) =
         execute_permission_intervention(app_handle, state.inner(), &app, project_id, command)
             .await?;
     project_desktop_intervention_resolution(
         state.inner(),
         im_projection.and_then(|p| p.for_result(&result)),
-    );
+    )
+    .await;
     Ok(session)
 }
 
@@ -10279,6 +10348,20 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
 }
 
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
+    if let Some(error) = error.downcast_ref::<gold_band::onboarding::model::SetupError>() {
+        return CommandErrorVm::new(error.code, error.params.clone());
+    }
+    if let Some(error) =
+        error.downcast_ref::<gold_band::storage::configuration::ConfigurationError>()
+    {
+        let value = serde_json::to_value(error).unwrap_or_default();
+        return CommandErrorVm::new(
+            value["code"]
+                .as_str()
+                .unwrap_or("setup.configuration-conflict"),
+            value["params"].clone(),
+        );
+    }
     if error
         .downcast_ref::<gold_band::acp::client::ModelConfigUnavailable>()
         .is_some()
@@ -11935,7 +12018,7 @@ pub async fn respond_elicitation(
         action: InterventionAction::Elicitation { action, content },
         expires_at_ms: None,
     };
-    let im_projection = desktop_intervention_projection(&app, &command);
+    let im_projection = desktop_intervention_projection(state.inner(), &app, &command).await;
     let result = execute_elicitation_intervention(
         app_handle.clone(),
         state.inner(),
@@ -11948,7 +12031,8 @@ pub async fn respond_elicitation(
     project_desktop_intervention_resolution(
         state.inner(),
         im_projection.and_then(|p| p.for_result(&result)),
-    );
+    )
+    .await;
 
     Ok(())
 }
@@ -12522,6 +12606,7 @@ fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, Co
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view_models_conversation::conversation_task_activity_from_prompt;
     use camino::Utf8PathBuf;
     use gold_band::app::{WorkflowTemplate, WorkflowTemplateStore};
     use gold_band::config::{ConversationWorkspaceEntry, ResolvedColorScheme, RuntimeConfig};
@@ -13507,6 +13592,7 @@ mod tests {
         let template_authoring = bound_authoring("agent-a", "template-workflow");
         let dynamic_template_authoring = dynamic_authoring("agent-a", "template-dynamic-workflow");
         let templates = WorkflowTemplateStore {
+            storage_revision: Default::default(),
             version: gold_band::domain::VERSION.to_string(),
             last_used_template_id: None,
             last_created_workflow: None,
@@ -13709,6 +13795,7 @@ mod tests {
         let usage = collect_agent_binding_usage(
             &ManagedAgentId::from_str("agent-a").unwrap(),
             &WorkflowTemplateStore {
+                storage_revision: Default::default(),
                 version: gold_band::domain::VERSION.to_string(),
                 last_used_template_id: None,
                 last_created_workflow: None,
@@ -14639,6 +14726,7 @@ mod tests {
     #[test]
     fn managed_agent_input_preserves_user_editable_fields_and_uses_internal_capability() {
         let input = ManagedAgentInput {
+            executable_path: None,
             display_name: "Claude Custom".to_string(),
             icon: String::new(),
             command: "  npx  ".to_string(),
@@ -14715,6 +14803,7 @@ mod tests {
     #[test]
     fn managed_agent_input_requires_display_name_and_command_at_the_command_boundary() {
         let missing_name = ManagedAgentInput {
+            executable_path: None,
             display_name: "  ".to_string(),
             icon: String::new(),
             command: "agent-acp".to_string(),
@@ -14734,6 +14823,7 @@ mod tests {
         assert_eq!(missing_name.code, "agent.display-name-required");
 
         let missing_command = ManagedAgentInput {
+            executable_path: None,
             display_name: "Custom Agent".to_string(),
             icon: String::new(),
             command: "  ".to_string(),

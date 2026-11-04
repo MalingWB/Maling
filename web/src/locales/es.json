@@ -998,7 +998,10 @@
         "folder-not-found": "No se encontró la carpeta seleccionada",
         "folder-not-directory": "La ruta seleccionada no es una carpeta",
         "folder-read-failed": "No se pudo leer por completo la carpeta seleccionada",
-        "no-markdown-files": "No se encontraron archivos Markdown en la carpeta seleccionada"
+        "no-markdown-files": "No se encontraron archivos Markdown en la carpeta seleccionada",
+        "file-not-found": "No se encontró el archivo seleccionado",
+        "file-not-markdown": "El archivo seleccionado no es un archivo Markdown",
+        "no-files": "No se seleccionó ningún archivo"
       }
     },
     "manual-check": {
@@ -1142,6 +1145,8 @@
       "runtime-offline": "Runtime no está listo. Vuelva a intentarlo en breve.",
       "session-resume-failed": "La reanudación de la sesión falló. Se iniciará una ejecución nueva.",
       "task-not-found": "No se pudo encontrar esta tarea de Multica.",
+      "upstream-pull-invalid-decision": "Elección no válida. Compruébala e inténtalo de nuevo.",
+      "upstream-pull-not-pending": "Esta obtención ya finalizó; no se necesita elegir.",
       "workspace-already-bound": "Este espacio de trabajo ya está vinculado.",
       "workspace-not-found": "No se pudo encontrar este vínculo de espacio de trabajo."
     },
@@ -1341,7 +1346,6 @@
     "builtInSectionDescription": "Roles fijos que pueden abrirse como borradores y guardarse como roles personalizados nuevos.",
     "customSectionTitle": "Roles personalizados",
     "customSectionDescription": "Tus roles de usuario se muestran aquí con paginación.",
-    "customProfilesPageRange": "Roles personalizados {{start}}-{{end}} / {{total}}",
     "builtInReadonlyHint": "Los roles integrados no pueden guardarse directamente. Guárdalos como un rol nuevo.",
     "emptyContent": "Aún no hay contenido del rol",
     "profileRequired": "El nombre y el resumen son obligatorios.",
@@ -1474,10 +1478,12 @@
       }
     },
     "importProfile": "Importar roles",
-    "importSettingsDescription": "Importa en lote archivos Markdown de roles desde una carpeta. Los nombres y resúmenes faltantes se completan automáticamente.",
+    "importSettingsDescription": "Importa en lote desde una carpeta o selecciona archivos Markdown de roles directamente. Los nombres y resúmenes faltantes se completan automáticamente.",
     "importDynamicTemplateDescription": "Cuando está habilitado, todos los roles importados se tratan como plantillas dinámicas; los cuerpos no válidos se degradan a estáticos.",
     "importPickFolder": "Elegir carpeta e importar",
     "importPickFolderTitle": "Elige una carpeta que contenga archivos Markdown de roles",
+    "importPickFiles": "Elegir archivos e importar",
+    "importPickFilesTitle": "Elige archivos Markdown de roles",
     "importResultTitle": "Resultados de importación",
     "importResultSummary": "Escaneados {{total}} archivo(s), correctos {{success}}, fallidos {{failed}}.",
     "importResultImported": "Importados",
@@ -2623,6 +2629,7 @@
       "receiverAccount": "Cuenta receptora",
       "robotName": "Nombre del bot",
       "privateBinding": "Chat privado: {{name}}",
+      "privateBindingUnnamed": "Chat privado vinculado",
       "notificationKinds": "Tipos de notificación",
       "notificationGroups": {
         "needsAction": "Requiere tu acción",
@@ -2670,6 +2677,7 @@
             "send": "Enviarte mensajes",
             "receive": "Leer los mensajes privados que envías al bot",
             "update": "Actualizar las tarjetas enviadas por el bot",
+            "profile": "Leer su nombre para mostrar la cuenta receptora",
             "confirm": "Aceptar y generar código QR"
           },
           "resetBinding": {
@@ -3039,7 +3047,9 @@
         "emptyTitle": "No conectado a {{source}}",
         "removeTask": "Quitar de la lista",
         "removeTaskHint": "Solo se quita de la lista de este lado; al actualizar vuelve a aparecer",
-        "removeTaskTerminalHint": "Elimina el registro local de finalización; no volverá a aparecer al actualizar"
+        "removeTaskTerminalHint": "Elimina el registro local de finalización; no volverá a aparecer al actualizar",
+        "rerunTask": "Reejecutar",
+        "rerunBadge": "Reejecutar"
       },
       "keepResident": "Mantener la sesión activa",
       "releaseResident": "Permitir el cierre de la sesión",
@@ -3254,6 +3264,7 @@
       "account": {
         "connected": "Conectado"
       },
+      "openPlatform": "Abrir la plataforma de {{source}}",
       "column": {
         "empty": "Sin tareas"
       },
@@ -3278,10 +3289,150 @@
         "label": "Tipo",
         "test": "Prueba"
       },
+      "searchPlaceholder": "Buscar nombre de tarea…",
       "readiness": {
-        "notReady": "No listo",
-        "notReadyHint": "La tarea de desarrollo correspondiente aún no está terminada; considere esperarla"
+        "ready": "Listo",
+        "readyHint": "La tarea de desarrollo correspondiente ha terminado; esta tarea puede comenzar"
+      },
+      "dpms": {
+        "badge": "DPMS",
+        "hint": "Esta tarea debe crear una demanda en DPMS y reportar el vínculo; la etiqueta desaparece al completar el reporte"
+      },
+      "issueStatus": {
+        "todo": "Pendiente",
+        "backlog": "Backlog"
       }
+    },
+    "upstreamPull": {
+      "title": "Entrega del upstream aún no obtenida",
+      "description": "El nodo {{node}} de «{{task}}» aún no ha obtenido la entrega del elemento de trabajo upstream {{issue}}.",
+      "fallbackNote": "Si no se elige en 60 segundos, el sondeo continúa automáticamente.",
+      "retry": "Seguir esperando",
+      "manual": "Proporcionar manualmente",
+      "skip": "Omitir obtención",
+      "manualLabel": "Entrega",
+      "manualPlaceholder": "Información clave como artefactos construidos y entornos de despliegue…",
+      "manualSubmit": "Continuar con esto",
+      "waitingNote": "Seguimos esperando la actualización de la nota de entrega del upstream. Puede proporcionarla manualmente o omitirla en cualquier momento."
+    }
+  },
+  "onboarding": {
+    "loading": "Cargando",
+    "loadFailed": "No se pudo leer la configuración inicial. Inténtalo de nuevo.",
+    "retry": "Reintentar",
+    "language": "Idioma",
+    "theme": "Cambiar tema",
+    "exit": "Salir de la configuración",
+    "progress": "Progreso",
+    "checking": "Comprobando el entorno…",
+    "runtimeVersion": "Node.js recomendado: {{version}}; compatible: {{ranges}}",
+    "recheck": "Comprobar de nuevo",
+    "installGuide": "Guía oficial de instalación",
+    "discovering": "Comprobando Agents locales…",
+    "discovered": "{{count}} Agents disponibles detectados",
+    "noAgents": "No se detectó ningún Agent disponible. Instala un Agent o inicia sesión y vuelve a comprobarlo.",
+    "agentRepairs": "Agents que requieren atención",
+    "retryAgent": "Comprobar de nuevo",
+    "chooseProgram": "Elegir programa",
+    "defaultAgent": "Agent predeterminado",
+    "chooseAgent": "Elige un Agent disponible",
+    "defaultModel": "Modelo predeterminado",
+    "chooseModel": "Elige un modelo",
+    "providerDefault": "Este Agent utiliza el modelo predeterminado del proveedor.",
+    "checkingModel": "Leyendo la configuración del modelo…",
+    "permission": "Modo de permisos",
+    "choosePermission": "Elige un modo de permisos",
+    "preview": "Revisar cambios",
+    "previewSummary": "Actualizar {{slots}} configuraciones de ejecución en {{count}} workflows integrados.",
+    "slots": "{{count}} configuraciones",
+    "loadMore": "Cargar más",
+    "back": "Atrás",
+    "help": "Ayuda",
+    "skipGit": "Omitir Git por ahora",
+    "next": "Siguiente",
+    "apply": "Aplicar y finalizar",
+    "review": "Vista previa",
+    "repairHint": "Sigue la guía del proveedor para instalar o iniciar sesión y comprueba de nuevo.",
+    "settingsTitle": "Configuración y flujos de trabajo",
+    "rerunTitle": "Configuración inicial",
+    "rerunDescription": "Vuelve a comprobar Git, el entorno de ejecución y los Agent disponibles en este equipo.",
+    "defaultsTitle": "Flujos de trabajo predeterminados",
+    "defaultsDescription": "Configura el Agent, el modelo y los permisos de los flujos de trabajo integrados sin modificar los personalizados.",
+    "configureDefaults": "Configurar valores predeterminados",
+    "rerun": "Repetir configuración",
+    "steps": {
+      "git": "Git",
+      "runtime": "Entorno",
+      "agent": "Agent"
+    },
+    "titles": {
+      "git": "Preparar Git",
+      "runtime": "Comprobar el entorno Node.js",
+      "agent": "Conecta un Agent y elige el modelo predeterminado"
+    },
+    "descriptions": {
+      "git": "Git proporciona control de versiones. Puedes instalarlo más tarde.",
+      "runtime": "Node.js, npm y npx deben superar la comprobación. Comprueba de nuevo tras instalar.",
+      "agent": "Los Agents disponibles se guardan automáticamente. Elige el modelo predeterminado, revisa y aplícalo a los workflows integrados."
+    },
+    "status": {
+      "ready": "Listo",
+      "missing": "No instalado",
+      "unsupported": "Versión no compatible",
+      "incompatible": "Entorno inconsistente",
+      "failed": "Error de comprobación",
+      "timeout": "Tiempo agotado",
+      "cancelled": "Cancelado",
+      "skipped": "Omitido",
+      "pending": "Sin comprobar",
+      "checking": "Comprobando"
+    },
+    "errors": {
+      "setup": {
+        "agent-preparation-required": "Sigue la guía del proveedor para instalar o iniciar sesión y comprueba de nuevo.",
+        "probe-failed": "La comprobación falló. Vuelve a comprobar.",
+        "probe-cancelled": "Se canceló la comprobación. Vuelve a comprobar para continuar.",
+        "runtime-incompatible": "Node.js, npm o npx no cumple los requisitos. Comprueba el entorno de ejecución.",
+        "environment-check-required": "Completa primero la comprobación del entorno de ejecución.",
+        "configuration-conflict": "La configuración cambió en otro lugar. Comprueba los Agents y revisa los cambios actuales.",
+        "preview-stale": "El modelo seleccionado o los Workflows integrados cambiaron. Vuelve a previsualizar los cambios.",
+        "agent-unavailable": "Este Agent ya no está disponible. Compruébalo de nuevo o elige otro Agent.",
+        "model-config-invalid": "Las opciones del modelo ya no son válidas. Selecciona el modelo de nuevo.",
+        "model-selection-required": "Selecciona un modelo antes de continuar.",
+        "permission-selection-required": "Selecciona un modo de permisos antes de continuar.",
+        "git-decision-required": "Instala una versión compatible de Git o elige omitir Git.",
+        "recovery-required": "No se pudo recuperar el guardado anterior. Restaura el acceso a la carpeta de ajustes y reinicia.",
+        "executable-path-invalid": "Selecciona un ejecutable existente con su ruta completa.",
+        "commit-failed": "No se pudo guardar. Comprueba los permisos y el espacio libre, y reintenta.",
+        "operation-id-invalid": "La solicitud de guardado no es válida. Vuelve a previsualizar los cambios.",
+        "templates-initialization-required": "Los Workflows integrados no están inicializados. Comprueba los Agents de nuevo."
+      }
+    },
+    "gitVersion": "Se requiere Git {{version}} o posterior.",
+    "previousBindings": "Configuraciones actuales que se reemplazarán",
+    "previousBinding": "{{slot}}: {{agent}} / {{model}}",
+    "defaultModelLabel": "Predeterminado del proveedor",
+    "runtimeBlocked": "La comprobación del entorno no se superó",
+    "detectionFailed": "Falló la detección de Agent. Vuelve a intentarlo.",
+    "recheckRuntime": "Comprobar el entorno de nuevo",
+    "viewRuntime": "Ver entorno",
+    "environmentHelp": {
+      "missing": "No se encontró esta herramienta. Sigue la guía oficial de instalación y vuelve a comprobar.",
+      "unsupported": "Instala una versión compatible siguiendo la guía oficial y vuelve a comprobar.",
+      "incompatible": "La combinación de entorno detectada es incompatible. Revisa las rutas de instalación y vuelve a intentarlo.",
+      "failed": "No se pudo completar la comprobación. Revisa la ruta del ejecutable, los permisos de acceso y la instalación y vuelve a intentarlo.",
+      "timeout": "Se agotó el tiempo de comprobación. Reintenta; si persiste, comprueba si la herramienta se inicia correctamente.",
+      "cancelled": "Se canceló la comprobación. Vuelve a comprobar para continuar."
+    },
+    "environmentReasons": {
+      "probe-unavailable": "No se pudo confirmar el entorno realmente utilizado. Revisa la instalación y vuelve a intentarlo.",
+      "node-mismatch": "Se utilizó otra instalación de Node.js. Esperada: {{expectedNodePath}}; actual: {{actualNodePath}}.",
+      "node-version-mismatch": "Las versiones de Node.js difieren. Esperada: {{expectedVersion}}; actual: {{actualVersion}}.",
+      "node-path-mismatch": "La ruta de inicio de Node.js difiere. Esperada: {{expectedNodePath}}; actual: {{actualNodePath}}.",
+      "npm-metadata-missing": "No se pudieron confirmar los metadatos de instalación de npm. Repara la instalación de Node.js/npm y vuelve a comprobar.",
+      "npm-engines-incompatible": "Este npm no admite el Node.js actual. Requisito: {{nodeRange}}.",
+      "npm-version-mismatch": "La información de versión de npm difiere. Salida: {{expectedVersion}}; paquete: {{actualVersion}}.",
+      "npm-package-mismatch": "npm y npx pertenecen a instalaciones distintas. npm: {{expectedNpmRoot}}; esta herramienta: {{actualNpmRoot}}."
     }
   }
 }

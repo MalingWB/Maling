@@ -12,6 +12,8 @@ mod runtime_recovery;
 mod state_access;
 mod state_factory;
 mod transition_context;
+pub mod upstream;
+mod workflow_share;
 
 pub use self::conversation_run::{
     CONVERSATION_METADATA_VERSION, CONVERSATION_SOURCE_CLI, CONVERSATION_SOURCE_DESKTOP,
@@ -139,8 +141,8 @@ impl Drop for OwnedTaskDirectory {
 }
 use self::profiles::{
     DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
-    ensure_default_user_profiles, import_profiles_from_folder, list_profiles, show_profile,
-    update_profile,
+    ensure_default_user_profiles, import_profiles_from_files, import_profiles_from_folder,
+    list_profiles, show_profile, update_profile,
 };
 
 const ATTEMPT_RUNTIME_STATE_LOCK_SHARDS: usize = 64;
@@ -173,9 +175,11 @@ pub(crate) fn attempt_runtime_state_lock(
 const STATE_CONFIG_LOCK_SHARDS: usize = 32;
 static STATE_CONFIG_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 pub use self::profiles::{
-    ImportProfilesInput, ImportProfilesResult, ProfileCommandError, ProfileEntry, ProfileInput,
-    ProfileList, ProfileScope,
+    ImportProfileFilesInput, ImportProfilesInput, ImportProfilesResult, MulticaInstallOutcome,
+    MulticaRoleExchange, ProfileCommandError, ProfileEntry, ProfileInput, ProfileList,
+    ProfileScope, multica_exchange_to_profile_input, profile_to_multica_exchange,
 };
+pub use self::workflow_share::{MulticaWorkflowExchange, workflow_template_to_multica_exchange};
 
 fn tail_text(text: &str, limit: usize) -> String {
     if limit == 0 {
@@ -284,7 +288,7 @@ fn default_workflow_template(
             label_key: "conversation.home.includeInterview".to_string(),
             default_enabled: true,
         }),
-        workflow: default_workflow_dsl("claude-acp", profiles, language),
+        workflow: default_workflow_dsl(profiles, language),
         model_bindings: WorkflowModelBindings::default(),
         created_at: now.clone(),
         updated_at: now,
@@ -305,7 +309,7 @@ fn default_lightweight_workflow_template(
             label_key: "conversation.home.includeGrill".to_string(),
             default_enabled: true,
         }),
-        workflow: default_lightweight_workflow_dsl("claude-acp", profiles, language),
+        workflow: default_lightweight_workflow_dsl(profiles, language),
         model_bindings: WorkflowModelBindings::default(),
         created_at: now.clone(),
         updated_at: now,
@@ -494,13 +498,8 @@ fn wb_cicd_workflow_template(
     template
 }
 
-fn default_workflow_dsl(
-    provider: &str,
-    profiles: &DefaultProfileIds,
-    language: DesktopLanguage,
-) -> WorkflowDsl {
+fn default_workflow_dsl(profiles: &DefaultProfileIds, language: DesktopLanguage) -> WorkflowDsl {
     fn worker(
-        _provider: &str,
         profiles: &DefaultProfileIds,
         id: &str,
         role_key: &str,
@@ -550,7 +549,6 @@ fn default_workflow_dsl(
         },
         nodes: vec![
             worker(
-                provider,
                 profiles,
                 "interview",
                 "interview",
@@ -559,7 +557,6 @@ fn default_workflow_dsl(
                 true,
             ),
             worker(
-                provider,
                 profiles,
                 "plan",
                 "plan",
@@ -568,7 +565,6 @@ fn default_workflow_dsl(
                 true,
             ),
             worker(
-                provider,
                 profiles,
                 "dev",
                 "dev",
@@ -577,7 +573,6 @@ fn default_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "review",
                 "review",
@@ -586,7 +581,6 @@ fn default_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "test",
                 "test",
@@ -595,7 +589,6 @@ fn default_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "accept",
                 "accept",
@@ -604,7 +597,6 @@ fn default_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "cleanup",
                 "cleanup",
@@ -689,12 +681,10 @@ fn default_workflow_dsl(
 }
 
 fn default_lightweight_workflow_dsl(
-    provider: &str,
     profiles: &DefaultProfileIds,
     language: DesktopLanguage,
 ) -> WorkflowDsl {
     fn worker(
-        _provider: &str,
         profiles: &DefaultProfileIds,
         id: &str,
         role_key: &str,
@@ -744,7 +734,6 @@ fn default_lightweight_workflow_dsl(
         },
         nodes: vec![
             worker(
-                provider,
                 profiles,
                 "grill",
                 "grill",
@@ -753,7 +742,6 @@ fn default_lightweight_workflow_dsl(
                 true,
             ),
             worker(
-                provider,
                 profiles,
                 "dev-test",
                 "dev-test",
@@ -762,7 +750,6 @@ fn default_lightweight_workflow_dsl(
                 false,
             ),
             worker(
-                provider,
                 profiles,
                 "accept",
                 "accept",
@@ -847,6 +834,7 @@ fn upsert_built_in_workflow_template(
         .position(|template| template.id == built_in.id)
     {
         let mut next = built_in;
+        next.created_at = templates[current_index].created_at.clone();
         let persisted = TaskAuthoringWorkflow {
             workflow: templates[current_index].workflow.clone(),
             model_bindings: templates[current_index].model_bindings.clone(),
@@ -858,6 +846,11 @@ fn upsert_built_in_workflow_template(
             Some(&persisted),
             Some(&next.id),
         )?;
+        if serde_json::to_value(&next.workflow)? == serde_json::to_value(&persisted.workflow)?
+            && next.model_bindings == persisted.model_bindings
+        {
+            next.updated_at = templates[current_index].updated_at.clone();
+        }
         templates[current_index] = next;
         if current_index != index {
             let template = templates.remove(current_index);
@@ -970,6 +963,8 @@ pub struct CreateTaskInput {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowTemplateStore {
+    #[serde(skip)]
+    pub storage_revision: crate::storage::configuration::FileRevision,
     pub version: String,
     #[serde(alias = "last_used_template_id")]
     pub last_used_template_id: Option<String>,
@@ -1394,6 +1389,9 @@ pub struct App {
     pub config: RuntimeConfig,
     task_search_indexer: Arc<dyn Fn(&Utf8Path, &str) + Send + Sync>,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
+    upstream_output_resolver: Option<Arc<dyn upstream::UpstreamOutputResolver>>,
+    completion_protocol_section_resolver:
+        Option<Arc<dyn upstream::CompletionProtocolSectionResolver>>,
     provider_diagnostics:
         Option<Arc<dyn Fn() -> Result<BTreeMap<String, ProviderDiagnosticSnapshot>> + Send + Sync>>,
     acp_live_update: Option<
@@ -1710,6 +1708,8 @@ impl App {
             config: self.config.clone(),
             task_search_indexer: self.task_search_indexer.clone(),
             provider_override: self.provider_override.clone(),
+            upstream_output_resolver: self.upstream_output_resolver.clone(),
+            completion_protocol_section_resolver: self.completion_protocol_section_resolver.clone(),
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
@@ -1773,6 +1773,8 @@ impl App {
             config,
             task_search_indexer: self.task_search_indexer.clone(),
             provider_override: self.provider_override.clone(),
+            upstream_output_resolver: self.upstream_output_resolver.clone(),
+            completion_protocol_section_resolver: self.completion_protocol_section_resolver.clone(),
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
@@ -1862,6 +1864,57 @@ impl App {
     ) -> Self {
         self.prompt_turn_lifecycle = Some(callback);
         self
+    }
+
+    /// 注册上游交付引用解析器（M5-cf，`$upstream.completion-output` 令牌的消费端）。
+    ///
+    /// 桌面壳 multica 域在启动时装入；引擎侧仅当节点 prompt 携带令牌时调用（两个装配面：
+    /// workflow `node_executor::build_worker_invocation` 与 auto
+    /// `orchestrator::build_dynamic_worker_invocation`）。同步阻塞调用——在 run 专用线程上
+    /// 执行，实现侧以轮询预算约束等待上限。
+    pub fn with_upstream_output_resolver(
+        mut self,
+        resolver: Arc<dyn upstream::UpstreamOutputResolver>,
+    ) -> Self {
+        self.upstream_output_resolver = Some(resolver);
+        self
+    }
+
+    /// 解析节点的上游交付引用（未注册解析器 → [`upstream::UpstreamResolveError::NoResolver`]）。
+    pub(crate) fn resolve_upstream_output(
+        &self,
+        task_id: &str,
+        node_id: &str,
+    ) -> Result<String, upstream::UpstreamResolveError> {
+        self.upstream_output_resolver
+            .as_ref()
+            .ok_or(upstream::UpstreamResolveError::NoResolver)?
+            .resolve_upstream_output(task_id, node_id)
+    }
+
+    /// 注册完成输出协议区段解析器（M5-cg 产出侧门禁，按节点身份的协议变体渲染端）。
+    ///
+    /// 桌面壳 multica 域在启动时装入；引擎侧在节点装配（`SessionMode::New`）时按判定出的
+    /// [`upstream::CompletionProtocolDesignation`] 调用。同步调用——纯模板渲染 + 内存映射
+    /// 反查，无阻塞等待。
+    pub fn with_completion_protocol_section_resolver(
+        mut self,
+        resolver: Arc<dyn upstream::CompletionProtocolSectionResolver>,
+    ) -> Self {
+        self.completion_protocol_section_resolver = Some(resolver);
+        self
+    }
+
+    /// 取节点的完成输出协议区段（解析器缺席 / 非 multica issue 任务 → `None`，不注入）。
+    pub(crate) fn completion_protocol_section(
+        &self,
+        task_id: &str,
+        node_id: &str,
+        designation: upstream::CompletionProtocolDesignation,
+    ) -> Option<crate::provider::PromptHiddenSection> {
+        self.completion_protocol_section_resolver
+            .as_ref()?
+            .completion_protocol_section(task_id, node_id, designation)
     }
 
     pub fn with_lifecycle_bus(mut self, lifecycle_bus: observability::RuntimeLifecycleBus) -> Self {
@@ -3376,7 +3429,7 @@ impl App {
     }
 
     pub fn save_settings(&self, settings: &SettingsConfig) -> Result<()> {
-        write_json(&self.paths.user_settings_file(), settings)
+        crate::storage::save_settings_file(&self.paths.user_settings_file(), settings).map(|_| ())
     }
 
     /// 读取全局 `state.json`（只读路径，任意调用）。
@@ -3626,15 +3679,28 @@ impl App {
         agent_id: ManagedAgentId,
         config: ManagedAgentConfig,
     ) -> Result<SettingsConfig> {
-        let mut agents = self.config.agents.clone();
-        agents.insert(agent_id, config);
-        self.set_user_agents(agents)
+        config.executable_adapter(&agent_id)?;
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            let mut settings = self.load_settings()?;
+            settings
+                .agents
+                .get_or_insert_with(|| self.config.agents.clone())
+                .insert(agent_id, config);
+            self.save_settings(&settings)?;
+            self.load_settings()
+        })
     }
 
     pub fn remove_managed_agent(&self, agent_id: &ManagedAgentId) -> Result<SettingsConfig> {
-        let mut agents = self.config.agents.clone();
-        agents.remove(agent_id);
-        self.set_user_agents(agents)
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            let mut settings = self.load_settings()?;
+            settings
+                .agents
+                .get_or_insert_with(|| self.config.agents.clone())
+                .remove(agent_id);
+            self.save_settings(&settings)?;
+            self.load_settings()
+        })
     }
 
     // ── MCP (委托给 McpManager，对标 Zed ContextServerStore) ──
@@ -3763,6 +3829,31 @@ impl App {
         self.load_workflow_template_store()
     }
 
+    /// Snapshot read for preview/application; never seeds, migrates or repairs templates.
+    pub fn read_workflow_templates(&self) -> Result<WorkflowTemplateStore> {
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            let path = self.paths.workflow_templates_file();
+            let mut store: WorkflowTemplateStore = read_json(&path)?;
+            store.storage_revision = crate::storage::configuration::revision(&path)?;
+            Ok(store)
+        })
+    }
+
+    pub fn initialize_workflow_templates(&self) -> Result<()> {
+        self.load_workflow_template_store().map(|_| ())
+    }
+
+    pub fn built_in_workflow_template_ids(&self) -> Vec<&'static str> {
+        let mut ids = vec![
+            DEFAULT_WORKFLOW_TEMPLATE_ID,
+            DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID,
+        ];
+        if crate::memory::is_wb() {
+            ids.push(WB_CICD_WORKFLOW_TEMPLATE_ID);
+        }
+        ids
+    }
+
     pub fn auto_templates(&self) -> Result<AutoTemplateStore> {
         self.load_auto_template_store()
     }
@@ -3784,6 +3875,13 @@ impl App {
         input: ImportProfilesInput,
     ) -> Result<ImportProfilesResult> {
         import_profiles_from_folder(&self.paths, input)
+    }
+
+    pub fn import_profiles_from_files(
+        &self,
+        input: ImportProfileFilesInput,
+    ) -> Result<ImportProfilesResult> {
+        import_profiles_from_files(&self.paths, input)
     }
 
     pub fn update_profile(&self, id: &str, input: ProfileInput) -> Result<ProfileEntry> {
@@ -3814,6 +3912,85 @@ impl App {
         workflow: WorkflowDsl,
     ) -> Result<WorkflowTemplateStore> {
         self.save_workflow_template_with_bindings(name, workflow, WorkflowModelBindings::default())
+    }
+
+    /// multica push-install 工单落库（工作流共享通道 B；wire envelope 在 `workflow_share`）。
+    ///
+    /// 语义（multica 工作流对接 §4.4/§5.4，`conflict_strategy:"skip"` 由本侧执行）：
+    /// - 同 id 既有**用户**模板 → 跳过不覆盖，返回既有条目（重装幂等，回报现有名）；
+    /// - 同 id 是**内置**模板（只读）→ 物化用户副本（ADR-0008 D6：内置随版本演进不覆盖，
+    ///   共享副本可能是更新的编排）；
+    /// - 无冲突 → 新模板**保留 payload id**：本地 id 空间与 multica asset key 对齐，
+    ///   「同 key 跳过」的重装去重才成立。
+    ///
+    /// 与 [`App::save_workflow_template_with_bindings`] 的刻意差异：
+    /// - inner `workflow.id` 恒重新生成——外来 inner id 是他机事实，撞本地 `DuplicateWorkflowId`
+    ///   不应拒装；asset 身份在模板 id（payload id），inner id 只是本机编排事实；
+    /// - 不做 `resolve_workflow_profiles` / `validate_ai_dynamic_allowed_workflows`（§5.5 角色
+    ///   依赖首版不处理：引用缺失不阻断安装，客户端打开/运行时既有提示兜底）；
+    /// - 不动 `last_used_template_id`（后台被动安装不改变用户本地默认选中）。
+    ///
+    /// [`App::save_workflow_template_with_bindings`]: App::save_workflow_template_with_bindings
+    pub fn install_workflow_template_from_multica(
+        &self,
+        exchange: &MulticaWorkflowExchange,
+    ) -> Result<(WorkflowTemplate, MulticaInstallOutcome)> {
+        let name = exchange.name.trim();
+        if name.is_empty() {
+            bail!("workflow template name cannot be empty");
+        }
+        let mut store = self.load_workflow_template_store()?;
+        if let Some(existing) = store
+            .templates
+            .iter()
+            .find(|template| template.id == exchange.id)
+        {
+            if !existing.is_built_in {
+                tracing::info!(
+                    template_id = %existing.id,
+                    name = %existing.name,
+                    "multica workflow install skipped: same-key user template exists"
+                );
+                // #6 安装回报：同 key 既有用户模板 → 复用（非新装），与全新落库可区分。
+                return Ok((existing.clone(), MulticaInstallOutcome::ReusedExisting));
+            }
+            // builtin 只读：继续走物化用户副本（返回的是本次安装产物，不是既有内置）。
+        }
+        let mut workflow = exchange.workflow.clone();
+        workflow.id = next_workflow_id();
+        let mut model_bindings = WorkflowModelBindings::default();
+        reconcile_authoring_workflow_for_save(&mut workflow, &mut model_bindings, None, None)?;
+        let validated = validate_authoring_workflow(workflow)?;
+        // payload id 保留为本地模板 id；被占（builtin 撞 id / payload id 空）时按名字派生唯一 id。
+        let id = if !exchange.id.trim().is_empty()
+            && store
+                .templates
+                .iter()
+                .all(|template| template.id != exchange.id)
+        {
+            exchange.id.clone()
+        } else {
+            unique_workflow_template_id(&store, name)
+        };
+        let now = now_rfc3339_like();
+        let template = WorkflowTemplate {
+            id,
+            name: name.to_string(),
+            is_built_in: false,
+            optional_entry_stage: None,
+            workflow: validated.raw,
+            model_bindings,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        store.templates.push(template.clone());
+        self.save_workflow_template_store(&mut store)?;
+        tracing::info!(
+            template_id = %template.id,
+            name = %template.name,
+            "multica workflow template installed"
+        );
+        Ok((template, MulticaInstallOutcome::Created))
     }
 
     pub fn save_workflow_template_with_bindings(
@@ -3863,7 +4040,7 @@ impl App {
             updated_at: now,
         });
         store.last_used_template_id = Some(id);
-        self.save_workflow_template_store(&store)?;
+        self.save_workflow_template_store(&mut store)?;
         Ok(store)
     }
 
@@ -3936,7 +4113,7 @@ impl App {
         template.model_bindings = model_bindings;
         template.updated_at = now_rfc3339_like();
         store.last_used_template_id = Some(template_id.to_string());
-        self.save_workflow_template_store(&store)?;
+        self.save_workflow_template_store(&mut store)?;
         Ok(store)
     }
 
@@ -3977,7 +4154,7 @@ impl App {
         template.model_bindings = model_bindings;
         template.updated_at = now_rfc3339_like();
         store.last_used_template_id = Some(template_id.to_string());
-        self.save_workflow_template_store(&store)?;
+        self.save_workflow_template_store(&mut store)?;
         Ok(store)
     }
 
@@ -4005,7 +4182,7 @@ impl App {
         if store.last_used_template_id.as_deref() == Some(template_id) {
             store.last_used_template_id = Some("default".to_string());
         }
-        self.save_workflow_template_store(&store)?;
+        self.save_workflow_template_store(&mut store)?;
         Ok(store)
     }
 
@@ -4126,62 +4303,77 @@ impl App {
     }
 
     fn load_workflow_template_store(&self) -> Result<WorkflowTemplateStore> {
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            let (mut store, changed) = self.prepare_workflow_template_store_unlocked(true)?;
+            if changed {
+                self.save_workflow_template_store(&mut store)?;
+            }
+            Ok(store)
+        })
+    }
+
+    /// Returns the setup-time template projection without creating, migrating or
+    /// repairing files. The onboarding preview and apply paths share this snapshot.
+    pub fn prepared_workflow_templates(&self) -> Result<WorkflowTemplateStore> {
+        crate::storage::configuration::with_configuration(&self.paths.user_gold_band_dir(), || {
+            self.prepare_workflow_template_store_unlocked(false)
+                .map(|(store, _)| store)
+        })
+    }
+
+    fn prepare_workflow_template_store_unlocked(
+        &self,
+        track_changes: bool,
+    ) -> Result<(WorkflowTemplateStore, bool)> {
         let default_profiles = ensure_default_user_profiles(&self.paths)?;
         let default_template =
             default_workflow_template(&default_profiles, self.config.desktop_language);
         let lightweight_template =
             default_lightweight_workflow_template(&default_profiles, self.config.desktop_language);
         let path = self.paths.workflow_templates_file();
-        if !path.exists() {
-            let legacy_path = self.paths.legacy_project_workflow_templates_file();
-            if legacy_path.exists() {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent.as_std_path())?;
-                }
-                fs::copy(legacy_path.as_std_path(), path.as_std_path())?;
-            }
-        }
-        if path.exists() {
-            let mut store: WorkflowTemplateStore = read_json(&path)?;
-            for template in &mut store.templates {
-                migrate_authoring_workflow(
-                    &mut template.workflow,
-                    &mut template.model_bindings,
-                    template.is_built_in.then_some(template.id.as_str()),
-                )?;
-            }
-            upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0)?;
-            upsert_built_in_workflow_template(&mut store.templates, default_template, 0)?;
-            if crate::memory::is_wb() {
-                upsert_built_in_workflow_template(
-                    &mut store.templates,
-                    wb_cicd_workflow_template(&default_profiles, self.config.desktop_language),
-                    2,
-                )?;
-            } else {
-                store
-                    .templates
-                    .retain(|template| template.id != WB_CICD_WORKFLOW_TEMPLATE_ID);
-            }
-            if let Some(workflow) = store.last_created_workflow.as_mut() {
-                let mut ignored = WorkflowModelBindings::default();
-                migrate_authoring_workflow(workflow, &mut ignored, None)?;
-            }
-            self.save_workflow_template_store(&store)?;
-            return Ok(store);
-        }
-        let mut store = WorkflowTemplateStore {
-            version: VERSION.to_string(),
-            last_used_template_id: Some("default".to_string()),
-            last_created_workflow: None,
-            templates: vec![default_template, lightweight_template],
+        let legacy_path = self.paths.legacy_project_workflow_templates_file();
+        let source = if path.exists() {
+            Some(path.clone())
+        } else {
+            legacy_path.exists().then_some(legacy_path)
         };
-        if crate::memory::is_wb() {
-            store.templates.push(wb_cicd_workflow_template(
-                &default_profiles,
-                self.config.desktop_language,
-            ));
-        }
+        let needs_canonical_copy = source.as_ref().is_some_and(|source| source != &path);
+        let (mut store, created) = if let Some(source) = source {
+            (read_json::<WorkflowTemplateStore>(&source)?, false)
+        } else {
+            (
+                WorkflowTemplateStore {
+                    storage_revision: crate::storage::configuration::FileRevision::Missing,
+                    version: VERSION.to_string(),
+                    last_used_template_id: Some("default".to_string()),
+                    last_created_workflow: None,
+                    templates: vec![default_template.clone(), lightweight_template.clone()],
+                },
+                true,
+            )
+        };
+        store.storage_revision = crate::storage::configuration::revision(&path)?;
+        let before = track_changes
+            .then(|| serde_json::to_value(&store))
+            .transpose()?;
+        let previous_slots = store
+            .templates
+            .iter()
+            .map(|template| {
+                (
+                    template.id.clone(),
+                    template
+                        .workflow
+                        .nodes
+                        .iter()
+                        .filter_map(|node| match node {
+                            NodeDsl::Worker(worker) => worker.execution_slot_id.clone(),
+                            _ => None,
+                        })
+                        .collect::<std::collections::BTreeSet<_>>(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
         for template in &mut store.templates {
             migrate_authoring_workflow(
                 &mut template.workflow,
@@ -4189,13 +4381,111 @@ impl App {
                 template.is_built_in.then_some(template.id.as_str()),
             )?;
         }
-        self.save_workflow_template_store(&store)?;
-        Ok(store)
+        upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0)?;
+        upsert_built_in_workflow_template(&mut store.templates, default_template, 0)?;
+        if crate::memory::is_wb() {
+            upsert_built_in_workflow_template(
+                &mut store.templates,
+                wb_cicd_workflow_template(&default_profiles, self.config.desktop_language),
+                2,
+            )?;
+        } else {
+            store
+                .templates
+                .retain(|template| template.id != WB_CICD_WORKFLOW_TEMPLATE_ID);
+        }
+        if let Some(workflow) = store.last_created_workflow.as_mut() {
+            let mut ignored = WorkflowModelBindings::default();
+            migrate_authoring_workflow(workflow, &mut ignored, None)?;
+        }
+        self.initialize_default_bindings(&mut store, &previous_slots);
+        let changed = track_changes
+            && (created
+                || needs_canonical_copy
+                || serde_json::to_value(&store)? != before.expect("tracked baseline"));
+        Ok((store, changed))
     }
 
-    fn save_workflow_template_store(&self, store: &WorkflowTemplateStore) -> Result<()> {
-        fs::create_dir_all(self.paths.user_context_dir().as_std_path())?;
-        write_json(&self.paths.workflow_templates_file(), store)
+    fn initialize_default_bindings(
+        &self,
+        store: &mut WorkflowTemplateStore,
+        prior: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    ) {
+        let Some(profile) = &self.config.default_execution_profile else {
+            return;
+        };
+        let ids = self.built_in_workflow_template_ids();
+        for template in &mut store.templates {
+            if !template.is_built_in || !ids.contains(&template.id.as_str()) {
+                continue;
+            }
+            let before = template.model_bindings.bindings.clone();
+            for slot in template
+                .workflow
+                .nodes
+                .iter()
+                .filter_map(|node| match node {
+                    NodeDsl::Worker(worker) => worker.execution_slot_id.as_ref(),
+                    _ => None,
+                })
+            {
+                if prior
+                    .get(&template.id)
+                    .is_some_and(|slots| slots.contains(slot))
+                {
+                    continue;
+                }
+                if let Some(binding) = template
+                    .model_bindings
+                    .bindings
+                    .iter_mut()
+                    .find(|binding| &binding.execution_slot_id == slot)
+                {
+                    binding.agent_id = profile.agent_id.as_str().into();
+                    binding.model_id = profile.model_selection.model_id().map(str::to_owned);
+                    binding.config_options = profile.config_options.clone();
+                    binding.model_bound_overrides = profile.model_bound_overrides.clone();
+                    binding.permission_mode_id = None;
+                    binding.auto_accept = false;
+                } else {
+                    template.model_bindings.bindings.push(
+                        crate::workflow_model_binding::WorkerModelBinding {
+                            execution_slot_id: slot.clone(),
+                            agent_id: profile.agent_id.as_str().into(),
+                            model_id: profile.model_selection.model_id().map(str::to_owned),
+                            config_options: profile.config_options.clone(),
+                            model_bound_overrides: profile.model_bound_overrides.clone(),
+                            permission_mode_id: None,
+                            auto_accept: false,
+                        },
+                    );
+                }
+            }
+            template
+                .model_bindings
+                .bindings
+                .sort_by(|left, right| left.execution_slot_id.cmp(&right.execution_slot_id));
+            if before != template.model_bindings.bindings {
+                template.model_bindings.binding_revision =
+                    template.model_bindings.binding_revision.saturating_add(1);
+            }
+        }
+    }
+
+    fn save_workflow_template_store(&self, store: &mut WorkflowTemplateStore) -> Result<()> {
+        let revision = crate::storage::configuration::with_configuration(
+            &self.paths.user_gold_band_dir(),
+            || {
+                crate::storage::configuration::verify_revision(
+                    &self.paths.workflow_templates_file(),
+                    &store.storage_revision,
+                )?;
+                write_json(&self.paths.workflow_templates_file(), store)?;
+                crate::storage::configuration::revision(&self.paths.workflow_templates_file())
+            },
+        )?;
+        store.storage_revision = revision;
+        Ok(())
     }
 
     pub fn task_authoring_workflow(&self, task_id: &str) -> Result<TaskAuthoringWorkflow> {
@@ -4291,7 +4581,7 @@ impl App {
         if let Some(template_id) = template_id.filter(|value| !value.trim().is_empty()) {
             store.last_used_template_id = Some(template_id);
         }
-        self.save_workflow_template_store(&store)
+        self.save_workflow_template_store(&mut store)
     }
 
     pub fn managed_agent(&self, provider: &str) -> Result<(ManagedAgentId, &ManagedAgentConfig)> {
@@ -4342,7 +4632,7 @@ impl App {
         let (agent_id, config) = self.managed_agent(provider)?;
         match acp_client::doctor_with_deadline(
             &agent_id,
-            &config.adapter,
+            &config.executable_adapter(&agent_id)?,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
@@ -4371,7 +4661,7 @@ impl App {
         let (agent_id, config) = self.managed_agent(provider)?;
         acp_client::probe_model_config(
             &agent_id,
-            &config.adapter,
+            &config.executable_adapter(&agent_id)?,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
@@ -4400,6 +4690,8 @@ impl App {
             config,
             task_search_indexer: default_task_search_indexer(),
             provider_override: None,
+            upstream_output_resolver: None,
+            completion_protocol_section_resolver: None,
             provider_diagnostics: None,
             acp_live_update: None,
             acp_session_update: None,
@@ -7184,6 +7476,7 @@ mod tests {
             config.with_provider_diagnostics(std::collections::BTreeMap::from([(
                 provider.to_string(),
                 ProviderDiagnosticSnapshot {
+                    config_fingerprint: None,
                     available: true,
                     error: None,
                     checked_at: "2026-06-24T00:00:00Z".to_string(),
@@ -7460,6 +7753,7 @@ mod tests {
             &std::collections::BTreeMap::from([(
                 "claude-acp".to_string(),
                 ProviderDiagnosticSnapshot {
+                    config_fingerprint: None,
                     available: true,
                     error: None,
                     checked_at: "2026-06-24T00:00:00Z".to_string(),
@@ -7743,6 +8037,7 @@ mod tests {
             control: WorkflowControl::default(),
         };
         let store = WorkflowTemplateStore {
+            storage_revision: Default::default(),
             version: VERSION.to_string(),
             last_used_template_id: Some("custom".to_string()),
             last_created_workflow: Some(stale_workflow.clone()),
@@ -7817,6 +8112,190 @@ mod tests {
             unreachable!();
         };
         assert_eq!(model.as_deref(), Some("gpt-5.4"));
+    }
+
+    #[test]
+    fn workflow_template_seed_returns_the_written_revision_for_immediate_save() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+
+        let mut store = app.workflow_templates().unwrap();
+        assert_eq!(
+            store.storage_revision,
+            crate::storage::configuration::revision(&app.paths.workflow_templates_file()).unwrap(),
+            "the seeded store must carry the revision written to disk"
+        );
+
+        store.last_used_template_id =
+            Some(super::DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID.to_string());
+        app.save_workflow_template_store(&mut store).unwrap();
+        assert_eq!(
+            store.storage_revision,
+            crate::storage::configuration::revision(&app.paths.workflow_templates_file()).unwrap(),
+            "every workflow template write must return the committed revision"
+        );
+    }
+
+    #[test]
+    fn multica_workflow_install_skip_builtin_copy_and_id_preservation() {
+        use super::*;
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+
+        let exchange_for = |id: &str, name: &str| MulticaWorkflowExchange {
+            id: id.to_string(),
+            name: name.to_string(),
+            is_built_in: false,
+            workflow: WorkflowDsl {
+                version: "0.1".to_string(),
+                id: "workflow-foreign-inner".to_string(),
+                entry: "dev".to_string(),
+                control: Default::default(),
+                nodes: vec![NodeDsl::Worker(WorkerNode {
+                    id: "dev".to_string(),
+                    execution_slot_id: Some("slot-dev".to_string()),
+                    provider: Some("claude-acp".to_string()),
+                    model: None,
+                    profile: Some("pf-builtin-dev".to_string()),
+                    goal: Some("实现需求".to_string()),
+                    output: None,
+                    success_condition: None,
+                    permission_mode: None,
+                    auto_accept: false,
+                    config_options: Default::default(),
+                    manual_check: None,
+                    prompt_envelope: Default::default(),
+                })],
+                edges: vec![EdgeDsl {
+                    from: "dev".to_string(),
+                    to: crate::dsl::END_NODE.to_string(),
+                    on: crate::dsl::EdgeOutcome::Success,
+                    session: None,
+                    new_round_entry: None,
+                }],
+            },
+        };
+
+        // 新装：保留 payload id 作本地模板 id；inner workflow.id 重新生成（外来 inner id 不进本地）；
+        // envelope worker 携带的 provider 经 save 侧统一迁移进本地 binding（node 侧剥空）。
+        let (created, created_outcome) = app
+            .install_workflow_template_from_multica(&exchange_for("shared-pipeline", "共享流水线"))
+            .unwrap();
+        assert_eq!(created.id, "shared-pipeline");
+        assert_eq!(created.name, "共享流水线");
+        assert!(!created.is_built_in);
+        assert_ne!(created.workflow.id, "workflow-foreign-inner");
+        assert_eq!(created.model_bindings.bindings.len(), 1);
+        assert_eq!(created.model_bindings.bindings[0].agent_id, "claude-acp");
+        // #6 安装回报：全新落库形态必须可区分。
+        assert_eq!(created_outcome, MulticaInstallOutcome::Created);
+        // 后台被动安装不动用户默认选中。
+        let store = app.workflow_templates().unwrap();
+        assert_eq!(store.last_used_template_id.as_deref(), Some("default"));
+
+        // 重装同 key：跳过不覆盖，返回既有条目（updated_at 不变佐证未覆盖）。
+        let before = store
+            .templates
+            .iter()
+            .find(|template| template.id == "shared-pipeline")
+            .unwrap()
+            .updated_at
+            .clone();
+        let (skipped, skipped_outcome) = app
+            .install_workflow_template_from_multica(&exchange_for(
+                "shared-pipeline",
+                "改名也不覆盖",
+            ))
+            .unwrap();
+        assert_eq!(skipped.id, "shared-pipeline");
+        assert_eq!(skipped.name, "共享流水线");
+        assert_eq!(skipped.updated_at, before);
+        // #6：同 key 既有用户模板 → 复用（非新装），服务端据此区分「已装过」。
+        assert_eq!(skipped_outcome, MulticaInstallOutcome::ReusedExisting);
+
+        // builtin id 推送：内置只读，物化用户副本（派生 id、is_built_in=false、名字保留）。
+        let (builtin_copy, copy_outcome) = app
+            .install_workflow_template_from_multica(&exchange_for("default", "默认完整工作流"))
+            .unwrap();
+        assert_ne!(builtin_copy.id, "default");
+        assert!(!builtin_copy.is_built_in);
+        assert_eq!(builtin_copy.name, "默认完整工作流");
+        // 副本是本次新落库的用户模板（Created），不是复用。
+        assert_eq!(copy_outcome, MulticaInstallOutcome::Created);
+        // 内置本体未被覆盖（仍是 builtin 且名字未变）。
+        let store = app.workflow_templates().unwrap();
+        let builtin = store
+            .templates
+            .iter()
+            .find(|template| template.id == "default")
+            .unwrap();
+        assert!(builtin.is_built_in);
+    }
+
+    #[test]
+    fn multica_workflow_install_tolerates_missing_role_references() {
+        use super::*;
+        // §5.5：引用非 builtin 角色缺失不阻断安装（客户端打开/运行时既有提示兜底）——
+        // save_workflow_template 的 resolve_workflow_profiles 硬校验不适用于安装路径。
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+        let mut exchange = MulticaWorkflowExchange {
+            id: "needs-roles".to_string(),
+            name: "依赖角色".to_string(),
+            is_built_in: false,
+            workflow: WorkflowDsl {
+                version: "0.1".to_string(),
+                id: "workflow-x".to_string(),
+                entry: "dev".to_string(),
+                control: Default::default(),
+                nodes: vec![NodeDsl::Worker(WorkerNode {
+                    id: "dev".to_string(),
+                    execution_slot_id: None,
+                    provider: Some("claude-acp".to_string()),
+                    model: None,
+                    profile: Some("pf-not-installed".to_string()),
+                    goal: None,
+                    output: None,
+                    success_condition: None,
+                    permission_mode: None,
+                    auto_accept: false,
+                    config_options: Default::default(),
+                    manual_check: None,
+                    prompt_envelope: Default::default(),
+                })],
+                edges: vec![EdgeDsl {
+                    from: "dev".to_string(),
+                    to: crate::dsl::END_NODE.to_string(),
+                    on: crate::dsl::EdgeOutcome::Success,
+                    session: None,
+                    new_round_entry: None,
+                }],
+            },
+        };
+        // 对照：同一 workflow 走 save_workflow_template 会被角色解析拒绝。
+        assert!(
+            app.save_workflow_template("依赖角色".to_string(), exchange.workflow.clone())
+                .is_err()
+        );
+        let (installed, _) = app
+            .install_workflow_template_from_multica(&exchange)
+            .unwrap();
+        assert_eq!(installed.id, "needs-roles");
+
+        // 结构非法仍拒绝（entry 引用未声明节点 → 与 multica INVALID_TEMPLATE 同族校验）。
+        // 用新 id：同 key 已存在时 skip 先于校验（幂等不覆盖，不重验旧 payload）。
+        exchange.id = "needs-roles-invalid".to_string();
+        exchange.workflow.entry = "ghost".to_string();
+        assert!(
+            app.install_workflow_template_from_multica(&exchange)
+                .is_err()
+        );
+
+        // 名字空白拒绝（envelope 名是落库名的唯一来源）。
+        let mut blank = exchange.clone();
+        blank.name = "   ".to_string();
+        blank.workflow.entry = "dev".to_string();
+        assert!(app.install_workflow_template_from_multica(&blank).is_err());
     }
 
     #[test]
@@ -9924,7 +10403,7 @@ mod tests {
         let paths =
             crate::storage::GoldBandPaths::new(Utf8PathBuf::from("/tmp/interview-default-success"));
         let profiles = super::ensure_default_user_profiles(&paths).unwrap();
-        let workflow = super::default_workflow_dsl("claude-acp", &profiles, DesktopLanguage::ZhCn);
+        let workflow = super::default_workflow_dsl(&profiles, DesktopLanguage::ZhCn);
 
         let interview = workflow
             .nodes
@@ -9961,6 +10440,10 @@ mod tests {
             status: "completed".into(),
             title: format!("title-{remote}"),
             completed_at: "2026-08-13T00:00:00Z".into(),
+            issue_status_category: None,
+            issue_status_name: None,
+            dpms_required: false,
+            dpms_story_id: None,
         }
     }
 

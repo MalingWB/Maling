@@ -158,7 +158,7 @@ function initialBrowserImSettings(): ImSettingsVm {
         kind: 'weCom', enabled, generation, state,
         capabilities: browserImCapabilities.weCom,
         identity: browserImIdentities.weCom,
-        binding: bound ? { destinationId: 'user-1', conversationId: 'user-1', actorId: 'user-1', isPrivate: true } : null,
+        binding: bound ? { destinationId: 'user-1', conversationId: 'user-1', actorId: 'user-1', isPrivate: true, displayName: 'Kelvin Zhou' } : null,
         lastConnectedAtMs: state === 'connected' ? Date.now() : null,
         lastErrorCode,
       } : null,
@@ -2044,6 +2044,9 @@ export const browserApi: RuntimeApi = {
   importProfilesFromFolder(_folderPath: string, _dynamicTemplate: boolean) {
     return Promise.resolve({ totalScanned: 0, imported: [], failed: [], truncated: false });
   },
+  importProfilesFromFiles(_filePaths: string[], _dynamicTemplate: boolean) {
+    return Promise.resolve({ totalScanned: 0, imported: [], failed: [], truncated: false });
+  },
   updateProfile(id: string, input: ProfileInput) {
     const existing = browserPreviewState.getProfiles().profiles.find((profile) => profile.id === id);
     if (!existing) return browserCommandError('app.unexpected');
@@ -2889,6 +2892,10 @@ export const browserApi: RuntimeApi = {
       kind: null,
       readiness: null,
       attachments: [],
+      issueStatusCategory: null,
+      issueStatusName: null,
+      rerunOfTaskId: null,
+      dpmsLinkPending: false,
     });
   },
   startRemoteConversationRun(input, _remoteTaskId, _workspaceId) {
@@ -2900,6 +2907,14 @@ export const browserApi: RuntimeApi = {
   },
   removeRemoteCompletedTask(_remoteTaskId: string) {
     return Promise.resolve();
+  },
+  reconcileRemoteTaskStatuses() {
+    // 浏览器桩：无对账数据源，静默 0（与后端「无终态历史/失败降级」同返回形态）。
+    return Promise.resolve(0);
+  },
+  rerunRemoteTask(_taskId: string) {
+    // 浏览器桩：浏览器端无 multica 连接（远程任务仅桌面端真实执行）。
+    return Promise.reject({ code: 'remote.source-not-configured', params: {} });
   },
   listServerMulticaWorkspaces() {
     return Promise.resolve([]);
@@ -3684,6 +3699,21 @@ export const browserApi: RuntimeApi = {
   },
   subscribeRemoteSourceSettingsUpdates() {
     return Promise.resolve(() => {});
+  },
+  subscribeRuntimeAssetInstalled() {
+    // 浏览器桩：无 multica daemon，被动安装事件永不产生。
+    return Promise.resolve(() => {});
+  },
+  subscribeUpstreamPullEvents() {
+    // 浏览器桩：无 multica 拉取链路，永不产生决策事件。
+    return Promise.resolve(() => {});
+  },
+  decideUpstreamPull(_taskId: string, _nodeId: string, _decision: string, _manualText?: string | null) {
+    return Promise.resolve();
+  },
+  listUpstreamPullPendings(_taskId: string) {
+    // 浏览器桩：无 multica 拉取链路，无待决槽。
+    return Promise.resolve([]);
   },
   workspaceFilePreviewUrl(token, _staticFrame = false) {
     const path = token.replace(/^browser-preview:/u, '');

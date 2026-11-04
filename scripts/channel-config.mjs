@@ -10,26 +10,28 @@ const baseTauriConfig = JSON.parse(
 const MAIN_BINARY_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 const WB_BASE_URL_ENV = 'GOLD_BAND_WB_BASE_URL';
+const WB_MULTICA_URL_ENV = 'GOLD_BAND_WB_MULTICA_URL';
+const BASE_TOKEN = '${GOLD_BAND_WB_BASE_URL}';
+const MULTICA_TOKEN = '${GOLD_BAND_WB_MULTICA_URL}';
 
-function resolveWbConfig(config, env) {
-  const raw = env[WB_BASE_URL_ENV];
-  let origin;
+function readOrigin(env, name) {
+  const raw = env[name];
   try {
     if (typeof raw !== 'string' || !/^https?:\/\/[^\/?#@\\\s]+\/?$/i.test(raw)) throw new Error();
     const url = new URL(raw);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
         url.pathname !== '/' || url.search || url.hash || raw.includes('?') || raw.includes('#')) throw new Error();
-    origin = url.origin;
+    return url.origin;
   } catch {
-    throw new Error(`Missing or invalid ${WB_BASE_URL_ENV}: expected an HTTP(S) origin without credentials, path, query or fragment.`);
+    throw new Error(`Missing or invalid ${name}: expected an HTTP(S) origin without credentials, path, query or fragment.`);
   }
-  if (!Number.isInteger(config.multicaPort) || config.multicaPort < 1 || config.multicaPort > 65535) {
-    throw new Error('Invalid WB multicaPort.');
-  }
-  const multica = new URL(origin);
-  multica.port = String(config.multicaPort);
+}
+
+function resolveWbConfig(config, env) {
+  const origin = readOrigin(env, WB_BASE_URL_ENV);
+  const multicaOrigin = readOrigin(env, WB_MULTICA_URL_ENV);
   const replace = (value) => {
-    if (typeof value === 'string') return value.replaceAll('${GOLD_BAND_WB_BASE_URL}', origin).replaceAll('${WB_MULTICA_URL}', multica.origin);
+    if (typeof value === 'string') return value.replaceAll(BASE_TOKEN, origin).replaceAll(MULTICA_TOKEN, multicaOrigin);
     if (Array.isArray(value)) return value.map(replace);
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replace(item)]));
     return value;

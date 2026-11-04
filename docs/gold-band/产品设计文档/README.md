@@ -1,11 +1,15 @@
 ﻿# Gold Band 文档导航
 
+> 第一次接触项目请先读[客户端知识库](../../knowledge-base/README.md)：按「产品定位 → 快速上手 → 功能操作 → 状态恢复 → 架构扩展」组织，面向使用者和新人。
+> 本文是工程级设计文档导航，面向需要修改实现的开发者。
+
 Gold Band 当前文档按目录式结构整理为 6 个主板块：
 
 ## 1. 产品设计
 - [产品概览](product/overview.md)
 
 ## 2. 交互层
+- [首次启动引导技术方案（主流程已实现，发布矩阵待验收）](interaction/app/first-run-onboarding.md)
 - [交互层概览](interaction/cli/overview.md)
 - [定时任务交互设计](interaction/app/scheduled-task-management.md)
 - [CLI 规范](interaction/cli/cli.md)
