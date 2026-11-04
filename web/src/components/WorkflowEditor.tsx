@@ -1387,6 +1387,15 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
       </Dialog>
       <div
         ref={setEditorContainerRef}
+        // Fullscreen yields to the navigation sidebar: WebKitGTK paints a
+        // fixed element nested in the clipped workspace panel tree over (or
+        // under) the sidebar differently from Chromium, and the overlay's hit
+        // region ate sidebar clicks. Starting the surface at the sidebar's
+        // live right edge (a var the workspace shell publishes) removes the
+        // overlap entirely — the sidebar stays visible and clickable, and the
+        // canvas fit centers in the visible area instead of under the
+        // sidebar. Elsewhere (workbench, sheets) the var is unset → 0px.
+        style={editorFullscreen ? { left: 'var(--workspace-left-panel-width, 0px)' } : undefined}
         className={cn(
           // The clamped height and the fullscreen overlay are mutually
           // exclusive branches on purpose: two height utilities on one

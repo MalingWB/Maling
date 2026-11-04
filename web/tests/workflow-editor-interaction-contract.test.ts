@@ -27,6 +27,7 @@ const editorSource = readFileSync(fileURLToPath(new URL('../src/components/Workf
 const runtimeGraphSource = readFileSync(fileURLToPath(new URL('../src/components/GraphView.tsx', import.meta.url)), 'utf8');
 const graphControlsSource = readFileSync(fileURLToPath(new URL('../src/components/GraphControls.tsx', import.meta.url)), 'utf8');
 const stylesSource = readFileSync(fileURLToPath(new URL('../src/styles.css', import.meta.url)), 'utf8');
+const workspaceShellSource = readFileSync(fileURLToPath(new URL('../src/components/workspace/WorkspaceShell.tsx', import.meta.url)), 'utf8');
 
 function worker(id: string, patch: Partial<WorkflowWorkerNodeDsl> = {}): WorkflowWorkerNodeDsl {
   return { type: 'worker', id, provider: 'claude-acp', profile: 'developer', goal: `Run ${id}`, ...patch };
@@ -466,6 +467,19 @@ describe('workflow editor interaction contracts', () => {
     expect(editorSource).toContain('data-workspace-editor-fullscreen');
     expect(stylesSource).toContain(':root[data-workspace-editor-fullscreen] #workspace-right');
     expect(stylesSource).not.toContain(':root[data-workspace-editor-fullscreen] #workspace-center');
+  });
+
+  it('yields the fullscreen overlay to the navigation sidebar', () => {
+    // WebKitGTK renders a fixed element nested in the clipped workspace
+    // panel tree differently from Chromium (the sidebar shows through the
+    // overlay while its hit region still eats sidebar clicks), so the
+    // overlay must not overlap the sidebar at all: the shell publishes the
+    // live left-panel width and the fullscreen surface starts at its right
+    // edge — the sidebar stays visible, clickable and resizable, and the
+    // canvas fit excludes the sidebar strip instead of centering under it.
+    expect(workspaceShellSource).toContain('--workspace-left-panel-width');
+    expect(workspaceShellSource).toContain("root.style.removeProperty('--workspace-left-panel-width')");
+    expect(editorSource).toContain("{ left: 'var(--workspace-left-panel-width, 0px)' }");
   });
 
   it('refits the viewport when fullscreen toggles', () => {

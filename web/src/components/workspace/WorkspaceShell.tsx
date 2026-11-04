@@ -599,6 +599,25 @@ function WorkspaceShellLayout({
     return () => cancelAnimationFrame(frame);
   }, [active.kind, autoCollapse.left, autoCollapse.right, recordPanelSnapshot, showLeft, showRightDock, sidebarWidth, workspace.requestedOpen, workspace.scopeKey, workspace.width]);
 
+  // Publish the live navigation-panel width for surfaces that must yield to
+  // the sidebar (the fullscreen editor overlay starts at its right edge, so
+  // the sidebar stays visible and clickable instead of being painted over).
+  // Set only while this shell is mounted; removed on unmount so other shells
+  // (workbench) never read a stale width.
+  useEffect(() => {
+    const panel = document.getElementById('workspace-navigation');
+    if (!panel) return undefined;
+    const root = document.documentElement;
+    const publish = () => root.style.setProperty('--workspace-left-panel-width', `${Math.round(panel.getBoundingClientRect().width)}px`);
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(panel);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty('--workspace-left-panel-width');
+    };
+  }, []);
+
   useEffect(() => {
     if (handledWorkspaceScopeRef.current !== workspace.scopeKey) {
       handledWorkspaceScopeRef.current = workspace.scopeKey;
