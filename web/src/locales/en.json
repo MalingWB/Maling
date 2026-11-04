@@ -2398,7 +2398,10 @@
       "deleteConfirmDescription": "Its text, quotes, role, and attachment references will be removed. This cannot be undone.",
       "takeConflict": "The input is not empty. The draft remains in the draft box.",
 
-      "takeDeleteKept": "Content was restored to the composer; the original draft is still saved."
+      "takeDeleteKept": "Content was restored to the composer; the original draft is still saved.",
+
+
+      "saveFull": "The draft box is full; delete an older draft to save more"
     },
     "sending": "Sending",
     "sendFailed": "Send failed",

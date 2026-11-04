@@ -2117,7 +2117,10 @@ fn schedule_direct_prompt_queue_drain(
             Some(claimed.prompt_id.clone()),
             locator.outer_node_id.clone(),
             locator.outer_attempt_id.clone(),
-            (!claimed.attachment_paths.is_empty()).then_some(claimed.attachment_paths.clone()),
+            (!claimed.attachment_paths.is_empty()).then_some(resolve_stored_attachments(
+                &attempt_dir,
+                &claimed.attachment_paths,
+            )),
         )
         .await
         {
@@ -7315,15 +7318,16 @@ pub async fn get_conversation_queued_prompt(
         outer_attempt_id,
     );
     let attempt_dir = locator.attempt_dir(&app);
+    let read_attempt_dir = attempt_dir.clone();
     let (item, _) = spawn_blocking_command(move || {
-        read_queued_prompt(&attempt_dir, &item_id).map_err(prompt_queue_command_error)
+        read_queued_prompt(&read_attempt_dir, &item_id).map_err(prompt_queue_command_error)
     })
     .await?;
     Ok(ConversationPromptQueueReadVm {
         draft: ConversationQueuedPromptDraftVm {
             content: item.content,
             quotes: item.quotes,
-            attachment_paths: item.attachment_paths,
+            attachment_paths: resolve_stored_attachments(&attempt_dir, &item.attachment_paths),
             role: item.role,
             workspace_files: item.workspace_files,
         },
@@ -7772,7 +7776,7 @@ pub async fn get_conversation_composer_draft(
             draft: ConversationQueuedPromptDraftVm {
                 content: draft.content,
                 quotes: draft.quotes,
-                attachment_paths: draft.attachment_paths,
+                attachment_paths: resolve_stored_attachments(&task_dir, &draft.attachment_paths),
                 role: draft.role,
                 workspace_files: draft.workspace_files,
             },
@@ -8003,7 +8007,10 @@ pub async fn use_conversation_queued_prompt(
         Some(claimed.prompt_id.clone()),
         locator.outer_node_id.clone(),
         locator.outer_attempt_id.clone(),
-        (!claimed.attachment_paths.is_empty()).then_some(claimed.attachment_paths.clone()),
+        (!claimed.attachment_paths.is_empty()).then_some(resolve_stored_attachments(
+            &attempt_dir,
+            &claimed.attachment_paths,
+        )),
         PromptSubmissionSource::Queue,
     )
     .await;
@@ -8029,7 +8036,10 @@ pub async fn use_conversation_queued_prompt(
                     Some(reclaimed.prompt_id),
                     locator.outer_node_id.clone(),
                     locator.outer_attempt_id.clone(),
-                    (!reclaimed.attachment_paths.is_empty()).then_some(reclaimed.attachment_paths),
+                    (!reclaimed.attachment_paths.is_empty()).then_some(resolve_stored_attachments(
+                        &attempt_dir,
+                        &reclaimed.attachment_paths,
+                    )),
                     PromptSubmissionSource::Queue,
                 )
                 .await;
@@ -8153,10 +8163,13 @@ fn enqueue_busy_conversation_prompt(
 }
 
 /// Publishes attachment bytes into the content-addressed user input store
-/// under `root` and returns the durable destination paths.
+/// under `root` and returns store-relative references
+/// (`user-inputs/<digest>/<stored-name>`).
 ///
-/// Durable entities (prompt queue items, composer drafts) store these
-/// destinations instead of the caller's scratch paths.
+/// Durable entities (prompt queue items, composer drafts) keep the relative
+/// reference - the same convention as timeline attachment metadata - so the
+/// durable record survives workspace relocation; consumers resolve it against
+/// the owning attempt/task directory at read or dispatch time.
 fn publish_attachments_for_durable_reference(
     paths: &[String],
     root: &Utf8Path,
@@ -8168,7 +8181,14 @@ fn publish_attachments_for_durable_reference(
         .map(|published| {
             published
                 .into_iter()
-                .map(|item| item.destination.to_string())
+                .map(|item| {
+                    format!(
+                        "{}/{}/{}",
+                        gold_band::provider::USER_INPUT_ATTACHMENT_PREFIX,
+                        item.digest,
+                        item.destination.file_name().unwrap_or_default()
+                    )
+                })
                 .collect()
         })
         .map_err(|_| {
@@ -8177,6 +8197,23 @@ fn publish_attachments_for_durable_reference(
                 serde_json::json!({}),
             )
         })
+}
+
+/// Resolves stored attachment references against the directory owning the
+/// durable store. New entries keep the store-relative
+/// `user-inputs/<digest>/<stored-name>` reference; legacy absolute references
+/// written before the relative convention are consumed as-is.
+fn resolve_stored_attachments(base_dir: &Utf8Path, stored: &[String]) -> Vec<String> {
+    stored
+        .iter()
+        .map(|path| {
+            if std::path::Path::new(path).is_absolute() {
+                path.clone()
+            } else {
+                base_dir.join(path).to_string()
+            }
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -15653,18 +15690,30 @@ mod tests {
         .unwrap();
 
         assert_eq!(item.attachment_paths.len(), 1);
-        let stored = Utf8Path::new(&item.attachment_paths[0]);
-        // Path forms differ between the raw tempdir and canonicalized storage
-        // (8.3 short names), so compare both sides canonically.
-        let stored_canonical = std::fs::canonicalize(stored).unwrap();
-        let store_canonical = std::fs::canonicalize(dir.join("user-inputs")).unwrap();
-        assert!(stored_canonical.starts_with(&store_canonical));
-        assert_eq!(std::fs::read(stored).unwrap(), b"queued attachment bytes");
+        let stored = item.attachment_paths[0].clone();
+        // The durable store keeps the store-relative reference (the timeline
+        // metadata convention), never an absolute path.
+        assert!(!std::path::Path::new(&stored).is_absolute());
+        assert!(stored.starts_with("user-inputs/"));
+        assert!(stored.ends_with("notes.txt"));
+        let resolved = resolve_stored_attachments(&dir, &[stored.clone()]);
+        assert_eq!(
+            std::fs::read(&resolved[0]).unwrap(),
+            b"queued attachment bytes"
+        );
         // The durable reference must survive the OS reclaiming its scratch area.
         std::fs::remove_file(source.as_std_path()).unwrap();
-        assert!(stored.exists());
+        assert!(std::path::Path::new(&resolved[0]).exists());
+        // And survive relocating the whole attempt directory (workspace move):
+        // the reference resolves against the new location.
+        let moved_root = temp.path().join("moved");
+        std::fs::create_dir_all(&moved_root).unwrap();
+        std::fs::rename(dir.as_std_path(), moved_root.join("attempt")).unwrap();
+        let moved = Utf8PathBuf::from_path_buf(moved_root.join("attempt")).unwrap();
+        let moved_resolved = resolve_stored_attachments(&moved, &[stored.clone()]);
+        assert!(std::path::Path::new(&moved_resolved[0]).exists());
         assert_eq!(
-            load_prompt_queue(&dir).unwrap().items[0].attachment_paths,
+            load_prompt_queue(&moved).unwrap().items[0].attachment_paths,
             item.attachment_paths
         );
     }
@@ -15715,14 +15764,68 @@ mod tests {
             .attachment_paths
             .clone();
         assert_eq!(stored_paths.len(), 1);
-        let stored = Utf8Path::new(&stored_paths[0]);
-        let stored_canonical = std::fs::canonicalize(stored).unwrap();
-        let store_canonical = std::fs::canonicalize(task_dir.join("user-inputs")).unwrap();
-        assert!(stored_canonical.starts_with(&store_canonical));
-        assert_eq!(std::fs::read(stored).unwrap(), b"draft attachment bytes");
+        let stored = stored_paths[0].clone();
+        assert!(!std::path::Path::new(&stored).is_absolute());
+        assert!(stored.starts_with("user-inputs/"));
+        assert!(stored.ends_with("draft-image.png"));
+        let resolved = resolve_stored_attachments(&task_dir, &[stored.clone()]);
+        assert_eq!(
+            std::fs::read(&resolved[0]).unwrap(),
+            b"draft attachment bytes"
+        );
         // The durable draft must survive the OS reclaiming its scratch area.
         std::fs::remove_file(source.as_std_path()).unwrap();
-        assert!(stored.exists());
+        assert!(std::path::Path::new(&resolved[0]).exists());
+        // And survive relocating the whole workspace root (workspace move).
+        // Relocate the whole data root (clone-to-a-new-location move) and
+        // re-anchor the task directory by its relative suffix: the stored
+        // reference must resolve against the relocated root.
+        // Relocate the project data directory wholesale (the durable store
+        // root) and re-anchor the task directory: the stored reference must
+        // resolve against the relocated root.
+        let project_root = task_dir.ancestors().nth(2).unwrap().to_path_buf();
+        let task_suffix = task_dir.strip_prefix(&project_root).unwrap().to_path_buf();
+        let moved_parent = std::env::temp_dir().join(format!(
+            "gold-band-draft-attachment-moved-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&moved_parent).unwrap();
+        let moved_project_root = moved_parent.join(project_root.file_name().unwrap_or_default());
+        std::fs::rename(&project_root, &moved_project_root).unwrap();
+        let moved_task_dir =
+            Utf8PathBuf::from_path_buf(moved_project_root.join(&task_suffix)).unwrap();
+        let moved_paths = gold_band::acp::composer_drafts::load_composer_drafts(&moved_task_dir)
+            .unwrap()
+            .items[0]
+            .attachment_paths
+            .clone();
+        let moved_resolved = resolve_stored_attachments(&moved_task_dir, &moved_paths);
+        assert!(std::path::Path::new(&moved_resolved[0]).exists());
+    }
+
+    #[test]
+    fn stored_attachment_references_resolve_relative_and_legacy_absolute() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = Utf8PathBuf::from_path_buf(temp.path().join("base")).unwrap();
+        std::fs::create_dir_all(base.join("user-inputs").join("digest")).unwrap();
+        std::fs::write(
+            base.join("user-inputs")
+                .join("digest")
+                .join("a.txt")
+                .as_std_path(),
+            b"relative",
+        )
+        .unwrap();
+        let legacy = Utf8PathBuf::from_path_buf(temp.path().join("legacy.txt")).unwrap();
+        std::fs::write(legacy.as_std_path(), b"absolute").unwrap();
+
+        let resolved = resolve_stored_attachments(
+            &base,
+            &["user-inputs/digest/a.txt".to_string(), legacy.to_string()],
+        );
+
+        assert_eq!(std::fs::read(&resolved[0]).unwrap(), b"relative");
+        assert_eq!(resolved[1], legacy.to_string());
     }
 
     #[test]

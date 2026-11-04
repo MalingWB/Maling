@@ -2398,7 +2398,10 @@
       "deleteConfirmDescription": "草稿的正文、引用、角色和附件引用會一起刪除，此操作無法復原。",
       "takeConflict": "輸入框已有內容，草稿仍保留在草稿箱。",
 
-      "takeDeleteKept": "內容已取回輸入框，原草稿仍保留在草稿箱。"
+      "takeDeleteKept": "內容已取回輸入框，原草稿仍保留在草稿箱。",
+
+
+      "saveFull": "草稿箱已滿，刪除舊草稿後可繼續保存"
     },
     "sending": "傳送中",
     "sendFailed": "傳送失敗",

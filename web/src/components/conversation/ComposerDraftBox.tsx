@@ -281,18 +281,43 @@ function ScopedComposerDraftBox({
               {t('acp.composerDrafts.count', { count, max: maxItems })}
             </span>
           ) : null}
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            className="ml-auto h-7 gap-1.5 text-xs"
-            disabled={busy || !canSave || full}
-            onClick={() => { void save(); }}
-            data-composer-draft-save="true"
-          >
-            {pending === 'save' ? <Loader2 className="size-3.5 animate-spin" /> : null}
-            {t('acp.composerDrafts.save')}
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              {full ? (
+                <span className="inline-flex" tabIndex={0}>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="ml-auto h-7 gap-1.5 text-xs"
+                    disabled={busy || !canSave || full}
+                    onClick={() => { void save(); }}
+                    data-composer-draft-save="true"
+                    data-composer-draft-save-full="true"
+                  >
+                    {pending === 'save' ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                    {t('acp.composerDrafts.save')}
+                  </Button>
+                </span>
+              ) : (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className="ml-auto h-7 gap-1.5 text-xs"
+                  disabled={busy || !canSave || full}
+                  onClick={() => { void save(); }}
+                  data-composer-draft-save="true"
+                >
+                  {pending === 'save' ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                  {t('acp.composerDrafts.save')}
+                </Button>
+              )}
+            </TooltipTrigger>
+            <TooltipContent>
+              {full ? t('acp.composerDrafts.saveFull') : t('acp.composerDrafts.save')}
+            </TooltipContent>
+          </Tooltip>
         </div>
         {error ? (
           <div className="flex items-center gap-2 px-3 pb-2">

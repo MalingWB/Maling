@@ -2398,7 +2398,10 @@
       "deleteConfirmDescription": "Se eliminarán el texto, las citas, el rol y las referencias de adjuntos. Esta acción no se puede deshacer.",
       "takeConflict": "El campo de entrada tiene contenido. El borrador permanece en la caja de borradores.",
 
-      "takeDeleteKept": "El contenido se restauró al campo de entrada; el borrador original sigue guardado."
+      "takeDeleteKept": "El contenido se restauró al campo de entrada; el borrador original sigue guardado.",
+
+
+      "saveFull": "La caja de borradores está llena; elimina un borrador antiguo para guardar más"
     },
     "sending": "Enviando",
     "sendFailed": "Error al enviar",

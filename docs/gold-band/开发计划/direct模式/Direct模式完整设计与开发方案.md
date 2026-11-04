@@ -1579,3 +1579,14 @@ P3：折叠箭头恢复为 `open && 'rotate-180'`（与任务列表一致）；�
 - 回归（先红后绿）：`busy_enqueue_publishes_attachments_into_durable_attempt_storage`、`composer_draft_save_publishes_attachments_into_task_storage` 均先在"路径原样保存"旧行为上失败（发布未发生、无 `user-inputs` 目录），接线后转绿；两条测试都包含"删除 OS 临时源文件后 durable 路径仍可读"的验收断言。desktop 990 项、prompt_queue 48 项、composer_drafts 11 项通过；provider 附件套件与本机基线一致（5 项 `stevendeng`/`STEVEN~1` 长短名路径断言为既有环境失败，与本次改动无关）。
 - 过度设计评审：不新增存储结构、引用计数或 GC；复用 admission 的内容寻址发布器，改动收敛在两个写入边界；前端与 browser mock 零改动。
 - 性能影响评审：入队/存草稿各增加一次有界字节拷贝（≤10 文件 × 25MB，用户显式触发）；发布运行于 blocking pool 且不持队列/草稿文件锁（锁只覆盖 JSON 原子写）；派发时 admission 命中 digest 仅做字节校验读，不重写。无轮询、无 N+1。
+
+## 37. 2026-11-04：队列/草稿附件改为存储相对引用与满箱提示
+
+状态：已实现并完成定向回归。
+
+- 缺陷（M1，§36 遗留简化）：队列项与草稿保存发布后的**绝对**路径，与 timeline 附件元数据的相对路径约定（`user-inputs/<摘要前缀>/<存储名>` + 消费端按所属目录解析）不一致；数据目录整体迁移后，timeline 附件存活而队列/草稿附件引用全部失效。
+- 修复：`publish_attachments_for_durable_reference` 改为返回存储相对引用（由 `USER_INPUT_ATTACHMENT_PREFIX + digest + 存储名` 直接构造，规避 canonical 长短名剥离问题）；新增 `resolve_stored_attachments(base, stored)`，在五个消费边界解析回绝对路径——队列编辑读取、草稿取出读取、立即发送提交、terminal 重派提交、自动出队提交。get 命令对前端仍返回绝对路径，前端与 browser mock 零改动；相对约定之前的存量绝对引用按原样消费（resolver 单一 `is_absolute` 分支，非双轨状态机）。
+- 验收：更新后的 enqueue/draft 发布测试断言存储值为 `user-inputs/...` 相对引用，并新增"整体搬迁 attempt 目录 / project 数据目录后引用仍按新位置解析成功"的迁移验收；`stored_attachment_references_resolve_relative_and_legacy_absolute` 固化 resolver 行为。desktop 991 项通过。
+- L2：草稿箱满（20/20）时保存按钮禁用并在 Tooltip 说明"删除旧草稿后可继续保存"（七语言 `acp.composerDrafts.saveFull`），复用既有 disabled-span Tooltip 模式，`data-composer-draft-save-full` 测试锚点固化。
+- 过度设计评审：不新增存储结构；相对引用与 timeline 约定对齐，resolver 是单一消费端 chokepoint；存量绝对引用按原样消费是 resolver 的一个分支而非迁移层。
+- 性能影响评审：相对引用由已计算的 digest 拼接，无额外 I/O；消费端解析为字符串 join；测试夹具发现 `App::new(root)` 的 project id 由路径哈希派生（测试专用派生，生产 project_id 由工作区注册表稳定持有），迁移验收因此直接对 project 数据目录整体搬迁验证。

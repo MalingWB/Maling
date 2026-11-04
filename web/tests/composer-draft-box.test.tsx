@@ -144,6 +144,17 @@ describe('ComposerDraftBox', () => {
     expect(Array.from(takes).every((button) => button.disabled)).toBe(true);
   });
 
+  it('explains when the box is full instead of silently disabling save', async () => {
+    apiMocks.listConversationComposerDrafts.mockResolvedValue(
+      draftBox(20, Array.from({ length: 20 }, (_, index) => `draft ${index}`)),
+    );
+    await render({ canSave: true });
+    const box = await openBox();
+    const save = box.querySelector<HTMLButtonElement>('[data-composer-draft-save="true"]');
+    expect(save?.disabled).toBe(true);
+    expect(save?.getAttribute('data-composer-draft-save-full')).toBe('true');
+  });
+
   it('keeps the saved draft when the composer filled up in the meantime', async () => {
     apiMocks.getConversationComposerDraft.mockResolvedValue({ draft: takenDraft, drafts: draftBox(2, ['alpha', 'beta']) });
     await render({ restoreDraft: vi.fn().mockReturnValue(false) });

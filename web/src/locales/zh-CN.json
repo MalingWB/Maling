@@ -2394,7 +2394,9 @@
       "deleteConfirmTitle": "删除这条草稿？",
       "deleteConfirmDescription": "草稿的正文、引用、角色和附件引用会一起删除，此操作无法撤销。",
       "takeConflict": "输入框已有内容，草稿仍保留在草稿箱。",
-      "takeDeleteKept": "内容已取回输入框，原草稿仍保留在草稿箱。"
+      "takeDeleteKept": "内容已取回输入框，原草稿仍保留在草稿箱。",
+
+      "saveFull": "草稿箱已满，删除旧草稿后可继续保存"
     },
     "sending": "发送中",
     "sendFailed": "发送失败",

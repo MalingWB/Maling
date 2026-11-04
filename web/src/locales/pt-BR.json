@@ -2398,7 +2398,10 @@
       "deleteConfirmDescription": "O texto, as citações, o papel e as referências de anexos serão removidos. Não será possível desfazer.",
       "takeConflict": "O campo de entrada contém conteúdo. O rascunho permanece na caixa de rascunhos.",
 
-      "takeDeleteKept": "O conteúdo foi restaurado para o campo de entrada; o rascunho original continua salvo."
+      "takeDeleteKept": "O conteúdo foi restaurado para o campo de entrada; o rascunho original continua salvo.",
+
+
+      "saveFull": "A caixa de rascunhos está cheia; exclua um rascunho antigo para salvar mais"
     },
     "sending": "Enviando",
     "sendFailed": "Falha no envio",
