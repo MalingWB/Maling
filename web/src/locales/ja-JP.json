@@ -1020,7 +1020,8 @@
       "continue-launch-channel-closed": "ワークフローの再開は開始されませんでした。もう一度やり直してください。"
     },
     "composer": {
-      "context-limit-exceeded": "コンテキストに追加できる参照と添付ファイルは最大 {{max}} 件です。"
+      "context-limit-exceeded": "コンテキストに追加できる参照と添付ファイルは最大 {{max}} 件です。",
+      "referenceUnavailable": "参照は利用できません"
     },
     "conversation": {
       "task-not-found": "この会話は見つかりませんでした。",
@@ -1040,6 +1041,7 @@
       "session-restore-unsupported": "このAgentは既存のセッションを復元できません。",
       "history-sync-unsupported": "このAgentは、既存のセッションの完全な履歴を同期できません。",
       "prompt-empty": "送信する内容を入力してください。",
+      "prompt-too-long": "メッセージは {{maxChars}} 文字を超えることはできません。",
       "prompt-quote-invalid": "引用したテキストが無効です。削除して、もう一度引用してください。",
       "prompt-quote-limit-exceeded": "引用は合計 {{maxChars}} 文字までです。",
       "prompt-quote-diff-limit-exceeded": "完全な diff の引用は合計 {{maxBytes}} バイト以内にしてください。",
@@ -1052,6 +1054,8 @@
       "prompt-queue-full": "保留中のキューがいっぱいです。最大 10 個のプロンプトを保持できます。",
       "prompt-queue-item-not-found": "このキューに入れられたプロンプトはもう存在しません。",
       "prompt-queue-item-dispatching": "このプロンプトは送信中のため、現在変更できません。",
+
+      "prompt-queue-item-editing": "このプロンプトは編集用に取得中のため、現在操作できません。",
       "prompt-queue-empty": "保留中のキューは空です。",
       "prompt-queue-revision-conflict": "送信待ちの順序が変更されました。リストの更新後にもう一度試してください。",
       "prompt-queue-invalid-order": "送信待ちの順序が無効です。もう一度試してください。",
@@ -1066,6 +1070,7 @@
       "composer-draft-empty": "保存できる内容がありません。",
       "composer-draft-full": "下書きボックスがいっぱいです。最大 {{max}} 件まで保存できます。",
       "composer-draft-not-found": "この下書きはすでに存在しません。",
+      "composer-draft-invalid": "下書きボックスのデータが無効です。ローカルデータを確認して、再度お試しください。",
       "composer-draft-storage-failed": "草稿ボックスにアクセスできません。再試行してください。",
       "execution-plan": {
         "not-found": "この Run には実行計画がありません。",
@@ -2378,7 +2383,13 @@
       "interruptConfirmTitle": "この内容を今すぐ送信しますか？",
       "interruptConfirmDescription": "現在の返信を停止してから、この内容を送信します。",
       "interruptConfirmSkip": "今後表示しない",
-      "interruptConfirmAction": "停止して送信"
+      "interruptConfirmAction": "停止して送信",
+
+      "itemStateEditing": "編集用に取得中",
+
+      "itemStateSending": "送信中",
+
+      "storageError": "送信待ちキューの読み取りに失敗しました"
     },
     "composerDrafts": {
       "title": "下書きボックス",
@@ -2389,7 +2400,14 @@
       "take": "入力欄に戻す",
       "takeOccupied": "先に入力欄の内容を処理してください",
       "delete": "下書きを削除",
-      "takeConflict": "入力欄に内容があるため、草稿は草稿ボックスに残っています。"
+      "deleteConfirmTitle": "この下書きを削除しますか？",
+      "deleteConfirmDescription": "本文、引用、ロール、添付参照が一緒に削除されます。この操作は取り消せません。",
+      "takeConflict": "入力欄に内容があるため、草稿は草稿ボックスに残っています。",
+
+      "takeDeleteKept": "内容は入力欄に戻しました。元の下書きも下書きボックスに残っています。",
+
+
+      "saveFull": "下書きボックスがいっぱいです。古い下書きを削除すると保存できます"
     },
     "sending": "送信中",
     "sendFailed": "送信に失敗しました",

@@ -93,12 +93,17 @@ describe('ComposerDraftBox', () => {
   }
 
   it('shows the load error instead of an empty box and lets the user retry', async () => {
-    apiMocks.listConversationComposerDrafts.mockRejectedValueOnce({
-      code: 'conversation.composer-draft-storage-failed', params: {},
-    });
+    apiMocks.listConversationComposerDrafts
+      .mockRejectedValueOnce({
+        code: 'conversation.composer-draft-storage-failed', params: {},
+      })
+      .mockRejectedValueOnce({
+        code: 'conversation.composer-draft-storage-failed', params: {},
+      });
     await render();
     const box = await openBox();
-    expect(apiMocks.listConversationComposerDrafts).toHaveBeenCalledTimes(1);
+    // The mount prefetch and the open-time refresh both failed.
+    expect(apiMocks.listConversationComposerDrafts.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(box.querySelector('[data-composer-draft-empty]')).toBeNull();
     expect(box.querySelector('[role="alert"]')?.textContent).toContain('无法访问草稿箱');
     await act(async () => box.querySelector<HTMLButtonElement>('[data-composer-draft-retry]')!.click());
@@ -109,10 +114,12 @@ describe('ComposerDraftBox', () => {
 
   it('loads the conversation drafts and shows their count on the trigger', async () => {
     await render();
-    expect(apiMocks.listConversationComposerDrafts).not.toHaveBeenCalled();
-    const box = await openBox();
+    // The bounded summary (≤20 items × 280-char previews) is prefetched on
+    // mount so the saved-draft count is visible without opening the box.
     expect(apiMocks.listConversationComposerDrafts).toHaveBeenCalledWith('project-1', 'task-1');
+    await settle();
     expect(host.querySelector('[data-composer-draft-count="true"]')?.textContent).toBe('2');
+    const box = await openBox();
     expect(box.querySelectorAll('[data-composer-draft-id]')).toHaveLength(2);
     expect(box.querySelector<HTMLButtonElement>('[data-composer-draft-save="true"]')?.disabled).toBe(true);
   });
@@ -137,6 +144,17 @@ describe('ComposerDraftBox', () => {
     expect(Array.from(takes).every((button) => button.disabled)).toBe(true);
   });
 
+  it('explains when the box is full instead of silently disabling save', async () => {
+    apiMocks.listConversationComposerDrafts.mockResolvedValue(
+      draftBox(20, Array.from({ length: 20 }, (_, index) => `draft ${index}`)),
+    );
+    await render({ canSave: true });
+    const box = await openBox();
+    const save = box.querySelector<HTMLButtonElement>('[data-composer-draft-save="true"]');
+    expect(save?.disabled).toBe(true);
+    expect(save?.getAttribute('data-composer-draft-save-full')).toBe('true');
+  });
+
   it('keeps the saved draft when the composer filled up in the meantime', async () => {
     apiMocks.getConversationComposerDraft.mockResolvedValue({ draft: takenDraft, drafts: draftBox(2, ['alpha', 'beta']) });
     await render({ restoreDraft: vi.fn().mockReturnValue(false) });
@@ -146,6 +164,22 @@ describe('ComposerDraftBox', () => {
     expect(apiMocks.saveConversationComposerDraft).not.toHaveBeenCalled();
     expect(apiMocks.deleteConversationComposerDraft).not.toHaveBeenCalled();
     expect(box.textContent).toContain('输入框已有内容，草稿仍保留在草稿箱。');
+    expect(host.querySelector('[data-composer-draft-count="true"]')?.textContent).toBe('2');
+  });
+
+  it('explains that the content was restored when deleting the taken draft fails', async () => {
+    apiMocks.getConversationComposerDraft.mockResolvedValue({ draft: takenDraft, drafts: draftBox(2, ['alpha', 'beta']) });
+    apiMocks.deleteConversationComposerDraft.mockRejectedValue({
+      code: 'conversation.composer-draft-storage-failed',
+      params: {},
+    });
+    await render();
+    const box = await openBox();
+    await act(async () => box.querySelector<HTMLButtonElement>('button[aria-label="取出到输入框"]')?.click());
+    await settle();
+    // The composer holds the payload and the stored copy survives; the user
+    // must be told both facts instead of a bare storage error.
+    expect(box.textContent).toContain('内容已取回输入框，原草稿仍保留在草稿箱。');
     expect(host.querySelector('[data-composer-draft-count="true"]')?.textContent).toBe('2');
   });
 
@@ -189,15 +223,29 @@ describe('ComposerDraftBox', () => {
     expect(box.textContent).toContain('草稿箱已满，最多可保留 20 条。');
   });
 
-  it('deletes a draft', async () => {
+  it('asks for confirmation before deleting a draft', async () => {
     apiMocks.deleteConversationComposerDraft.mockResolvedValue(draftBox(3, ['beta']));
     await render();
     const box = await openBox();
     const remove = box.querySelector<HTMLButtonElement>('[data-composer-draft-id="draft-alpha"] button[aria-label="删除草稿"]');
     await act(async () => remove?.click());
+    expect(apiMocks.deleteConversationComposerDraft).not.toHaveBeenCalled();
+    const dialog = document.body.querySelector<HTMLElement>('[data-composer-draft-delete-confirm="true"]')!;
+    expect(dialog).not.toBeNull();
+    await act(async () => dialog.querySelector<HTMLButtonElement>('button[aria-label="取消"]')?.click());
+    await settle();
+    expect(box.querySelectorAll('[data-composer-draft-id]')).toHaveLength(2);
+
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-composer-draft-box-trigger="true"]')?.click());
+    await settle();
+    const reopenedBox = document.body.querySelector<HTMLElement>('[data-composer-draft-box="true"]')!;
+    const removeAgain = reopenedBox.querySelector<HTMLButtonElement>('[data-composer-draft-id="draft-alpha"] button[aria-label="删除草稿"]');
+    await act(async () => removeAgain?.click());
+    const confirm = document.body.querySelector<HTMLElement>('[data-composer-draft-delete-confirm="true"]')!;
+    await act(async () => confirm.querySelector<HTMLButtonElement>('button[aria-label="删除草稿"]')?.click());
     await settle();
     expect(apiMocks.deleteConversationComposerDraft).toHaveBeenCalledWith('project-1', 'task-1', 'draft-alpha');
-    expect(box.querySelectorAll('[data-composer-draft-id]')).toHaveLength(1);
+    expect(host.querySelector('[data-composer-draft-count="true"]')?.textContent).toBe('1');
   });
 
   function capturing(input: string) {
@@ -226,6 +274,8 @@ describe('ComposerDraftBox', () => {
     const save = deferred<ConversationComposerDraftBoxVm>();
     apiMocks.listConversationComposerDrafts
       .mockResolvedValueOnce(draftBox(2, ['alpha', 'beta']))
+      .mockResolvedValueOnce(draftBox(2, ['alpha', 'beta']))
+      .mockResolvedValueOnce(draftBox(1, ['other']))
       .mockResolvedValueOnce(draftBox(1, ['other']));
     apiMocks.saveConversationComposerDraft.mockReturnValue(save.promise);
     const captureDraft = capturing('gamma');
@@ -247,7 +297,8 @@ describe('ComposerDraftBox', () => {
     const list = deferred<ConversationComposerDraftBoxVm>();
     apiMocks.listConversationComposerDrafts.mockReturnValue(list.promise);
     await render();
-    expect(apiMocks.listConversationComposerDrafts).not.toHaveBeenCalled();
+    // The mount prefetch is still in flight, so the box has no data yet.
+    expect(apiMocks.listConversationComposerDrafts).toHaveBeenCalledTimes(1);
     const box = await openBox();
     expect(box.querySelector('[data-composer-draft-loading]')).not.toBeNull();
     expect(box.querySelector('[data-composer-draft-empty]')).toBeNull();
