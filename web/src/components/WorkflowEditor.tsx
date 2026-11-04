@@ -1372,13 +1372,20 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
       <div
         ref={setEditorContainerRef}
         className={cn(
-          '@container/workflow-editor h-[clamp(520px,calc(100dvh-11rem),760px)] min-h-0',
+          // The clamped height and the fullscreen overlay are mutually
+          // exclusive branches on purpose: two height utilities on one
+          // element resolve by stylesheet order (Tailwind v4 sorts the
+          // arbitrary clamp after h-auto), which left the fullscreen
+          // overlay sized as the clamped strip instead of the viewport.
           // Fullscreen is a fixed viewport overlay — the same surface the
-          // runtime graphs' fullscreen dialog uses — with an opaque app
-          // background and the clamped height dropped (the insets size the
-          // box). No user-agent fullscreen canvas is involved, so none of
-          // the UA-canvas fixes (backdrop theming, 100% vs 100vh) apply.
-          editorFullscreen && 'fixed inset-0 z-50 h-auto max-h-none bg-background text-foreground',
+          // runtime graphs' fullscreen dialog uses — and the insets alone
+          // size the box. No user-agent fullscreen canvas is involved, so
+          // none of the UA-canvas fixes (backdrop theming, 100% vs 100vh)
+          // apply.
+          '@container/workflow-editor min-h-0',
+          editorFullscreen
+            ? 'fixed inset-0 z-50 max-h-none bg-background text-foreground'
+            : 'h-[clamp(520px,calc(100dvh-11rem),760px)]',
           className,
         )}
         data-workflow-editor-layout={isCompact ? 'compact' : 'split'}

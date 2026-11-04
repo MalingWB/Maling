@@ -429,9 +429,17 @@ describe('workflow editor interaction contracts', () => {
     // is therefore a fixed viewport overlay — the same surface the
     // runtime graphs' fullscreen dialog uses — with an opaque app
     // background and the clamped height dropped.
+    // The overlay and the clamped height are mutually exclusive branches:
+    // two height utilities on one element resolve by stylesheet order
+    // (the arbitrary clamp sorts after h-auto in Tailwind v4), which
+    // sized the overlay as the clamped strip instead of the viewport.
     expect(editorSource).toContain(
-      "editorFullscreen && 'fixed inset-0 z-50 h-auto max-h-none bg-background text-foreground'",
+      "? 'fixed inset-0 z-50 max-h-none bg-background text-foreground'",
     );
+    expect(editorSource).toContain(
+      ": 'h-[clamp(520px,calc(100dvh-11rem),760px)]',",
+    );
+    expect(editorSource).not.toContain("editorFullscreen && 'fixed");
     expect(editorSource).not.toContain('requestFullscreen');
     expect(editorSource).not.toContain('exitFullscreen');
     expect(editorSource).not.toContain('fullscreenchange');
