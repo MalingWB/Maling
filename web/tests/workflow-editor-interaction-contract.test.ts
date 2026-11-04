@@ -445,6 +445,16 @@ describe('workflow editor interaction contracts', () => {
     expect(editorSource).not.toContain('fullscreenchange');
   });
 
+  it('hides the editing card header inside the fullscreen overlay', () => {
+    // Fullscreen is a focused canvas surface: the card header (title,
+    // subtitle, canvas/JSON tabs, undo/redo, template and save actions)
+    // would ride along as a strip of editing chrome — the subtitle text
+    // and its bottom divider — stealing vertical space. It only renders
+    // outside fullscreen; the canvas toolbar, GraphControls (with the
+    // exit action) and the inspector remain.
+    expect(editorSource).toMatch(/\{editorFullscreen \? null : \(\s*<CardHeader/);
+  });
+
   it('lifts the workspace center panel above the shell while fullscreen', () => {
     // The conversation workspace traps the center panel in a z-10 stacking
     // context — the right dock (z-10, later sibling) and both resize

@@ -1170,26 +1170,28 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
 
   const canvasSurface = (
     <AppCard className="flex size-full min-h-0 flex-col gap-0 overflow-hidden border-0 bg-transparent py-0 shadow-none">
-      <CardHeader className="flex shrink-0 flex-col items-stretch justify-between gap-3 border-b px-4 py-3 @lg/workflow-editor:flex-row @lg/workflow-editor:items-center">
-        <div className="min-w-0">
-          <CardTitle>{t('workflowEditor.title')}</CardTitle>
-          <p className="mt-1 text-xs text-muted-foreground">{t('workflowEditor.subtitle')}</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Tabs value={tab} onValueChange={(value) => handleEditorTabChange(value as EditorTab)}>
-            <TabsList>
-              <TabsTrigger value="canvas">{t('workflowEditor.canvas')}</TabsTrigger>
-              <TabsTrigger value="json">JSON</TabsTrigger>
-            </TabsList>
-          </Tabs>
-          <div className="flex items-center rounded-lg border bg-background/70 p-0.5">
-            <Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canUndo} onClick={undoWorkflow} aria-label={t('workflowEditor.undo')}><Undo2 className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('workflowEditor.undo')} (Ctrl+Z)</TooltipContent></Tooltip>
-            <Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canRedo} onClick={redoWorkflow} aria-label={t('workflowEditor.redo')}><Redo2 className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('workflowEditor.redo')} (Ctrl+Y)</TooltipContent></Tooltip>
+      {editorFullscreen ? null : (
+        <CardHeader className="flex shrink-0 flex-col items-stretch justify-between gap-3 border-b px-4 py-3 @lg/workflow-editor:flex-row @lg/workflow-editor:items-center">
+          <div className="min-w-0">
+            <CardTitle>{t('workflowEditor.title')}</CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">{t('workflowEditor.subtitle')}</p>
           </div>
-          {defaultWorkflow ? <Button variant="outline" size="sm" onClick={applyDefaultTemplate}>{t('workflowEditor.defaultTemplate')}</Button> : null}
-          {showSaveAction ? <Button size="sm" disabled={!canSave || saving} onClick={() => void handleSave()}>{t('workflowEditor.saveWorkflow')}</Button> : null}
-        </div>
-      </CardHeader>
+          <div className="flex flex-wrap items-center gap-2">
+            <Tabs value={tab} onValueChange={(value) => handleEditorTabChange(value as EditorTab)}>
+              <TabsList>
+                <TabsTrigger value="canvas">{t('workflowEditor.canvas')}</TabsTrigger>
+                <TabsTrigger value="json">JSON</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <div className="flex items-center rounded-lg border bg-background/70 p-0.5">
+              <Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canUndo} onClick={undoWorkflow} aria-label={t('workflowEditor.undo')}><Undo2 className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('workflowEditor.undo')} (Ctrl+Z)</TooltipContent></Tooltip>
+              <Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canRedo} onClick={redoWorkflow} aria-label={t('workflowEditor.redo')}><Redo2 className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('workflowEditor.redo')} (Ctrl+Y)</TooltipContent></Tooltip>
+            </div>
+            {defaultWorkflow ? <Button variant="outline" size="sm" onClick={applyDefaultTemplate}>{t('workflowEditor.defaultTemplate')}</Button> : null}
+            {showSaveAction ? <Button size="sm" disabled={!canSave || saving} onClick={() => void handleSave()}>{t('workflowEditor.saveWorkflow')}</Button> : null}
+          </div>
+        </CardHeader>
+      )}
       <CardContent className="min-h-0 flex-1 p-0">
         {tab === 'canvas' ? (
           <div ref={canvasRef} className="relative size-full min-h-0">
