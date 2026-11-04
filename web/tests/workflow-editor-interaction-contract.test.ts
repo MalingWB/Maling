@@ -421,21 +421,33 @@ describe('workflow editor interaction contracts', () => {
     expect(editorSource).toContain('useRef<WorkflowLayoutDirection>(layoutDirection)');
   });
 
-  it('gives the native fullscreen surface the app background and full height', () => {
-    // Native fullscreen composites the element over a user-agent black
-    // canvas: the editor container must carry its own background and drop
-    // the clamped height, or it floats as a strip on black.
-    expect(editorSource).toContain('[:fullscreen]:h-full [:fullscreen]:max-h-none [:fullscreen]:bg-background [:fullscreen]:text-foreground');
+  it('expands fullscreen editing as a viewport-level app overlay', () => {
+    // The element Fullscreen API maps to a WM window-state change on
+    // WebKitGTK (the WSL dev build): the compositor transition flashes
+    // white over the taskbar and stalls the frame, and on WebView2
+    // (Windows production) it only fills the webview anyway. Fullscreen
+    // is therefore a fixed viewport overlay — the same surface the
+    // runtime graphs' fullscreen dialog uses — with an opaque app
+    // background and the clamped height dropped.
+    expect(editorSource).toContain(
+      "editorFullscreen && 'fixed inset-0 z-50 h-auto max-h-none bg-background text-foreground'",
+    );
+    expect(editorSource).not.toContain('requestFullscreen');
+    expect(editorSource).not.toContain('exitFullscreen');
+    expect(editorSource).not.toContain('fullscreenchange');
   });
 
-  it('offers fullscreen editing through the element-level Fullscreen API', () => {
+  it('exits the fullscreen overlay on Escape while fullscreen stays editor-local state', () => {
     // The editor is a stateful work surface: fullscreen drives the editor
-    // container itself (toolbars, inspector and drafts travel along) instead
-    // of duplicating a second editor instance inside a dialog.
+    // container itself (toolbars, inspector and drafts travel along)
+    // instead of duplicating a second editor instance inside a dialog.
+    // Escape is consumed at capture so the same press does not also close
+    // an open dialog or cancel an inline edit, and the page scroll is
+    // locked while the overlay covers it (the fullscreen dialog's
+    // contract).
     expect(editorSource).toContain('const toggleEditorFullscreen = useCallback(() => {');
-    expect(editorSource).toContain('element.requestFullscreen()');
-    expect(editorSource).toContain('document.exitFullscreen()');
-    expect(editorSource).toContain("document.addEventListener('fullscreenchange', sync)");
+    expect(editorSource).toContain('setEditorFullscreen((active) => !active)');
+    expect(editorSource).toContain("event.key !== 'Escape'");
     expect(editorSource).toContain('onFullscreen={toggleEditorFullscreen}');
     expect(editorSource).toContain('fullscreenActive={editorFullscreen}');
   });

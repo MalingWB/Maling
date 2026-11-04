@@ -495,25 +495,36 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const [layoutDirection, setLayoutDirection] = useState<WorkflowLayoutDirection>(() =>
     directionPreference === 'vertical' ? 'DOWN' : 'RIGHT');
   const layoutDirectionRef = useRef<WorkflowLayoutDirection>(layoutDirection);
-  // Fullscreen editing drives the element-level Fullscreen API on the editor
-  // container: tabs, canvas toolbars, and inspector all travel into fullscreen
+  // Fullscreen editing lifts the editor container into a viewport-level app
+  // overlay: tabs, canvas toolbars, and inspector all travel into fullscreen
   // together, and the live editing state is never duplicated into a second
   // editor instance (the runtime graphs use a dialog because they are
-  // stateless views).
+  // stateless views). The element Fullscreen API is deliberately not used:
+  // WebKitGTK maps it to a WM window-state change (the compositor transition
+  // flashes white and stalls), and on WebView2 it only fills the webview
+  // anyway — the overlay behaves identically on both with no transition.
   const [editorFullscreen, setEditorFullscreen] = useState(false);
   useEffect(() => {
-    const sync = () => setEditorFullscreen(Boolean(document.fullscreenElement));
-    document.addEventListener('fullscreenchange', sync);
-    return () => document.removeEventListener('fullscreenchange', sync);
-  }, []);
+    if (!editorFullscreen) return;
+    // Escape is consumed at capture so the same press does not also close an
+    // open dialog or cancel an inline edit; the page scroll stays locked
+    // while the overlay covers it (the fullscreen dialog's contract).
+    const exitOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setEditorFullscreen(false);
+    };
+    window.addEventListener('keydown', exitOnEscape, true);
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', exitOnEscape, true);
+      document.body.style.overflow = previousBodyOverflow;
+    };
+  }, [editorFullscreen]);
   const toggleEditorFullscreen = useCallback(() => {
-    const element = editorContainerRef.current;
-    if (!element) return;
-    if (document.fullscreenElement) {
-      void document.exitFullscreen().catch(() => {});
-      return;
-    }
-    void element.requestFullscreen().catch(() => {});
+    setEditorFullscreen((active) => !active);
   }, []);
   const [terminalMenu, setTerminalMenu] = useState<TerminalMenu | null>(null);
   const [validationDialogOpen, setValidationDialogOpen] = useState(false);
@@ -1356,14 +1367,12 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
         ref={setEditorContainerRef}
         className={cn(
           '@container/workflow-editor h-[clamp(520px,calc(100dvh-11rem),760px)] min-h-0',
-          // Native fullscreen paints the element over a user-agent black
-          // canvas: without its own background and unclamped height the
-          // editor would float as a strip on black. The fullscreen pseudo
-          // class restores the app surface and fills the screen.
-          // h-full (not h-screen/100vh): fractional-DPI displays size 100vh a few
-          // pixels off the real fullscreen height, leaking a bottom strip; 100%
-          // matches the user agent's own fullscreen box exactly.
-          '[:fullscreen]:h-full [:fullscreen]:max-h-none [:fullscreen]:bg-background [:fullscreen]:text-foreground',
+          // Fullscreen is a fixed viewport overlay — the same surface the
+          // runtime graphs' fullscreen dialog uses — with an opaque app
+          // background and the clamped height dropped (the insets size the
+          // box). No user-agent fullscreen canvas is involved, so none of
+          // the UA-canvas fixes (backdrop theming, 100% vs 100vh) apply.
+          editorFullscreen && 'fixed inset-0 z-50 h-auto max-h-none bg-background text-foreground',
           className,
         )}
         data-workflow-editor-layout={isCompact ? 'compact' : 'split'}
