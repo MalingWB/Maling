@@ -27,6 +27,7 @@ mod metrics;
 mod multica;
 mod notifications;
 mod npx_cache;
+mod onboarding;
 mod personal_analytics;
 mod remote;
 mod remote_image_trust;
@@ -53,25 +54,26 @@ use commands::{
     doctor_agent, execute_git_mutation, fetch_agent_model_config, get_acp_activity_detail,
     get_acp_image, get_acp_raw_frames, get_acp_session, get_acp_tool_detail,
     get_agent_binding_usage, get_agent_command_catalog, get_agent_registry, get_app_bootstrap,
-    get_auto_templates, get_file_comparison, get_git_branch_picker_snapshot, get_git_capability,
-    get_git_commit_detail, get_git_commit_reachability, get_git_commit_review,
-    get_git_commit_review_statistics, get_git_comparison, get_git_history, get_git_operation,
-    get_github_capability, get_github_issue, get_github_operation, get_github_pull_request,
-    get_log_page, get_metrics_settings, get_multica_settings, get_profile, get_profiles,
-    get_round_detail, get_run_detail, get_skill_sync_status, get_source_control_snapshot,
-    get_system_fonts, get_task_detail, get_task_list, get_turn_file_change_set, get_update_status,
-    get_workflow, get_workflow_templates, import_desktop_wallpaper, import_profiles_from_files,
+    get_auto_templates, get_conversation_queued_prompt, get_file_comparison,
+    get_git_branch_picker_snapshot, get_git_capability, get_git_commit_detail,
+    get_git_commit_reachability, get_git_commit_review, get_git_commit_review_statistics,
+    get_git_comparison, get_git_history, get_git_operation, get_github_capability,
+    get_github_issue, get_github_operation, get_github_pull_request, get_log_page,
+    get_metrics_settings, get_multica_settings, get_profile, get_profiles, get_round_detail,
+    get_run_detail, get_skill_sync_status, get_source_control_snapshot, get_system_fonts,
+    get_task_detail, get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
+    get_workflow_templates, import_desktop_wallpaper, import_profiles_from_files,
     import_profiles_from_folder, initialize_git_repository, list_conversation_directory,
     list_github_issues, list_github_pull_requests, list_mcp_servers, list_mcp_tools,
     list_project_skills, list_skills, mark_settings_advanced_update_seen,
     mark_settings_update_seen, open_conversation_directory_path_in_file_manager,
     open_in_file_manager, pause_run, preflight_github_pull_request,
     read_conversation_directory_file, read_skill, record_activity, recover_conversation_runtime,
-    remove_recent_workspace, renew_acp_session_lease, reorder_conversation_queued_prompts,
-    replace_auto_templates, report_frontend_error, report_webview_environment,
-    resolve_turn_attachment_file, respond_acp_permission, respond_elicitation,
-    restore_conversation_queued_prompt, restore_theme_desktop_wallpaper, retry_run,
-    save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
+    release_conversation_queued_prompt_edit, remove_recent_workspace, renew_acp_session_lease,
+    reorder_conversation_queued_prompts, replace_auto_templates, report_frontend_error,
+    report_webview_environment, resolve_turn_attachment_file, respond_acp_permission,
+    respond_elicitation, restore_theme_desktop_wallpaper, retry_run, save_auto_template,
+    save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
     save_desktop_wallpaper_opacity, save_interface_zoom_percent, save_metrics_settings,
     save_multica_connection_address, save_task_workflow, save_updater_settings,
     save_workflow_graph_direction, save_workflow_template, search_acp_prompts, search_acp_sessions,
@@ -123,6 +125,134 @@ use tauri::Manager;
 use tracing::{debug, info, warn};
 use updater::{retry_pending_startup_install, start_update_polling};
 use workspace_files::{WorkspaceFileRuntime, WorkspaceFileWatchRuntime};
+
+pub(crate) fn start_business_runtime(handle: tauri::AppHandle) {
+    use std::sync::atomic::Ordering;
+    let state = handle.state::<DesktopState>();
+    let Ok(context) = state.context() else {
+        return;
+    };
+    if matches!(
+        context.config.onboarding,
+        Some(gold_band::onboarding::model::OnboardingState::Pending { .. })
+    ) || state.business_runtime_started.swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    // Lifecycle subscribers enqueue completion-output work, so install the
+    // single ordered queue before they can receive any events.
+    multica::bridge::init_completion_output_queue(handle.clone());
+    if let Ok(runtime_app) = state.app() {
+        let im_handle = handle.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = im_runtime::initialize_im_runtime_if_required(&im_handle).await {
+                warn!(error = %error, "IM runtime failed to initialize");
+            }
+        });
+        commands::register_lifecycle_subscribers(&runtime_app, &handle);
+        // home repo 自愈（单一 repo、有界）：远程来源 work_dir 定点自愈移入下方 spawn_blocking
+        // 恢复管线（P2），不再阻塞窗口启动关键路径。
+        let _ = runtime_app.recover_interrupted_running_sessions();
+    }
+    let recovery_handle = handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let blocking_handle = recovery_handle.clone();
+        let recovery = tauri::async_runtime::spawn_blocking(move || {
+            let state = blocking_handle.state::<DesktopState>();
+            // 远程来源 work_dir 定点自愈先于 complete_startup_recovery：resume 判定等待的
+            // 启动门（wait_for_startup_accepting）打开即意味着本步已收敛（断点续跑根因修复：
+            // home 自愈够不到 task 自身 work_dir，残留 Running 会使 classify_resume 误落 Fresh）。
+            if let Ok(runtime_app) = state.app() {
+                recover_remote_work_dir_sessions(&runtime_app);
+            }
+            state.recover_interrupted_conversation_workspaces()
+        })
+        .await;
+        let report = match recovery {
+            Ok(Ok(report)) => Some(report),
+            Ok(Err(error)) => {
+                warn!(
+                    error = %error,
+                    "failed to read runtime recovery candidates"
+                );
+                None
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "runtime recovery blocking task failed"
+                );
+                None
+            }
+        };
+        let Some(report) = report else {
+            let state = recovery_handle.state::<DesktopState>();
+            if let Err(error) = state.runtime_recovery().fail_startup_recovery() {
+                warn!(
+                    error = %error,
+                    "runtime recovery startup gate could not transition to failed"
+                );
+            }
+            return;
+        };
+
+        let blocked_project_ids = report
+            .blocked_project_ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let state = recovery_handle.state::<DesktopState>();
+        if let Err(error) = state
+            .runtime_recovery()
+            .complete_startup_recovery(blocked_project_ids.clone())
+        {
+            warn!(
+                error = %error,
+                "runtime recovery startup gate could not be completed"
+            );
+            return;
+        }
+        for recovered in &report.recovered_runs {
+            commands::emit_recovered_conversation_run_state(&recovery_handle, recovered);
+        }
+        if let Err(error) = scheduled_runtime::start(recovery_handle.clone(), &blocked_project_ids)
+        {
+            warn!(error = %error, "scheduled task scheduler failed to start");
+        }
+        info!(
+            workspace_count = report.workspace_count,
+            candidate_count = report.candidate_count,
+            recovered_run_count = report.recovered_run_count,
+            consumed_candidate_count = report.consumed_candidate_count,
+            blocked_workspace_count = report.blocked_project_ids.len(),
+            failure_count = report.failures.len(),
+            "conversation workspace startup recovery completed"
+        );
+        for failure in report.failures {
+            warn!(
+                workspace_path = %failure.workspace_path,
+                error_code = failure.code,
+                error = %failure.message,
+                "conversation workspace startup recovery failed"
+            );
+        }
+    });
+    // Initialize SQLite search index (best-effort; failures are non-fatal).
+    // On first run (empty DB), a background thread backfills existing tasks/sessions.
+    if let Ok(ctx) = state.context() {
+        let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
+        info!(
+            repo_root = %paths.repo_root,
+            project_id = %paths.project_id,
+            needs_workspace = ctx.needs_workspace,
+            "desktop runtime initialized"
+        );
+        builtin_mcp::inject_builtin_mcp_servers(&state);
+        let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
+    }
+    multica::start_multica_loop(handle.clone());
+    let _ = state.reevaluate_heartbeat_config();
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -256,6 +386,7 @@ fn run() -> anyhow::Result<()> {
             },
         )
         .setup(|app| {
+            app.manage(onboarding::SetupController::default());
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
                 window_chrome::ensure_undecorated_edge_resize(&window);
@@ -292,120 +423,7 @@ fn run() -> anyhow::Result<()> {
             state.install_completion_protocol_section_resolver(std::sync::Arc::new(
                 multica::upstream::MulticaCompletionProtocolResolver::new(app.handle().clone()),
             ))?;
-            if let Ok(runtime_app) = state.app() {
-                let im_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(error) =
-                        im_runtime::initialize_im_runtime_if_required(&im_handle).await
-                    {
-                        warn!(error = %error, "IM runtime failed to initialize");
-                    }
-                });
-                // M5-cj：completion_output 写序队列必须先于 lifecycle 订阅器装配（订阅器
-                // 事件回调会入队快照/终态作业，队列句柄缺失 = 作业被丢）。
-                multica::bridge::init_completion_output_queue(app.handle().clone());
-                commands::register_lifecycle_subscribers(&runtime_app, app.handle());
-                // home repo 自愈（单一 repo、有界）：远程来源 work_dir 定点自愈移入下方 spawn_blocking
-                // 恢复管线（P2），不再阻塞窗口启动关键路径。
-                let _ = runtime_app.recover_interrupted_running_sessions();
-            }
-            let recovery_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let blocking_handle = recovery_handle.clone();
-                let recovery = tauri::async_runtime::spawn_blocking(move || {
-                    let state = blocking_handle.state::<DesktopState>();
-                    // 远程来源 work_dir 定点自愈先于 complete_startup_recovery：resume 判定等待的
-                    // 启动门（wait_for_startup_accepting）打开即意味着本步已收敛（断点续跑根因修复：
-                    // home 自愈够不到 task 自身 work_dir，残留 Running 会使 classify_resume 误落 Fresh）。
-                    if let Ok(runtime_app) = state.app() {
-                        recover_remote_work_dir_sessions(&runtime_app);
-                    }
-                    state.recover_interrupted_conversation_workspaces()
-                })
-                .await;
-                let report = match recovery {
-                    Ok(Ok(report)) => Some(report),
-                    Ok(Err(error)) => {
-                        warn!(
-                            error = %error,
-                            "failed to read runtime recovery candidates"
-                        );
-                        None
-                    }
-                    Err(error) => {
-                        warn!(
-                            error = %error,
-                            "runtime recovery blocking task failed"
-                        );
-                        None
-                    }
-                };
-                let Some(report) = report else {
-                    let state = recovery_handle.state::<DesktopState>();
-                    if let Err(error) = state.runtime_recovery().fail_startup_recovery() {
-                        warn!(
-                            error = %error,
-                            "runtime recovery startup gate could not transition to failed"
-                        );
-                    }
-                    return;
-                };
-
-                let blocked_project_ids = report
-                    .blocked_project_ids
-                    .iter()
-                    .cloned()
-                    .collect::<std::collections::HashSet<_>>();
-                let state = recovery_handle.state::<DesktopState>();
-                if let Err(error) = state
-                    .runtime_recovery()
-                    .complete_startup_recovery(blocked_project_ids.clone())
-                {
-                    warn!(
-                        error = %error,
-                        "runtime recovery startup gate could not be completed"
-                    );
-                    return;
-                }
-                for recovered in &report.recovered_runs {
-                    commands::emit_recovered_conversation_run_state(&recovery_handle, recovered);
-                }
-                if let Err(error) =
-                    scheduled_runtime::start(recovery_handle.clone(), &blocked_project_ids)
-                {
-                    warn!(error = %error, "scheduled task scheduler failed to start");
-                }
-                info!(
-                    workspace_count = report.workspace_count,
-                    candidate_count = report.candidate_count,
-                    recovered_run_count = report.recovered_run_count,
-                    consumed_candidate_count = report.consumed_candidate_count,
-                    blocked_workspace_count = report.blocked_project_ids.len(),
-                    failure_count = report.failures.len(),
-                    "conversation workspace startup recovery completed"
-                );
-                for failure in report.failures {
-                    warn!(
-                        workspace_path = %failure.workspace_path,
-                        error_code = failure.code,
-                        error = %failure.message,
-                        "conversation workspace startup recovery failed"
-                    );
-                }
-            });
-            // Initialize SQLite search index (best-effort; failures are non-fatal).
-            // On first run (empty DB), a background thread backfills existing tasks/sessions.
-            if let Ok(ctx) = state.context() {
-                let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
-                info!(
-                    repo_root = %paths.repo_root,
-                    project_id = %paths.project_id,
-                    needs_workspace = ctx.needs_workspace,
-                    "desktop runtime initialized"
-                );
-                builtin_mcp::inject_builtin_mcp_servers(&state);
-                let _ = init_search_index(&paths.sqlite_db_path(), &paths.projects_dir());
-            }
+            start_business_runtime(app.handle().clone());
             let handle = app.handle().clone();
             let command_handle = handle.clone();
             handle
@@ -444,11 +462,20 @@ fn run() -> anyhow::Result<()> {
             });
             retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
-            multica::start_multica_loop(app.handle().clone());
-            let _ = app.state::<DesktopState>().reevaluate_heartbeat_config();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            onboarding::get_onboarding_status,
+            onboarding::save_setup_preferences,
+            onboarding::check_setup_environment,
+            onboarding::cancel_setup_environment,
+            onboarding::skip_setup_git,
+            onboarding::start_setup_agent_detection,
+            onboarding::cancel_setup_detection,
+            onboarding::retry_setup_agent,
+            onboarding::probe_setup_model,
+            onboarding::preview_default_setup,
+            onboarding::apply_default_setup,
             commands_file_references::resolve_right_workspace_file_target,
             commands_file_references::reveal_right_workspace_file,
             memory::read_project_memory,
@@ -531,7 +558,8 @@ fn run() -> anyhow::Result<()> {
             renew_acp_session_lease,
             submit_conversation_prompt,
             reorder_conversation_queued_prompts,
-            restore_conversation_queued_prompt,
+            get_conversation_queued_prompt,
+            release_conversation_queued_prompt_edit,
             delete_conversation_queued_prompt,
             use_conversation_queued_prompt,
             commands::set_conversation_prompt_queue_mode,

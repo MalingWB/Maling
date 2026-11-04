@@ -1020,7 +1020,8 @@
       "continue-launch-channel-closed": "工作流恢复未能启动，请重试。"
     },
     "composer": {
-      "context-limit-exceeded": "上下文最多包含 {{max}} 个引用和附件。"
+      "context-limit-exceeded": "上下文最多包含 {{max}} 个引用和附件。",
+      "referenceUnavailable": "引用已失效"
     },
     "conversation": {
       "task-not-found": "找不到该会话。",
@@ -1040,6 +1041,7 @@
       "session-restore-unsupported": "当前 Agent 不支持恢复已有会话。",
       "history-sync-unsupported": "当前 Agent 不支持同步已有会话的完整历史。",
       "prompt-empty": "请输入要发送的内容。",
+      "prompt-too-long": "消息内容不能超过 {{maxChars}} 个字符。",
       "prompt-quote-invalid": "引用数据无效，请删除后重新引用。",
       "prompt-quote-limit-exceeded": "引用内容总长度不能超过 {{maxChars}} 个字符。",
       "prompt-quote-diff-limit-exceeded": "完整 diff 引用总大小不能超过 {{maxBytes}} 字节。",
@@ -1052,6 +1054,8 @@
       "prompt-queue-full": "待发送队列已满，最多可保留 10 条。",
       "prompt-queue-item-not-found": "这条待发送内容已不存在。",
       "prompt-queue-item-dispatching": "这条内容正在发送，暂时无法操作。",
+
+      "prompt-queue-item-editing": "这条内容正在取回编辑，暂时无法操作。",
       "prompt-queue-empty": "待发送队列为空。",
       "prompt-queue-revision-conflict": "待发送顺序已发生变化，请在列表更新后重试。",
       "prompt-queue-invalid-order": "待发送顺序无效，请重试。",
@@ -1066,6 +1070,7 @@
       "composer-draft-empty": "没有可保存的内容。",
       "composer-draft-full": "草稿箱已满，最多可保留 {{max}} 条。",
       "composer-draft-not-found": "这条草稿已不存在。",
+      "composer-draft-invalid": "草稿箱数据无效，请检查本地数据后重试。",
       "composer-draft-storage-failed": "无法访问草稿箱，请重试。",
       "execution-plan": {
         "not-found": "这次 Run 还没有执行计划。",
@@ -2378,7 +2383,10 @@
       "interruptConfirmTitle": "立即发送这条内容？",
       "interruptConfirmDescription": "当前回复会被停止，然后发送这条内容。",
       "interruptConfirmSkip": "后续不再提示",
-      "interruptConfirmAction": "停止并发送"
+      "interruptConfirmAction": "停止并发送",
+      "itemStateEditing": "取回编辑中",
+      "itemStateSending": "发送中",
+      "storageError": "待发送队列读取失败"
     },
     "composerDrafts": {
       "title": "草稿箱",
@@ -2389,7 +2397,12 @@
       "take": "取出到输入框",
       "takeOccupied": "请先处理输入框中的当前内容",
       "delete": "删除草稿",
-      "takeConflict": "输入框已有内容，草稿仍保留在草稿箱。"
+      "deleteConfirmTitle": "删除这条草稿？",
+      "deleteConfirmDescription": "草稿的正文、引用、角色和附件引用会一起删除，此操作无法撤销。",
+      "takeConflict": "输入框已有内容，草稿仍保留在草稿箱。",
+      "takeDeleteKept": "内容已取回输入框，原草稿仍保留在草稿箱。",
+
+      "saveFull": "草稿箱已满，删除旧草稿后可继续保存"
     },
     "sending": "发送中",
     "sendFailed": "发送失败",
@@ -3313,6 +3326,125 @@
       "confirm": "连接",
       "connecting": "连接中…",
       "cancelConnect": "取消连接"
+    }
+  },
+  "onboarding": {
+    "loading": "正在加载",
+    "loadFailed": "无法读取启动配置，请重试。",
+    "retry": "重试",
+    "language": "语言",
+    "theme": "切换主题",
+    "exit": "退出引导",
+    "progress": "设置进度",
+    "checking": "正在检查环境…",
+    "runtimeVersion": "推荐 Node.js {{version}}；支持 {{ranges}}",
+    "recheck": "重新检测",
+    "installGuide": "官方安装指引",
+    "discovering": "正在检测本地 Agent…",
+    "discovered": "检测到 {{count}} 个可用 Agent",
+    "noAgents": "尚未检测到可用 Agent。请完成 Agent 安装或登录后重新检测。",
+    "agentRepairs": "检测未通过的 Agent",
+    "retryAgent": "重新检测",
+    "chooseProgram": "选择程序",
+    "defaultAgent": "默认 Agent",
+    "chooseAgent": "选择可用 Agent",
+    "defaultModel": "默认模型",
+    "chooseModel": "选择模型",
+    "providerDefault": "此 Agent 使用供应商默认模型。",
+    "checkingModel": "正在读取模型配置…",
+    "permission": "权限模式",
+    "choosePermission": "选择权限模式",
+    "preview": "应用预览",
+    "previewSummary": "将更新 {{count}} 个内置工作流的 {{slots}} 个执行配置。",
+    "slots": "{{count}} 个执行配置",
+    "loadMore": "加载更多",
+    "back": "上一步",
+    "help": "帮助",
+    "skipGit": "暂时跳过 Git",
+    "next": "下一步",
+    "apply": "应用并完成",
+    "review": "预览更改",
+    "repairHint": "请按照供应商指引完成安装或登录，然后重新检测。",
+    "settingsTitle": "引导与工作流",
+    "rerunTitle": "首次启动引导",
+    "rerunDescription": "重新检查 Git、运行环境和本机 Agent。",
+    "defaultsTitle": "默认工作流",
+    "defaultsDescription": "统一设置内置工作流的 Agent、模型和权限，不影响自定义工作流。",
+    "configureDefaults": "配置默认项",
+    "rerun": "重新运行引导",
+    "steps": {
+      "git": "Git",
+      "runtime": "运行环境",
+      "agent": "Agent"
+    },
+    "titles": {
+      "git": "准备 Git",
+      "runtime": "检查 Node.js 运行环境",
+      "agent": "连接 Agent，设置默认模型"
+    },
+    "descriptions": {
+      "git": "Git 用于版本管理。你可以稍后安装。",
+      "runtime": "Node.js、npm 和 npx 均需通过检查才能继续。安装后可直接重新检测。",
+      "agent": "可用 Agent 会自动保存。选择默认模型后，预览并应用到全部内置工作流。"
+    },
+    "status": {
+      "ready": "已就绪",
+      "missing": "未安装",
+      "unsupported": "版本不支持",
+      "incompatible": "环境不一致",
+      "failed": "检查失败",
+      "timeout": "检查超时",
+      "cancelled": "已取消",
+      "skipped": "已跳过",
+      "pending": "待检测",
+      "checking": "检测中"
+    },
+    "errors": {
+      "setup": {
+        "agent-preparation-required": "请按照供应商指引完成安装或登录，然后重新检测。",
+        "probe-failed": "检测失败，请重新检测。",
+        "probe-cancelled": "检测已取消，请重新检测以继续。",
+        "runtime-incompatible": "Node.js、npm 或 npx 不满足要求，请检查运行环境。",
+        "environment-check-required": "请先完成运行环境检测。",
+        "configuration-conflict": "配置已在其他位置更改，请重新检测 Agent 并预览最新修改。",
+        "preview-stale": "所选模型或内置工作流已更改，请重新预览。",
+        "agent-unavailable": "此 Agent 已不可用，请重新检测或选择其他 Agent。",
+        "model-config-invalid": "模型选项已失效，请重新选择模型。",
+        "model-selection-required": "请先选择模型。",
+        "permission-selection-required": "请先选择权限模式。",
+        "git-decision-required": "请安装受支持的 Git 版本，或明确选择跳过 Git。",
+        "recovery-required": "上次保存未能恢复，请恢复设置目录的访问权限后重启。",
+        "executable-path-invalid": "请选择现有可执行程序的完整路径。",
+        "commit-failed": "无法保存，请检查目录权限和磁盘空间后重试。",
+        "operation-id-invalid": "保存请求无效，请重新预览。",
+        "templates-initialization-required": "内置工作流尚未初始化，请重新检测 Agent。"
+      }
+    },
+    "gitVersion": "需要 Git {{version}} 或更新版本。",
+    "previousBindings": "将替换的当前配置",
+    "previousBinding": "{{slot}}：{{agent}} / {{model}}",
+    "defaultModelLabel": "供应商默认模型",
+    "runtimeBlocked": "运行环境检测未通过",
+    "detectionFailed": "Agent 检测失败，请重试。",
+    "recheckRuntime": "重新检测运行环境",
+    "viewRuntime": "查看运行环境",
+    "environmentHelp": {
+      "missing": "未找到此工具。请按照官方指引安装后重新检测。",
+      "unsupported": "请按照官方指引安装支持的版本后重新检测。",
+      "incompatible": "检测到的运行环境组合不兼容，请检查安装位置后重新检测。",
+      "failed": "无法完成检测。请检查程序路径、访问权限和安装状态后重试。",
+      "timeout": "检测超时，请重新检测；持续超时时请检查该工具能否正常启动。",
+      "cancelled": "检测已取消，请重新检测。"
+    },
+    "environmentReasons": {
+      "probe-unavailable": "无法确认实际使用的运行环境，请检查安装状态后重新检测。",
+      "node-mismatch": "使用了不同的 Node.js。预期：{{expectedNodePath}}；实际：{{actualNodePath}}。",
+      "node-version-mismatch": "Node.js 版本不一致。预期：{{expectedVersion}}；实际：{{actualVersion}}。",
+      "node-path-mismatch": "Node.js 启动路径不一致。预期：{{expectedNodePath}}；实际：{{actualNodePath}}。",
+      "npm-metadata-missing": "无法确认 npm 的安装信息，请修复 Node.js/npm 安装后重新检测。",
+      "npm-engines-incompatible": "此 npm 不支持当前 Node.js，要求：{{nodeRange}}。",
+      "npm-version-mismatch": "npm 版本信息不一致。输出：{{expectedVersion}}；安装包：{{actualVersion}}。",
+      "npm-package-mismatch": "npm 与 npx 来自不同安装。npm：{{expectedNpmRoot}}；当前工具：{{actualNpmRoot}}。"
     }
   }
 }

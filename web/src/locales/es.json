@@ -1020,7 +1020,8 @@
       "continue-launch-channel-closed": "La reanudación del flujo de trabajo no se inició. Vuelva a intentarlo."
     },
     "composer": {
-      "context-limit-exceeded": "El contexto puede contener como máximo {{max}} referencias y archivos adjuntos."
+      "context-limit-exceeded": "El contexto puede contener como máximo {{max}} referencias y archivos adjuntos.",
+      "referenceUnavailable": "Referencia no disponible"
     },
     "conversation": {
       "task-not-found": "No se pudo encontrar esta conversación.",
@@ -1040,6 +1041,7 @@
       "session-restore-unsupported": "Este Agent no puede restaurar una sesión existente.",
       "history-sync-unsupported": "Este Agent no puede sincronizar el historial completo de una sesión existente.",
       "prompt-empty": "Introduzca un mensaje para enviar.",
+      "prompt-too-long": "El mensaje no puede superar {{maxChars}} caracteres.",
       "prompt-quote-invalid": "El texto citado no es válido. Elimínelo y vuelva a citar el mensaje.",
       "prompt-quote-limit-exceeded": "El texto citado no puede superar {{maxChars}} caracteres en total.",
       "prompt-quote-diff-limit-exceeded": "Las citas de diff completo no pueden superar {{maxBytes}} bytes en total.",
@@ -1052,6 +1054,8 @@
       "prompt-queue-full": "La cola pendiente está llena. Puede contener hasta 10 prompts.",
       "prompt-queue-item-not-found": "Este prompt en cola ya no existe.",
       "prompt-queue-item-dispatching": "Este prompt se está enviando y no se puede modificar ahora mismo.",
+
+      "prompt-queue-item-editing": "Este prompt se está restaurando para editar y no se puede modificar ahora mismo.",
       "prompt-queue-empty": "La cola pendiente está vacía.",
       "prompt-queue-revision-conflict": "El orden pendiente cambió. Inténtelo de nuevo después de que se actualice la lista.",
       "prompt-queue-invalid-order": "El orden pendiente no es válido. Vuelva a intentarlo.",
@@ -1066,6 +1070,7 @@
       "composer-draft-empty": "No hay nada que guardar.",
       "composer-draft-full": "Los borradores están llenos. Puedes guardar hasta {{max}}.",
       "composer-draft-not-found": "Este borrador ya no existe.",
+      "composer-draft-invalid": "Los datos de la caja de borradores no son válidos. Revisa los datos locales e inténtalo de nuevo.",
       "composer-draft-storage-failed": "No se puede acceder a los borradores. Inténtalo de nuevo.",
       "execution-plan": {
         "not-found": "Este Run todavía no tiene un plan de ejecución.",
@@ -2378,7 +2383,13 @@
       "interruptConfirmTitle": "¿Enviar este mensaje ahora?",
       "interruptConfirmDescription": "La respuesta actual se detendrá antes de enviar este mensaje.",
       "interruptConfirmSkip": "No volver a preguntar",
-      "interruptConfirmAction": "Detener y enviar"
+      "interruptConfirmAction": "Detener y enviar",
+
+      "itemStateEditing": "Restaurando para editar",
+
+      "itemStateSending": "Enviando",
+
+      "storageError": "No se pudo leer la cola de envío"
     },
     "composerDrafts": {
       "title": "Borradores",
@@ -2389,7 +2400,14 @@
       "take": "Mover a la entrada",
       "takeOccupied": "Primero resuelve el contenido actual de la entrada",
       "delete": "Eliminar borrador",
-      "takeConflict": "El campo de entrada tiene contenido. El borrador permanece en la caja de borradores."
+      "deleteConfirmTitle": "¿Eliminar este borrador?",
+      "deleteConfirmDescription": "Se eliminarán el texto, las citas, el rol y las referencias de adjuntos. Esta acción no se puede deshacer.",
+      "takeConflict": "El campo de entrada tiene contenido. El borrador permanece en la caja de borradores.",
+
+      "takeDeleteKept": "El contenido se restauró al campo de entrada; el borrador original sigue guardado.",
+
+
+      "saveFull": "La caja de borradores está llena; elimina un borrador antiguo para guardar más"
     },
     "sending": "Enviando",
     "sendFailed": "Error al enviar",
@@ -3313,6 +3331,125 @@
       "manualPlaceholder": "Información clave como artefactos construidos y entornos de despliegue…",
       "manualSubmit": "Continuar con esto",
       "waitingNote": "Seguimos esperando la actualización de la nota de entrega del upstream. Puede proporcionarla manualmente o omitirla en cualquier momento."
+    }
+  },
+  "onboarding": {
+    "loading": "Cargando",
+    "loadFailed": "No se pudo leer la configuración inicial. Inténtalo de nuevo.",
+    "retry": "Reintentar",
+    "language": "Idioma",
+    "theme": "Cambiar tema",
+    "exit": "Salir de la configuración",
+    "progress": "Progreso",
+    "checking": "Comprobando el entorno…",
+    "runtimeVersion": "Node.js recomendado: {{version}}; compatible: {{ranges}}",
+    "recheck": "Comprobar de nuevo",
+    "installGuide": "Guía oficial de instalación",
+    "discovering": "Comprobando Agents locales…",
+    "discovered": "{{count}} Agents disponibles detectados",
+    "noAgents": "No se detectó ningún Agent disponible. Instala un Agent o inicia sesión y vuelve a comprobarlo.",
+    "agentRepairs": "Agents que requieren atención",
+    "retryAgent": "Comprobar de nuevo",
+    "chooseProgram": "Elegir programa",
+    "defaultAgent": "Agent predeterminado",
+    "chooseAgent": "Elige un Agent disponible",
+    "defaultModel": "Modelo predeterminado",
+    "chooseModel": "Elige un modelo",
+    "providerDefault": "Este Agent utiliza el modelo predeterminado del proveedor.",
+    "checkingModel": "Leyendo la configuración del modelo…",
+    "permission": "Modo de permisos",
+    "choosePermission": "Elige un modo de permisos",
+    "preview": "Revisar cambios",
+    "previewSummary": "Actualizar {{slots}} configuraciones de ejecución en {{count}} workflows integrados.",
+    "slots": "{{count}} configuraciones",
+    "loadMore": "Cargar más",
+    "back": "Atrás",
+    "help": "Ayuda",
+    "skipGit": "Omitir Git por ahora",
+    "next": "Siguiente",
+    "apply": "Aplicar y finalizar",
+    "review": "Vista previa",
+    "repairHint": "Sigue la guía del proveedor para instalar o iniciar sesión y comprueba de nuevo.",
+    "settingsTitle": "Configuración y flujos de trabajo",
+    "rerunTitle": "Configuración inicial",
+    "rerunDescription": "Vuelve a comprobar Git, el entorno de ejecución y los Agent disponibles en este equipo.",
+    "defaultsTitle": "Flujos de trabajo predeterminados",
+    "defaultsDescription": "Configura el Agent, el modelo y los permisos de los flujos de trabajo integrados sin modificar los personalizados.",
+    "configureDefaults": "Configurar valores predeterminados",
+    "rerun": "Repetir configuración",
+    "steps": {
+      "git": "Git",
+      "runtime": "Entorno",
+      "agent": "Agent"
+    },
+    "titles": {
+      "git": "Preparar Git",
+      "runtime": "Comprobar el entorno Node.js",
+      "agent": "Conecta un Agent y elige el modelo predeterminado"
+    },
+    "descriptions": {
+      "git": "Git proporciona control de versiones. Puedes instalarlo más tarde.",
+      "runtime": "Node.js, npm y npx deben superar la comprobación. Comprueba de nuevo tras instalar.",
+      "agent": "Los Agents disponibles se guardan automáticamente. Elige el modelo predeterminado, revisa y aplícalo a los workflows integrados."
+    },
+    "status": {
+      "ready": "Listo",
+      "missing": "No instalado",
+      "unsupported": "Versión no compatible",
+      "incompatible": "Entorno inconsistente",
+      "failed": "Error de comprobación",
+      "timeout": "Tiempo agotado",
+      "cancelled": "Cancelado",
+      "skipped": "Omitido",
+      "pending": "Sin comprobar",
+      "checking": "Comprobando"
+    },
+    "errors": {
+      "setup": {
+        "agent-preparation-required": "Sigue la guía del proveedor para instalar o iniciar sesión y comprueba de nuevo.",
+        "probe-failed": "La comprobación falló. Vuelve a comprobar.",
+        "probe-cancelled": "Se canceló la comprobación. Vuelve a comprobar para continuar.",
+        "runtime-incompatible": "Node.js, npm o npx no cumple los requisitos. Comprueba el entorno de ejecución.",
+        "environment-check-required": "Completa primero la comprobación del entorno de ejecución.",
+        "configuration-conflict": "La configuración cambió en otro lugar. Comprueba los Agents y revisa los cambios actuales.",
+        "preview-stale": "El modelo seleccionado o los Workflows integrados cambiaron. Vuelve a previsualizar los cambios.",
+        "agent-unavailable": "Este Agent ya no está disponible. Compruébalo de nuevo o elige otro Agent.",
+        "model-config-invalid": "Las opciones del modelo ya no son válidas. Selecciona el modelo de nuevo.",
+        "model-selection-required": "Selecciona un modelo antes de continuar.",
+        "permission-selection-required": "Selecciona un modo de permisos antes de continuar.",
+        "git-decision-required": "Instala una versión compatible de Git o elige omitir Git.",
+        "recovery-required": "No se pudo recuperar el guardado anterior. Restaura el acceso a la carpeta de ajustes y reinicia.",
+        "executable-path-invalid": "Selecciona un ejecutable existente con su ruta completa.",
+        "commit-failed": "No se pudo guardar. Comprueba los permisos y el espacio libre, y reintenta.",
+        "operation-id-invalid": "La solicitud de guardado no es válida. Vuelve a previsualizar los cambios.",
+        "templates-initialization-required": "Los Workflows integrados no están inicializados. Comprueba los Agents de nuevo."
+      }
+    },
+    "gitVersion": "Se requiere Git {{version}} o posterior.",
+    "previousBindings": "Configuraciones actuales que se reemplazarán",
+    "previousBinding": "{{slot}}: {{agent}} / {{model}}",
+    "defaultModelLabel": "Predeterminado del proveedor",
+    "runtimeBlocked": "La comprobación del entorno no se superó",
+    "detectionFailed": "Falló la detección de Agent. Vuelve a intentarlo.",
+    "recheckRuntime": "Comprobar el entorno de nuevo",
+    "viewRuntime": "Ver entorno",
+    "environmentHelp": {
+      "missing": "No se encontró esta herramienta. Sigue la guía oficial de instalación y vuelve a comprobar.",
+      "unsupported": "Instala una versión compatible siguiendo la guía oficial y vuelve a comprobar.",
+      "incompatible": "La combinación de entorno detectada es incompatible. Revisa las rutas de instalación y vuelve a intentarlo.",
+      "failed": "No se pudo completar la comprobación. Revisa la ruta del ejecutable, los permisos de acceso y la instalación y vuelve a intentarlo.",
+      "timeout": "Se agotó el tiempo de comprobación. Reintenta; si persiste, comprueba si la herramienta se inicia correctamente.",
+      "cancelled": "Se canceló la comprobación. Vuelve a comprobar para continuar."
+    },
+    "environmentReasons": {
+      "probe-unavailable": "No se pudo confirmar el entorno realmente utilizado. Revisa la instalación y vuelve a intentarlo.",
+      "node-mismatch": "Se utilizó otra instalación de Node.js. Esperada: {{expectedNodePath}}; actual: {{actualNodePath}}.",
+      "node-version-mismatch": "Las versiones de Node.js difieren. Esperada: {{expectedVersion}}; actual: {{actualVersion}}.",
+      "node-path-mismatch": "La ruta de inicio de Node.js difiere. Esperada: {{expectedNodePath}}; actual: {{actualNodePath}}.",
+      "npm-metadata-missing": "No se pudieron confirmar los metadatos de instalación de npm. Repara la instalación de Node.js/npm y vuelve a comprobar.",
+      "npm-engines-incompatible": "Este npm no admite el Node.js actual. Requisito: {{nodeRange}}.",
+      "npm-version-mismatch": "La información de versión de npm difiere. Salida: {{expectedVersion}}; paquete: {{actualVersion}}.",
+      "npm-package-mismatch": "npm y npx pertenecen a instalaciones distintas. npm: {{expectedNpmRoot}}; esta herramienta: {{actualNpmRoot}}."
     }
   }
 }

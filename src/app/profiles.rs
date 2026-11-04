@@ -1883,7 +1883,7 @@ profile body
         }
         let ids = ensure_default_user_profiles(&paths).unwrap();
         assert_eq!(ids.get("cicd"), Some(id));
-        let workflow = crate::app::default_workflow_dsl("claude-acp", &ids, DesktopLanguage::ZhCn);
+        let workflow = crate::app::default_workflow_dsl(&ids, DesktopLanguage::ZhCn);
         assert!(!serde_json::to_string(&workflow).unwrap().contains(id));
     }
 
@@ -2395,7 +2395,7 @@ profile body
         // default workflow never references "grill".
         assert_eq!(ids.get("grill"), Some("pf-builtin-grill"));
         // Verify the default workflow does not embed the grill profile id.
-        let dsl = crate::app::default_workflow_dsl("claude-acp", &ids, DesktopLanguage::ZhCn);
+        let dsl = crate::app::default_workflow_dsl(&ids, DesktopLanguage::ZhCn);
         let serialized = serde_json::to_string(&dsl).unwrap();
         assert!(
             !serialized.contains("pf-builtin-grill"),

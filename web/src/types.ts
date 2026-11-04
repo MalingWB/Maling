@@ -597,6 +597,7 @@ export interface ManagedAgentVm {
   agentType: string;
   displayName: string;
   command: string;
+  executablePath?: string | null;
   args: string[];
   env: AgentEnvEntryVm[];
   iconKey: string;
@@ -703,6 +704,7 @@ export interface ManagedAgentInput {
   displayName: string;
   icon: string;
   command: string;
+  executablePath?: string | null;
   args: string[];
   env: Record<string, string>;
   primaryAgentDir: string;
@@ -2987,9 +2989,13 @@ export interface ResolveAppExitInput {
   decision: AppExitDecision;
 }
 
+export type ConversationQueuedPromptState = 'queued' | 'editing' | 'dispatching';
+
 export interface ConversationQueuedPromptVm {
   id: string;
-  content: string;
+  /** Durable lifecycle state; every state stays visible in the projection. */
+  state: ConversationQueuedPromptState;
+  contentPreview: string;
   attachmentCount: number;
   quoteCount: number;
   workspaceFileCount: number;
@@ -3052,6 +3058,8 @@ export interface ConversationPromptQueueVm {
   dispatchMode: 'auto' | 'manual';
   autoDispatchSuspended: boolean;
   suspensionReason?: 'stopped' | 'failed' | null;
+  /** The durable queue file could not be read; the panel must surface it. */
+  storageError: boolean;
 }
 
 export interface ConversationAttemptLifecycleVm {

@@ -163,14 +163,16 @@ import {
   type AttachmentItem,
 } from "@/lib/attachment-service";
 import {
+  acpComposerDraftRolePrefix,
+  acpComposerDraftToPromptSubmission,
   queuedPromptToAcpComposerDraft,
   useAcpComposerDraft,
   type AcpComposerDraft,
 } from "@/lib/acp-composer-draft";
+import { fileReferenceIdentity } from "@/lib/file-reference-source";
 import {
   addComposerQuote,
   addComposerWorkspaceFile,
-  createComposerPromptSubmission,
   userPromptQuotesFromRaw,
   userPromptRoleFromRaw,
   hasUserPromptPayload,
@@ -278,7 +280,8 @@ import {
   continueConversationRuntime,
   recoverConversationRuntime,
   reorderConversationQueuedPrompts,
-  restoreConversationQueuedPrompt,
+  getConversationQueuedPrompt,
+  releaseConversationQueuedPromptEdit,
   resumeConversationPromptQueue,
   setConversationPromptQueueMode,
   statAttachmentFiles,
@@ -1467,6 +1470,10 @@ export function ACPChatDialog(
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
+  const mountedRef = useRef(true);
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
   const [roleProfiles, setRoleProfiles] = useState<ProfileVm[]>([]);
   useEffect(() => {
     if (!roleSelectionEnabled) {
@@ -1786,6 +1793,22 @@ export function ACPChatDialog(
   const [queueMutationPending, setQueueMutationPending] = useState(false);
   const [queueRestorePending, setQueueRestorePending] = useState(false);
   const [queueSendingItemId, setQueueSendingItemId] = useState<string | null>(null);
+  const composerDraftStoragePendingRef = useRef(false);
+  const composerMutationInFlightRef = useRef(false);
+  const [composerDraftStoragePending, setComposerDraftStoragePending] = useState(false);
+  const acquireComposerMutation = useCallback(() => {
+    if (composerMutationInFlightRef.current) return false;
+    composerMutationInFlightRef.current = true;
+    return true;
+  }, []);
+  const releaseComposerMutation = useCallback(() => {
+    composerMutationInFlightRef.current = false;
+  }, []);
+  const changeComposerDraftStoragePending = useCallback((pending: boolean) => {
+    composerDraftStoragePendingRef.current = pending;
+    setComposerDraftStoragePending(pending);
+    if (!pending) releaseComposerMutation();
+  }, [releaseComposerMutation]);
   const latestSessionRef = useRef<AcpSessionVm | null>(restoredSession);
   const canonicalTimelineCoverageRef = useRef<{
     eventWindowKey: string;
@@ -2672,7 +2695,7 @@ export function ACPChatDialog(
       },
     },
   });
-  const committedSlashCommand = useMemo(
+  const parsedCommittedSlashCommand = useMemo(
     () => parseCommittedSlashItem(
       prompt,
       slashCommands.catalogItems,
@@ -2680,6 +2703,21 @@ export function ACPChatDialog(
     ),
     [prompt, slashCommands.catalogItems, slashCommands.selectedIdentity],
   );
+  const committedSlashCommand = useMemo(() => {
+    const role = composerDraft.draft.role;
+    if (!role) return parsedCommittedSlashCommand;
+    return {
+      item: {
+        kind: 'role' as const,
+        id: role.profileId,
+        name: role.name,
+        description: role.name,
+        content: role.content,
+      },
+      prefix: acpComposerDraftRolePrefix(role),
+      suffix: prompt.slice(acpComposerDraftRolePrefix(role).length),
+    };
+  }, [composerDraft.draft.role, parsedCommittedSlashCommand, prompt]);
   const providerCatalog = useMemo(
     () => acpProviderConfigCatalog(agentRegistry, effective?.provider),
     [agentRegistry, effective?.provider],
@@ -2989,6 +3027,7 @@ export function ACPChatDialog(
   const canSubmitPrompt = composerState.canSubmit
     && !queueSubmitPending
     && !queueRestorePending
+    && !composerDraftStoragePending
     && hasUserPromptPayload(
       slashSendableText(prompt, committedSlashCommand),
       pendingAttachments.length,
@@ -2997,7 +3036,8 @@ export function ACPChatDialog(
     );
   const canSubmitHistory = composerState.canSubmitContent
     && !queueSubmitPending
-    && !queueRestorePending;
+    && !queueRestorePending
+    && !composerDraftStoragePending;
   const promptQueue = localRuntimeLifecycle?.promptQueue
     ?? runtimeComposerContext?.lifecycle?.promptQueue
     ?? null;
@@ -6175,10 +6215,26 @@ export function ACPChatDialog(
       // Enrich attachments and structured file references together so neither overwrites the other.
       void Promise.all([
         draft.attachmentPaths.length > 0
-          ? statAttachmentFiles(draft.attachmentPaths).catch(() => []) : Promise.resolve([]),
+          ? statAttachmentFiles(draft.attachmentPaths).then(
+              fileRefs => ({ failed: false, fileRefs }),
+              () => ({ failed: true, fileRefs: [] as never[] }),
+            ) : Promise.resolve({ failed: false, fileRefs: [] as never[] }),
         Promise.all(sources.map(source => resolveRightWorkspaceFileTarget(source).catch(() => null))),
-      ]).then(([fileRefs, targets]) => {
-        const enrichedDraft = queuedPromptToAcpComposerDraft(draft, fileRefs, targets.filter(target => target !== null));
+      ]).then(([attachmentStat, targetResults]) => {
+        const targets = targetResults.filter(target => target !== null);
+        const unresolvedAttachmentPaths = attachmentStat.failed
+          ? draft.attachmentPaths
+          : draft.attachmentPaths.filter(path => !attachmentStat.fileRefs.some(file => file.path === path));
+        const unresolvedSourceIds = targetResults.flatMap((target, index) => (
+          target ? [] : [fileReferenceIdentity(sources[index])]
+        ));
+        const enrichedDraft = queuedPromptToAcpComposerDraft(
+          draft,
+          attachmentStat.fileRefs,
+          targets,
+          unresolvedAttachmentPaths,
+          unresolvedSourceIds,
+        );
         if (!composerDraft.replaceIfUnchanged(restoredDraft, enrichedDraft)) {
           revokeAttachmentPreviewUrls(enrichedDraft.attachments);
         }
@@ -6193,12 +6249,7 @@ export function ACPChatDialog(
   const captureComposerDraft = async (): Promise<CapturedComposerDraft | null> => {
     const draftSnapshot = composerDraft.draft;
     if (!draftSnapshot) return null;
-    const input = createComposerPromptSubmission(
-      draftSnapshot.content,
-      draftSnapshot.quotes,
-      committedSlashCommand,
-      draftSnapshot.workspaceFiles,
-    );
+    const input = acpComposerDraftToPromptSubmission(draftSnapshot, committedSlashCommand);
     const attachmentPaths = await resolveAttachmentPaths(draftSnapshot.attachments);
     setComposerContextError(null);
     return {
@@ -6206,6 +6257,7 @@ export function ACPChatDialog(
       attachmentPaths,
       commit: () => {
         if (!composerDraft.clearIfUnchanged(draftSnapshot)) return;
+        draftSnapshot.attachments.forEach(closeComposerAttachmentPreview);
         releaseSubmittedAttachments(draftSnapshot.attachments);
         requestAnimationFrame(() => composerTextareaRef.current?.focus());
       },
@@ -6213,22 +6265,85 @@ export function ACPChatDialog(
   };
 
   const restoreQueuedPrompt = async (itemId: string) => {
-    if (queueMutationPending || queueSubmitPending || composerDraftOccupied) return;
+    if (
+      queueMutationPending
+      || queueSubmitPending
+      || composerDraftOccupied
+      || composerDraftStoragePendingRef.current
+      || !acquireComposerMutation()
+    ) return;
     setQueueMutationPending(true);
     setQueueRestorePending(true);
     setSendError(null);
+    let editReserved = false;
+    const handoffIsCurrent = () => (
+      mountedRef.current && sessionIdentityRef.current === sessionIdentity
+    );
+    const releaseEditReservation = async () => {
+      if (!editReserved) return;
+      try {
+        const released = await releaseConversationQueuedPromptEdit(
+          projectId, taskId, runId, roundId, nodeId, attemptId,
+          itemId, outerNodeId, outerAttemptId,
+        );
+        if (handoffIsCurrent()) applyQueueLifecycle(released.lifecycle);
+      } finally {
+        editReserved = false;
+      }
+    };
     try {
-      const result = await restoreConversationQueuedPrompt(
+      // Reserve/read first. The durable queue item is consumed only after the
+      // empty composer accepts the complete payload, matching the draft-box
+      // get -> restore -> delete contract. The reservation prevents automatic
+      // dispatch from claiming it between these two handoff steps.
+      const result = await getConversationQueuedPrompt(
         projectId, taskId, runId, roundId, nodeId, attemptId,
         itemId, outerNodeId, outerAttemptId,
       );
+      editReserved = true;
+      if (!handoffIsCurrent()) {
+        try {
+          await releaseEditReservation();
+        } catch {
+          // The durable reservation will be recovered on the next queue read.
+        }
+        return;
+      }
       applyQueueLifecycle(result.lifecycle);
       if (!restoreDraftIntoComposer(result.draft)) {
-        setSendError(t('acp.promptQueue.restoreDraftConflict'));
+        try {
+          await releaseEditReservation();
+        } catch {
+          // Preserve the user-facing handoff conflict; reconciliation will
+          // recover an abandoned edit reservation after process restart.
+        }
+        if (handoffIsCurrent()) setSendError(t('acp.promptQueue.restoreDraftConflict'));
+        return;
       }
+      if (!handoffIsCurrent()) {
+        try {
+          await releaseEditReservation();
+        } catch {
+          // The durable reservation will be recovered on the next queue read.
+        }
+        return;
+      }
+      const deleted = await deleteConversationQueuedPrompt(
+        projectId, taskId, runId, roundId, nodeId, attemptId,
+        itemId, outerNodeId, outerAttemptId,
+      );
+      editReserved = false;
+      if (handoffIsCurrent()) applyQueueLifecycle(deleted.lifecycle);
     } catch (error) {
-      setSendError(displayAppError(t, error));
+      try {
+        await releaseEditReservation();
+      } catch {
+        // Keep the original operation error; durable reconciliation handles
+        // an edit reservation if storage is unavailable during cleanup.
+      }
+      if (handoffIsCurrent()) setSendError(displayAppError(t, error));
     } finally {
+      releaseComposerMutation();
       setQueueMutationPending(false);
       setQueueRestorePending(false);
     }
@@ -6341,16 +6456,34 @@ export function ACPChatDialog(
     }
   };
 
+  /** Re-reads the canonical session so a surfaced queue storage failure can
+   * converge without a page re-entry; all staleness guards live in
+   * applySessionUpdate. */
+  const retryQueuedPromptStorage = async () => {
+    if (queueMutationPending || queueSubmitPending) return;
+    setQueueMutationPending(true);
+    setSendError(null);
+    try {
+      const updated = await getAcpSession(
+        projectId, taskId, runId, roundId, nodeId, attemptId,
+        { branchId, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize },
+        latestSessionRef.current,
+        outerNodeId, outerAttemptId,
+      );
+      applySessionUpdate(updated, 'queue-storage-retry');
+    } catch (error) {
+      setSendError(displayAppError(t, error));
+    } finally {
+      setQueueMutationPending(false);
+    }
+  };
+
   const send = async (historyText?: string) => {
+    if (composerDraftStoragePendingRef.current) return;
     if (historyText !== undefined ? !canSubmitHistory || !historyText.trim() : !canSubmitPrompt) return;
     const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
     if (!draftSnapshot) return;
-    const submission = createComposerPromptSubmission(
-      draftSnapshot.content,
-      draftSnapshot.quotes,
-      committedSlashCommand,
-      draftSnapshot.workspaceFiles,
-    );
+    const submission = acpComposerDraftToPromptSubmission(draftSnapshot, committedSlashCommand);
     if (composerState.submitTarget !== "none") {
       await submitPrompt(submission, draftSnapshot);
     }
@@ -6491,12 +6624,7 @@ export function ACPChatDialog(
         const draftSnapshot = historyText !== undefined ? adoptHistoryText(historyText) : composerDraft.draft;
         if (!draftSnapshot) { setRuntimeContinueSubmitting(false); return; }
         const accepted = await submitPrompt(
-          createComposerPromptSubmission(
-            draftSnapshot.content,
-            draftSnapshot.quotes,
-            committedSlashCommand,
-            draftSnapshot.workspaceFiles,
-          ),
+          acpComposerDraftToPromptSubmission(draftSnapshot, committedSlashCommand),
           draftSnapshot,
           "runtime-continue",
         );
@@ -7150,6 +7278,7 @@ export function ACPChatDialog(
                 onToggleMode={setQueuedPromptDispatchMode}
                 onResumeDispatch={resumeQueuedPromptDispatch}
                 onClear={clearQueuedPrompts}
+                onStorageRetry={retryQueuedPromptStorage}
               />
             ) : null}
             {readOnly && !showDisabledComposer ? null : composerState.externalKind && !showDisabledComposer ? (
@@ -7236,11 +7365,13 @@ export function ACPChatDialog(
                   <ComposerDraftBox
                     projectId={projectId}
                     taskId={taskId}
-                    disabled={readOnly || composerInputDisabled}
+                    disabled={readOnly || composerInputDisabled || queueRestorePending}
                     canSave={composerDraftSavable}
                     composerOccupied={composerDraftOccupied}
                     captureDraft={captureComposerDraft}
                     restoreDraft={restoreDraftIntoComposer}
+                    acquireMutation={acquireComposerMutation}
+                    onPendingChange={changeComposerDraftStoragePending}
                   />
                 )}
                 supersededSession={supersededSession}

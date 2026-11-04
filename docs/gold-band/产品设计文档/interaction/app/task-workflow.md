@@ -343,3 +343,9 @@ MVP 中任务工作流页由 Tauri command `get_workflow` 提供 view model，�
 ## 10. 一句话总结
 
 > 任务工作流页顶部通过“工作流”卡片管理原始 workflow 生命周期，主区域聚焦这个 workflow 在每次 run / round 中实际跑成了什么样。
+
+## 首次启动的默认模型应用
+
+引导按当前渠道内置 ID 集合枚举全部 Worker execution slot，预览并批量写入既有 WorkflowModelBindings，包括未启用的可选入口；初始绑定为空时也必须逐槽补齐。用户重跑引导时可展开查看将替换的当前绑定。只替换 Agent、模型及模型参数；同 Agent 保留原权限，换 Agent 使用经能力校验的权限并关闭 Auto Accept。用户模板、已有 Task／定时任务、Run snapshot、结构、角色与 last_used_template_id 不受影响。
+
+预览使用纯读取接口；初始化／内置定义升级只为新模板或新 slot 填入默认初值，刻意清空的已有 slot 不被重新绑定。设置和模板通过同一短锁及两文件恢复记录提交，详见[首次启动引导](first-run-onboarding.md)。
