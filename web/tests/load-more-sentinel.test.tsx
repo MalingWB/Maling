@@ -141,6 +141,49 @@ describe('useLoadMoreSentinel', () => {
     }
   });
 
+  it('ignores scrolls from outside its own scroll container', async () => {
+    // The sidebar list must not page because the chat pane scrolled (e.g.
+    // streaming auto-scroll): only a scroll whose target lies inside the
+    // sentinel's own scroll container arms the hook. A list that fits without
+    // a scrollbar therefore relies on the explicit button until its own
+    // container actually scrolls.
+    stubElementVisible(true);
+    const onLoadMore = vi.fn(() => new Promise<void>(() => {}));
+    const own = document.createElement('div');
+    own.style.overflowY = 'auto';
+    document.body.append(own);
+    const container = document.createElement('div');
+    own.append(container);
+    const root: Root = createRoot(container);
+    function Harness() {
+      const setSentinel = useLoadMoreSentinel(true, onLoadMore);
+      return <div ref={setSentinel} data-sentinel="true" />;
+    }
+    act(() => {
+      root.render(<Harness />);
+    });
+    const unrelated = document.createElement('div');
+    unrelated.style.overflowY = 'auto';
+    document.body.append(unrelated);
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+    try {
+      armByUserScroll(unrelated);
+      armByUserScroll(window);
+      await act(async () => {
+        await settle();
+      });
+      expect(onLoadMore).not.toHaveBeenCalled();
+      armByUserScroll(own);
+      await act(async () => {
+        await settle();
+      });
+      expect(onLoadMore.mock.calls.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      act(() => root.unmount());
+      document.body.replaceChildren();
+    }
+  });
+
   it('arms from a scroll inside a nested overflow container', async () => {
     // scroll events do not bubble, but reach window capture listeners; the
     // recent list scrolls in its own container and must still arm the hook.
