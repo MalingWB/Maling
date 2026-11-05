@@ -17,7 +17,7 @@ export interface SetupStatus {
 }
 export interface EnvironmentReport {
   runtimeReady: boolean;
-  checks: Array<{ tool: 'git' | 'node' | 'npm' | 'npx'; status: 'ready' | 'missing' | 'unsupported' | 'incompatible' | 'failed' | 'timeout' | 'cancelled'; version: string | null; executablePath: string | null; nodeExecutablePath?: string | null; error?: AppErrorVm | null }>;
+  checks: Array<{ tool: 'git' | 'node' | 'npm' | 'npx'; status: 'ready' | 'missing' | 'unsupported' | 'unverified' | 'incompatible' | 'failed' | 'timeout' | 'cancelled'; version: string | null; executablePath: string | null; nodeExecutablePath?: string | null; error?: AppErrorVm | null }>;
 }
 export type EnvironmentCheck = EnvironmentReport['checks'][number];
 export interface SetupAgent {
@@ -32,7 +32,7 @@ export interface SetupAgent {
 export type SetupEvent =
   | { type: 'checking'; generation: string; agentId: string; label: string }
   | { type: 'ready'; generation: string; agent: SetupAgent }
-  | { type: 'repair'; generation: string; agentId: string; label: string; code: string; helpUrl: string | null }
+  | { type: 'unavailable'; generation: string; agentId: string }
   | { type: 'finished'; generation: string; nextCursor: string | null }
   | ({ type: 'failed'; generation: string } & AppErrorVm);
 export interface SetupSelection { profile: DefaultExecutionProfile; permissionModeId: string | null }
@@ -45,8 +45,6 @@ export interface SetupApi {
   skipGit(): Promise<void>;
   start(onEvent: (event: SetupEvent) => void, after?: string): Promise<string>;
   cancel(generation: string): Promise<void>;
-  retry(generation: string, agentId: string, onEvent: (event: SetupEvent) => void, executablePath?: string): Promise<void>;
-  pickExecutable(): Promise<string | null>;
   probeModel(generation: string, agentId: string, modelId: string): Promise<SetupAgent>;
   preview(selection: SetupSelection): Promise<SetupPreview>;
   apply(request: SetupApply): Promise<void>;

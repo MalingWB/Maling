@@ -1198,45 +1198,6 @@ impl DesktopState {
             .map(|_| ())
     }
 
-    pub(crate) fn invalidate_setup_diagnostic(
-        &self,
-        candidate: &gold_band::onboarding::discovery::SetupCandidate,
-        error: &anyhow::Error,
-    ) -> Result<()> {
-        let app = self.app()?;
-        let actual = app
-            .managed_agents()
-            .get(&candidate.id)
-            .map(gold_band::onboarding::model::fingerprint)
-            .transpose()?;
-        if actual.is_none() || actual != candidate.expected_fingerprint {
-            return Ok(());
-        }
-        let mut next = self.agent_diagnostics()?;
-        let error = error
-            .downcast_ref::<gold_band::onboarding::model::SetupError>()
-            .map(|error| gold_band::config::DiagnosticError {
-                code: error.code.to_owned(),
-                params: error.params.clone(),
-                raw: None,
-            })
-            .unwrap_or_else(|| gold_band::acp::client::doctor_diagnostic_error(error));
-        let failed = ProviderDiagnosticSnapshot {
-            config_fingerprint: actual,
-            available: false,
-            error: Some(error),
-            checked_at: chrono::Utc::now().to_rfc3339(),
-            capabilities: None,
-        };
-        next.insert(candidate.id.clone(), failed.clone());
-        self.persist_agent_diagnostics(&next)?;
-        self.agent_diagnostics
-            .lock()
-            .map_err(|_| anyhow::anyhow!("diagnostic lock poisoned"))?
-            .insert(candidate.id.clone(), failed);
-        Ok(())
-    }
-
     pub fn agent_config_diagnostic_commit_guard(&self) -> Result<MutexGuard<'_, ()>> {
         self.agent_config_diagnostic_commit_lock
             .lock()

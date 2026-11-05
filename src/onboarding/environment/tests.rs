@@ -4,7 +4,9 @@ use std::sync::Mutex;
 struct FixtureRunner {
     results: Vec<(EnvironmentTool, Option<ProbeOutput>)>,
     failure: Option<(EnvironmentTool, EnvironmentStatus)>,
+    minimum_timeouts: Vec<(EnvironmentTool, Duration)>,
     calls: Mutex<Vec<EnvironmentTool>>,
+    timeouts: Mutex<Vec<(EnvironmentTool, Duration)>>,
 }
 
 impl FixtureRunner {
@@ -53,7 +55,9 @@ impl FixtureRunner {
                 (EnvironmentTool::Npx, Some(output(EnvironmentTool::Npx))),
             ],
             failure: None,
+            minimum_timeouts: vec![],
             calls: Mutex::new(vec![]),
+            timeouts: Mutex::new(vec![]),
         }
     }
     fn output(&mut self, tool: EnvironmentTool) -> &mut ProbeOutput {
@@ -84,10 +88,11 @@ impl EnvironmentRunner for FixtureRunner {
         &self,
         tool: EnvironmentTool,
         _: &Path,
-        _: Duration,
+        timeout: Duration,
         cancelled: &AtomicBool,
     ) -> Result<ProbeOutput, EnvironmentStatus> {
         self.calls.lock().unwrap().push(tool);
+        self.timeouts.lock().unwrap().push((tool, timeout));
         if cancelled.load(Ordering::Acquire) {
             return Err(EnvironmentStatus::Cancelled);
         }
@@ -95,6 +100,13 @@ impl EnvironmentRunner for FixtureRunner {
             && failed == tool
         {
             return Err(status);
+        }
+        if self
+            .minimum_timeouts
+            .iter()
+            .any(|(candidate, minimum)| *candidate == tool && timeout < *minimum)
+        {
+            return Err(EnvironmentStatus::Timeout);
         }
         Ok(self
             .results
@@ -104,6 +116,48 @@ impl EnvironmentRunner for FixtureRunner {
             .1
             .clone()
             .unwrap())
+    }
+}
+
+/// Windows npm/npx launchers start node and resolve the npm package before printing a
+/// version, so their cold start can exceed a native `--version`. Keep a separate,
+/// larger but still bounded budget instead of relaxing the native tools.
+#[test]
+fn javascript_launchers_receive_a_cold_start_budget_separate_from_native_tools() {
+    let mut runner = FixtureRunner::healthy();
+    runner.minimum_timeouts = vec![
+        (EnvironmentTool::Npm, Duration::from_secs(10)),
+        (EnvironmentTool::Npx, Duration::from_secs(10)),
+    ];
+
+    let report = runner.report();
+
+    assert!(report.runtime_ready, "{:#?}", report.checks);
+    let policy = environment_policy();
+    assert!(
+        policy.probe_timeouts.package_manager_command_ms > policy.probe_timeouts.native_command_ms
+    );
+    let timeouts = runner.timeouts.lock().unwrap();
+    let timeout_of = |tool| {
+        timeouts
+            .iter()
+            .find(|(candidate, _)| *candidate == tool)
+            .unwrap()
+            .1
+    };
+    for tool in [EnvironmentTool::Git, EnvironmentTool::Node] {
+        assert_eq!(
+            timeout_of(tool),
+            Duration::from_millis(policy.probe_timeouts.native_command_ms),
+            "{tool:?}"
+        );
+    }
+    for tool in [EnvironmentTool::Npm, EnvironmentTool::Npx] {
+        assert_eq!(
+            timeout_of(tool),
+            Duration::from_millis(policy.probe_timeouts.package_manager_command_ms),
+            "{tool:?}"
+        );
     }
 }
 
@@ -167,8 +221,11 @@ fn node_and_npm_boundaries_reject_unknown_majors_and_prereleases() {
         ("10.8.9", false),
         ("10.9.0", true),
         ("11.0.0", true),
-        ("12.0.0", false),
+        ("12.0.0", true),
+        ("12.2.1", true),
         ("11.0.0-rc.1", false),
+        ("12.0.0-rc.1", false),
+        ("13.0.0", false),
     ] {
         assert_eq!(
             matches_policy(
@@ -202,6 +259,189 @@ fn each_failed_tool_keeps_its_reason_without_masking_other_successes() {
             report.checks[3].error.as_ref().unwrap().params["tool"],
             "npx"
         );
+    }
+}
+
+#[test]
+fn newer_unverified_major_is_reported_separately_from_unsupported() {
+    for (tool, newer, older) in [
+        (EnvironmentTool::Node, "25.0.0", "20.19.0"),
+        (EnvironmentTool::Npm, "13.0.0", "9.9.0"),
+        (EnvironmentTool::Npx, "13.0.0", "9.9.0"),
+    ] {
+        let mut runner = FixtureRunner::healthy();
+        runner.output(tool).stdout = newer.into();
+        if tool == EnvironmentTool::Node {
+            runner.output(tool).observations[0].node_version = newer.into();
+        } else {
+            runner.output(tool).observations[0]
+                .npm
+                .as_mut()
+                .unwrap()
+                .version = newer.into();
+            if tool == EnvironmentTool::Npx {
+                runner.output(EnvironmentTool::Npm).stdout = newer.into();
+                runner.output(EnvironmentTool::Npm).observations[0]
+                    .npm
+                    .as_mut()
+                    .unwrap()
+                    .version = newer.into();
+            }
+        }
+        let check = runner
+            .report()
+            .checks
+            .into_iter()
+            .find(|check| check.tool == tool)
+            .unwrap();
+        assert_eq!(
+            check.status,
+            EnvironmentStatus::Unverified,
+            "{tool:?} {newer}"
+        );
+        assert_eq!(
+            check.error.as_ref().unwrap().code,
+            "setup.runtime-version-unverified"
+        );
+        assert_eq!(
+            serde_json::to_value(&check).unwrap()["status"],
+            "unverified"
+        );
+
+        let mut runner = FixtureRunner::healthy();
+        runner.output(tool).stdout = older.into();
+        if tool == EnvironmentTool::Node {
+            runner.output(tool).observations[0].node_version = older.into();
+        } else {
+            runner.output(tool).observations[0]
+                .npm
+                .as_mut()
+                .unwrap()
+                .version = older.into();
+            if tool == EnvironmentTool::Npx {
+                runner.output(EnvironmentTool::Npm).stdout = older.into();
+                runner.output(EnvironmentTool::Npm).observations[0]
+                    .npm
+                    .as_mut()
+                    .unwrap()
+                    .version = older.into();
+            }
+        }
+        let check = runner
+            .report()
+            .checks
+            .into_iter()
+            .find(|check| check.tool == tool)
+            .unwrap();
+        assert_eq!(
+            check.status,
+            EnvironmentStatus::Unsupported,
+            "{tool:?} {older}"
+        );
+        assert_eq!(
+            check.error.as_ref().unwrap().code,
+            "setup.runtime-version-unsupported"
+        );
+    }
+}
+
+#[test]
+fn stable_unverified_node_can_continue_when_the_actual_npm_toolchain_is_compatible() {
+    let mut runner = FixtureRunner::healthy();
+    runner.output(EnvironmentTool::Node).stdout = "23.11.0".into();
+    runner.output(EnvironmentTool::Node).observations[0].node_version = "23.11.0".into();
+    for tool in [EnvironmentTool::Npm, EnvironmentTool::Npx] {
+        runner.output(tool).observations[0].node_version = "23.11.0".into();
+    }
+
+    let report = runner.report();
+
+    assert_eq!(
+        report
+            .checks
+            .iter()
+            .find(|check| check.tool == EnvironmentTool::Node)
+            .unwrap()
+            .status,
+        EnvironmentStatus::Unverified
+    );
+    assert!(report.runtime_ready, "{:#?}", report.checks);
+}
+
+#[test]
+fn stable_unverified_node_still_has_to_match_the_observed_runtime_path() {
+    let mut runner = FixtureRunner::healthy();
+    runner.output(EnvironmentTool::Node).stdout = "23.11.0".into();
+    runner.output(EnvironmentTool::Node).observations[0].node_version = "23.11.0".into();
+    runner.output(EnvironmentTool::Node).observations[0].node_path = "other-node".into();
+    for tool in [EnvironmentTool::Npm, EnvironmentTool::Npx] {
+        let observation = &mut runner.output(tool).observations[0];
+        observation.node_version = "23.11.0".into();
+        observation.node_path = "other-node".into();
+    }
+
+    let report = runner.report();
+    let node = report
+        .checks
+        .iter()
+        .find(|check| check.tool == EnvironmentTool::Node)
+        .unwrap();
+
+    assert_eq!(node.status, EnvironmentStatus::Incompatible);
+    assert_eq!(
+        node.error.as_ref().unwrap().params["reason"],
+        "node-path-mismatch"
+    );
+    assert!(!report.runtime_ready);
+}
+
+#[test]
+fn stable_unverified_npm_and_npx_can_continue_when_the_package_identity_matches() {
+    let mut runner = FixtureRunner::healthy();
+    for tool in [EnvironmentTool::Npm, EnvironmentTool::Npx] {
+        runner.output(tool).stdout = "13.0.0".into();
+        runner.output(tool).observations[0]
+            .npm
+            .as_mut()
+            .unwrap()
+            .version = "13.0.0".into();
+    }
+
+    let report = runner.report();
+
+    for tool in [EnvironmentTool::Npm, EnvironmentTool::Npx] {
+        assert_eq!(
+            report
+                .checks
+                .iter()
+                .find(|check| check.tool == tool)
+                .unwrap()
+                .status,
+            EnvironmentStatus::Unverified,
+            "{tool:?}"
+        );
+    }
+    assert!(report.runtime_ready, "{:#?}", report.checks);
+}
+
+#[test]
+fn policy_verified_majors_cover_every_range_lower_bound() {
+    let policy = environment_policy();
+    for (ranges, verified_majors) in [
+        (&policy.node.ranges, &policy.node.verified_majors),
+        (&policy.npm.ranges, &policy.npm.verified_majors),
+    ] {
+        for range in ranges {
+            let lower = range
+                .split_whitespace()
+                .find(|part| part.starts_with(">="))
+                .expect("policy range has an inclusive lower bound");
+            let version = Version::parse(lower.trim_start_matches(">=")).unwrap();
+            assert!(
+                verified_majors.contains(&version.major),
+                "{range} lower-bound major must be listed in verifiedMajors"
+            );
+        }
     }
 }
 

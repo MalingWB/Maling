@@ -18,12 +18,6 @@ export const desktopSetupApi: SetupApi = {
   skipGit: () => invokeCommand('skip_setup_git'),
   start: (onEvent, after) => invokeCommand('start_setup_agent_detection', { onEvent: channel(onEvent), after: after ?? null }),
   cancel: (generation) => invokeCommand('cancel_setup_detection', { generation }),
-  retry: (generation, agentId, onEvent, executablePath) => invokeCommand('retry_setup_agent', { generation, agentId, executablePath: executablePath ?? null, onEvent: channel(onEvent) }),
-  pickExecutable: async () => {
-    const { open } = await import('@tauri-apps/plugin-dialog');
-    const result = await open({ multiple: false, directory: false });
-    return typeof result === 'string' ? result : null;
-  },
   probeModel: (generation, agentId, modelId) => invokeCommand('probe_setup_model', { generation, agentId, modelId }),
   preview: (selection) => invokeCommand('preview_default_setup', { selection }),
   apply: (request) => invokeCommand('apply_default_setup', { request }),

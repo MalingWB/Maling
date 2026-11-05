@@ -1,19 +1,16 @@
 import type { AppErrorVm } from '@/types';
 import type { EnvironmentCheck, EnvironmentReport, SetupAgent, SetupEvent } from './types';
-
-type Repair = Extract<SetupEvent, { type: 'repair' }>;
 export interface SetupDetectionState {
   environment: { phase: 'idle' | 'checking' | 'ready' | 'failed'; report?: EnvironmentReport; progress: Partial<Record<EnvironmentCheck['tool'], EnvironmentCheck>> };
   phase: 'idle' | 'detecting' | 'completed' | 'blocked-environment' | 'failed';
   generation: string;
   agents: Record<string, SetupAgent>;
-  repairs: Record<string, Repair>;
   pending: Record<string, string>;
   nextCursor: string | null;
 }
 export const initialDetectionState: SetupDetectionState = {
   environment: { phase: 'checking', progress: {} }, phase: 'idle', generation: '',
-  agents: {}, repairs: {}, pending: {}, nextCursor: null,
+  agents: {}, pending: {}, nextCursor: null,
 };
 type Action =
   | { type: 'environment-started' }
@@ -46,7 +43,7 @@ export function setupDetectionReducer(state: SetupDetectionState, action: Action
     case 'environment-completed': return { ...state, phase: action.report.runtimeReady ? 'idle' : 'blocked-environment', environment: { phase: 'ready', report: action.report, progress: {} } };
     case 'environment-failed': return { ...state, environment: { phase: 'failed', progress: {} } };
     case 'runtime-blocked': return { ...state, phase: 'blocked-environment', generation: '', pending: {}, nextCursor: null, environment: { phase: 'ready', report: action.report, progress: {} } };
-    case 'detection-started': return { ...state, phase: 'detecting', generation: '', agents: action.append ? state.agents : {}, repairs: action.append ? state.repairs : {}, pending: {}, nextCursor: null };
+    case 'detection-started': return { ...state, phase: 'detecting', generation: '', agents: action.append ? state.agents : {}, pending: {}, nextCursor: null };
     case 'detection-stopped': return { ...state, phase: 'idle', generation: '', pending: {} };
     case 'detection-accepted': return state.phase === 'detecting' || state.phase === 'completed' ? { ...state, generation: action.generation } : state;
     case 'detection-failed': return { ...state, phase: 'failed', generation: '', pending: {} };
@@ -63,10 +60,10 @@ export function setupDetectionReducer(state: SetupDetectionState, action: Action
       if (event.type === 'finished') return { ...current, phase: 'completed', nextCursor: event.nextCursor };
       const id = event.type === 'ready' ? event.agent.agentType : event.agentId;
       const pending = { ...state.pending }; delete pending[id];
-      const agents = { ...state.agents }; const repairs = { ...state.repairs };
-      if (event.type === 'ready') { agents[id] = event.agent; delete repairs[id]; }
-      else { delete agents[id]; repairs[id] = event; }
-      return { ...current, pending, agents, repairs };
+      const agents = { ...state.agents };
+      if (event.type === 'ready') agents[id] = event.agent;
+      else delete agents[id];
+      return { ...current, pending, agents };
     }
   }
 }

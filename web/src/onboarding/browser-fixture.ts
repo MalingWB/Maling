@@ -1,4 +1,5 @@
 import type { EnvironmentReport, SetupAgent, SetupApi, SetupStatus } from './types';
+import packagedPolicy from '../../../configs/onboarding-environment-policy.json';
 
 let browserApi: SetupApi | undefined;
 export function browserSetupApi(): SetupApi {
@@ -12,7 +13,7 @@ export function createBrowserSetupApi(): SetupApi {
     platform: 'windows',
     state: { status: 'pending', gitDecision: 'undecided' }, gitMinimumVersion: '2.36.0', language: 'zh-cn', defaultExecutionProfile: null,
     appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'dark', visualQualityByTheme: {} },
-    environmentPolicy: { node: { ranges: ['>=22.20.0 <23', '>=24 <25'], recommendedVersion: '24.22.0', helpUrl: 'https://nodejs.org/en/download' }, npm: { ranges: ['>=10.9 <12'] }, gitHelpUrl: 'https://git-scm.com/downloads' },
+    environmentPolicy: { node: { ranges: ['>=22.20.0 <23', '>=24 <25'], recommendedVersion: '24.22.0', helpUrl: 'https://nodejs.org/en/download' }, npm: { ranges: packagedPolicy.npm.ranges }, gitHelpUrl: 'https://git-scm.com/downloads' },
   };
   const agent: SetupAgent = {
     agentType: 'fixture-agent', displayName: 'Local Agent',
@@ -27,6 +28,15 @@ export function createBrowserSetupApi(): SetupApi {
   let environment: { requestId: string; report?: EnvironmentReport } | null = null;
   let checks = 0;
   const report = (failed = false): EnvironmentReport => ({ runtimeReady: !failed, checks: (['git', 'node', 'npm', 'npx'] as const).map((tool) => ({ tool, status: failed && tool === 'npm' ? 'missing' : 'ready', version: tool === 'git' ? '2.53.0' : tool === 'node' ? '24.22.0' : '11.19.1', executablePath: `C:\\Users\\示例用户\\Programs with spaces\\${tool}.exe` })) });
+  const unverifiedNodeReport = (): EnvironmentReport => ({
+    runtimeReady: true,
+    checks: report().checks.map((check) => check.tool === 'node' ? {
+      ...check,
+      status: 'unverified',
+      version: '23.11.0',
+      error: { code: 'setup.runtime-version-unverified', params: { tool: 'node', version: '23.11.0' } },
+    } : check),
+  });
   const blockedReport = (): EnvironmentReport => ({ ...report(), runtimeReady: false, checks: report().checks.map((check) => check.tool === 'npx' ? { ...check, status: 'incompatible', nodeExecutablePath: 'C:\\Other Node\\node.exe', error: { code: 'setup.runtime-incompatible', params: { reason: 'node-mismatch', expectedNodePath: 'C:\\Users\\示例用户\\Programs with spaces\\node.exe', actualNodePath: 'C:\\Other Node\\node.exe' } } } : check) });
   const requireEnvironment = () => {
     if (!environment?.report) throw { code: 'setup.environment-check-required', params: {} };
@@ -38,7 +48,11 @@ export function createBrowserSetupApi(): SetupApi {
       environment = { requestId };
       await Promise.resolve();
       const failed = fixture === 'runtime-failure' && checks === 0;
-      const result = fixture === 'runtime-path-mismatch' && checks === 0 ? blockedReport() : report(failed);
+      const result = fixture === 'runtime-path-mismatch' && checks === 0
+        ? blockedReport()
+        : fixture === 'unverified-node'
+          ? unverifiedNodeReport()
+          : report(failed);
       if (environment?.requestId === requestId) { checks += 1; environment.report = result; }
       return result;
     },
@@ -50,14 +64,12 @@ export function createBrowserSetupApi(): SetupApi {
       receive({ type: 'checking', generation, agentId: agent.agentType, label: agent.displayName });
       timers.set(generation, setTimeout(() => {
         receive({ type: 'ready', generation, agent });
-        receive({ type: 'repair', generation, agentId: 'needs-login', label: 'Another Agent', code: 'setup.agent-preparation-required', helpUrl: 'https://agentclientprotocol.com' });
+        receive({ type: 'unavailable', generation, agentId: 'needs-login' });
         receive({ type: 'finished', generation, nextCursor: null });
       }, 600));
       return generation;
     },
     cancel: async (generation) => { clearTimeout(timers.get(generation)); timers.delete(generation); },
-    pickExecutable: async () => null,
-    retry: async (generation, id, receive) => { receive({ type: 'ready', generation, agent: { ...agent, agentType: id, displayName: 'Another Agent' } }); },
     probeModel: async () => {
       if (fixture === 'legacy-models') throw { code: 'acp.model-config-unavailable', params: {} };
       return agent;

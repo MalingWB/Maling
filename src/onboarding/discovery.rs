@@ -27,6 +27,32 @@ pub struct SetupCandidate {
     pub expected_fingerprint: Option<String>,
 }
 
+pub enum CandidateDetection<'a> {
+    Reuse(&'a ProviderDiagnosticSnapshot),
+    Probe,
+    Unavailable,
+}
+
+/// Configured Agents reuse the Agent management domain's canonical Doctor snapshot.
+/// Only unconfigured catalog candidates are eligible for setup-owned probing.
+pub fn candidate_detection<'a>(
+    candidate: &SetupCandidate,
+    diagnostics: &'a BTreeMap<ManagedAgentId, ProviderDiagnosticSnapshot>,
+) -> CandidateDetection<'a> {
+    let Some(expected_fingerprint) = candidate.expected_fingerprint.as_deref() else {
+        return CandidateDetection::Probe;
+    };
+    match diagnostics.get(&candidate.id) {
+        Some(diagnostic)
+            if diagnostic.available
+                && diagnostic.config_fingerprint.as_deref() == Some(expected_fingerprint) =>
+        {
+            CandidateDetection::Reuse(diagnostic)
+        }
+        _ => CandidateDetection::Unavailable,
+    }
+}
+
 pub fn candidates(
     settings: &SettingsConfig,
     after: Option<&str>,

@@ -27,13 +27,33 @@ pub struct EnvironmentPolicy {
     pub node: NodePolicy,
     pub npm: NpmPolicy,
     pub git_help_url: String,
-    pub probe_timeout_ms: u64,
+    pub probe_timeouts: ProbeTimeoutPolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeTimeoutPolicy {
+    pub native_command_ms: u64,
+    pub package_manager_command_ms: u64,
+}
+
+impl EnvironmentPolicy {
+    fn probe_timeout(&self, tool: EnvironmentTool) -> Duration {
+        let milliseconds = match tool {
+            EnvironmentTool::Git | EnvironmentTool::Node => self.probe_timeouts.native_command_ms,
+            EnvironmentTool::Npm | EnvironmentTool::Npx => {
+                self.probe_timeouts.package_manager_command_ms
+            }
+        };
+        Duration::from_millis(milliseconds)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodePolicy {
     pub ranges: Vec<String>,
+    pub verified_majors: Vec<u64>,
     pub recommended_version: String,
     pub help_url: String,
 }
@@ -42,6 +62,7 @@ pub struct NodePolicy {
 #[serde(rename_all = "camelCase")]
 pub struct NpmPolicy {
     pub ranges: Vec<String>,
+    pub verified_majors: Vec<u64>,
     pub matrix_versions: Vec<String>,
 }
 
@@ -81,10 +102,20 @@ pub enum EnvironmentStatus {
     Ready,
     Missing,
     Unsupported,
+    Unverified,
     Incompatible,
     Failed,
     Timeout,
     Cancelled,
+}
+
+impl EnvironmentStatus {
+    /// A stable version outside the verified policy window is a warning, not a
+    /// proof that the local toolchain cannot run. The joint runtime checks
+    /// below still have to confirm paths, versions and npm engines.
+    fn is_runtime_usable(self) -> bool {
+        matches!(self, Self::Ready | Self::Unverified)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -324,11 +355,34 @@ fn matches_policy(version: &Version, ranges: &[String]) -> bool {
         })
 }
 
+/// A version outside the accepted ranges is either older than every verified
+/// major (unsupported) or newer than the verified majors (unverified). Keeping
+/// the two apart prevents telling users to downgrade a newer official release.
+fn version_status(
+    version: &Version,
+    ranges: &[String],
+    verified_majors: &[u64],
+) -> EnvironmentStatus {
+    if matches_policy(version, ranges) {
+        return EnvironmentStatus::Ready;
+    }
+    let older_than_verified = verified_majors
+        .iter()
+        .min()
+        .is_some_and(|oldest| version.major < *oldest);
+    if !version.pre.is_empty() || older_than_verified || verified_majors.contains(&version.major) {
+        EnvironmentStatus::Unsupported
+    } else {
+        EnvironmentStatus::Unverified
+    }
+}
+
 fn failure(check: &mut EnvironmentCheck, status: EnvironmentStatus) {
     check.status = status;
     let code = match status {
         EnvironmentStatus::Missing => "setup.runtime-missing",
         EnvironmentStatus::Unsupported => "setup.runtime-version-unsupported",
+        EnvironmentStatus::Unverified => "setup.runtime-version-unverified",
         EnvironmentStatus::Incompatible => "setup.runtime-incompatible",
         EnvironmentStatus::Timeout => "setup.probe-timeout",
         EnvironmentStatus::Cancelled => "setup.probe-cancelled",
@@ -397,12 +451,7 @@ pub fn check_environment(
                 };
                 let mut observation = None;
                 if let Some(path) = &check.executable_path {
-                    match runner.probe(
-                        tool,
-                        path,
-                        Duration::from_millis(policy.probe_timeout_ms),
-                        cancelled,
-                    ) {
+                    match runner.probe(tool, path, policy.probe_timeout(tool), cancelled) {
                         Err(status) => failure(&mut check, status),
                         Ok(output) => {
                             if tool == EnvironmentTool::Git {
@@ -448,13 +497,15 @@ pub fn check_environment(
                                     observation.as_ref().map(|o| o.node_path.clone());
                                 if let Some(version) = version {
                                     check.version = Some(version.to_string());
-                                    let ranges = if tool == EnvironmentTool::Node {
-                                        &policy.node.ranges
+                                    let (ranges, verified_majors) = if tool == EnvironmentTool::Node
+                                    {
+                                        (&policy.node.ranges, &policy.node.verified_majors)
                                     } else {
-                                        &policy.npm.ranges
+                                        (&policy.npm.ranges, &policy.npm.verified_majors)
                                     };
-                                    if !matches_policy(&version, ranges) {
-                                        failure(&mut check, EnvironmentStatus::Unsupported);
+                                    let status = version_status(&version, ranges, verified_majors);
+                                    if status != EnvironmentStatus::Ready {
+                                        failure(&mut check, status);
                                     } else if observation.is_none() {
                                         incompatible(
                                             &mut check,
@@ -484,7 +535,7 @@ pub fn check_environment(
     let node = results[1].1.as_ref();
     let npm = results[2].1.as_ref().and_then(|o| o.npm.as_ref());
     for index in 1..checks.len() {
-        if checks[index].status != EnvironmentStatus::Ready {
+        if !checks[index].status.is_runtime_usable() {
             continue;
         }
         let observed = results[index].1.as_ref();
@@ -541,7 +592,7 @@ pub fn check_environment(
     EnvironmentReport {
         runtime_ready: checks[1..]
             .iter()
-            .all(|check| check.status == EnvironmentStatus::Ready),
+            .all(|check| check.status.is_runtime_usable()),
         checks,
     }
 }

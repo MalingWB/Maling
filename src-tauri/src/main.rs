@@ -472,7 +472,6 @@ fn run() -> anyhow::Result<()> {
             onboarding::skip_setup_git,
             onboarding::start_setup_agent_detection,
             onboarding::cancel_setup_detection,
-            onboarding::retry_setup_agent,
             onboarding::probe_setup_model,
             onboarding::preview_default_setup,
             onboarding::apply_default_setup,
