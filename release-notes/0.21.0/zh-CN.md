@@ -21,6 +21,10 @@ Direct 会话运行中可以继续输入，内容可以先加入待发送队列�
 
 ![Composer 待发送队列](assets/composer-queue.png)
 
+可在「设置 → 高级 → 待发送」开启「立即发送前确认打断当前回复」，避免立即发送时打断当前正在生成的回复。
+
+![Composer 待发送确认设置](assets/composer-queue-confirm-setting.png)
+
 新增草稿箱，最多保存 20 条草稿。草稿会保留正文、文件引用、角色和附件引用，取回到输入框后再决定是否发送。保存失败不会清空正在编辑的内容，附件也不会因为停止会话或切换页面而丢失。
 
 ![Composer 草稿箱](assets/composer-drafts.png)
