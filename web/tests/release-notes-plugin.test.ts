@@ -43,4 +43,37 @@ describe('release notes build module', () => {
     expect(source).toContain('export const releaseNotesVersion = "9.9.9";');
     expect(source).not.toContain('import(');
   });
+
+  it('bundles release note assets and rewrites their Markdown references', () => {
+    const root = repo('1.2.3', ['zh-CN', 'en']);
+    const assetDirectory = path.join(root, 'release-notes', '1.2.3', 'assets');
+    mkdirSync(assetDirectory, { recursive: true });
+    writeFileSync(path.join(assetDirectory, 'first.png'), 'first');
+    writeFileSync(path.join(assetDirectory, 'second.jpg'), 'second');
+    writeFileSync(
+      path.join(root, 'release-notes', '1.2.3', 'zh-CN.md'),
+      [
+        '![First](assets/first.png)',
+        '![Second](assets/second.jpg "Second")',
+        '![Remote](https://example.invalid/remote.png)',
+      ].join('\n'),
+    );
+
+    const source = releaseNotesModuleSource(root);
+    const imports = [...source.matchAll(/^import (__releaseNotesAsset\d+) from "([^"]+)\?url";$/gm)]
+      .map(([, variable, file]) => [variable, file]);
+    expect(imports).toEqual([
+      ['__releaseNotesAsset0', expect.stringMatching(/release-notes[\\/]1\.2\.3[\\/]assets[\\/]first\.png$/)],
+      ['__releaseNotesAsset1', expect.stringMatching(/release-notes[\\/]1\.2\.3[\\/]assets[\\/]second\.jpg$/)],
+    ]);
+    expect(source).toContain('.split("assets/first.png").join(new URL(__releaseNotesAsset0, document.baseURI).href)');
+    expect(source).toContain('.split("assets/second.jpg").join(new URL(__releaseNotesAsset1, document.baseURI).href)');
+    expect(source).not.toContain('remote.png?url');
+  });
+
+  it('rejects a referenced release note asset that is missing', () => {
+    const root = repo('1.2.3', ['zh-CN']);
+    writeFileSync(path.join(root, 'release-notes', '1.2.3', 'zh-CN.md'), '![Missing](assets/missing.png)');
+    expect(() => releaseNotesModuleSource(root)).toThrow('Release note image not found');
+  });
 });
