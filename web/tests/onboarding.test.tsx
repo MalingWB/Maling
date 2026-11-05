@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { OnboardingPage } from '@/onboarding/OnboardingPage';
 import { OnboardingGate } from '@/onboarding/OnboardingGate';
 import { createBrowserSetupApi } from '@/onboarding/browser-fixture';
+import packagedPolicy from '../../configs/onboarding-environment-policy.json';
 import { acpCompositeConfigSections } from '@/lib/acp-composite-config';
 import type { EnvironmentCheck, SetupAgent, SetupApi, SetupEvent, SetupStatus } from '@/onboarding/types';
 import i18n from '@/i18n';
@@ -36,6 +37,11 @@ let host: HTMLDivElement; let root: Root; let api: SetupApi; let status: SetupSt
 let receive: (event: SetupEvent) => void;
 const done = vi.fn();
 const healthyEnvironment = () => ({ runtimeReady: true, checks: (['git', 'node', 'npm', 'npx'] as const).map((tool) => ({ tool, status: 'ready' as const, version: tool === 'git' ? '2.53.0' : tool === 'node' ? '22.22.3' : '10.9.8', executablePath: null })) });
+
+it('keeps the browser fixture aligned with the packaged npm policy', async () => {
+  const fixture = await createBrowserSetupApi().status();
+  expect(fixture.environmentPolicy.npm.ranges).toEqual(packagedPolicy.npm.ranges);
+});
 
 beforeEach(async () => {
   await i18n.changeLanguage('en');

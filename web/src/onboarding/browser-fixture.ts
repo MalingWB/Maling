@@ -1,4 +1,5 @@
 import type { EnvironmentReport, SetupAgent, SetupApi, SetupStatus } from './types';
+import packagedPolicy from '../../../configs/onboarding-environment-policy.json';
 
 let browserApi: SetupApi | undefined;
 export function browserSetupApi(): SetupApi {
@@ -12,7 +13,7 @@ export function createBrowserSetupApi(): SetupApi {
     platform: 'windows',
     state: { status: 'pending', gitDecision: 'undecided' }, gitMinimumVersion: '2.36.0', language: 'zh-cn', defaultExecutionProfile: null,
     appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'dark', visualQualityByTheme: {} },
-    environmentPolicy: { node: { ranges: ['>=22.20.0 <23', '>=24 <25'], recommendedVersion: '24.22.0', helpUrl: 'https://nodejs.org/en/download' }, npm: { ranges: ['>=10.9 <12'] }, gitHelpUrl: 'https://git-scm.com/downloads' },
+    environmentPolicy: { node: { ranges: ['>=22.20.0 <23', '>=24 <25'], recommendedVersion: '24.22.0', helpUrl: 'https://nodejs.org/en/download' }, npm: { ranges: packagedPolicy.npm.ranges }, gitHelpUrl: 'https://git-scm.com/downloads' },
   };
   const agent: SetupAgent = {
     agentType: 'fixture-agent', displayName: 'Local Agent',
