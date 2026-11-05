@@ -7,7 +7,10 @@ use gold_band::{
     config::{ManagedAgentId, ProviderDiagnosticSnapshot},
     onboarding::{
         defaults::{ApplyDefaultSetup, DefaultSetupPreview, DefaultSetupSelection},
-        discovery::{IsolatedProbeDirectory, SetupCandidate, candidates, prepared_adapter},
+        discovery::{
+            CandidateDetection, IsolatedProbeDirectory, SetupCandidate, candidate_detection,
+            candidates, prepared_adapter,
+        },
         environment::{
             EnvironmentCheck, EnvironmentPolicy, EnvironmentReport, LocalEnvironmentRunner,
             check_environment, environment_policy,
@@ -41,7 +44,6 @@ pub struct SetupRun {
     pub generation: String,
     pub cancelled: Arc<AtomicBool>,
     suppressed: Mutex<BTreeSet<ManagedAgentId>>,
-    candidates: Mutex<BTreeMap<ManagedAgentId, SetupCandidate>>,
     channel: Channel<SetupEvent>,
 }
 
@@ -134,24 +136,14 @@ impl SetupController {
             if let Ok(mut suppressed) = run.suppressed.lock() {
                 suppressed.insert(id.clone());
             }
-            let label = run.candidates.lock().ok().and_then(|items| {
-                items
-                    .get(id)
-                    .map(|candidate| candidate.config.adapter.display_name.clone())
-            });
-            if let Some(label) = label {
-                publish(
-                    run,
-                    &run.channel,
-                    SetupEvent::Repair {
-                        generation: run.generation.clone(),
-                        agent_id: id.as_str().into(),
-                        label,
-                        code: "setup.configuration-conflict".into(),
-                        help_url: None,
-                    },
-                );
-            }
+            publish(
+                run,
+                &run.channel,
+                SetupEvent::Unavailable {
+                    generation: run.generation.clone(),
+                    agent_id: id.as_str().into(),
+                },
+            );
         }
     }
 
@@ -236,12 +228,9 @@ pub enum SetupEvent {
         generation: String,
         agent: SetupAgentVm,
     },
-    Repair {
+    Unavailable {
         generation: String,
         agent_id: String,
-        label: String,
-        code: String,
-        help_url: Option<String>,
     },
     Finished {
         generation: String,
@@ -368,6 +357,23 @@ mod tests {
         assert!(payload["supportedModels"].is_null());
         assert!(payload["configOptions"].is_null());
         assert_eq!(payload["supportedModes"][0]["id"], "default");
+    }
+
+    #[test]
+    fn unavailable_agent_event_contains_no_repair_details() {
+        let payload = serde_json::to_value(SetupEvent::Unavailable {
+            generation: "test-generation".into(),
+            agent_id: "codex-acp".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "type": "unavailable",
+                "generation": "test-generation",
+                "agentId": "codex-acp"
+            })
+        );
     }
 
     #[test]
@@ -544,10 +550,7 @@ fn probe_candidate(
     }
     let probe = match result {
         Ok(probe) => probe,
-        Err(error) => {
-            state.invalidate_setup_diagnostic(candidate, &error)?;
-            return Err(error);
-        }
+        Err(error) => return Err(error),
     };
     let diagnostic = ProviderDiagnosticSnapshot {
         config_fingerprint: Some(fingerprint(&candidate.config)?),
@@ -557,14 +560,6 @@ fn probe_candidate(
         capabilities: Some(probe.capabilities),
     };
     state.persist_setup_success(candidate, diagnostic, &run.cancelled)?;
-    // Advance the candidate's baseline after our own successful registration. A
-    // later deletion/edit still conflicts; a retry of the same configuration does not.
-    let mut saved = candidate.clone();
-    saved.expected_fingerprint = Some(fingerprint(&saved.config)?);
-    run.candidates
-        .lock()
-        .map_err(|_| SetupError::new("setup.probe-failed"))?
-        .insert(saved.id.clone(), saved);
     let app = state.app()?;
     let diagnostics = state.agent_diagnostics()?;
     let config = app
@@ -584,32 +579,59 @@ fn probe_candidate(
     Ok(())
 }
 
-fn report_candidate_error(
+fn publish_candidate_unavailable(
     run: &SetupRun,
     candidate: &SetupCandidate,
-    error: anyhow::Error,
     channel: &Channel<SetupEvent>,
 ) {
     if !run.allows(&candidate.id) {
         return;
     }
-    let code = error
-        .downcast_ref::<SetupError>()
-        .map(|error| error.code.to_owned())
-        .unwrap_or_else(|| gold_band::acp::client::doctor_diagnostic_error(&error).code);
-    let entry = gold_band::agent_catalog::builtin_agent(candidate.id.as_str());
     publish(
         run,
         channel,
-        SetupEvent::Repair {
+        SetupEvent::Unavailable {
             generation: run.generation.clone(),
             agent_id: candidate.id.as_str().into(),
-            label: candidate.config.adapter.display_name.clone(),
-            code,
-            help_url: entry
-                .and_then(|entry| entry.website.clone().or_else(|| entry.repository.clone())),
         },
     );
+}
+
+fn publish_configured_candidate(
+    handle: &AppHandle,
+    run: &SetupRun,
+    candidate: &SetupCandidate,
+    channel: &Channel<SetupEvent>,
+) -> anyhow::Result<bool> {
+    if candidate.expected_fingerprint.is_none() {
+        return Ok(false);
+    }
+    let state = handle.state::<DesktopState>();
+    let _commit = state.agent_config_diagnostic_commit_guard()?;
+    if !run.allows(&candidate.id) {
+        return Ok(true);
+    }
+    let app = state.app()?;
+    let diagnostics = state.agent_diagnostics()?;
+    let current = app.managed_agents().get(&candidate.id);
+    let current_matches = current.map(fingerprint).transpose()?.as_deref()
+        == candidate.expected_fingerprint.as_deref();
+    if current_matches
+        && let Some(config) = current
+        && let CandidateDetection::Reuse(diagnostic) = candidate_detection(candidate, &diagnostics)
+    {
+        publish(
+            run,
+            channel,
+            SetupEvent::Ready {
+                generation: run.generation.clone(),
+                agent: managed_agent_vm(&candidate.id, config, Some(diagnostic)).into(),
+            },
+        );
+    } else {
+        publish_candidate_unavailable(run, candidate, channel);
+    }
+    Ok(true)
 }
 
 #[tauri::command]
@@ -623,7 +645,6 @@ pub fn start_setup_agent_detection(
         generation: uuid::Uuid::new_v4().to_string(),
         cancelled: Arc::new(AtomicBool::new(false)),
         suppressed: Mutex::new(BTreeSet::new()),
-        candidates: Mutex::new(BTreeMap::new()),
         channel: on_event.clone(),
     });
     {
@@ -657,14 +678,17 @@ pub fn start_setup_agent_detection(
                     .into_iter()
                     .map(|candidate| (candidate.id.clone(), candidate))
                     .collect();
-                *run.candidates
-                    .lock()
-                    .map_err(|_| SetupError::new("setup.probe-failed"))? = batch.clone();
                 let ids: Vec<_> = batch.keys().cloned().collect();
                 for_each_diagnostic_agent(&ids, |id| {
                     let candidate = &batch[id];
-                    if let Err(error) = probe_candidate(&handle, &run, candidate, &on_event) {
-                        report_candidate_error(&run, candidate, error, &on_event);
+                    match publish_configured_candidate(&handle, &run, candidate, &on_event) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            if probe_candidate(&handle, &run, candidate, &on_event).is_err() {
+                                publish_candidate_unavailable(&run, candidate, &on_event);
+                            }
+                        }
+                        Err(_) => publish_candidate_unavailable(&run, candidate, &on_event),
                     }
                 });
                 publish(
@@ -726,41 +750,6 @@ pub fn cancel_setup_detection(
         state.setup_active.store(false, Ordering::Release);
     }
     Ok(())
-}
-
-#[tauri::command]
-pub async fn retry_setup_agent(
-    handle: AppHandle,
-    generation: String,
-    agent_id: String,
-    executable_path: Option<String>,
-    on_event: Channel<SetupEvent>,
-) -> CommandResult<()> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let run = handle
-            .state::<SetupController>()
-            .current(&generation)
-            .map_err(command_error)?;
-        let id: ManagedAgentId = agent_id.parse().map_err(command_error)?;
-        let mut candidate = run
-            .candidates
-            .lock()
-            .map_err(|_| command_error(SetupError::new("setup.probe-failed").into()))?
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| command_error(SetupError::new("setup.agent-unavailable").into()))?;
-        // Only this explicitly chosen path may differ from the captured baseline.
-        // Registration compares that baseline again before updating the instance.
-        if executable_path.is_some() {
-            candidate.config.executable_path = executable_path;
-        }
-        if let Err(error) = probe_candidate(&handle, &run, &candidate, &on_event) {
-            report_candidate_error(&run, &candidate, error, &on_event);
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|error| command_error(error.into()))?
 }
 
 #[tauri::command]

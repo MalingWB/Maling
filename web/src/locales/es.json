@@ -3307,15 +3307,12 @@
     "exit": "Salir de la configuración",
     "progress": "Progreso",
     "checking": "Comprobando el entorno…",
-    "runtimeVersion": "Node.js recomendado: {{version}}; compatible: {{ranges}}",
+    "runtimeVersion": "Node.js recomendado: {{version}}; rangos verificados: {{ranges}}",
     "recheck": "Comprobar de nuevo",
     "installGuide": "Guía oficial de instalación",
     "discovering": "Comprobando Agents locales…",
     "discovered": "{{count}} Agents disponibles detectados",
     "noAgents": "No se detectó ningún Agent disponible. Instala un Agent o inicia sesión y vuelve a comprobarlo.",
-    "agentRepairs": "Agents que requieren atención",
-    "retryAgent": "Comprobar de nuevo",
-    "chooseProgram": "Elegir programa",
     "defaultAgent": "Agent predeterminado",
     "chooseAgent": "Elige un Agent disponible",
     "defaultModel": "Modelo predeterminado",
@@ -3354,7 +3351,7 @@
     },
     "descriptions": {
       "git": "Git proporciona control de versiones. Puedes instalarlo más tarde.",
-      "runtime": "Node.js, npm y npx deben superar la comprobación. Comprueba de nuevo tras instalar.",
+      "runtime": "Node.js, npm y npx deben funcionar correctamente y ser compatibles entre sí. Las versiones estables fuera de los rangos verificados muestran una advertencia, pero no bloquean la configuración.",
       "agent": "Los Agents disponibles se guardan automáticamente. Elige el modelo predeterminado, revisa y aplícalo a los workflows integrados."
     },
     "status": {
@@ -3402,7 +3399,7 @@
     "environmentHelp": {
       "missing": "No se encontró esta herramienta. Sigue la guía oficial de instalación y vuelve a comprobar.",
       "unsupported": "Instala una versión compatible siguiendo la guía oficial y vuelve a comprobar.",
-      "unverified": "Esta versión es más reciente que el rango verificado y aún no se ha validado. Usa una versión recomendada o espera al soporte y vuelve a comprobar.",
+      "unverified": "Esta versión estable está fuera de los rangos verificados actualmente, pero la cadena de herramientas detectada es compatible, así que puedes continuar. Siempre que sea posible, usa una versión LTS verificada.",
       "incompatible": "La combinación de entorno detectada es incompatible. Revisa las rutas de instalación y vuelve a intentarlo.",
       "failed": "No se pudo completar la comprobación. Revisa la ruta del ejecutable, los permisos de acceso y la instalación y vuelve a intentarlo.",
       "timeout": "Se agotó el tiempo de comprobación. Reintenta; si persiste, comprueba si la herramienta se inicia correctamente.",

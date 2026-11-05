@@ -109,6 +109,15 @@ pub enum EnvironmentStatus {
     Cancelled,
 }
 
+impl EnvironmentStatus {
+    /// A stable version outside the verified policy window is a warning, not a
+    /// proof that the local toolchain cannot run. The joint runtime checks
+    /// below still have to confirm paths, versions and npm engines.
+    fn is_runtime_usable(self) -> bool {
+        matches!(self, Self::Ready | Self::Unverified)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentCheck {
@@ -526,7 +535,7 @@ pub fn check_environment(
     let node = results[1].1.as_ref();
     let npm = results[2].1.as_ref().and_then(|o| o.npm.as_ref());
     for index in 1..checks.len() {
-        if checks[index].status != EnvironmentStatus::Ready {
+        if !checks[index].status.is_runtime_usable() {
             continue;
         }
         let observed = results[index].1.as_ref();
@@ -583,7 +592,7 @@ pub fn check_environment(
     EnvironmentReport {
         runtime_ready: checks[1..]
             .iter()
-            .all(|check| check.status == EnvironmentStatus::Ready),
+            .all(|check| check.status.is_runtime_usable()),
         checks,
     }
 }

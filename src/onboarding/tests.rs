@@ -2,7 +2,7 @@ use super::{defaults::*, discovery::*, environment::EnvironmentReport, initializ
 use crate::{
     app::App,
     config::{ManagedAgentConfig, ProviderDiagnosticSnapshot, RuntimeConfig},
-    storage::{load_settings_file, save_settings_file, write_json},
+    storage::{load_settings_file, read_json, save_settings_file, write_json},
 };
 use std::{collections::BTreeMap, sync::atomic::AtomicBool};
 
@@ -575,6 +575,51 @@ fn setup_custom_candidate_paging_is_bounded_and_does_not_launch_adapters() {
     let (last, cursor) = candidates(&settings, cursor.as_deref()).unwrap();
     assert_eq!(last.len(), 10);
     assert!(cursor.is_none());
+}
+
+#[test]
+fn setup_reuses_only_matching_healthy_configured_agent_diagnostics() {
+    let (_temp, app, candidate, _) = fixture();
+    let settings = app.load_settings().unwrap();
+    let (batch, _) = candidates(&settings, None).unwrap();
+    let configured = batch.iter().find(|item| item.id == candidate.id).unwrap();
+    let path = app.paths.agent_diagnostics_file();
+    let persisted_before = std::fs::read(&path).unwrap();
+    let mut diagnostics: BTreeMap<crate::config::ManagedAgentId, ProviderDiagnosticSnapshot> =
+        read_json(&path).unwrap();
+
+    assert!(matches!(
+        candidate_detection(configured, &diagnostics),
+        CandidateDetection::Reuse(_)
+    ));
+    assert_eq!(std::fs::read(&path).unwrap(), persisted_before);
+
+    diagnostics.get_mut(&candidate.id).unwrap().available = false;
+    assert!(matches!(
+        candidate_detection(configured, &diagnostics),
+        CandidateDetection::Unavailable
+    ));
+    diagnostics.get_mut(&candidate.id).unwrap().available = true;
+    diagnostics
+        .get_mut(&candidate.id)
+        .unwrap()
+        .config_fingerprint = Some("stale".into());
+    assert!(matches!(
+        candidate_detection(configured, &diagnostics),
+        CandidateDetection::Unavailable
+    ));
+    diagnostics.remove(&candidate.id);
+    assert!(matches!(
+        candidate_detection(configured, &diagnostics),
+        CandidateDetection::Unavailable
+    ));
+
+    let (fresh, _) = candidates(&crate::config::SettingsConfig::default(), None).unwrap();
+    let unconfigured = fresh.iter().find(|item| item.id == candidate.id).unwrap();
+    assert!(matches!(
+        candidate_detection(unconfigured, &BTreeMap::new()),
+        CandidateDetection::Probe
+    ));
 }
 
 fn local_program(directory: &std::path::Path, name: &str) -> std::path::PathBuf {

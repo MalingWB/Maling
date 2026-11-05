@@ -3307,15 +3307,12 @@
     "exit": "Sair da configuração",
     "progress": "Progresso",
     "checking": "Verificando ambiente…",
-    "runtimeVersion": "Node.js recomendado: {{version}}; compatível: {{ranges}}",
+    "runtimeVersion": "Node.js recomendado: {{version}}; faixas verificadas: {{ranges}}",
     "recheck": "Verificar novamente",
     "installGuide": "Guia oficial de instalação",
     "discovering": "Verificando Agents locais…",
     "discovered": "{{count}} Agents disponíveis detectados",
     "noAgents": "Nenhum Agent disponível foi detectado. Instale ou entre em um Agent e verifique novamente.",
-    "agentRepairs": "Agents que precisam de atenção",
-    "retryAgent": "Verificar novamente",
-    "chooseProgram": "Escolher programa",
     "defaultAgent": "Agent padrão",
     "chooseAgent": "Escolha um Agent disponível",
     "defaultModel": "Modelo padrão",
@@ -3354,7 +3351,7 @@
     },
     "descriptions": {
       "git": "Git fornece controle de versão. Você pode instalá-lo depois.",
-      "runtime": "Node.js, npm e npx devem passar na verificação. Verifique novamente após instalar.",
+      "runtime": "Node.js, npm e npx precisam funcionar corretamente e ser compatíveis entre si. Versões estáveis fora das faixas verificadas exibem um aviso, mas não bloqueiam a configuração.",
       "agent": "Agents disponíveis são salvos automaticamente. Escolha o modelo padrão, revise e aplique aos workflows integrados."
     },
     "status": {
@@ -3402,7 +3399,7 @@
     "environmentHelp": {
       "missing": "Esta ferramenta não foi encontrada. Siga o guia oficial de instalação e verifique novamente.",
       "unsupported": "Instale uma versão compatível seguindo o guia oficial e verifique novamente.",
-      "unverified": "Esta versão é mais recente que a faixa verificada e ainda não foi validada. Use uma versão recomendada ou aguarde o suporte e verifique novamente.",
+      "unverified": "Esta versão estável está fora das faixas verificadas atualmente, mas o conjunto de ferramentas detectado é compatível, então você pode continuar. Prefira uma versão LTS verificada quando possível.",
       "incompatible": "A combinação de ambiente detectada é incompatível. Confira os caminhos de instalação e tente novamente.",
       "failed": "Não foi possível concluir a verificação. Confira o caminho do executável, as permissões de acesso e a instalação e tente novamente.",
       "timeout": "A verificação excedeu o tempo limite. Tente novamente; se persistir, confira se a ferramenta inicia corretamente.",

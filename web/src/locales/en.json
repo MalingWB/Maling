@@ -3307,15 +3307,12 @@
     "exit": "Exit setup",
     "progress": "Setup progress",
     "checking": "Checking environment…",
-    "runtimeVersion": "Recommended Node.js {{version}}; supported {{ranges}}",
+    "runtimeVersion": "Recommended Node.js {{version}}; verified ranges {{ranges}}",
     "recheck": "Check again",
     "installGuide": "Official installation guide",
     "discovering": "Checking local Agents…",
     "discovered": "{{count}} available Agents detected",
     "noAgents": "No available Agent was detected. Install or sign in to an Agent, then check again.",
-    "agentRepairs": "Agents that need attention",
-    "retryAgent": "Check again",
-    "chooseProgram": "Choose program",
     "defaultAgent": "Default Agent",
     "chooseAgent": "Choose an available Agent",
     "defaultModel": "Default model",
@@ -3354,7 +3351,7 @@
     },
     "descriptions": {
       "git": "Git provides version control. You can install it later.",
-      "runtime": "Node.js, npm and npx must all pass before continuing. Check again after installation.",
+      "runtime": "Node.js, npm, and npx must run correctly and be mutually compatible. Stable versions outside the verified ranges show a warning but do not block setup.",
       "agent": "Ready Agents are saved automatically. Choose your default model, then review and apply it to all built-in workflows."
     },
     "status": {
@@ -3402,7 +3399,7 @@
     "environmentHelp": {
       "missing": "This tool was not found. Follow the official installation guide, then check again.",
       "unsupported": "Install a supported version using the official guide, then check again.",
-      "unverified": "This version is newer than the verified range and has not been validated yet. Use a recommended version or wait for support, then check again.",
+      "unverified": "This stable version is outside the currently verified ranges, but the detected toolchain is compatible, so you can continue. Prefer a verified LTS version when practical.",
       "incompatible": "The detected runtime combination is incompatible. Check the installation paths and try again.",
       "failed": "The check could not finish. Check the executable path, access permissions and installation, then retry.",
       "timeout": "The check timed out. Retry; if it keeps timing out, check whether this tool starts correctly.",

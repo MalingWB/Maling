@@ -172,19 +172,28 @@ it('does not classify an interrupted Agent scan as an empty result', async () =>
   expect(host.textContent).toContain('Agent detection failed');
 });
 
-it('shows a newer unverified version instead of telling the user to downgrade', async () => {
+it('warns about a stable unverified Node version without blocking a compatible toolchain', async () => {
   const report = {
-    runtimeReady: false,
-    checks: [{ tool: 'npm' as const, status: 'unverified' as const, version: '13.0.0', executablePath: 'C:\\npm\\npm.cmd', nodeExecutablePath: null, error: { code: 'setup.runtime-version-unverified', params: { tool: 'npm', version: '13.0.0' } } }],
+    runtimeReady: true,
+    checks: [
+      { tool: 'git' as const, status: 'ready' as const, version: '2.53.0', executablePath: 'C:\\Git\\git.exe' },
+      { tool: 'node' as const, status: 'unverified' as const, version: '23.11.0', executablePath: 'C:\\Node\\node.exe', error: { code: 'setup.runtime-version-unverified', params: { tool: 'node', version: '23.11.0' } } },
+      { tool: 'npm' as const, status: 'ready' as const, version: '10.9.8', executablePath: 'C:\\Node\\npm.cmd', nodeExecutablePath: 'C:\\Node\\node.exe' },
+      { tool: 'npx' as const, status: 'ready' as const, version: '10.9.8', executablePath: 'C:\\Node\\npx.cmd', nodeExecutablePath: 'C:\\Node\\node.exe' },
+    ],
   };
   vi.spyOn(api, 'environment').mockResolvedValue(report);
-  await act(async () => root.render(<OnboardingPage api={api} status={status} onDone={done} onExit={() => {}} initialStep={2} />));
-  expect(api.start).not.toHaveBeenCalled();
-  expect(host.textContent).toContain('npm 13.0.0');
-  expect(host.textContent).toContain('Unverified version');
-  expect(host.textContent).toContain('newer than the verified range');
+  await render();
+  await click('Next');
+  expect(host.textContent).toContain('Node.js 23.11.0');
+  const warning = Array.from(host.querySelectorAll('span')).find((item) => item.textContent === 'Unverified version')!;
+  expect(warning.className).toContain('text-gold-warning');
+  expect(warning.className).not.toContain('text-destructive');
+  expect(host.textContent).toContain('outside the currently verified ranges');
   expect(host.textContent).not.toContain('Unsupported version');
-  expect(button('Preview changes').disabled).toBe(true);
+  expect(button('Next').disabled).toBe(false);
+  await click('Next');
+  expect(api.start).toHaveBeenCalledTimes(1);
 });
 
 it('rechecks a blocked runtime once and resumes Agent detection while rejecting the old run', async () => {
@@ -274,39 +283,22 @@ it('marks Agent detection complete before model and permission choices are fille
   expect(button('Preview changes').disabled).toBe(true);
 });
 
-it('shows failed Agents with retry and executable-path repair actions', async () => {
-  const retry = vi.spyOn(api, 'retry');
-  const pickExecutable = vi.spyOn(api, 'pickExecutable').mockResolvedValue('C:\\Tools\\broken-agent.exe');
+it('does not expose unavailable Agents or repair actions', async () => {
   await thirdStep();
-  await act(async () => receive({ type: 'repair', generation: 'generation-1', agentId: 'broken', label: 'Broken Agent', code: 'setup.agent-preparation-required', helpUrl: null }));
+  await act(async () => receive({ type: 'unavailable', generation: 'generation-1', agentId: 'broken' }));
   await act(async () => receive({ type: 'finished', generation: 'generation-1', nextCursor: null }));
-  expect(host.textContent).toContain('Broken Agent');
-  await click('Choose program');
-  expect(pickExecutable).toHaveBeenCalledTimes(1);
-  expect(retry).toHaveBeenCalledWith('generation-1', 'broken', expect.any(Function), 'C:\\Tools\\broken-agent.exe');
-});
-
-it('keeps long localized Agent repair actions inside the narrow content width', async () => {
-  await thirdStep();
-  await act(async () => { await i18n.changeLanguage('pt-BR'); });
-  await act(async () => receive({ type: 'repair', generation: 'generation-1', agentId: 'broken', label: 'Broken Agent', code: 'setup.agent-preparation-required', helpUrl: null }));
-
-  const choose = button('Escolher programa');
-  const actions = choose.parentElement!;
-  const retry = Array.from(actions.querySelectorAll('button')).find((item) => item.textContent?.includes('Verificar novamente'))!;
-  expect(actions.className).toContain('w-full');
-  expect(actions.className).toContain('max-w-full');
-  expect(actions.className).not.toContain('shrink-0');
-  expect(choose.className).toContain('whitespace-normal');
-  expect(retry.className).toContain('whitespace-normal');
+  expect(host.textContent).not.toContain('Broken Agent');
+  expect(host.textContent).not.toContain('Agents that need attention');
+  expect(host.textContent).not.toContain('Choose program');
+  expect(button('Preview changes').disabled).toBe(true);
 });
 
 it('streams only saved healthy Agents into the selector and applies a reviewed request', async () => {
   await thirdStep();
-  await act(async () => receive({ type: 'repair', generation: 'generation-1', agentId: 'broken', label: 'Broken Agent', code: 'setup.agent-preparation-required', helpUrl: null }));
+  await act(async () => receive({ type: 'unavailable', generation: 'generation-1', agentId: 'broken' }));
   expect(host.querySelectorAll('select')[1].options.length).toBe(1);
   expect(Array.from(host.querySelectorAll('select')[1].options).some((option) => option.textContent?.includes('Broken Agent'))).toBe(false);
-  expect(host.textContent).toContain('Broken Agent');
+  expect(host.textContent).not.toContain('Broken Agent');
   expect(host.querySelector('details')).toBeNull();
   await ready(); await select(1, 'local-agent');
   await click('Preview changes');
@@ -444,7 +436,7 @@ it('submits current-model thought options without inventing an unobserved per-mo
 
 it('invalidates a selected failed Agent without silently choosing another', async () => {
   await thirdStep(); await ready(); await ready('other-agent'); await select(1, 'local-agent');
-  await act(async () => receive({ type: 'repair', generation: 'generation-1', agentId: 'local-agent', label: 'Local', code: 'setup.agent-unavailable', helpUrl: null }));
+  await act(async () => receive({ type: 'unavailable', generation: 'generation-1', agentId: 'local-agent' }));
   expect(host.querySelectorAll('select')[1].value).toBe('');
   expect(button('Preview changes').disabled).toBe(true);
 });

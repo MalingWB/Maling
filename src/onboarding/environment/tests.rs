@@ -271,6 +271,23 @@ fn newer_unverified_major_is_reported_separately_from_unsupported() {
     ] {
         let mut runner = FixtureRunner::healthy();
         runner.output(tool).stdout = newer.into();
+        if tool == EnvironmentTool::Node {
+            runner.output(tool).observations[0].node_version = newer.into();
+        } else {
+            runner.output(tool).observations[0]
+                .npm
+                .as_mut()
+                .unwrap()
+                .version = newer.into();
+            if tool == EnvironmentTool::Npx {
+                runner.output(EnvironmentTool::Npm).stdout = newer.into();
+                runner.output(EnvironmentTool::Npm).observations[0]
+                    .npm
+                    .as_mut()
+                    .unwrap()
+                    .version = newer.into();
+            }
+        }
         let check = runner
             .report()
             .checks
@@ -293,6 +310,23 @@ fn newer_unverified_major_is_reported_separately_from_unsupported() {
 
         let mut runner = FixtureRunner::healthy();
         runner.output(tool).stdout = older.into();
+        if tool == EnvironmentTool::Node {
+            runner.output(tool).observations[0].node_version = older.into();
+        } else {
+            runner.output(tool).observations[0]
+                .npm
+                .as_mut()
+                .unwrap()
+                .version = older.into();
+            if tool == EnvironmentTool::Npx {
+                runner.output(EnvironmentTool::Npm).stdout = older.into();
+                runner.output(EnvironmentTool::Npm).observations[0]
+                    .npm
+                    .as_mut()
+                    .unwrap()
+                    .version = older.into();
+            }
+        }
         let check = runner
             .report()
             .checks
@@ -309,6 +343,85 @@ fn newer_unverified_major_is_reported_separately_from_unsupported() {
             "setup.runtime-version-unsupported"
         );
     }
+}
+
+#[test]
+fn stable_unverified_node_can_continue_when_the_actual_npm_toolchain_is_compatible() {
+    let mut runner = FixtureRunner::healthy();
+    runner.output(EnvironmentTool::Node).stdout = "23.11.0".into();
+    runner.output(EnvironmentTool::Node).observations[0].node_version = "23.11.0".into();
+    for tool in [EnvironmentTool::Npm, EnvironmentTool::Npx] {
+        runner.output(tool).observations[0].node_version = "23.11.0".into();
+    }
+
+    let report = runner.report();
+
+    assert_eq!(
+        report
+            .checks
+            .iter()
+            .find(|check| check.tool == EnvironmentTool::Node)
+            .unwrap()
+            .status,
+        EnvironmentStatus::Unverified
+    );
+    assert!(report.runtime_ready, "{:#?}", report.checks);
+}
+
+#[test]
+fn stable_unverified_node_still_has_to_match_the_observed_runtime_path() {
+    let mut runner = FixtureRunner::healthy();
+    runner.output(EnvironmentTool::Node).stdout = "23.11.0".into();
+    runner.output(EnvironmentTool::Node).observations[0].node_version = "23.11.0".into();
+    runner.output(EnvironmentTool::Node).observations[0].node_path = "other-node".into();
+    for tool in [EnvironmentTool::Npm, EnvironmentTool::Npx] {
+        let observation = &mut runner.output(tool).observations[0];
+        observation.node_version = "23.11.0".into();
+        observation.node_path = "other-node".into();
+    }
+
+    let report = runner.report();
+    let node = report
+        .checks
+        .iter()
+        .find(|check| check.tool == EnvironmentTool::Node)
+        .unwrap();
+
+    assert_eq!(node.status, EnvironmentStatus::Incompatible);
+    assert_eq!(
+        node.error.as_ref().unwrap().params["reason"],
+        "node-path-mismatch"
+    );
+    assert!(!report.runtime_ready);
+}
+
+#[test]
+fn stable_unverified_npm_and_npx_can_continue_when_the_package_identity_matches() {
+    let mut runner = FixtureRunner::healthy();
+    for tool in [EnvironmentTool::Npm, EnvironmentTool::Npx] {
+        runner.output(tool).stdout = "13.0.0".into();
+        runner.output(tool).observations[0]
+            .npm
+            .as_mut()
+            .unwrap()
+            .version = "13.0.0".into();
+    }
+
+    let report = runner.report();
+
+    for tool in [EnvironmentTool::Npm, EnvironmentTool::Npx] {
+        assert_eq!(
+            report
+                .checks
+                .iter()
+                .find(|check| check.tool == tool)
+                .unwrap()
+                .status,
+            EnvironmentStatus::Unverified,
+            "{tool:?}"
+        );
+    }
+    assert!(report.runtime_ready, "{:#?}", report.checks);
 }
 
 #[test]
