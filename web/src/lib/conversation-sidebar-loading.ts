@@ -10,10 +10,10 @@ import type {
 } from '@/types';
 import { parseTimestamp } from '@/lib/datetime';
 
-export const CONVERSATION_TASK_PAGE_SIZE = 10;
-export const CONVERSATION_RUN_PAGE_SIZE = 10;
-/** Every sidebar section pages at the same documented 10-row size (plan 需求 3.1, 2026-11-03 统一). */
-export const CONVERSATION_PINNED_TASK_PAGE_SIZE = 10;
+export const CONVERSATION_TASK_PAGE_SIZE = 7;
+export const CONVERSATION_RUN_PAGE_SIZE = 7;
+/** Every sidebar section pages at the same documented 7-row size (2026-11-05 由 10 下调). */
+export const CONVERSATION_PINNED_TASK_PAGE_SIZE = 7;
 export const CONVERSATION_SIDEBAR_TASK_WINDOW = 120;
 export const CONVERSATION_SIDEBAR_RUN_WINDOW = 100;
 
