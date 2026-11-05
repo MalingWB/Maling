@@ -78,6 +78,7 @@ function sidebarVm(): ConversationSidebarVm {
     tasksByWorkspace: { 'workspace-a': [task('task-1'), task('task-2'), task('task-3')] },
     workspaceTaskPages: { 'workspace-a': { status: 'ready', nextCursor: null } },
     lastActiveWorkspaceId: 'workspace-a',
+    preferences: { 'workspaces.collapsed': false },
   };
 }
 

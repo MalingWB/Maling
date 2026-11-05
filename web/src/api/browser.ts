@@ -3004,7 +3004,7 @@ export const browserApi: RuntimeApi = {
       preferences: {},
     });
   },
-  getConversationTaskPage(projectId, cursor, limit = 10) {
+  getConversationTaskPage(projectId, cursor, limit = 7) {
     const previewTask: ConversationTaskRowVm = {
       projectId: 'default',
       taskId: 'mock-task',
@@ -3036,7 +3036,7 @@ export const browserApi: RuntimeApi = {
     }
     return Promise.resolve({ ...task, runs: [], runHistoryStatus: 'not-loaded', runsNextCursor: null });
   },
-  getConversationPinnedTaskPage(cursor, limit = 10) {
+  getConversationPinnedTaskPage(cursor, limit = 7) {
     const tasks = [...browserConversationTasks.values()].filter((task) => task.pinned);
     const start = cursor ? Math.max(0, tasks.findIndex((task) => task.taskId === cursor) + 1) : 0;
     const page = tasks.slice(start, start + limit);
@@ -3046,7 +3046,7 @@ export const browserApi: RuntimeApi = {
       errors: [],
     });
   },
-  getConversationRecentTaskPage(cursor, limit = 10) {
+  getConversationRecentTaskPage(cursor, limit = 7) {
     const tasks = [...browserConversationTasks.values()]
       .sort((left, right) => (right.lastActivityAt ?? '').localeCompare(left.lastActivityAt ?? ''));
     const start = cursor ? Math.max(0, tasks.findIndex((task) => task.taskId === cursor) + 1) : 0;
@@ -3057,7 +3057,7 @@ export const browserApi: RuntimeApi = {
       errors: [],
     });
   },
-  getConversationRunSummaryPage(projectId, taskId, cursor, limit = 10) {
+  getConversationRunSummaryPage(projectId, taskId, cursor, limit = 7) {
     const task = browserConversationTasks.get(taskId);
     const start = cursor ? Math.max(0, (task?.runs ?? []).findIndex((run) => run.runId === cursor) + 1) : 0;
     const runs = (task?.runs ?? []).slice(start, start + limit);

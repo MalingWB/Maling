@@ -72,9 +72,10 @@ afterEach(() => {
 });
 
 describe('ConversationSidebar recent section', () => {
-  it('sits below the workspace groups with exactly one separator per boundary', () => {
-    // Codex-style recency placement: workspaces first, recent conversations
-    // last; every adjacent section boundary carries exactly one separator.
+  it('renders as the last group of the shared scroll tree without structural separators', () => {
+    // 2026-11-05 IA: pinned / workspaces / recent are groups of one scrolling
+    // sidebar tree — no fixed-height recent tail, no boundary separators; the
+    // sticky group headings carry the visual structure.
     const vm = recentSidebar('cursor-2');
     vm.workspaces = [
       { projectId: 'project-a', workspacePath: '/a', name: 'Workspace A' },
@@ -83,37 +84,32 @@ describe('ConversationSidebar recent section', () => {
     const { container, root } = mount(vm, () => {});
     try {
       const recentHeading = container.querySelector('[data-conversation-sidebar-heading="recent"]')!;
-      const groups = container.querySelectorAll('[data-conversation-workspace-group]');
-      expect(groups.length).toBeGreaterThan(0);
-      expect(
-        (groups[groups.length - 1] as Node).compareDocumentPosition(recentHeading as Node)
-          & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-      // The recent section lives in its own pinned tail region with internal
-      // scrolling — any number of workspaces can never push it out of reach.
       const scrollRegion = container.querySelector('[data-conversation-sidebar-region="scrollable-conversations"]')!;
       const recentRegion = container.querySelector('[data-conversation-sidebar-region="recent"]')!;
-      expect(scrollRegion.contains(recentHeading)).toBe(false);
+      const workspacesRegion = container.querySelector('[data-conversation-sidebar-region="workspaces"]')!;
+      expect(scrollRegion.contains(recentHeading)).toBe(true);
       expect(recentRegion.contains(recentHeading)).toBe(true);
-      // The section keeps a stable share of the sidebar (about one third on
-      // common displays) instead of sizing with the conversation count:
-      // fixed-height via clamp, longer lists scroll internally.
-      const scroller = recentRegion.querySelector('.gold-themed-scrollbar')!;
-      expect(scroller.className).toContain('h-[clamp(9.5rem,33vh,26rem)]');
-      // No pinned section: only the workspaces|recent boundary carries one.
-      expect(container.querySelectorAll('[data-conversation-sidebar-separator]').length).toBe(1);
+      // Order: workspaces group first, recent group last.
+      expect(
+        workspacesRegion.compareDocumentPosition(recentRegion) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+      // No bounded internal scroller — recent rows flow with the whole tree.
+      expect(recentRegion.querySelector('.gold-themed-scrollbar')).toBeNull();
+      expect(recentRegion.querySelector('.h-\\[clamp')) .toBeNull();
+      // Group boundaries are headings, never separators.
+      expect(container.querySelectorAll('[data-conversation-sidebar-separator]').length).toBe(0);
     } finally {
       act(() => root.unmount());
     }
 
-    // A pinned section adds its own single boundary separator — never a
-    // second parallel line from the section wrappers themselves.
+    // A pinned section also becomes a plain group: heading present, still no
+    // structural separators.
     const withPins = recentSidebar(null);
     withPins.pinRefs = [{ projectId: 'project-a', taskId: 'task-1', taskUuid: 'uuid-1' } as never];
     const pinned = mount(withPins, () => {});
     try {
       expect(pinned.container.querySelector('[data-conversation-sidebar-heading="pinned"]')).toBeTruthy();
-      expect(pinned.container.querySelectorAll('[data-conversation-sidebar-separator]').length).toBe(2);
+      expect(pinned.container.querySelectorAll('[data-conversation-sidebar-separator]').length).toBe(0);
     } finally {
       act(() => pinned.root.unmount());
     }
@@ -232,6 +228,7 @@ describe('ConversationSidebar recent section', () => {
     const vm = recentSidebar(null);
     vm.workspaces = [{ projectId: 'project-a', workspacePath: '/a', name: 'Workspace A' }];
     vm.lastActiveWorkspaceId = 'project-a';
+    vm.preferences = { 'workspaces.collapsed': false };
     vm.tasksByWorkspace = {
       'project-a': [{
         projectId: 'project-a', taskId: 'task-1', taskUuid: 'uuid-1', title: 'Only', autoTitle: false,

@@ -131,7 +131,7 @@ describe('conversation visual hierarchy contract', () => {
     expect(sidebar).toContain('data-conversation-workspace-group={ws.projectId}');
     expect(sidebar).toContain('className="mb-2"');
     expect(sidebar).not.toContain('className="mb-4"');
-    expect(sidebar).toContain('text-sm font-semibold leading-5 text-sidebar-foreground/80');
+    expect(sidebar).toContain('text-sm font-medium leading-5 text-sidebar-foreground/80');
     expect(sidebar).toContain('truncate text-sm');
     expect(sidebar.match(/className="space-y-0\.5"/gu) ?? []).toHaveLength(2);
     expect(sidebar).toContain("bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground");

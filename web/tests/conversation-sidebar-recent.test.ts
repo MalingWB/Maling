@@ -209,15 +209,15 @@ describe('conversation sidebar recent tasks', () => {
     ]));
   });
 
-  it('keeps every sidebar section at the documented 10-row page size', () => {
-    expect(CONVERSATION_TASK_PAGE_SIZE).toBe(10);
-    expect(CONVERSATION_PINNED_TASK_PAGE_SIZE).toBe(10);
+  it('keeps every sidebar section at the documented 7-row page size', () => {
+    expect(CONVERSATION_TASK_PAGE_SIZE).toBe(7);
+    expect(CONVERSATION_PINNED_TASK_PAGE_SIZE).toBe(7);
     const app = readFileSync(path.resolve(__dirname, '../src/App.tsx'), 'utf8');
     expect(app).toContain('getConversationPinnedTaskPage(cursor, CONVERSATION_PINNED_TASK_PAGE_SIZE)');
     expect(app).toContain('getConversationTaskPage(projectId, cursor, CONVERSATION_TASK_PAGE_SIZE)');
     // The backend fallbacks must not disagree with the documented defaults.
     const viewModels = readFileSync(path.resolve(__dirname, '../../src-tauri/src/view_models_conversation.rs'), 'utf8');
-    expect(viewModels).toContain('pub const CONVERSATION_RUN_PAGE_DEFAULT_LIMIT: usize = 10;');
-    expect(viewModels).toContain('pub const CONVERSATION_PINNED_TASK_PAGE_DEFAULT_LIMIT: usize = 10;');
+    expect(viewModels).toContain('pub const CONVERSATION_RUN_PAGE_DEFAULT_LIMIT: usize = 7;');
+    expect(viewModels).toContain('pub const CONVERSATION_PINNED_TASK_PAGE_DEFAULT_LIMIT: usize = 7;');
   });
 });

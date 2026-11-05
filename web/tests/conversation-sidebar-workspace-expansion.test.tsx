@@ -57,6 +57,7 @@ function sidebarVm(): ConversationSidebarVm {
       'workspace-b': { status: 'ready', nextCursor: null },
     },
     lastActiveWorkspaceId: 'workspace-a',
+    preferences: { 'workspaces.collapsed': false },
   };
 }
 

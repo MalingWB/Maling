@@ -1447,16 +1447,15 @@ pub fn conversation_task_row_vm(
     ))
 }
 
-/// Sidebar task pages default to the documented 10-row page (docs:
-/// conversational-home.md 渐进加载契约; plan 需求 3.1). Callers may pass an
-/// explicit limit.
-pub const CONVERSATION_TASK_PAGE_DEFAULT_LIMIT: usize = 10;
-/// Run history pages moved to the same documented 10-row page (plan 需求 3.1:
-/// Task/Run 分页 24/20 统一降为 10).
-pub const CONVERSATION_RUN_PAGE_DEFAULT_LIMIT: usize = 10;
-/// The pinned section pages at the same documented 10-row size (plan 需求 3.1,
-/// unified 2026-11-03).
-pub const CONVERSATION_PINNED_TASK_PAGE_DEFAULT_LIMIT: usize = 10;
+/// Sidebar task pages default to the documented 7-row page (docs:
+/// conversational-home.md 渐进加载契约; 2026-11-05 由 10 下调). Callers may
+/// pass an explicit limit.
+pub const CONVERSATION_TASK_PAGE_DEFAULT_LIMIT: usize = 7;
+/// Run history pages moved to the same documented page size (2026-11-05 由 10 下调).
+pub const CONVERSATION_RUN_PAGE_DEFAULT_LIMIT: usize = 7;
+/// The pinned section pages at the same documented size (unified 2026-11-03;
+/// 2026-11-05 由 10 下调为 7).
+pub const CONVERSATION_PINNED_TASK_PAGE_DEFAULT_LIMIT: usize = 7;
 pub const CONVERSATION_SIDEBAR_PAGE_MAX_LIMIT: usize = 100;
 
 fn entity_sequence(id: &str, prefix: &str) -> Option<u32> {
