@@ -77,9 +77,16 @@ function stubElementVisible(visible: boolean) {
     return {
       top: visible ? 10 : 2000,
       bottom: visible ? 20 : 2010,
-      left: 0, right: 10, width: 10, height: 10, x: 0, y: 0, toJSON: () => ({}),
+      left: 0, right: 10, width: 10, height: 10, x: 0, y: 0,
     } as DOMRect;
   };
+}
+
+/** The first real user scroll arms the sentinel. */
+function armByUserScroll(target: EventTarget = window) {
+  act(() => {
+    target.dispatchEvent(new Event('scroll'));
+  });
 }
 
 beforeEach(() => {
@@ -94,11 +101,93 @@ afterEach(() => {
 });
 
 describe('useLoadMoreSentinel', () => {
-  it('loads the next page when the sentinel intersects the viewport', async () => {
-    const onLoadMore = vi.fn();
+  it('does not auto-load before the user scrolls even when the sentinel is already intersecting', async () => {
+    // Expanding a section renders the first page with the sentinel inside the
+    // viewport without any user scroll; IntersectionObserver fires immediately
+    // for such elements. The list must stay at one page until a real scroll.
+    const onLoadMore = vi.fn(() => Promise.resolve());
+    const { root } = mountSentinel(true, onLoadMore);
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+    try {
+      await act(async () => {
+        StubIntersectionObserver.callback?.([{ isIntersecting: true }]);
+        await settle();
+        await settle();
+      });
+      expect(onLoadMore).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('arms on the first scroll and then loads an already-visible sentinel', async () => {
+    stubElementVisible(true);
+    const onLoadMore = vi.fn(() => Promise.resolve());
+    const { root } = mountSentinel(true, onLoadMore);
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+    try {
+      await act(async () => {
+        StubIntersectionObserver.callback?.([{ isIntersecting: true }]);
+        await settle();
+      });
+      expect(onLoadMore).not.toHaveBeenCalled();
+      armByUserScroll();
+      await act(async () => {
+        await settle();
+      });
+      expect(onLoadMore.mock.calls.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('arms from a scroll inside a nested overflow container', async () => {
+    // scroll events do not bubble, but reach window capture listeners; the
+    // recent list scrolls in its own container and must still arm the hook.
+    stubElementVisible(true);
+    const onLoadMore = vi.fn(() => Promise.resolve());
+    const scroller = document.createElement('div');
+    scroller.style.overflowY = 'auto';
+    document.body.append(scroller);
+    const container = document.createElement('div');
+    scroller.append(container);
+    const root: Root = createRoot(container);
+    function Harness() {
+      const setSentinel = useLoadMoreSentinel(true, onLoadMore);
+      return <div ref={setSentinel} data-sentinel="true" />;
+    }
+    act(() => {
+      root.render(<Harness />);
+    });
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+    try {
+      await act(async () => {
+        StubIntersectionObserver.callback?.([{ isIntersecting: true }]);
+        await settle();
+      });
+      expect(onLoadMore).not.toHaveBeenCalled();
+      armByUserScroll(scroller);
+      await act(async () => {
+        await settle();
+      });
+      expect(onLoadMore.mock.calls.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      act(() => root.unmount());
+      document.body.replaceChildren();
+    }
+  });
+
+  it('loads the next page when the sentinel intersects after the user scrolled', async () => {
+    // Visible sentinel: the arm-triggered check itself performs the load; the
+    // load stays pending forever so the subsequent intersection cannot
+    // double-fire — exactly one request for one armed arrival.
+    stubElementVisible(true);
+    const onLoadMore = vi.fn(() => new Promise<void>(() => {}));
     const { root } = mountSentinel(true, onLoadMore);
     try {
       expect(StubIntersectionObserver.callback).toBeTruthy();
+      armByUserScroll();
+      expect(onLoadMore).toHaveBeenCalledTimes(1);
       await act(async () => {
         StubIntersectionObserver.callback?.([{ isIntersecting: true }]);
       });
@@ -114,6 +203,7 @@ describe('useLoadMoreSentinel', () => {
     try {
       // Disabled renders no sentinel element at all.
       expect(document.querySelector('[data-sentinel="true"]')).toBeNull();
+      armByUserScroll();
       expect(onLoadMore).not.toHaveBeenCalled();
     } finally {
       act(() => root.unmount());
@@ -131,6 +221,7 @@ describe('useLoadMoreSentinel', () => {
     const { root } = mountSentinel(true, onLoadMore);
     const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
     try {
+      armByUserScroll();
       await act(async () => {
         StubIntersectionObserver.callback?.([{ isIntersecting: true }]);
         await settle();
@@ -185,6 +276,7 @@ describe('useLoadMoreSentinel', () => {
     }
     const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
     try {
+      armByUserScroll();
       await act(async () => {
         StubIntersectionObserver.callback?.([{ isIntersecting: true }]);
         await settle();
@@ -212,6 +304,7 @@ describe('useLoadMoreSentinel', () => {
     const { root, setEnabled } = mountSwitchableSentinel(true, onLoadMore);
     const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
     try {
+      armByUserScroll();
       await act(async () => {
         StubIntersectionObserver.callback?.([{ isIntersecting: true }]);
       });
@@ -224,7 +317,7 @@ describe('useLoadMoreSentinel', () => {
         await settle();
       });
       // A stale scheduled re-check must consult the latest enabled value, not
-      // the one captured when the load started.
+      // the one captured when its load started.
       expect(onLoadMore).toHaveBeenCalledTimes(1);
     } finally {
       act(() => root.unmount());
