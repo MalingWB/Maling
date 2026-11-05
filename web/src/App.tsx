@@ -16,6 +16,7 @@ import {
   getConversationRun,
   getConversationRunMode,
   getConversationPinnedTaskPage,
+  getConversationRecentTaskPage,
   getConversationRunSummaryPage,
   getConversationSidebarBootstrap,
   getConversationTaskPage,
@@ -36,6 +37,8 @@ import {
   rerunConversationTask,
   removeRecentWorkspace,
   saveDesktopPreferences,
+  saveInterfaceZoomPercent,
+  saveWorkflowGraphDirection,
   saveDesktopAvatar,
   saveDesktopAvatarShape,
   saveDesktopWallpaperOpacity,
@@ -107,6 +110,9 @@ import { Shell, type ShellProps } from './components/Shell';
 import { BrandLoadingState } from '@/components/BrandLoadingState';
 import i18n, { displayAppError, loadI18nLanguage } from './i18n';
 import { useScheduledTaskCreatedNotice } from '@/lib/scheduled-task-created-notice';
+import { useDesktopZoomShortcuts } from '@/hooks/use-desktop-zoom-shortcuts';
+import { WorkflowGraphDirectionProvider } from '@/components/workflow-direction-preference';
+import type { WorkflowGraphDirectionPreference } from '@/types';
 import {
   conversationAcpRunRefreshStatus,
   isRuntimeControlledConversationLifecycle,
@@ -217,12 +223,17 @@ import {
   findConversationTask,
 } from '@/lib/conversation-task-state';
 import {
+  CONVERSATION_PINNED_TASK_PAGE_SIZE,
   CONVERSATION_RUN_PAGE_SIZE,
   CONVERSATION_TASK_PAGE_SIZE,
   ConversationSidebarSingleFlight,
   clearConversationLocatedTask,
   locateConversationSidebarTask,
   applyConversationPinnedTaskPage,
+  applyConversationRecentTaskPage,
+  beginConversationRecentTaskLoad,
+  failConversationRecentTaskLoad,
+  conversationSidebarBootstrapInvalidationKeys,
   applyConversationRunSummaryPage,
   applyConversationSidebarBootstrap as mergeConversationSidebarBootstrap,
   applyConversationTaskPage,
@@ -458,7 +469,7 @@ function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
 }
 
 /** Shell callbacks App keeps identity-stable across renders. */
-type ShellCommands = Required<Pick<ShellProps, 'onSelect' | 'onSelectConversation' | 'onToggleSidebar' | 'onOpenPersonalAnalytics' | 'onOpenReleaseNotes' | 'onChooseWorkspace' | 'onConversationNew' | 'onConversationSearch' | 'onConversationRetrySidebar' | 'onConversationRequestWorkspaceTasks' | 'onConversationRequestPinnedTasks' | 'onConversationRequestTaskRuns' | 'onConversationPauseRun' | 'onConversationRenameTask' | 'onConversationDeleteTask' | 'onConversationSetResident' | 'onConversationPinTask' | 'onConversationUnpinTask' | 'onConversationNewInWorkspace' | 'onConversationAddWorkspace' | 'onConversationRemoveWorkspace'>>;
+type ShellCommands = Required<Pick<ShellProps, 'onSelect' | 'onSelectConversation' | 'onToggleSidebar' | 'onOpenPersonalAnalytics' | 'onOpenReleaseNotes' | 'onChooseWorkspace' | 'onConversationNew' | 'onConversationSearch' | 'onConversationRetrySidebar' | 'onConversationRequestWorkspaceTasks' | 'onConversationRequestPinnedTasks' | 'onConversationRequestRecentTasks' | 'onConversationRequestTaskRuns' | 'onConversationPauseRun' | 'onConversationRenameTask' | 'onConversationDeleteTask' | 'onConversationSetResident' | 'onConversationPinTask' | 'onConversationUnpinTask' | 'onConversationNewInWorkspace' | 'onConversationAddWorkspace' | 'onConversationRemoveWorkspace'>>;
 
 export function App() {
   const { t } = useTranslation();
@@ -658,6 +669,12 @@ export function App() {
   }, [workspaceRevealRequest, revealConversationSidebarTask]);
 
   const applyConversationSidebarBootstrap = useCallback((bootstrap: ConversationSidebarBootstrapVm, projectId?: string | null) => {
+    // The workspace identity set changed: every in-flight page load (workspace,
+    // pinned, recent) paginates a voided premise and must no-op, and the
+    // bootstrap's own follow-up loads must not be deduped onto those flights.
+    for (const key of conversationSidebarBootstrapInvalidationKeys(conversationSidebarRef.current, bootstrap)) {
+      conversationSidebarFlights.invalidate(key);
+    }
     setConversationSidebar((current) => {
       const merged = mergeConversationSidebarBootstrap(current, bootstrap);
       const activeProjectId = projectId ?? activeWorkspaceIdRef.current ?? merged.lastActiveWorkspaceId ?? null;
@@ -665,7 +682,7 @@ export function App() {
       conversationSidebarRef.current = next;
       return next;
     });
-  }, []);
+  }, [conversationSidebarFlights]);
 
   const loadConversationWorkspaceTasks = useCallback((projectId: string, cursor?: string | null, refresh = false) => {
     const append = Boolean(cursor);
@@ -709,7 +726,7 @@ export function App() {
         return next;
       });
       try {
-        const page = await getConversationPinnedTaskPage(cursor, CONVERSATION_TASK_PAGE_SIZE);
+        const page = await getConversationPinnedTaskPage(cursor, CONVERSATION_PINNED_TASK_PAGE_SIZE);
         if (!conversationSidebarFlights.isCurrent(flightKey, generation)) return page;
         setConversationSidebar((current) => {
           const next = applyConversationPinnedTaskPage(current, page, append);
@@ -721,6 +738,37 @@ export function App() {
         if (!conversationSidebarFlights.isCurrent(flightKey, generation)) throw error;
         setConversationSidebar((current) => {
           const next = failConversationPinnedTaskLoad(current);
+          conversationSidebarRef.current = next;
+          return next;
+        });
+        throw error;
+      }
+    });
+  }, [conversationSidebarFlights]);
+
+  const loadConversationRecentTasks = useCallback((cursor?: string | null) => {
+    const append = Boolean(cursor);
+    const flightKey = 'recent';
+    return conversationSidebarFlights.run(flightKey, async () => {
+      const generation = conversationSidebarFlights.generation(flightKey);
+      setConversationSidebar((current) => {
+        const next = beginConversationRecentTaskLoad(current);
+        conversationSidebarRef.current = next;
+        return next;
+      });
+      try {
+        const page = await getConversationRecentTaskPage(cursor, CONVERSATION_TASK_PAGE_SIZE);
+        if (!conversationSidebarFlights.isCurrent(flightKey, generation)) return page;
+        setConversationSidebar((current) => {
+          const next = applyConversationRecentTaskPage(current, page, append);
+          conversationSidebarRef.current = next;
+          return next;
+        });
+        return page;
+      } catch (error) {
+        if (!conversationSidebarFlights.isCurrent(flightKey, generation)) throw error;
+        setConversationSidebar((current) => {
+          const next = failConversationRecentTaskLoad(current);
           conversationSidebarRef.current = next;
           return next;
         });
@@ -785,6 +833,7 @@ export function App() {
         ?? sidebarBootstrap.workspaces[0]?.projectId;
       if (projectId) void loadConversationWorkspaceTasks(projectId).catch(() => {});
       if (sidebarBootstrap.pinRefs.length > 0) void loadConversationPinnedTasks().catch(() => {});
+      void loadConversationRecentTasks().catch(() => {});
       return sidebarBootstrap;
     } catch (error) {
       if (!conversationSidebarFlights.isCurrent('bootstrap', generation)) throw error;
@@ -799,6 +848,7 @@ export function App() {
     applyConversationSidebarBootstrap,
     conversationSidebarFlights,
     loadConversationPinnedTasks,
+    loadConversationRecentTasks,
     loadConversationWorkspaceTasks,
   ]);
 
@@ -1035,6 +1085,12 @@ export function App() {
   }, []);
 
   const preferences = bootstrap?.preferences ?? defaultPreferences;
+  // Stepping stays gated until the persisted preferences hydrate: startup
+  // defaults would otherwise seed the step base and overwrite the persisted
+  // zoom with a value the user never saw.
+  useDesktopZoomShortcuts(preferences, (percent) => {
+    onSaveInterfaceZoomPercent(percent);
+  }, bootstrap != null);
   const updaterSettings = bootstrap?.updaterSettings ?? defaultUpdaterSettings;
   const metricsSettings = bootstrap?.metricsSettings ?? null;
   const updateStatus = bootstrap?.updateStatus ?? defaultUpdateStatus;
@@ -2127,6 +2183,54 @@ export function App() {
     preferenceSaveQueueRef.current = save;
   };
 
+  // Graph-control direction toggles are background gestures like the zoom
+  // shortcuts: a full preference round-trip could capture a stale
+  // personalization (e.g. a just-persisted shortcut zoom whose re-render has
+  // not landed) and silently revert it, so this persists exactly one field
+  // through the same serialized queue.
+  const onSaveWorkflowGraphDirection = (next: WorkflowGraphDirectionPreference) => {
+    const generation = ++preferenceSaveGenerationRef.current;
+    const save = preferenceSaveQueueRef.current
+      .catch(() => undefined)
+      .then(() => saveWorkflowGraphDirection(next))
+      .then((saved) => {
+        if (generation !== preferenceSaveGenerationRef.current) return;
+        applySavedPreferences(saved);
+      })
+      .catch((err) => {
+        if (generation === preferenceSaveGenerationRef.current) setError(displayAppError(t, err));
+      });
+    preferenceSaveQueueRef.current = save;
+  };
+
+  // Shortcut zoom commits persist exactly one field through the same serialized
+  // queue as full preference saves: the canonical personalization is read
+  // server-side, so startup defaults still live in the frontend (bootstrap IPC
+  // in flight) can never round-trip into storage. A background gesture must
+  // not flip the busy UI.
+  const onSaveInterfaceZoomPercent = (percent: number) => {
+    const generation = ++preferenceSaveGenerationRef.current;
+    const save = preferenceSaveQueueRef.current
+      .catch(() => undefined)
+      .then(() => saveInterfaceZoomPercent(percent))
+      .then((saved) => {
+        if (generation !== preferenceSaveGenerationRef.current) return;
+        applySavedPreferences(saved);
+      })
+      .catch((err) => {
+        if (generation === preferenceSaveGenerationRef.current) setError(displayAppError(t, err));
+      });
+    preferenceSaveQueueRef.current = save;
+  };
+  // Latest-ref keeps the context value stable so graph surfaces do not re-render
+  // on unrelated App state changes.
+  const saveWorkflowGraphDirectionRef = useRef(onSaveWorkflowGraphDirection);
+  saveWorkflowGraphDirectionRef.current = onSaveWorkflowGraphDirection;
+  const workflowGraphDirectionControl = useMemo(() => ({
+    preference: preferences.personalization.workflowGraphDirection,
+    setPreference: (next: WorkflowGraphDirectionPreference) => saveWorkflowGraphDirectionRef.current(next),
+  }), [preferences.personalization.workflowGraphDirection]);
+
   const applySavedPreferences = useCallback((saved: PreferencesVm) => {
     setBootstrap((current) => current ? { ...current, preferences: saved } : current);
   }, []);
@@ -2455,10 +2559,16 @@ export function App() {
     onConversationSearch: () => setConversationSearchOpen(true),
     onConversationRetrySidebar: () => { void loadConversationSidebarBootstrap().catch(() => {}); },
     onConversationRequestWorkspaceTasks: (projectId, cursor) => {
-      void loadConversationWorkspaceTasks(projectId, cursor).catch(() => {});
+      // The raw rejection reaches the auto-load sentinel (which stops its
+      // chain on failure); the failure state itself is already contained in
+      // the sidebar page status, and manual sidebar buttons swallow it.
+      return loadConversationWorkspaceTasks(projectId, cursor);
     },
     onConversationRequestPinnedTasks: (cursor) => {
-      void loadConversationPinnedTasks(cursor).catch(() => {});
+      void loadConversationPinnedTasks(cursor).catch(() => undefined);
+    },
+    onConversationRequestRecentTasks: (cursor) => {
+      return loadConversationRecentTasks(cursor);
     },
     onConversationRequestTaskRuns: (task, cursor) => {
       void loadConversationRunHistory(task, cursor).catch(() => {});
@@ -2476,6 +2586,7 @@ export function App() {
       invalidateConversationSidebarLoad(`workspace:${projectId}`);
       invalidateConversationSidebarLoad(`runs:${projectId}:${taskUuid ?? taskId}`);
       invalidateConversationSidebarLoad('pinned');
+      invalidateConversationSidebarLoad('recent');
       invalidateConversationSidebarLoad('bootstrap');
       if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
         conversationNavigationRequestRef.current += 1;
@@ -2541,16 +2652,19 @@ export function App() {
     },
     onConversationAddWorkspace: () => {
       invalidateConversationSidebarLoad('bootstrap');
+      invalidateConversationSidebarLoad('recent');
       addConversationWorkspace().then((sidebarBootstrap) => {
         applyConversationSidebarBootstrap(sidebarBootstrap);
         const projectId = sidebarBootstrap.lastActiveWorkspaceId ?? sidebarBootstrap.workspaces[0]?.projectId;
         if (projectId) void loadConversationWorkspaceTasks(projectId).catch(() => {});
+        void loadConversationRecentTasks().catch(() => {});
       }).catch(() => {});
     },
     onConversationRemoveWorkspace: (projectId) => {
       cancelConversationSidebarReveal();
       invalidateConversationSidebarLoad(`workspace:${projectId}`);
       invalidateConversationSidebarLoad('pinned');
+      invalidateConversationSidebarLoad('recent');
       invalidateConversationSidebarLoad('bootstrap');
       setError(null);
       return removeConversationWorkspace(projectId)
@@ -2575,6 +2689,7 @@ export function App() {
           if (transition.activeWorkspaceId) {
             void loadConversationWorkspaceTasks(transition.activeWorkspaceId).catch(() => {});
           }
+          void loadConversationRecentTasks().catch(() => {});
         })
         .catch((err) => {
           setError(displayAppError(t, err));
@@ -2584,6 +2699,7 @@ export function App() {
   });
 
   return (
+    <WorkflowGraphDirectionProvider value={workflowGraphDirectionControl}>
     <AvatarPreferencesProvider preferences={preferences.avatars}>
     <GitBranchPickerSnapshotProvider>
     <ConversationComposerDraftBoundary ref={composerDraftRef}>
@@ -2631,6 +2747,7 @@ export function App() {
       onConversationRetrySidebar={shellCommands.onConversationRetrySidebar}
       onConversationRequestWorkspaceTasks={shellCommands.onConversationRequestWorkspaceTasks}
       onConversationRequestPinnedTasks={shellCommands.onConversationRequestPinnedTasks}
+      onConversationRequestRecentTasks={shellCommands.onConversationRequestRecentTasks}
       onConversationRequestTaskRuns={shellCommands.onConversationRequestTaskRuns}
       onConversationPauseRun={shellCommands.onConversationPauseRun}
       onConversationRenameTask={shellCommands.onConversationRenameTask}
@@ -2683,6 +2800,7 @@ export function App() {
     </ConversationComposerDraftBoundary>
     </GitBranchPickerSnapshotProvider>
     </AvatarPreferencesProvider>
+    </WorkflowGraphDirectionProvider>
   );
 
   function renderConversationContent() {

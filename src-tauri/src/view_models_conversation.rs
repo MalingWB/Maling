@@ -1447,8 +1447,16 @@ pub fn conversation_task_row_vm(
     ))
 }
 
-pub const CONVERSATION_TASK_PAGE_DEFAULT_LIMIT: usize = 24;
-pub const CONVERSATION_RUN_PAGE_DEFAULT_LIMIT: usize = 20;
+/// Sidebar task pages default to the documented 10-row page (docs:
+/// conversational-home.md 渐进加载契约; plan 需求 3.1). Callers may pass an
+/// explicit limit.
+pub const CONVERSATION_TASK_PAGE_DEFAULT_LIMIT: usize = 10;
+/// Run history pages moved to the same documented 10-row page (plan 需求 3.1:
+/// Task/Run 分页 24/20 统一降为 10).
+pub const CONVERSATION_RUN_PAGE_DEFAULT_LIMIT: usize = 10;
+/// The pinned section pages at the same documented 10-row size (plan 需求 3.1,
+/// unified 2026-11-03).
+pub const CONVERSATION_PINNED_TASK_PAGE_DEFAULT_LIMIT: usize = 10;
 pub const CONVERSATION_SIDEBAR_PAGE_MAX_LIMIT: usize = 100;
 
 fn entity_sequence(id: &str, prefix: &str) -> Option<u32> {
@@ -1753,6 +1761,167 @@ pub fn conversation_pinned_task_page_vm(
         .flatten()
         .map(|pin| conversation_pin_cursor(&pin.project_id, &pin.task_id));
     ConversationPinnedTaskPageVm {
+        tasks,
+        next_cursor,
+        errors,
+    }
+}
+
+/// Stable pagination identity for the cross-workspace recent list. `project_id`
+/// participates because task ids (`task-001`) repeat across workspaces.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct ConversationRecentTaskPageCursor {
+    activity_millis: i64,
+    sequence: u32,
+    project_id: String,
+    task_id: String,
+}
+
+impl ConversationRecentTaskPageCursor {
+    /// Descending (activity, sequence, project, task) key shared by sort and
+    /// cursor filtering.
+    fn sort_key(&self) -> (i64, u32, &str, &str) {
+        (
+            self.activity_millis,
+            self.sequence,
+            &self.project_id,
+            &self.task_id,
+        )
+    }
+
+    fn is_after(&self, cursor: &Self) -> bool {
+        self.sort_key() < cursor.sort_key()
+    }
+}
+
+/// One recent conversation row projected across workspaces; flattens the shared
+/// task row and adds the owning workspace display name.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationRecentTaskRowVm {
+    #[serde(flatten)]
+    pub task: ConversationTaskRowVm,
+    pub workspace_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationRecentTaskPageVm {
+    pub tasks: Vec<ConversationRecentTaskRowVm>,
+    pub next_cursor: Option<String>,
+    pub errors: Vec<ConversationListItemErrorVm>,
+}
+
+/// Merges every workspace's tasks by durable activity time and pages the global
+/// order. Canonical identity still comes from each workspace's filesystem
+/// enumeration; a single broken workspace only yields a structured error.
+pub fn conversation_recent_task_page_vm(
+    sources: &[ConversationWorkspaceSource],
+    cursor: Option<&str>,
+    limit: usize,
+) -> ConversationRecentTaskPageVm {
+    let limit = limit.clamp(1, CONVERSATION_SIDEBAR_PAGE_MAX_LIMIT);
+    // An unparseable cursor restarts from the newest page; cursors are opaque
+    // tokens issued by this function, so a malformed one is a client bug.
+    let cursor = cursor
+        .map(serde_json::from_str::<ConversationRecentTaskPageCursor>)
+        .transpose()
+        .ok()
+        .flatten();
+    let mut errors = Vec::new();
+    // (source index, cursor key) for every readable workspace task.
+    let mut candidates: Vec<(usize, ConversationRecentTaskPageCursor)> = Vec::new();
+    for (index, source) in sources.iter().enumerate() {
+        let tasks_dir = source.app.paths.tasks_dir();
+        let canonical = match canonical_entity_ids(&tasks_dir, "task-", "task.json") {
+            Ok(ids) => ids,
+            Err(_) => {
+                errors.push(ConversationListItemErrorVm {
+                    code: "conversation.task-summary-unavailable".to_string(),
+                    params: serde_json::json!({ "projectId": source.workspace.project_id }),
+                });
+                continue;
+            }
+        };
+        let activity_by_task = gold_band::storage::sqlite::task_activities_in_task_root(&tasks_dir)
+            .into_iter()
+            .map(|entry| (entry.task_id, entry.updated_at))
+            .collect::<HashMap<_, _>>();
+        for (_, task_id) in canonical {
+            let Some(sequence) = entity_sequence(&task_id, "task-") else {
+                continue;
+            };
+            let activity_millis = activity_by_task
+                .get(&task_id)
+                .and_then(|value| conversation_timestamp_millis(value))
+                .unwrap_or(i64::MIN);
+            candidates.push((
+                index,
+                ConversationRecentTaskPageCursor {
+                    activity_millis,
+                    sequence,
+                    project_id: source.workspace.project_id.clone(),
+                    task_id,
+                },
+            ));
+        }
+    }
+    candidates.sort_unstable_by(|left, right| right.1.sort_key().cmp(&left.1.sort_key()));
+    let mut page: Vec<(usize, ConversationRecentTaskPageCursor)> = candidates
+        .into_iter()
+        .filter(|(_, key)| cursor.as_ref().is_none_or(|cursor| key.is_after(cursor)))
+        .take(limit + 1)
+        .collect();
+    let has_more = page.len() > limit;
+    page.truncate(limit);
+    // The page is consumed by the projection loop below; capture the page-end
+    // cursor first so `next_cursor` still has a row to point after.
+    let page_end_cursor = has_more
+        .then(|| page.last().map(|(_, key)| key.clone()))
+        .flatten();
+    let mut tasks = Vec::with_capacity(page.len());
+    // Outer `Some` marks an attempt; a failed read stays `Some(None)` so a
+    // broken source is not re-queried once per row of the page.
+    let mut unread_by_source: Vec<Option<Option<HashMap<String, ConversationTerminalResultVm>>>> =
+        (0..sources.len()).map(|_| None).collect();
+    for (index, key) in page {
+        let source = &sources[index];
+        match source.app.task_show(&key.task_id) {
+            Ok(task) => {
+                if unread_by_source[index].is_none() {
+                    unread_by_source[index] = Some(unread_terminal_results(&source.app).ok());
+                }
+                let unread = unread_by_source[index]
+                    .as_ref()
+                    .and_then(|unread| unread.as_ref())
+                    .and_then(|unread| unread.get(&key.task_id));
+                tasks.push(ConversationRecentTaskRowVm {
+                    task: conversation_task_summary_vm_from_task(
+                        &source.app,
+                        &source.workspace.project_id,
+                        &task,
+                        false,
+                        None,
+                        unread,
+                    ),
+                    workspace_name: source.workspace.name.clone(),
+                });
+            }
+            Err(_) => errors.push(ConversationListItemErrorVm {
+                code: "conversation.task-summary-unavailable".to_string(),
+                params: serde_json::json!({
+                    "projectId": key.project_id,
+                    "taskId": key.task_id,
+                }),
+            }),
+        }
+    }
+    let next_cursor = page_end_cursor
+        .map(|key| serde_json::to_string(&key))
+        .transpose()
+        .ok()
+        .flatten();
+    ConversationRecentTaskPageVm {
         tasks,
         next_cursor,
         errors,
@@ -4874,7 +5043,8 @@ mod tests {
         ConversationTaskActivityVm, ConversationWorkLocationVm, ConversationWorkspaceSource,
         ConversationWorkspaceVm, PROMPT_CONTENT_PREVIEW_CHARS, PromptActivity,
         attempt_control_mode, attempt_control_projection, auto_config_from_vm,
-        conversation_attempt_lifecycle_vm, conversation_run_summary_page_vm, conversation_run_vm,
+        conversation_attempt_lifecycle_vm, conversation_recent_task_page_vm,
+        conversation_run_summary_page_vm, conversation_run_vm,
         conversation_session_successors_from_state, conversation_sidebar_bootstrap_vm,
         conversation_sidebar_vm_from_sources, conversation_status_from_session,
         conversation_task_activity, conversation_task_page_vm, conversation_task_row_vm,
@@ -7463,6 +7633,70 @@ mod tests {
         assert!(page.next_cursor.is_some());
         assert!(page.tasks.iter().all(|task| task.runs.is_empty()));
         assert!(page.tasks.iter().all(|task| task.latest_run.is_some()));
+    }
+
+    fn recent_test_source(
+        project_id: &str,
+        name: &str,
+        repo: Utf8PathBuf,
+    ) -> ConversationWorkspaceSource {
+        ConversationWorkspaceSource {
+            workspace: ConversationWorkspaceVm {
+                project_id: project_id.to_string(),
+                workspace_path: repo.to_string(),
+                name: name.to_string(),
+            },
+            app: App::new(repo),
+        }
+    }
+
+    #[test]
+    fn recent_task_page_merges_workspaces_with_global_cursor_and_isolated_errors() {
+        let repo_a = temp_repo_root();
+        let repo_b = temp_repo_root();
+        let app_a = App::new(repo_a.clone());
+        let app_b = App::new(repo_b.clone());
+        // Without SQLite activity rows the merged order falls back to
+        // (sequence, project) descending — deterministic for assertions.
+        write_sidebar_task_fixture(&app_a, "task-001", "A1", "run-001", "2026-08-01T00:00:00Z");
+        write_sidebar_task_fixture(&app_b, "task-001", "B1", "run-001", "2026-08-02T00:00:00Z");
+        write_sidebar_task_fixture(&app_a, "task-002", "A2", "run-001", "2026-08-03T00:00:00Z");
+        // Invalid task.json yields a structured error without hiding other rows.
+        std::fs::create_dir_all(app_b.paths.task_dir("task-003").as_std_path()).unwrap();
+        std::fs::write(
+            app_b.paths.task_file("task-003").as_std_path(),
+            "{ not json",
+        )
+        .unwrap();
+
+        let sources = vec![
+            recent_test_source("workspace-a", "Workspace A", repo_a),
+            recent_test_source("workspace-b", "Workspace B", repo_b),
+        ];
+
+        let page = conversation_recent_task_page_vm(&sources, None, 2);
+        // Order (sequence, project) descending puts the broken task-003 first;
+        // its structured error consumes a page slot without hiding task-002.
+        assert_eq!(page.tasks.len(), 1);
+        assert_eq!(page.tasks[0].task.project_id, "workspace-a");
+        assert_eq!(page.tasks[0].task.task_id, "task-002");
+        assert_eq!(page.tasks[0].workspace_name, "Workspace A");
+        assert_eq!(page.errors.len(), 1);
+        assert_eq!(page.errors[0].code, "conversation.task-summary-unavailable");
+        assert_eq!(page.errors[0].params["taskId"].as_str(), Some("task-003"));
+        assert!(page.next_cursor.is_some());
+
+        // Page 2 continues the global order; the same task id in both workspaces
+        // stays distinct with project id breaking the tie.
+        let next = conversation_recent_task_page_vm(&sources, page.next_cursor.as_deref(), 2);
+        assert_eq!(next.tasks.len(), 2);
+        assert_eq!(next.tasks[0].task.project_id, "workspace-b");
+        assert_eq!(next.tasks[0].task.title, "B1");
+        assert_eq!(next.tasks[0].workspace_name, "Workspace B");
+        assert_eq!(next.tasks[1].task.project_id, "workspace-a");
+        assert_eq!(next.tasks[1].task.title, "A1");
+        assert!(next.errors.is_empty());
+        assert!(next.next_cursor.is_none(), "the merged list is exhausted");
     }
 
     #[test]

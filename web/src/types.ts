@@ -16,8 +16,9 @@ export interface WallpaperSchemePersonalization {
   image: WallpaperImagePreference;
   opacityPercent: number;
 }
+export type WorkflowGraphDirectionPreference = 'auto' | 'horizontal' | 'vertical';
 export interface PersonalizationPreference {
-  schemaVersion: 4;
+  schemaVersion: 5;
   typography: {
     ui: { fontStack: FontStackPreference; fontSize: FontSizePreference };
     editor: { fontStack: FontStackPreference; fontSize: FontSizePreference };
@@ -29,6 +30,10 @@ export interface PersonalizationPreference {
     agent: { image: AvatarPreference; shape: AvatarShapePreference };
     user: { image: AvatarPreference; shape: AvatarShapePreference };
   };
+  /** Interface zoom percent applied to the app webviews (50–250, default 100). */
+  interfaceZoomPercent: number;
+  /** Workflow graph layout direction preference; `auto` follows container aspect. */
+  workflowGraphDirection: WorkflowGraphDirectionPreference;
 }
 export type DesktopLanguage = 'zh-cn' | 'zh-tw' | 'en' | 'ja-jp' | 'ko-kr' | 'pt-br' | 'es';
 export type BrowserSearchEngine = 'baidu' | 'google' | 'bing';
@@ -2869,6 +2874,9 @@ export interface ConversationSidebarVm {
   pinRefs: PinRef[];
   pinnedTasks: ConversationTaskRowVm[];
   pinnedTaskPage: ConversationPageLoadVm;
+  // Cross-workspace recent conversations; shown for any workspace count.
+  recentTasks: ConversationRecentTaskRowVm[];
+  recentTaskPage: ConversationPageLoadVm;
   tasksByWorkspace: Record<string, ConversationTaskRowVm[]>;
   workspaceTaskPages: Record<string, ConversationPageLoadVm>;
   lastActiveWorkspaceId?: string | null;
@@ -2884,6 +2892,17 @@ export interface ConversationTaskPageVm {
 
 export interface ConversationPinnedTaskPageVm {
   tasks: ConversationTaskRowVm[];
+  nextCursor?: string | null;
+  errors: ConversationListItemErrorVm[];
+}
+
+/** Cross-workspace recent row: the shared task row plus the owning workspace name. */
+export interface ConversationRecentTaskRowVm extends ConversationTaskRowVm {
+  workspaceName: string;
+}
+
+export interface ConversationRecentTaskPageVm {
+  tasks: ConversationRecentTaskRowVm[];
   nextCursor?: string | null;
   errors: ConversationListItemErrorVm[];
 }

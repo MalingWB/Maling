@@ -3,8 +3,10 @@ import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Gl
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStableCallbacks } from '@/hooks/use-stable-callbacks';
-import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
+import { useLoadMoreSentinel } from '@/hooks/use-load-more-sentinel';
+import type { ConversationPage, ConversationRecentTaskRowVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
 import { saveConversationPreference } from '../../api';
+import { CONVERSATION_TASK_PAGE_SIZE } from '@/lib/conversation-sidebar-loading';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
@@ -22,6 +24,13 @@ import { AcpProcessingSpinner } from '@/components/acp/AcpProcessingSpinner';
 import { ResidentPin } from '@/components/conversation/ResidentPin';
 
 export const conversationSidebarActivityIconClass = 'animate-pulse';
+
+// Manual retry/load-more buttons already render the section's error state; the
+// request rejection exists for the auto-load sentinel, so manual requests
+// swallow it instead of surfacing unhandled rejections.
+function requestSidebarPage(request: () => unknown) {
+  Promise.resolve(request()).catch(() => {});
+}
 
 export function conversationSidebarTerminalResultDotClass(
   kind: NonNullable<ConversationTaskRowVm['unreadTerminalResult']>['kind'],
@@ -88,8 +97,10 @@ interface ConversationSidebarProps {
   onOpenProjectMemory?: (workspace: { projectId: string; name: string }) => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
   onRetryBootstrap: () => void;
-  onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void;
+  /** Rejects on failure so the auto-load sentinel can stop its chain. */
+  onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void | Promise<unknown>;
   onRequestPinnedTasks: (cursor?: string | null) => void;
+  onRequestRecentTasks: (cursor?: string | null) => void | Promise<unknown>;
   onRequestTaskRuns: (task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>, cursor?: string | null) => void;
 }
 
@@ -117,6 +128,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   onRetryBootstrap,
   onRequestWorkspaceTasks,
   onRequestPinnedTasks,
+  onRequestRecentTasks,
   onRequestTaskRuns,
 }: ConversationSidebarProps) {
   const readOnly = useReadOnlyExperience();
@@ -124,6 +136,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Record<string, boolean>>({});
   const [expandedTaskKeys, setExpandedTaskKeys] = useState<ConversationSidebarExpandedTaskKeys>({ pinned: null, workspace: null });
   const [activeRunListScope, setActiveRunListScope] = useState<ConversationSidebarRunListScope>('workspace');
+  const [recentCollapsed, setRecentCollapsed] = useState(false);
   const [pinnedCollapsed, setPinnedCollapsed] = useState(() => {
     const pref = vm.preferences?.['pinned.collapsed'];
     if (typeof pref === 'boolean') return pref;
@@ -257,7 +270,9 @@ export const ConversationSidebar = memo(function ConversationSidebar({
       const expanding = !prev[projectId];
       if (expanding) {
         const status = vm.workspaceTaskPages[projectId]?.status ?? 'not-loaded';
-        if (status === 'not-loaded' || status === 'error') onRequestWorkspaceTasks(projectId);
+        if (status === 'not-loaded' || status === 'error') {
+          requestSidebarPage(() => onRequestWorkspaceTasks(projectId));
+        }
       }
       return { ...prev, [projectId]: expanding };
     });
@@ -441,7 +456,8 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           }}
         >
         {vm.pinRefs.length > 0 || vm.pinnedTasks.length > 0 ? (
-          <div className="my-1.5 border-y border-border/55 py-2">
+          <>
+          <div className="py-2">
             <button
               type="button"
               data-conversation-sidebar-heading="pinned"
@@ -514,9 +530,11 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               </div>
             ) : null}
           </div>
-        ) : (
-          <Separator className="mx-1 my-1.5 opacity-45" />
-        )}
+          {/* One separator per adjacent section boundary — never parallel
+              lines from both section wrappers. */}
+          <Separator data-conversation-sidebar-separator className="mx-1 my-1.5 opacity-45" />
+          </>
+        ) : null}
 
         {/* Workspace sections — scrollable with sticky headers */}
           <div className="pt-2">
@@ -617,7 +635,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                       </div>
                     ) : null}
                     {vm.workspaceTaskPages[ws.projectId]?.status === 'error' ? (
-                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={() => onRequestWorkspaceTasks(ws.projectId)}>
+                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestWorkspaceTasks(ws.projectId))}>
                         {t('conversation.sidebar.retryConversations')}
                       </Button>
                     ) : null}
@@ -629,10 +647,20 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     ) : null}
                     {(vm.workspaceTaskPages[ws.projectId]?.status === 'ready' && vm.workspaceTaskPages[ws.projectId]?.nextCursor)
                       || ((vm.workspaceTaskPages[ws.projectId]?.status ?? 'not-loaded') === 'not-loaded' && vm.tasksByWorkspace[ws.projectId]?.length) ? (
-                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={() => onRequestWorkspaceTasks(ws.projectId, vm.workspaceTaskPages[ws.projectId]?.nextCursor)}>
+                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestWorkspaceTasks(ws.projectId, vm.workspaceTaskPages[ws.projectId]?.nextCursor))}>
                         {t('conversation.sidebar.loadMoreConversations')}
                       </Button>
                     ) : null}
+                    {vm.workspaceTaskPages[ws.projectId]?.status === 'ready'
+                      && !vm.workspaceTaskPages[ws.projectId]?.nextCursor
+                      && (vm.tasksByWorkspace[ws.projectId] ?? []).length >= CONVERSATION_TASK_PAGE_SIZE ? (
+                      <div className="px-3 py-1 text-xs text-muted-foreground/70">{t('conversation.sidebar.allConversationsShown')}</div>
+                    ) : null}
+                    <LoadMoreSentinel
+                      marker={`workspace:${ws.projectId}`}
+                      enabled={vm.workspaceTaskPages[ws.projectId]?.status === 'ready' && Boolean(vm.workspaceTaskPages[ws.projectId]?.nextCursor)}
+                      onLoadMore={() => onRequestWorkspaceTasks(ws.projectId, vm.workspaceTaskPages[ws.projectId]?.nextCursor)}
+                    />
                   </div>
                 ) : null}
               </div>
@@ -657,6 +685,78 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             ) : null}
           </div>
         </ScrollArea>
+
+        {/* Cross-workspace recent section pinned at the sidebar tail so any
+            number of workspaces can never push it out of reach; a bounded
+            internal scroll keeps long recent lists from stealing the
+            workspace area. Always visible — with a single workspace it simply
+            mirrors that workspace's recent tasks. */}
+        <div data-conversation-sidebar-region="recent" className="shrink-0">
+          <Separator data-conversation-sidebar-separator className="mx-1 my-1.5 opacity-45" />
+          {/* Plain overflow container, not ScrollArea: the radix viewport is
+              percentage-sized and collapses under a max-height-only parent
+              (the sidebar's main list works because its flex column grants a
+              definite height). The section keeps a stable share of the
+              sidebar — clamp(9.5rem, 33vh, 26rem), roughly one third on
+              common displays — so its footprint does not jump with the
+              conversation count (Codex-style fixed placement); lists longer
+              than the share scroll internally. No top
+              padding: a padded scrollport parks its sticky child at the
+              content-box top, leaving a strip where scrolling rows peek out
+              above the heading. */}
+          <div className="gold-themed-scrollbar h-[clamp(9.5rem,33vh,26rem)] overflow-y-auto px-0.5 pb-1">
+            <button
+              type="button"
+              data-conversation-sidebar-heading="recent"
+              className="sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1 text-left text-sm font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
+              onClick={() => setRecentCollapsed((collapsed) => !collapsed)}
+            >
+              <ChevronDown className={cn('size-3 transition-transform', recentCollapsed && '-rotate-90')} />
+              {t('conversation.sidebar.recent')}
+            </button>
+            {!recentCollapsed ? (
+              <div className="mt-1 space-y-0.5">
+                {(vm.recentTasks ?? []).map((row) => (
+                  <RecentTaskRow
+                    key={`recent-${conversationSidebarTaskKey(row.projectId, row.taskId, row.taskUuid)}`}
+                    row={row}
+                    isActive={active.kind === 'conversation-run' && active.projectId === row.projectId && active.taskId === row.taskId}
+                    onSelect={onSelect}
+                    t={t}
+                  />
+                ))}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'loading' ? (
+                  <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
+                    <Loader2 className="size-3 animate-spin" />
+                    {t('conversation.sidebar.loadingRecent')}
+                  </div>
+                ) : null}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'error' ? (
+                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestRecentTasks())}>
+                    {t('conversation.sidebar.retryRecent')}
+                  </Button>
+                ) : null}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && (vm.recentTasks ?? []).length === 0 && !vm.recentTaskPage?.nextCursor ? (
+                  <div className="px-2 py-1 text-xs text-muted-foreground">{t('conversation.sidebar.noRecent')}</div>
+                ) : null}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && vm.recentTaskPage?.nextCursor ? (
+                  <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestRecentTasks(vm.recentTaskPage?.nextCursor))}>
+                    {t('conversation.sidebar.loadMoreRecent')}
+                  </Button>
+                ) : null}
+                {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && !vm.recentTaskPage?.nextCursor
+                  && (vm.recentTasks ?? []).length >= CONVERSATION_TASK_PAGE_SIZE ? (
+                  <div className="px-2 py-1 text-xs text-muted-foreground/70">{t('conversation.sidebar.allRecentShown')}</div>
+                ) : null}
+                <LoadMoreSentinel
+                  marker="recent"
+                  enabled={(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && Boolean(vm.recentTaskPage?.nextCursor)}
+                  onLoadMore={() => onRequestRecentTasks(vm.recentTaskPage?.nextCursor)}
+                />
+              </div>
+            ) : null}
+          </div>
+        </div>
 
 
         {/* Settings */}
@@ -1155,6 +1255,104 @@ const TaskRow = memo(function TaskRow({
     </AlertDialog>
     </>
   );
+});
+
+// ── Recent (cross-workspace) row ──
+
+/** Lightweight navigation row for the merged recent list. Full row interactions
+ *  (runs, rename, pin) stay in the workspace and pinned sections. */
+const RecentTaskRow = memo(function RecentTaskRow({
+  row,
+  isActive,
+  onSelect,
+  t,
+}: {
+  row: ConversationRecentTaskRowVm;
+  isActive: boolean;
+  onSelect: (page: ConversationPage) => void;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  const useAgentIdentity = conversationSidebarIdentityKind(row) === 'agent-icon';
+  const latestRun = row.latestRun;
+  const latestColor = latestRun ? conversationSidebarRunStatusClass(latestRun) : 'bg-muted-foreground/30';
+  const relativeTime = row.lastActivityAt && (row.runMode === 'direct' || row.latestRun?.status !== 'running')
+    ? formatCompactRelativeTime(row.lastActivityAt, t('conversation.runtime.justNow'))
+    : null;
+  const recentRowBody = (
+    <>
+      <span className="flex size-4 shrink-0 items-center justify-center">
+        {useAgentIdentity && row.agentIdentity ? (
+          <img src={agentIconSrc(row.agentIdentity.iconKey)} alt="" className={agentIconClass(row.agentIdentity.iconKey, 'size-3')} />
+        ) : (
+          <span className={cn('size-1.5 rounded-full', latestColor)} />
+        )}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-sm">{row.title}</span>
+      <span className="shrink-0 truncate text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">
+        {relativeTime ? `${row.workspaceName} · ${relativeTime}` : row.workspaceName}
+      </span>
+    </>
+  );
+  // Rows without a run have nowhere to navigate: render a static row instead
+  // of a dead clickable button with hover/cursor affordances.
+  if (!latestRun) {
+    return (
+      <div
+        data-recent-task-id={row.taskId}
+        data-recent-task-project={row.projectId}
+        className={cn(
+          'flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sidebar-foreground/70',
+          isActive && 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground',
+        )}
+      >
+        {recentRowBody}
+      </div>
+    );
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          data-recent-task-id={row.taskId}
+          data-recent-task-project={row.projectId}
+          className={cn(
+            'flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sidebar-foreground',
+            isActive ? 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground' : 'cursor-pointer hover:bg-sidebar-accent',
+          )}
+          onClick={() => {
+            onSelect({
+              kind: 'conversation-run',
+              projectId: row.projectId,
+              taskId: row.taskId,
+              taskUuid: row.taskUuid,
+              runId: latestRun.runId,
+            });
+          }}
+        >
+          {recentRowBody}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" className="max-w-[min(36rem,calc(100vw-2rem))] break-all">
+        {row.workspaceName} · {row.title}
+      </TooltipContent>
+    </Tooltip>
+  );
+});
+
+/** Invisible tail sentinel: scrolls into view -> load the next page. */
+const LoadMoreSentinel = memo(function LoadMoreSentinel({
+  enabled,
+  onLoadMore,
+  marker,
+}: {
+  enabled: boolean;
+  onLoadMore: () => void;
+  marker: string;
+}) {
+  const setSentinel = useLoadMoreSentinel(enabled, onLoadMore);
+  if (!enabled) return null;
+  return <div ref={setSentinel} data-load-more-sentinel={marker} aria-hidden className="h-px" />;
 });
 
 // ── Sidebar Button ──

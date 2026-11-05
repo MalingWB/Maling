@@ -3,6 +3,7 @@ import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversa
 import type { AcpSessionUpdatedEventVm, ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm, ImChannelCapabilitiesVm } from '../types';
 import { browserPreviewState } from './browserState';
+import { clampInterfaceZoomPercent } from '@/lib/desktop-zoom';
 import { localTimestamp, toRoundSelectionInput } from './shared';
 import { scheduledScheduleSpecFromInput } from '@/lib/scheduled-task-authoring';
 import { normalizeFontCatalogFamilies } from '@/lib/font-families';
@@ -2613,6 +2614,29 @@ export const browserApi: RuntimeApi = {
     const preferences = browserPreviewState.setPreferences({ ...current, appearance, personalization, language, useLocalClaude, verboseLogging, browser });
     return Promise.resolve(preferences);
   },
+  applyDesktopZoom(percent: number) {
+    // Browser preview has no webview zoom; echo the clamped value back.
+    return Promise.resolve(clampInterfaceZoomPercent(percent));
+  },
+  saveInterfaceZoomPercent(percent: number) {
+    // Browser preview has no webview zoom; record the percent on the preview
+    // preferences instead.
+    const current = browserPreviewState.getPreferences();
+    const preferences = browserPreviewState.setPreferences({
+      ...current,
+      personalization: { ...current.personalization, interfaceZoomPercent: clampInterfaceZoomPercent(percent) },
+    });
+    return Promise.resolve(preferences);
+  },
+  saveWorkflowGraphDirection(direction: import('../types').WorkflowGraphDirectionPreference) {
+    // Browser preview records the direction on the preview preferences.
+    const current = browserPreviewState.getPreferences();
+    const preferences = browserPreviewState.setPreferences({
+      ...current,
+      personalization: { ...current.personalization, workflowGraphDirection: direction },
+    });
+    return Promise.resolve(preferences);
+  },
   saveDesktopAvatar(input) {
     const current = browserPreviewState.getPreferences();
     const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -2980,7 +3004,7 @@ export const browserApi: RuntimeApi = {
       preferences: {},
     });
   },
-  getConversationTaskPage(projectId, cursor, limit = 24) {
+  getConversationTaskPage(projectId, cursor, limit = 10) {
     const previewTask: ConversationTaskRowVm = {
       projectId: 'default',
       taskId: 'mock-task',
@@ -3012,7 +3036,7 @@ export const browserApi: RuntimeApi = {
     }
     return Promise.resolve({ ...task, runs: [], runHistoryStatus: 'not-loaded', runsNextCursor: null });
   },
-  getConversationPinnedTaskPage(cursor, limit = 24) {
+  getConversationPinnedTaskPage(cursor, limit = 10) {
     const tasks = [...browserConversationTasks.values()].filter((task) => task.pinned);
     const start = cursor ? Math.max(0, tasks.findIndex((task) => task.taskId === cursor) + 1) : 0;
     const page = tasks.slice(start, start + limit);
@@ -3022,7 +3046,18 @@ export const browserApi: RuntimeApi = {
       errors: [],
     });
   },
-  getConversationRunSummaryPage(projectId, taskId, cursor, limit = 20) {
+  getConversationRecentTaskPage(cursor, limit = 10) {
+    const tasks = [...browserConversationTasks.values()]
+      .sort((left, right) => (right.lastActivityAt ?? '').localeCompare(left.lastActivityAt ?? ''));
+    const start = cursor ? Math.max(0, tasks.findIndex((task) => task.taskId === cursor) + 1) : 0;
+    const page = tasks.slice(start, start + limit);
+    return Promise.resolve({
+      tasks: page.map((task) => ({ ...task, workspaceName: 'Default Workspace' })),
+      nextCursor: start + limit < tasks.length ? page.at(-1)?.taskId ?? null : null,
+      errors: [],
+    });
+  },
+  getConversationRunSummaryPage(projectId, taskId, cursor, limit = 10) {
     const task = browserConversationTasks.get(taskId);
     const start = cursor ? Math.max(0, (task?.runs ?? []).findIndex((run) => run.runId === cursor) + 1) : 0;
     const runs = (task?.runs ?? []).slice(start, start + limit);

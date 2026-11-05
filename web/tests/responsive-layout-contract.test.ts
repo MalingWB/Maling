@@ -279,7 +279,9 @@ describe('responsive desktop layout contracts', () => {
     expect(runModeManagementSource).toContain('className="min-h-0 min-w-0 flex-1 overflow-hidden"');
     expect(runModeManagementSource).toContain('className="h-full min-h-0"');
     expect(workflowEditorSource).toContain('<ScrollArea className="size-full">');
-    expect(workflowEditorSource).toContain("cn('@container/workflow-editor h-[clamp(520px,calc(100dvh-11rem),760px)] min-h-0', className)");
+    expect(workflowEditorSource).toContain("'@container/workflow-editor min-h-0',");
+    expect(workflowEditorSource).toContain(": 'h-[clamp(520px,calc(100dvh-11rem),760px)]',");
+    expect(workflowEditorSource).toContain("',\n          className,");
   });
 
   it('keeps raw frame search separate while filters wrap horizontally inside the workspace width', () => {

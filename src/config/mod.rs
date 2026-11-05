@@ -346,6 +346,21 @@ impl WallpaperPersonalization {
     }
 }
 
+pub const MIN_INTERFACE_ZOOM_PERCENT: u16 = 50;
+pub const MAX_INTERFACE_ZOOM_PERCENT: u16 = 250;
+pub const DEFAULT_INTERFACE_ZOOM_PERCENT: u16 = 100;
+
+/// User preference for the workflow graph layout direction. `Auto` follows the
+/// canvas container aspect ratio; the other variants pin one ELK direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkflowGraphDirectionPreference {
+    #[default]
+    Auto,
+    Horizontal,
+    Vertical,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalizationPreference {
@@ -353,6 +368,14 @@ pub struct PersonalizationPreference {
     pub typography: TypographyPersonalization,
     pub wallpaper: WallpaperPersonalization,
     pub avatars: AvatarPersonalizationSet,
+    #[serde(default = "default_interface_zoom_percent")]
+    pub interface_zoom_percent: u16,
+    #[serde(default)]
+    pub workflow_graph_direction: WorkflowGraphDirectionPreference,
+}
+
+fn default_interface_zoom_percent() -> u16 {
+    DEFAULT_INTERFACE_ZOOM_PERCENT
 }
 
 impl Default for PersonalizationPreference {
@@ -370,7 +393,7 @@ impl Default for PersonalizationPreference {
             opacity_percent: DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT,
         };
         Self {
-            schema_version: 4,
+            schema_version: 5,
             typography: TypographyPersonalization {
                 ui: typography(),
                 editor: typography(),
@@ -385,13 +408,18 @@ impl Default for PersonalizationPreference {
                 agent: avatar(),
                 user: avatar(),
             },
+            interface_zoom_percent: DEFAULT_INTERFACE_ZOOM_PERCENT,
+            workflow_graph_direction: WorkflowGraphDirectionPreference::Auto,
         }
     }
 }
 
 impl PersonalizationPreference {
     pub fn normalized(mut self) -> Self {
-        self.schema_version = 4;
+        self.schema_version = 5;
+        self.interface_zoom_percent = self
+            .interface_zoom_percent
+            .clamp(MIN_INTERFACE_ZOOM_PERCENT, MAX_INTERFACE_ZOOM_PERCENT);
         self.typography.ui.font_stack = self.typography.ui.font_stack.normalized();
         self.typography.editor.font_stack = self.typography.editor.font_stack.normalized();
         for wallpaper in [
@@ -2337,8 +2365,8 @@ mod tests {
         ManagedAgentId, MulticaAccountRef, PersonalizationPreference, ProjectAppConfig,
         ProjectIdentityConfig, RemoteCompletedTask, RemoteTaskConversation, RemoteWorkspaceRef,
         RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
-        TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
-        catalog_agent_default_config, project_identity_config,
+        TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkflowGraphDirectionPreference,
+        WorkspaceLayoutConfig, catalog_agent_default_config, project_identity_config,
     };
     use crate::agent_catalog::{builtin_agent, builtin_agent_catalog};
     use std::collections::BTreeMap;
@@ -2440,6 +2468,84 @@ mod tests {
     }
 
     #[test]
+    fn legacy_personalization_schema_v4_upgrades_with_display_defaults() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 12,
+                "personalization": {
+                    "schemaVersion": 4,
+                    "typography": {
+                        "ui": { "fontStack": { "source": "theme" }, "fontSize": { "source": "theme" } },
+                        "editor": { "fontStack": { "source": "theme" }, "fontSize": { "source": "theme" } }
+                    },
+                    "wallpaper": {
+                        "byColorScheme": {
+                            "light": { "image": { "source": "theme" }, "opacityPercent": 60 },
+                            "dark": { "image": { "source": "theme" }, "opacityPercent": 60 }
+                        }
+                    },
+                    "avatars": {
+                        "agent": { "image": { "source": "theme" }, "shape": { "source": "theme" } },
+                        "user": { "image": { "source": "theme" }, "shape": { "source": "theme" } }
+                    }
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        let personalization = settings.personalization.unwrap();
+        assert_eq!(personalization.schema_version, 5);
+        assert_eq!(personalization.interface_zoom_percent, 100);
+        assert_eq!(
+            personalization.workflow_graph_direction,
+            WorkflowGraphDirectionPreference::Auto
+        );
+    }
+
+    #[test]
+    fn personalization_display_preferences_clamp_and_serialize() {
+        let preference = PersonalizationPreference {
+            interface_zoom_percent: 500,
+            workflow_graph_direction: WorkflowGraphDirectionPreference::Vertical,
+            ..PersonalizationPreference::default()
+        }
+        .normalized();
+        assert_eq!(preference.schema_version, 5);
+        assert_eq!(preference.interface_zoom_percent, 250);
+        assert_eq!(
+            preference.workflow_graph_direction,
+            WorkflowGraphDirectionPreference::Vertical
+        );
+
+        let parsed: PersonalizationPreference = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 5,
+            "typography": {
+                "ui": { "fontStack": { "source": "theme" }, "fontSize": { "source": "theme" } },
+                "editor": { "fontStack": { "source": "theme" }, "fontSize": { "source": "theme" } }
+            },
+            "wallpaper": {
+                "byColorScheme": {
+                    "light": { "image": { "source": "theme" }, "opacityPercent": 60 },
+                    "dark": { "image": { "source": "theme" }, "opacityPercent": 60 }
+                }
+            },
+            "avatars": {
+                "agent": { "image": { "source": "theme" }, "shape": { "source": "theme" } },
+                "user": { "image": { "source": "theme" }, "shape": { "source": "theme" } }
+            },
+            "interfaceZoomPercent": 40
+        }))
+        .unwrap();
+        // Deserialization keeps the stored value; normalization owns the clamp.
+        assert_eq!(parsed.interface_zoom_percent, 40);
+        assert_eq!(parsed.normalized().interface_zoom_percent, 50);
+
+        let persisted = serde_json::to_value(&preference).unwrap();
+        assert_eq!(persisted["interfaceZoomPercent"], 250);
+        assert_eq!(persisted["workflowGraphDirection"], "vertical");
+    }
+
+    #[test]
     fn legacy_desktop_typography_preferences_are_bounded_during_migration() {
         let (settings, migrated) =
             SettingsConfig::from_json_value_with_migration(serde_json::json!({
@@ -2509,7 +2615,7 @@ mod tests {
 
         assert!(migrated);
         let personalization = settings.personalization.unwrap();
-        assert_eq!(personalization.schema_version, 4);
+        assert_eq!(personalization.schema_version, 5);
         assert_eq!(
             personalization.typography.ui.font_stack,
             FontStackPreference::Theme
@@ -2548,7 +2654,7 @@ mod tests {
 
         assert!(migrated);
         let personalization = settings.personalization.unwrap();
-        assert_eq!(personalization.schema_version, 4);
+        assert_eq!(personalization.schema_version, 5);
         assert_eq!(
             personalization.wallpaper.by_color_scheme.light.image,
             WallpaperImagePreference::Theme
@@ -2595,7 +2701,7 @@ mod tests {
 
         assert!(migrated);
         let personalization = settings.personalization.unwrap();
-        assert_eq!(personalization.schema_version, 4);
+        assert_eq!(personalization.schema_version, 5);
         for wallpaper in [
             personalization.wallpaper.by_color_scheme.light,
             personalization.wallpaper.by_color_scheme.dark,

@@ -45,23 +45,24 @@ mod workspace_files;
 
 use anyhow::Context;
 use commands::{
-    add_mcp_server, cancel_git_operation, cancel_github_operation, cancel_multica_connect,
-    change_git_branch, check_local_claude, check_mcp_server_health, check_skill_name_conflict,
-    check_update_manual, choose_workspace, clear_desktop_avatar, connect_multica,
-    continue_conversation_runtime, continue_run, create_agent, create_profile, create_task,
-    delete_agent, delete_auto_template, delete_conversation_queued_prompt, delete_mcp_server,
-    delete_profile, delete_skill, delete_workflow_template, disconnect_multica, doctor_agent,
-    execute_git_mutation, fetch_agent_model_config, get_acp_activity_detail, get_acp_image,
-    get_acp_raw_frames, get_acp_session, get_acp_tool_detail, get_agent_binding_usage,
-    get_agent_command_catalog, get_agent_registry, get_app_bootstrap, get_auto_templates,
-    get_conversation_queued_prompt, get_file_comparison, get_git_branch_picker_snapshot,
-    get_git_capability, get_git_commit_detail, get_git_commit_reachability, get_git_commit_review,
-    get_git_commit_review_statistics, get_git_comparison, get_git_history, get_git_operation,
-    get_github_capability, get_github_issue, get_github_operation, get_github_pull_request,
-    get_log_page, get_metrics_settings, get_multica_settings, get_profile, get_profiles,
-    get_round_detail, get_run_detail, get_skill_sync_status, get_source_control_snapshot,
-    get_system_fonts, get_task_detail, get_task_list, get_turn_file_change_set, get_update_status,
-    get_workflow, get_workflow_templates, import_desktop_wallpaper, import_profiles_from_files,
+    add_mcp_server, apply_desktop_zoom, cancel_git_operation, cancel_github_operation,
+    cancel_multica_connect, change_git_branch, check_local_claude, check_mcp_server_health,
+    check_skill_name_conflict, check_update_manual, choose_workspace, clear_desktop_avatar,
+    connect_multica, continue_conversation_runtime, continue_run, create_agent, create_profile,
+    create_task, delete_agent, delete_auto_template, delete_conversation_queued_prompt,
+    delete_mcp_server, delete_profile, delete_skill, delete_workflow_template, disconnect_multica,
+    doctor_agent, execute_git_mutation, fetch_agent_model_config, get_acp_activity_detail,
+    get_acp_image, get_acp_raw_frames, get_acp_session, get_acp_tool_detail,
+    get_agent_binding_usage, get_agent_command_catalog, get_agent_registry, get_app_bootstrap,
+    get_auto_templates, get_conversation_queued_prompt, get_file_comparison,
+    get_git_branch_picker_snapshot, get_git_capability, get_git_commit_detail,
+    get_git_commit_reachability, get_git_commit_review, get_git_commit_review_statistics,
+    get_git_comparison, get_git_history, get_git_operation, get_github_capability,
+    get_github_issue, get_github_operation, get_github_pull_request, get_log_page,
+    get_metrics_settings, get_multica_settings, get_profile, get_profiles, get_round_detail,
+    get_run_detail, get_skill_sync_status, get_source_control_snapshot, get_system_fonts,
+    get_task_detail, get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
+    get_workflow_templates, import_desktop_wallpaper, import_profiles_from_files,
     import_profiles_from_folder, initialize_git_repository, list_conversation_directory,
     list_github_issues, list_github_pull_requests, list_mcp_servers, list_mcp_tools,
     list_project_skills, list_skills, mark_settings_advanced_update_seen,
@@ -73,36 +74,38 @@ use commands::{
     report_webview_environment, resolve_turn_attachment_file, respond_acp_permission,
     respond_elicitation, restore_theme_desktop_wallpaper, retry_run, save_auto_template,
     save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
-    save_desktop_wallpaper_opacity, save_metrics_settings, save_multica_connection_address,
-    save_task_workflow, save_updater_settings, save_workflow_template, search_acp_prompts,
-    search_acp_sessions, search_tasks, select_recent_desktop_avatar,
-    select_recent_desktop_wallpaper, select_recent_workspace, set_acp_session_auto_accept,
-    set_acp_session_config_option, set_acp_session_model, set_acp_session_permission_mode,
-    show_artifact, show_attachment, show_worker_ref, start_git_operation, start_git_state_monitor,
-    start_github_login, start_github_pull_request_create, start_run, start_update_install,
-    stop_active_session, stop_git_state_monitor, submit_conversation_prompt, submit_manual_check,
-    toggle_mcp_server, update_agent, update_auto_template, update_mcp_server,
-    update_notification_attention, update_profile, update_skill_sync_targets,
-    update_workflow_template, use_conversation_queued_prompt, write_skill,
+    save_desktop_wallpaper_opacity, save_interface_zoom_percent, save_metrics_settings,
+    save_multica_connection_address, save_task_workflow, save_updater_settings,
+    save_workflow_graph_direction, save_workflow_template, search_acp_prompts, search_acp_sessions,
+    search_tasks, select_recent_desktop_avatar, select_recent_desktop_wallpaper,
+    select_recent_workspace, set_acp_session_auto_accept, set_acp_session_config_option,
+    set_acp_session_model, set_acp_session_permission_mode, show_artifact, show_attachment,
+    show_worker_ref, start_git_operation, start_git_state_monitor, start_github_login,
+    start_github_pull_request_create, start_run, start_update_install, stop_active_session,
+    stop_git_state_monitor, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
+    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
+    update_profile, update_skill_sync_targets, update_workflow_template,
+    use_conversation_queued_prompt, write_skill,
 };
 use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
     choose_conversation_workspace, create_conversation_run, create_scheduled_task,
     delete_conversation_task, delete_scheduled_execution_history, delete_scheduled_task,
-    get_conversation_execution_plan, get_conversation_pinned_task_page, get_conversation_run,
-    get_conversation_run_mode, get_conversation_run_summary_page,
-    get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_task_summary,
-    get_conversation_workspaces, get_scheduled_runtime_settings, get_scheduled_task,
-    get_scheduled_task_diagnostics, list_scheduled_execution_history, list_scheduled_tasks,
-    materialize_conversation_attachments, pin_conversation,
-    preflight_conversation_execution_plan_save, recover_conversation_execution_plan_operation,
-    remove_conversation_workspace, reorder_pinned_conversations, rerun_conversation_task,
-    run_scheduled_task_now, save_conversation_execution_plan, save_conversation_preference,
-    save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
-    save_scheduled_runtime_settings, search_conversation_tasks, set_conversation_resident,
-    set_scheduled_task_enabled, show_conversation_attachment, show_conversation_message_attachment,
-    stat_attachment_files, sync_conversation_workspace, unpin_conversation, update_scheduled_task,
-    update_task_metadata, validate_conversation_create,
+    get_conversation_execution_plan, get_conversation_pinned_task_page,
+    get_conversation_recent_task_page, get_conversation_run, get_conversation_run_mode,
+    get_conversation_run_summary_page, get_conversation_sidebar_bootstrap,
+    get_conversation_task_page, get_conversation_task_summary, get_conversation_workspaces,
+    get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
+    list_scheduled_execution_history, list_scheduled_tasks, materialize_conversation_attachments,
+    pin_conversation, preflight_conversation_execution_plan_save,
+    recover_conversation_execution_plan_operation, remove_conversation_workspace,
+    reorder_pinned_conversations, rerun_conversation_task, run_scheduled_task_now,
+    save_conversation_execution_plan, save_conversation_preference, save_conversation_run_mode,
+    save_desktop_ui_mode, save_last_conversation_workspace, save_scheduled_runtime_settings,
+    search_conversation_tasks, set_conversation_resident, set_scheduled_task_enabled,
+    show_conversation_attachment, show_conversation_message_attachment, stat_attachment_files,
+    sync_conversation_workspace, unpin_conversation, update_scheduled_task, update_task_metadata,
+    validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
@@ -392,11 +395,21 @@ fn run() -> anyhow::Result<()> {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
             if let Ok(ctx) = state.context() {
-                let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
+                let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root.clone());
                 touch_log_file_best_effort(&paths);
                 if let Some(runtime_log_guard) = init_tracing(&paths, &ctx.config, true) {
                     let _ = app.manage(runtime_log_guard);
                 }
+                // Apply the persisted interface zoom before the first paint so a
+                // zoomed session never starts at 100% and visibly jumps.
+                let zoom_percent = ctx
+                    .app()
+                    .load_settings()
+                    .ok()
+                    .and_then(|settings| settings.personalization)
+                    .map(|personalization| personalization.interface_zoom_percent)
+                    .unwrap_or(gold_band::config::DEFAULT_INTERFACE_ZOOM_PERCENT);
+                commands::apply_interface_zoom_to_app_webviews(app.handle(), zoom_percent);
             }
             state.install_scheduled_service(std::sync::Arc::new(
                 scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
@@ -610,6 +623,9 @@ fn run() -> anyhow::Result<()> {
             show_artifact,
             show_attachment,
             show_worker_ref,
+            apply_desktop_zoom,
+            save_interface_zoom_percent,
+            save_workflow_graph_direction,
             save_desktop_preferences,
             save_desktop_avatar,
             select_recent_desktop_avatar,
@@ -661,6 +677,7 @@ fn run() -> anyhow::Result<()> {
             get_conversation_task_page,
             get_conversation_task_summary,
             get_conversation_pinned_task_page,
+            get_conversation_recent_task_page,
             get_conversation_run_summary_page,
             list_scheduled_tasks,
             list_scheduled_execution_history,

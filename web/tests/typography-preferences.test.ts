@@ -51,7 +51,9 @@ describe('desktop typography preferences', () => {
     vi.stubGlobal('document', { documentElement: { dataset: {}, style: { setProperty } } });
 
     applyPersonalization({
-      schemaVersion: 4,
+      schemaVersion: 5,
+      interfaceZoomPercent: 100,
+      workflowGraphDirection: 'auto',
       typography: {
         ui: { fontStack: { source: 'theme' }, fontSize: { source: 'custom', px: 15.6 } },
         editor: { fontStack: { source: 'custom', families: ['Fira Code', 'Consolas'] }, fontSize: { source: 'custom', px: 30 } },

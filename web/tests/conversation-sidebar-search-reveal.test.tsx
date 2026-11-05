@@ -25,12 +25,13 @@ const vm: ConversationSidebarVm = {
     { projectId: 'a', name: 'A', workspacePath: 'D:/A' },
     { projectId: 'b', name: 'B', workspacePath: 'D:/B' },
   ], pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready' },
+  recentTasks: [], recentTaskPage: { status: 'not-loaded' },
   tasksByWorkspace: { a: [], b: [task] }, workspaceTaskPages: { a: { status: 'ready' }, b: { status: 'ready' } },
 };
 const callbacks = {
   onSelect: vi.fn(), onNewConversation: vi.fn(), onSearch: vi.fn(), onPinTask: vi.fn(),
   onUnpinTask: vi.fn(), onRenameTask: vi.fn(), onDeleteTask: vi.fn(), onRetryBootstrap: vi.fn(),
-  onRequestWorkspaceTasks: vi.fn(), onRequestPinnedTasks: vi.fn(), onRequestTaskRuns: vi.fn(),
+  onRequestWorkspaceTasks: vi.fn(), onRequestPinnedTasks: vi.fn(), onRequestRecentTasks: vi.fn(), onRequestTaskRuns: vi.fn(),
 };
 
 it('reveals a search conversation once, without expanding or loading run history', async () => {
