@@ -67,7 +67,7 @@ function loadedWorkspace(tasks: ConversationTaskRowVm[]) {
     workspaces: [{ projectId: 'project-a', workspacePath: 'D:/A', name: 'A' }],
     pinRefs: [],
     lastActiveWorkspaceId: 'project-a',
-    preferences: {},
+    preferences: { 'workspaces.collapsed': false },
   });
   return applyConversationTaskPage(sidebar, { projectId: 'project-a', tasks, nextCursor: null, errors: [] }, false);
 }
@@ -109,8 +109,8 @@ describe('ConversationSidebar workspace empty state', () => {
     const sidebar = applyConversationSidebarBootstrap(createEmptyConversationSidebar(), {
       workspaces: [{ projectId: 'project-a', workspacePath: 'D:/A', name: 'A' }],
       pinRefs: [],
+    preferences: { 'workspaces.collapsed': false },
       lastActiveWorkspaceId: 'project-a',
-      preferences: {},
     });
     const paged = applyConversationTaskPage(sidebar, { projectId: 'project-a', tasks: [], nextCursor: 'cursor-2', errors: [] }, false);
     expect(await renderedText(paged)).not.toContain(EMPTY_TEXT);

@@ -61,6 +61,7 @@ function sidebarVm(activity: ConversationTaskActivityVm | null): ConversationSid
     },
     workspaceTaskPages: { 'workspace-a': { status: 'ready', nextCursor: null } },
     lastActiveWorkspaceId: 'workspace-a',
+    preferences: { 'workspaces.collapsed': false },
   };
 }
 

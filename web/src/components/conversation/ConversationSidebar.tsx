@@ -142,6 +142,14 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     if (typeof pref === 'boolean') return pref;
     return false;
   });
+  // The workspaces group collapses by default (2026-11-05 IA: first level is
+  // groups — pinned, workspaces, recent — and the group header owns the
+  // add-workspace entry so it stays at the first level).
+  const [workspacesCollapsed, setWorkspacesCollapsed] = useState(() => {
+    const pref = vm.preferences?.['workspaces.collapsed'];
+    if (typeof pref === 'boolean') return pref;
+    return true;
+  });
   const [collapsedPinnedWorkspaces, setCollapsedPinnedWorkspaces] = useState<Record<string, boolean>>({});
   const [workspaceToRemove, setWorkspaceToRemove] = useState<ConversationWorkspaceVm | null>(null);
   const [workspaceRemovalPending, setWorkspaceRemovalPending] = useState(false);
@@ -172,6 +180,20 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     if (typeof pref === 'boolean') setPinnedCollapsed(pref);
   }, [vm.preferences]);
 
+  // Sync workspaces group collapse from persisted preferences when the sidebar
+  // VM reloads. This component is the only writer of the preference, so an
+  // echo of our own save (bootstrap re-applied with a fresh preferences
+  // object) must not override a transient reveal expansion: only a value that
+  // differs from what we last saved counts as an external change.
+  const lastSavedWorkspacesCollapsedRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const pref = vm.preferences?.['workspaces.collapsed'];
+    if (typeof pref !== 'boolean') return;
+    if (pref === lastSavedWorkspacesCollapsedRef.current) return;
+    lastSavedWorkspacesCollapsedRef.current = pref;
+    setWorkspacesCollapsed(pref);
+  }, [vm.preferences]);
+
   const workspaceExpansionInitializedRef = useRef(false);
   const handledWorkspaceRevealRequestRef = useRef<number | null>(null);
   const pendingTaskRevealRef = useRef<number | null>(null);
@@ -197,6 +219,9 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     handledWorkspaceRevealRequestRef.current = workspaceRevealRequest.requestId;
     pendingTaskRevealRef.current = workspaceRevealRequest.taskId && !workspaceRevealRequest.scrollHandled ? workspaceRevealRequest.requestId : null;
     if (workspaceRevealRequest.taskId) setActiveRunListScope('workspace');
+    // A reveal is an explicit navigation intent: expand the workspaces group
+    // for this turn without overwriting the persisted collapse preference.
+    setWorkspacesCollapsed(false);
     setExpandedWorkspaces((current) => current[workspaceRevealRequest.projectId]
       ? current
       : { ...current, [workspaceRevealRequest.projectId]: true });
@@ -206,7 +231,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     const request = workspaceRevealRequest;
     const viewport = conversationViewportRef.current;
     if (!request?.taskId || !viewport || pendingTaskRevealRef.current !== request.requestId
-      || !expandedWorkspaces[request.projectId] || active.kind !== 'conversation-run'
+      || workspacesCollapsed || !expandedWorkspaces[request.projectId] || active.kind !== 'conversation-run'
       || active.projectId !== request.projectId || active.taskId !== request.taskId) return;
     const row = [...viewport.querySelectorAll<HTMLElement>('[data-conversation-task-row="workspace"]')]
       .find((element) => element.dataset.projectId === request.projectId && element.dataset.taskId === request.taskId
@@ -220,7 +245,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     else if (rowBounds.bottom > bounds.bottom) viewport.scrollTop += rowBounds.bottom - bounds.bottom;
     pendingTaskRevealRef.current = null;
     onRevealHandled?.(request.requestId);
-  }, [workspaceRevealRequest, expandedWorkspaces, vm.tasksByWorkspace, active, onRevealHandled]);
+    // workspacesCollapsed is a dependency because the reveal first expands the
+    // group in a sibling effect: this scroll pass then runs against a DOM
+    // without the target row and must re-run once the group opens.
+  }, [workspaceRevealRequest, workspacesCollapsed, expandedWorkspaces, vm.tasksByWorkspace, active, onRevealHandled]);
 
   const cancelPendingTaskReveal = () => {
     const requestId = pendingTaskRevealRef.current;
@@ -232,6 +260,15 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     setPinnedCollapsed((prev) => {
       const next = !prev;
       saveConversationPreference('pinned.collapsed', next).catch(() => {});
+      return next;
+    });
+  };
+
+  const toggleWorkspacesCollapsed = () => {
+    setWorkspacesCollapsed((prev) => {
+      const next = !prev;
+      lastSavedWorkspacesCollapsedRef.current = next;
+      saveConversationPreference('workspaces.collapsed', next).catch(() => {});
       return next;
     });
   };
@@ -461,6 +498,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             <button
               type="button"
               data-conversation-sidebar-heading="pinned"
+              aria-expanded={!pinnedCollapsed}
               className="sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1 text-left text-sm font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
               onClick={togglePinnedCollapsed}
             >
@@ -479,7 +517,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                           <button
                             type="button"
                             data-conversation-pinned-workspace-id={projectId}
-                            className="flex w-full items-center gap-1.5 px-1 py-1 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground"
+                            className="flex w-full items-center gap-1.5 py-1 pl-5 pr-1 text-left text-sm font-medium leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground"
                             onClick={() => togglePinnedWorkspace(projectId)}
                           >
                             <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
@@ -512,7 +550,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                   );
                 })}
                 {vm.pinnedTaskPage.status === 'loading' ? (
-                  <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-2 pl-5 pr-2 py-1 text-xs text-muted-foreground">
                     <Loader2 className="size-3 animate-spin" />
                     {t('conversation.sidebar.loadingPinned')}
                   </div>
@@ -530,16 +568,54 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               </div>
             ) : null}
           </div>
-          {/* One separator per adjacent section boundary — never parallel
-              lines from both section wrappers. */}
-          <Separator data-conversation-sidebar-separator className="mx-1 my-1.5 opacity-45" />
           </>
         ) : null}
 
-        {/* Workspace sections — scrollable with sticky headers */}
-          <div className="pt-2">
+        {/* Workspaces group (2026-11-05 IA): one sidebar tree — pinned,
+            workspaces, recent — with no structural separators. The group
+            collapses by default; its header owns the add-workspace action so
+            the entry point stays at the first level, mirroring the
+            per-workspace new-conversation button one level down. */}
+          <div data-conversation-sidebar-region="workspaces" className="pt-1">
+            <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1 text-sm font-medium text-sidebar-foreground">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    data-conversation-sidebar-heading="workspaces"
+                    aria-expanded={!workspacesCollapsed}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-sidebar-accent-foreground group-hover:pr-17"
+                    onClick={toggleWorkspacesCollapsed}
+                  >
+                    <ChevronDown className={cn('size-3 shrink-0 transition-transform', workspacesCollapsed && '-rotate-90')} />
+                    <span className="truncate">{t('conversation.sidebar.workspaces')}</span>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">{t('conversation.sidebar.workspaces')}</TooltipContent>
+              </Tooltip>
+              {!readOnly && onAddWorkspace ? (
+                <span className="pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-5 shrink-0 active:scale-90 transition-transform"
+                        aria-label={t('conversation.sidebar.addWorkspace')}
+                        onClick={onAddWorkspace}
+                      >
+                        <Plus className="size-3" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t('conversation.sidebar.addWorkspace')}</TooltipContent>
+                  </Tooltip>
+                </span>
+              ) : null}
+            </div>
+            {!workspacesCollapsed ? (
+              <>
             {vm.loadStatus === 'not-loaded' || vm.loadStatus === 'loading' ? (
-              <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
+              <div className="flex items-center gap-2 pl-5 pr-3 py-3 text-xs text-muted-foreground">
                 <Loader2 className="size-3.5 animate-spin" />
                 {t('conversation.sidebar.loadingWorkspaces')}
               </div>
@@ -555,14 +631,14 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 data-conversation-workspace-group={ws.projectId}
                 className="mb-2"
               >
-                <div data-conversation-workspace-header className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1">
+                <div data-conversation-workspace-header className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar py-1 pl-5 pr-1">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
                         type="button"
                         data-conversation-workspace-id={ws.projectId}
                         aria-expanded={Boolean(expandedWorkspaces[ws.projectId])}
-                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-17"
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-medium leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-17"
                         onClick={() => toggleWorkspace(ws.projectId)}
                       >
                         <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
@@ -609,10 +685,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 {expandedWorkspaces[ws.projectId] ? (
                   <div className="space-y-0.5">
                     {workspaceRevealRequest?.projectId === ws.projectId && workspaceRevealRequest.status === 'loading' ? (
-                      <div role="status" className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" />{t('conversation.sidebar.loadingConversations')}</div>
+                      <div role="status" className="flex items-center gap-2 pl-7 pr-3 py-2 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" />{t('conversation.sidebar.loadingConversations')}</div>
                     ) : null}
                     {workspaceRevealRequest?.projectId === ws.projectId && workspaceRevealRequest.status === 'error' ? (
-                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={onRetryReveal}>{t('conversation.sidebar.retryConversations')}</Button>
+                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start pl-7 pr-3 text-xs text-muted-foreground" onClick={onRetryReveal}>{t('conversation.sidebar.retryConversations')}</Button>
                     ) : null}
                     {(vm.tasksByWorkspace[ws.projectId] ?? []).map((task) => (
                       <TaskRow
@@ -629,13 +705,13 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                       />
                     ))}
                     {vm.workspaceTaskPages[ws.projectId]?.status === 'loading' ? (
-                      <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+                      <div className="flex items-center gap-2 pl-7 pr-3 py-2 text-xs text-muted-foreground">
                         <Loader2 className="size-3 animate-spin" />
                         {t('conversation.sidebar.loadingConversations')}
                       </div>
                     ) : null}
                     {vm.workspaceTaskPages[ws.projectId]?.status === 'error' ? (
-                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestWorkspaceTasks(ws.projectId))}>
+                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start pl-7 pr-3 text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestWorkspaceTasks(ws.projectId))}>
                         {t('conversation.sidebar.retryConversations')}
                       </Button>
                     ) : null}
@@ -643,18 +719,18 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                       && !vm.workspaceTaskPages[ws.projectId]?.nextCursor
                       && (vm.tasksByWorkspace[ws.projectId] ?? []).length === 0
                       && !(workspaceRevealRequest?.projectId === ws.projectId && workspaceRevealRequest.status) ? (
-                      <div className="px-3 py-2 text-xs text-muted-foreground">{t('conversation.noConversations')}</div>
+                      <div className="pl-7 pr-3 py-2 text-xs text-muted-foreground">{t('conversation.noConversations')}</div>
                     ) : null}
                     {(vm.workspaceTaskPages[ws.projectId]?.status === 'ready' && vm.workspaceTaskPages[ws.projectId]?.nextCursor)
                       || ((vm.workspaceTaskPages[ws.projectId]?.status ?? 'not-loaded') === 'not-loaded' && vm.tasksByWorkspace[ws.projectId]?.length) ? (
-                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start px-3 text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestWorkspaceTasks(ws.projectId, vm.workspaceTaskPages[ws.projectId]?.nextCursor))}>
+                      <Button variant="ghost" size="sm" className="h-7 w-full justify-start pl-7 pr-3 text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestWorkspaceTasks(ws.projectId, vm.workspaceTaskPages[ws.projectId]?.nextCursor))}>
                         {t('conversation.sidebar.loadMoreConversations')}
                       </Button>
                     ) : null}
                     {vm.workspaceTaskPages[ws.projectId]?.status === 'ready'
                       && !vm.workspaceTaskPages[ws.projectId]?.nextCursor
                       && (vm.tasksByWorkspace[ws.projectId] ?? []).length >= CONVERSATION_TASK_PAGE_SIZE ? (
-                      <div className="px-3 py-1 text-xs text-muted-foreground/70">{t('conversation.sidebar.allConversationsShown')}</div>
+                      <div className="pl-7 pr-3 py-1 text-xs text-muted-foreground/70">{t('conversation.sidebar.allConversationsShown')}</div>
                     ) : null}
                     <LoadMoreSentinel
                       marker={`workspace:${ws.projectId}`}
@@ -666,48 +742,23 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               </div>
             ))}
 
-            {/* Add workspace button */}
-            {onAddWorkspace ? (
-              <button
-                type="button"
-                className="mt-1.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                onClick={onAddWorkspace}
-              >
-                <Plus className="size-3.5" />
-                <span>{t('conversation.sidebar.addWorkspace')}</span>
-              </button>
-            ) : null}
-
             {vm.loadStatus === 'ready' && vm.workspaces.length === 0 ? (
               <div className="px-3 py-4 text-center text-xs text-muted-foreground">
                 {t('conversation.sidebar.noWorkspaces')}
               </div>
             ) : null}
+              </>
+            ) : null}
           </div>
-        </ScrollArea>
 
-        {/* Cross-workspace recent section pinned at the sidebar tail so any
-            number of workspaces can never push it out of reach; a bounded
-            internal scroll keeps long recent lists from stealing the
-            workspace area. Always visible — with a single workspace it simply
-            mirrors that workspace's recent tasks. */}
-        <div data-conversation-sidebar-region="recent" className="shrink-0">
-          <Separator data-conversation-sidebar-separator className="mx-1 my-1.5 opacity-45" />
-          {/* Plain overflow container, not ScrollArea: the radix viewport is
-              percentage-sized and collapses under a max-height-only parent
-              (the sidebar's main list works because its flex column grants a
-              definite height). The section keeps a stable share of the
-              sidebar — clamp(9.5rem, 33vh, 26rem), roughly one third on
-              common displays — so its footprint does not jump with the
-              conversation count (Codex-style fixed placement); lists longer
-              than the share scroll internally. No top
-              padding: a padded scrollport parks its sticky child at the
-              content-box top, leaving a strip where scrolling rows peek out
-              above the heading. */}
-          <div className="gold-themed-scrollbar h-[clamp(9.5rem,33vh,26rem)] overflow-y-auto px-0.5 pb-1">
+        {/* Recent group (2026-11-05 IA): part of the shared scroll tree —
+            no structural separator and no fixed-height tail; workspaces and
+            recent rows share one scrolling column. */}
+        <div data-conversation-sidebar-region="recent" className="pt-1 pb-2">
             <button
               type="button"
               data-conversation-sidebar-heading="recent"
+              aria-expanded={!recentCollapsed}
               className="sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1 text-left text-sm font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
               onClick={() => setRecentCollapsed((collapsed) => !collapsed)}
             >
@@ -726,7 +777,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                   />
                 ))}
                 {(vm.recentTaskPage?.status ?? 'not-loaded') === 'loading' ? (
-                  <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-2 pl-5 pr-2 py-1 text-xs text-muted-foreground">
                     <Loader2 className="size-3 animate-spin" />
                     {t('conversation.sidebar.loadingRecent')}
                   </div>
@@ -737,7 +788,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                   </Button>
                 ) : null}
                 {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && (vm.recentTasks ?? []).length === 0 && !vm.recentTaskPage?.nextCursor ? (
-                  <div className="px-2 py-1 text-xs text-muted-foreground">{t('conversation.sidebar.noRecent')}</div>
+                  <div className="pl-5 pr-2 py-1 text-xs text-muted-foreground">{t('conversation.sidebar.noRecent')}</div>
                 ) : null}
                 {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && vm.recentTaskPage?.nextCursor ? (
                   <Button variant="ghost" size="sm" className="h-7 w-full justify-start text-xs text-muted-foreground" onClick={() => requestSidebarPage(() => onRequestRecentTasks(vm.recentTaskPage?.nextCursor))}>
@@ -746,7 +797,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 ) : null}
                 {(vm.recentTaskPage?.status ?? 'not-loaded') === 'ready' && !vm.recentTaskPage?.nextCursor
                   && (vm.recentTasks ?? []).length >= CONVERSATION_TASK_PAGE_SIZE ? (
-                  <div className="px-2 py-1 text-xs text-muted-foreground/70">{t('conversation.sidebar.allRecentShown')}</div>
+                  <div className="pl-5 pr-2 py-1 text-xs text-muted-foreground/70">{t('conversation.sidebar.allRecentShown')}</div>
                 ) : null}
                 <LoadMoreSentinel
                   marker="recent"
@@ -755,8 +806,8 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 />
               </div>
             ) : null}
-          </div>
         </div>
+        </ScrollArea>
 
 
         {/* Settings */}
@@ -1040,7 +1091,7 @@ const TaskRow = memo(function TaskRow({
       data-task-id={task.taskId}
       data-task-uuid={task.taskUuid ?? undefined}
       className={cn(
-        'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-sidebar-foreground cursor-pointer',
+        'group relative flex w-full min-w-0 items-center gap-2 rounded-lg py-1.5 pl-7 pr-2 text-sidebar-foreground cursor-pointer',
         isActive ? 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground' : 'hover:bg-sidebar-accent',
       )}
       onClick={handleRowClick}
@@ -1177,7 +1228,7 @@ const TaskRow = memo(function TaskRow({
         </ContextMenu>
       ) : taskRow}
       {expanded && hasRuns ? (
-        <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-3">
+        <div className="ml-3 mt-1 space-y-1 border-l border-border/60 pl-2">
           {task.runs.map((run) => {
             const color = conversationSidebarRunStatusClass(run);
             const runTime = run.status !== 'running'
@@ -1219,7 +1270,7 @@ const TaskRow = memo(function TaskRow({
             );
           })}
           {task.runHistoryStatus === 'loading' ? (
-            <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2 pl-5 pr-2 py-1 text-xs text-muted-foreground">
               <Loader2 className="size-3 animate-spin" />
               {t('conversation.sidebar.loadingRuns')}
             </div>
@@ -1301,7 +1352,7 @@ const RecentTaskRow = memo(function RecentTaskRow({
         data-recent-task-id={row.taskId}
         data-recent-task-project={row.projectId}
         className={cn(
-          'flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sidebar-foreground/70',
+          'flex w-full min-w-0 items-center gap-2 rounded-lg py-1.5 pl-5 pr-2 text-left text-sidebar-foreground/70',
           isActive && 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground',
         )}
       >
@@ -1317,7 +1368,7 @@ const RecentTaskRow = memo(function RecentTaskRow({
           data-recent-task-id={row.taskId}
           data-recent-task-project={row.projectId}
           className={cn(
-            'flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sidebar-foreground',
+            'flex w-full min-w-0 items-center gap-2 rounded-lg py-1.5 pl-5 pr-2 text-left text-sidebar-foreground',
             isActive ? 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground' : 'cursor-pointer hover:bg-sidebar-accent',
           )}
           onClick={() => {
