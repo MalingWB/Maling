@@ -29,7 +29,7 @@ describe('sidebar selected-state styles', () => {
     expect(source).not.toContain('text-sm font-medium text-muted-foreground');
     expect(source).not.toContain('text-xs font-medium text-muted-foreground');
     expect(source).toContain('text-sm font-medium leading-5 text-sidebar-foreground/80');
-    expect(source).toContain('text-sidebar-foreground cursor-pointer');
+    expect(source).toContain("deadRecentRow ? 'text-sidebar-foreground/70' : 'cursor-pointer'");
     expect(source).not.toContain('text-sidebar-foreground/85 cursor-pointer');
     expect(source).toContain('tabular-nums text-muted-foreground/55');
   });
