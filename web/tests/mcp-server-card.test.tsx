@@ -7,7 +7,7 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallback?: string | { defaultValue?: string; name?: string }) => {
       const values: Record<string, string> = {
-        'contextManagement.mcp.goldBandMemoryName': 'Gold Band Shared Memory',
+        'contextManagement.mcp.goldBandMemoryName': 'MALING Shared Memory',
         'contextManagement.mcp.diagnosticPassed': 'The latest MCP configuration check passed',
       };
       if (values[key]) return values[key];
@@ -63,7 +63,7 @@ describe('managed memory MCP card', () => {
       />,
     ));
 
-    expect(container.textContent).toContain('Gold Band Shared Memory');
+    expect(container.textContent).toContain('MALING Shared Memory');
     expect(container.textContent).toContain('Stdio');
     expect(container.textContent).toContain('The latest MCP configuration check passed');
     expect(container.textContent).not.toContain('Running');

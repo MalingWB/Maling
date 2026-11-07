@@ -1389,7 +1389,7 @@
       "diagnosticPassed": "A última verificação de configuração MCP passou",
       "diagnosticFailed": "A última verificação de configuração MCP falhou",
       "diagnosticAuthRequired": "A última verificação requer autorização",
-      "goldBandMemoryName": "Memória compartilhada Gold Band",
+      "goldBandMemoryName": "Memória compartilhada MALING",
       "toggleServer": "Habilitar ou desabilitar {{name}}",
       "emptyServers": "Nenhum servidor MCP configurado",
       "helpInfo": "Informações de ajuda",

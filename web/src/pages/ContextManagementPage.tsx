@@ -923,7 +923,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <span className="truncate text-sm font-semibold">{skill.name}</span>
-                            <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal text-muted-foreground">{skill.agentSource || '.gold-band'}</Badge>
+                            <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal text-muted-foreground">{skill.agentSource || '.maling'}</Badge>
                           </div>
                           <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{skill.description || <span className="italic text-muted-foreground/50">{t('contextManagement.skills.noDescription', '无描述')}</span>}</p>
                         </div>
@@ -932,7 +932,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
                     </div>
                     <div className="mt-auto flex h-16 shrink-0 items-center justify-between gap-2 border-t border-border/30 px-2 py-1">
                       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden px-2">
-                        {sourceAgents.length === 0 ? <span className="max-w-20 shrink-0 truncate text-ui-caption text-muted-foreground">{skill.agentSource || '.gold-band'}</span> : null}
+                        {sourceAgents.length === 0 ? <span className="max-w-20 shrink-0 truncate text-ui-caption text-muted-foreground">{skill.agentSource || '.maling'}</span> : null}
                         <SkillAgentOverflow
                           sourceAgents={sourceAgents}
                           syncAgents={syncAgents}

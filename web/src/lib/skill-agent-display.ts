@@ -14,7 +14,7 @@ export interface ConfiguredSkillAgentMeta extends SkillAgentDisplayMeta {
 
 export const GOLD_BAND_AGENT_META: SkillAgentDisplayMeta = {
   agentType: 'gold-band',
-  label: 'Gold Band',
+  label: 'MALING',
   iconKey: 'gold-band',
 };
 
@@ -52,7 +52,7 @@ export function skillSourceAgents(
   skill: SkillMetaVm,
   configuredAgents: ConfiguredSkillAgentMeta[],
 ) {
-  if (skill.agentSource === '.gold-band') return [GOLD_BAND_AGENT_META];
+  if (skill.agentSource === '.maling') return [GOLD_BAND_AGENT_META];
   return configuredAgents.filter((agent) => (
     (skill.source === 'project'
       ? agent.projectPrimaryAgentDir ?? agent.primaryAgentDir
@@ -95,7 +95,7 @@ export function selectableSyncAgents(
   skill: SkillMetaVm | null,
   configuredAgents: ConfiguredSkillAgentMeta[],
 ) {
-  if (!skill || skill.agentSource === '.gold-band') return configuredAgents;
+  if (!skill || skill.agentSource === '.maling') return configuredAgents;
   const sourceAgentTypes = new Set(
     skillSourceAgents(skill, configuredAgents).map((agent) => agent.agentType),
   );

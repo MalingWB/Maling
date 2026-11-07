@@ -1389,7 +1389,7 @@
       "diagnosticPassed": "The latest MCP configuration check passed",
       "diagnosticFailed": "The latest MCP configuration check failed",
       "diagnosticAuthRequired": "The latest check requires authorization",
-      "goldBandMemoryName": "Gold Band Shared Memory",
+      "goldBandMemoryName": "MALING Shared Memory",
       "toggleServer": "Enable or disable {{name}}",
       "emptyServers": "No MCP servers configured",
       "helpInfo": "Help information",
