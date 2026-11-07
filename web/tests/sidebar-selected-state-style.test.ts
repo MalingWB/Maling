@@ -40,8 +40,11 @@ describe('sidebar selected-state styles', () => {
       'utf8',
     );
 
-    expect(source).toContain('icon={<Library />}');
-    expect(source).toContain('icon={<Route />}');
+    // Icons carry their own size-* class: span-level `[&_svg]:size-*` loses
+    // to the Button base's `[&_svg:not([class*='size-'])]:size-4` and never
+    // applied (2026-11-07 nav-column fix).
+    expect(source).toContain('icon={<Library className="size-3.5" />}');
+    expect(source).toContain('icon={<Route className="size-3.5" />}');
     expect(source).not.toContain('icon={<Boxes />}');
     expect(source).not.toContain('icon={<Workflow />}');
   });

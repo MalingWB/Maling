@@ -201,7 +201,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   const handledWorkspaceRevealRequestRef = useRef<number | null>(null);
   const pendingTaskRevealRef = useRef<number | null>(null);
   const conversationViewportRef = useRef<HTMLDivElement>(null);
-  const runListInteractionScopeRef = useRef<ConversationSidebarRunListScope | null>(null);
+  const runListInteractionRef = useRef<{ scope: ConversationSidebarRunListScope; taskKey: string } | null>(null);
   const initialWorkspaceId = active.kind === 'conversation-run'
     ? active.projectId
     : (defaultExpandedWorkspaceId ?? vm.lastActiveWorkspaceId ?? null);
@@ -322,12 +322,17 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 
   useEffect(() => {
     if (!activeTaskKey) return;
-    const interactionScope = runListInteractionScopeRef.current;
-    runListInteractionScopeRef.current = null;
-    if (interactionScope === 'pinned' || interactionScope === 'recent') return;
-    // External activation (search dialog, deep link) owns the workspace copy
-    // again: a previous recent/pinned interaction must not leave the
-    // highlight scope stuck there with an expanded-but-unhighlighted row.
+    // A user interaction owns the highlight scope for the task it activated.
+    // Data refreshes for the SAME task (run-history loads, page loads,
+    // activity updates) re-run this effect; they must not be re-classified
+    // as external activation and steal the scope back to the workspace copy.
+    const interaction = runListInteractionRef.current;
+    if (interaction && interaction.taskKey === activeTaskKey
+      && (interaction.scope === 'pinned' || interaction.scope === 'recent')) return;
+    // External activation (search dialog, deep link) of another task owns the
+    // workspace copy again: a previous recent/pinned interaction must not
+    // leave the highlight scope stuck there with an expanded-but-unhighlighted
+    // row.
     setActiveRunListScope('workspace');
     if (workspaceRevealRequest?.taskId && active.kind === 'conversation-run'
       && workspaceRevealRequest.projectId === active.projectId && workspaceRevealRequest.taskId === active.taskId) return;
@@ -360,8 +365,14 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     setExpandedWorkspaces((prev) => ({ ...prev, [projectId]: expanding }));
   };
 
-  const markRunListInteraction = (scope: ConversationSidebarRunListScope) => {
-    runListInteractionScopeRef.current = scope;
+  const markRunListInteraction = (
+    scope: ConversationSidebarRunListScope,
+    task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
+  ) => {
+    runListInteractionRef.current = {
+      scope,
+      taskKey: conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid),
+    };
     setActiveRunListScope(scope);
   };
 
@@ -370,7 +381,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     task: ConversationTaskRowVm,
     runId: string,
   ) => {
-    markRunListInteraction(scope);
+    markRunListInteraction(scope, task);
     onSelect({
       kind: 'conversation-run',
       projectId: task.projectId,
@@ -387,7 +398,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 
   const toggleTaskRuns = (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => {
     const taskKey = conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid);
-    markRunListInteraction(scope);
+    markRunListInteraction(scope, task);
     if (task.runHistoryStatus === 'not-loaded' || task.runHistoryStatus === 'error') {
       onRequestTaskRuns(task);
     }
@@ -395,7 +406,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   };
 
   const expandTaskRuns = (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => {
-    markRunListInteraction(scope);
+    markRunListInteraction(scope, task);
     if (task.runHistoryStatus === 'not-loaded' || task.runHistoryStatus === 'error') {
       onRequestTaskRuns(task);
     }
@@ -445,12 +456,12 @@ export const ConversationSidebar = memo(function ConversationSidebar({
         <div className="flex flex-col gap-0.5">
           <SidebarButton
             active={activeNavigationKey === 'quick-chat'}
-            icon={<MessageSquare />}
+            icon={<MessageSquare className="size-4" />}
             label={t('conversation.sidebar.newChat')}
             onClick={onNewConversation}
           />
           {!readOnly && <SidebarButton
-            icon={<Search />}
+            icon={<Search className="size-4" />}
             label={t('conversation.sidebar.search')}
             onClick={onSearch}
           />}
@@ -463,21 +474,21 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           <SidebarButton
             compact
             active={activeNavigationKey === 'agents'}
-            icon={<Bot />}
+            icon={<Bot className="size-3.5" />}
             label={t('conversation.sidebar.agentManagement')}
             onClick={() => onSelect({ kind: 'agents' })}
           />
           <SidebarButton
             compact
             active={activeNavigationKey === 'contexts'}
-            icon={<Library />}
+            icon={<Library className="size-3.5" />}
             label={t('conversation.sidebar.contextManagement')}
             onClick={() => onSelect({ kind: 'contexts' })}
           />
           <SidebarButton
             compact
             active={activeNavigationKey === 'run-mode-management'}
-            icon={<Route />}
+            icon={<Route className="size-3.5" />}
             label={t('conversation.sidebar.runModeManagement')}
             onClick={() => onSelect({ kind: 'run-mode-management' })}
           />
@@ -490,9 +501,12 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                   moreNavigationActive && !moreNavigationOpen && 'bg-sidebar-accent text-sidebar-accent-foreground',
                 )}
               >
-                <Ellipsis className="size-3.5" />
+                {/* Spans keep both svgs out of direct-child position: the Button
+                    base's `has-[>svg]:px-3` otherwise overrides px-2 and shifts
+                    the whole row 4px right of the nav column. */}
+                <span><Ellipsis className="size-3.5" /></span>
                 <span className="min-w-0 flex-1 truncate text-left">{t('conversation.sidebar.more')}</span>
-                <ChevronDown className={cn('size-3.5 shrink-0 transition-transform', moreNavigationOpen && 'rotate-180')} />
+                <span className="shrink-0"><ChevronDown className={cn('size-3.5 transition-transform', moreNavigationOpen && 'rotate-180')} /></span>
               </Button>
             </CollapsibleTrigger>
             <CollapsibleContent
@@ -503,7 +517,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 <SidebarButton
                   compact
                   active={active.kind === 'remote-tasks'}
-                  icon={<Globe />}
+                  icon={<Globe className="size-3.5" />}
                   label={t('conversation.sidebar.remoteTaskManagement')}
                   onClick={() => {
                     setMoreNavigationOpen(true);
@@ -514,7 +528,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               <SidebarButton
                 compact
                 active={activeNavigationKey === 'scheduled-tasks'}
-                icon={<AlarmClock />}
+                icon={<AlarmClock className="size-3.5" />}
                 label={t('scheduled.management.title')}
                 onClick={() => {
                   setMoreNavigationOpen(true);
@@ -633,7 +647,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     type="button"
                     data-conversation-sidebar-heading="workspaces"
                     aria-expanded={!workspacesCollapsed}
-                    className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left hover:text-sidebar-accent-foreground group-hover:pr-17"
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left hover:text-sidebar-accent-foreground group-hover:pr-18"
                     onClick={toggleWorkspacesCollapsed}
                   >
                     <ChevronDown className={cn('size-3.5 shrink-0 transition-transform', workspacesCollapsed && '-rotate-90')} />
@@ -643,7 +657,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 <TooltipContent side="right">{t('conversation.sidebar.workspaces')}</TooltipContent>
               </Tooltip>
               {!readOnly && onAddWorkspace ? (
-                <span className="pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+                <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
@@ -687,7 +701,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                         type="button"
                         data-conversation-workspace-id={ws.projectId}
                         aria-expanded={Boolean(expandedWorkspaces[ws.projectId])}
-                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-medium leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-17"
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-medium leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-18"
                         onClick={() => toggleWorkspace(ws.projectId)}
                       >
                         <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
@@ -698,7 +712,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                       {ws.workspacePath}
                     </TooltipContent>
                   </Tooltip>
-                  <span className="pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+                  <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
                     {!readOnly && onOpenProjectMemory ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -857,7 +871,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 
         {/* Settings */}
         <Separator className="mx-1 my-1.5 opacity-45" />
-        <SidebarButton icon={<Settings />} label={t('conversation.sidebar.settings')} onClick={() => onSelect({ kind: 'settings' })} />
+        <SidebarButton icon={<Settings className="size-4" />} label={t('conversation.sidebar.settings')} onClick={() => onSelect({ kind: 'settings' })} />
         </aside>
 
         <AlertDialog
@@ -1074,6 +1088,7 @@ const TaskRow = memo(function TaskRow({
   const [editValue, setEditValue] = useState(task.title);
   const editInputRef = useRef<HTMLInputElement>(null);
   const hasRuns = shouldShowConversationSidebarRunList(task);
+  const runListOwnsSelection = doesConversationSidebarRunListOwnSelection(task, activeRunKey, expanded && hasRuns);
 
   const latestRun = task.latestRun;
   const isDirect = task.runMode === 'direct';
@@ -1145,7 +1160,12 @@ const TaskRow = memo(function TaskRow({
       className={cn(
         'group relative flex w-full min-w-0 items-center gap-2 rounded-lg py-1.5 pl-7 pr-2 text-sidebar-foreground',
         deadRecentRow ? 'text-sidebar-foreground/70' : 'cursor-pointer',
-        isActive ? 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground' : !deadRecentRow && 'hover:bg-sidebar-accent',
+        // Selection sinks to the active run row while it is visible in the
+        // expanded run list; the task row keeps only its weight then, so
+        // exactly one row carries the accent at any time.
+        isActive
+          ? cn('font-medium text-sidebar-accent-foreground', !runListOwnsSelection && 'bg-sidebar-accent/70')
+          : !deadRecentRow && 'hover:bg-sidebar-accent',
       )}
       onClick={deadRecentRow ? undefined : handleRowClick}
     >
@@ -1394,7 +1414,12 @@ function SidebarButton({
       )}
       onClick={onClick}
     >
-      <span className={cn(compact ? '[&_svg]:size-3.5' : '[&_svg]:size-4')}>{icon}</span>
+      {/* The span keeps svgs out of direct-child position so the Button base's
+          `has-[>svg]:px-3` cannot override the row's px-2 padding. Icon sizes
+          are set by an explicit size-* class on each icon at the call site:
+          span-level `[&_svg]:size-*` loses the specificity race to the Button
+          base's `[&_svg:not([class*='size-'])]:size-4` and never applied. */}
+      <span>{icon}</span>
       <span>{label}</span>
     </Button>
   );
@@ -1461,4 +1486,17 @@ export function isConversationSidebarRunActive(
   taskUuid?: string | null,
 ) {
   return activeRunKey === conversationSidebarRunKey(projectId, taskId, runId, taskUuid);
+}
+
+/** The expanded run list owns the selection accent while the active run row is
+ *  actually rendered in it; otherwise (collapsed list, run history not yet
+ *  loaded, or the active run sits beyond the loaded page) the task row keeps
+ *  the accent so exactly one row stays highlighted at any time. */
+export function doesConversationSidebarRunListOwnSelection(
+  task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid' | 'runs'>,
+  activeRunKey: string | null | undefined,
+  runListExpanded: boolean,
+) {
+  if (activeRunKey == null || !runListExpanded) return false;
+  return task.runs.some((run) => isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId, task.taskUuid));
 }
