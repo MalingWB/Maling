@@ -70,7 +70,7 @@ export function McpServerCard({
   const { t } = useTranslation();
   const transportLabel = TRANSPORT_LABEL[server.transport] ?? server.transport;
   const displayName = server.id === 'gold-band-memory'
-    ? t('contextManagement.mcp.goldBandMemoryName', 'Gold Band 共享记忆')
+    ? t('contextManagement.mcp.goldBandMemoryName', 'MALING 共享记忆')
     : server.name;
   const diagnosticChecking = isChecking || health?.status === 'checking';
   const diagnosticMessage = diagnosticChecking

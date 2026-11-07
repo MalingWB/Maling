@@ -5,8 +5,16 @@ import { embeddedDemoParentHref } from '../../marketing/demo/routes';
 describe('production website entrances', () => {
   it('requires an explicit production demo URL and permits a same-origin deployment path', () => {
     expect(() => siteConfig({}, true)).toThrow();
-    expect(siteConfig({ VITE_DEMO_URL: '/demo/' }, true).demoUrl).toBe('/demo/');
-    expect(siteConfig({}, false).demoUrl).toBe('http://127.0.0.1:1450/');
+    expect(siteConfig({ VITE_DEMO_URL: '/demo/', GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, true).demoUrl).toBe('/demo/');
+    expect(() => siteConfig({}, false)).toThrow();
+    expect(siteConfig({ GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, false).demoUrl).toBe('http://127.0.0.1:1450/');
+    expect(siteConfig({ GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, false).inlineDownloadBaseUrl).toBe('https://example.invalid/api/file/download/');
+  });
+  it('requires GOLD_BAND_WB_BASE_URL to be a bare HTTP(S) origin', () => {
+    expect(siteConfig({ VITE_DEMO_URL: '/demo/', GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, true).inlineDownloadBaseUrl).toBe('https://example.invalid/api/file/download/');
+    for (const GOLD_BAND_WB_BASE_URL of ['', 'example.invalid', 'https://example.invalid/path', 'https://example.invalid?x=1', 'https://user:pass@example.invalid']) {
+      expect(() => siteConfig({ VITE_DEMO_URL: '/demo/', GOLD_BAND_WB_BASE_URL }, true)).toThrow();
+    }
   });
   it('rejects executable, malformed and loopback URLs', () => {
     for (const VITE_DEMO_URL of ['javascript:alert(1)', '//example.com', 'https://user:pass@example.com', 'https://127.0.0.1', 'https://localhost', 'http://example.com', 'https://[::1]', 'https://[::ffff:127.0.0.1]', 'https://localhost.', 'https://2130706433', 'https://example.com\\@localhost']) {

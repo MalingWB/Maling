@@ -7,10 +7,15 @@ import { createPreviewRun, createPreviewSession } from '../../marketing/shared/f
 import { mockErrorBlockedConversationRun, mockErrorBlockedConversationSession } from '../src/mockData';
 
 describe('website motion', () => {
-  it('does not stop the public page when the system reduces motion', () => {
+  it('keeps the product homepage and chapter playback when the system reduces motion', () => {
     const siteRoot = resolve('marketing/site');
     const main = readFileSync(resolve(siteRoot, 'main.tsx'), 'utf8');
     const style = readFileSync(resolve(siteRoot, 'style.css'), 'utf8');
+    expect(main).toContain('<Story language={language} theme={theme} />');
+    expect(main).toContain('autoPlay');
+    expect(main).toContain('<DownloadMenu config={config}');
+    expect(main).not.toContain('homeTitle');
+    expect(main).not.toContain('homeText');
     expect(main).not.toContain('prefers-reduced-motion');
     expect(main).not.toContain('reducedMotion');
     expect(style).toContain('scroll-behavior: smooth');
@@ -21,16 +26,14 @@ describe('website motion', () => {
 describe('website routing and bilingual content', () => {
   it('preserves page identity when changing language and handles unknown paths', () => {
     for (const language of ['zh', 'en'] as const) for (const page of ['home', 'documentation', 'demo'] as const) {
-      expect(parseRoute(pageHref(language, page))).toEqual({ language, page });
+      expect(parseRoute(pageHref(language, page))).toEqual({ language, page, docId: null });
     }
     expect(parseRoute('/en/not-a-page').page).toBe('not-found');
-    expect(parseRoute('/')).toEqual({ language: 'zh', page: 'home' });
+    expect(parseRoute('/')).toEqual({ language: 'zh', page: 'home', docId: null });
     expect(pageHref('en', 'documentation', '/product/')).toBe('/product/en/documentation');
-    expect(parseRoute('/', 'en')).toEqual({ language: 'en', page: 'home' });
-    expect(copy.zh.homeTitle).toBe('敬请期待');
-    expect(copy.en.homeTitle).toBe('Coming soon');
-    expect(copy.zh.placeholder).toBe('正在准备中');
-    expect(copy.en.placeholder).toBe('Coming soon');
+    expect(parseRoute('/', 'en')).toEqual({ language: 'en', page: 'home', docId: null });
+    expect(copy.zh.docs.overview).toBe('知识库总览');
+    expect(copy.en.docs.overview).toBe('Overview');
   });
   it('keeps the same four chapters in both languages', () => {
     for (const language of ['zh', 'en'] as const) expect(copy[language].chapters.map(chapter => chapter.id)).toEqual(CHAPTER_IDS);
