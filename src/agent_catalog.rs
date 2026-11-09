@@ -1,7 +1,9 @@
 use std::sync::OnceLock;
 
-use anyhow::{Context, Result};
-use serde::Deserialize;
+use anyhow::{Context, Result, ensure};
+use serde::{Deserialize, Serialize};
+
+use crate::platform::{DesktopPlatform, platform_excluded};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,8 +16,23 @@ pub struct AgentCatalog {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCatalogSource {
+    pub official_registry: AgentCatalogOfficialRegistrySource,
+    pub local_supplement: AgentCatalogLocalSupplementSource,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCatalogOfficialRegistrySource {
     pub url: String,
     pub registry_version: String,
+    pub fetched_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCatalogLocalSupplementSource {
+    pub path: String,
+    pub sha256: String,
     pub fetched_at: String,
 }
 
@@ -25,6 +42,7 @@ pub struct AgentCatalogEntry {
     pub id: String,
     pub label: String,
     pub version: String,
+    pub provenance: AgentCatalogProvenance,
     pub description: String,
     pub repository: Option<String>,
     pub website: Option<String>,
@@ -47,6 +65,30 @@ pub struct AgentCatalogEntry {
     pub supports_system_prompt: bool,
     #[serde(default)]
     pub supports_external_session_sync: bool,
+    #[serde(default)]
+    pub excluded_platforms: Vec<DesktopPlatform>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentCatalogSourceKind {
+    OfficialRegistry,
+    LocalSupplement,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentIntegrationOrigin {
+    Official,
+    CommunityAdapter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCatalogProvenance {
+    pub source_kind: AgentCatalogSourceKind,
+    pub integration_origin: AgentIntegrationOrigin,
+    pub validated_version: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -72,10 +114,16 @@ pub fn builtin_agent(id: &str) -> Option<&'static AgentCatalogEntry> {
         .find(|entry| entry.id == id)
 }
 
+impl AgentCatalogEntry {
+    pub fn supports_platform(&self, platform: DesktopPlatform) -> bool {
+        !platform_excluded(&self.excluded_platforms, platform)
+    }
+}
+
 fn parse_agent_catalog(json: &str) -> Result<AgentCatalog> {
     let catalog: AgentCatalog = serde_json::from_str(json).context("invalid Agent catalog JSON")?;
     anyhow::ensure!(
-        catalog.schema_version == 1,
+        catalog.schema_version == 2,
         "unsupported Agent catalog schema"
     );
     anyhow::ensure!(!catalog.agents.is_empty(), "Agent catalog is empty");
@@ -90,8 +138,64 @@ fn parse_agent_catalog(json: &str) -> Result<AgentCatalog> {
             "duplicate Agent catalog id `{}`",
             entry.id
         );
+        validate_entry(entry)?;
     }
     Ok(catalog)
+}
+
+fn validate_entry(entry: &AgentCatalogEntry) -> Result<()> {
+    ensure!(!entry.version.is_empty(), "Agent catalog version is empty");
+    ensure!(
+        semver::Version::parse(&entry.version).is_ok(),
+        "Agent `{}` has an invalid version",
+        entry.id
+    );
+    ensure!(
+        semver::Version::parse(&entry.provenance.validated_version).is_ok(),
+        "Agent `{}` has an invalid validated version",
+        entry.id
+    );
+    ensure!(
+        !entry.icon_key.is_empty()
+            && !entry.icon_key.contains(['/', '\\'])
+            && entry.icon_key != "."
+            && entry.icon_key != "..",
+        "Agent `{}` has an invalid icon key",
+        entry.id
+    );
+    ensure!(
+        !entry.command.is_empty(),
+        "Agent `{}` has an empty launch command",
+        entry.id
+    );
+    for directory in entry
+        .primary_agent_dir
+        .iter()
+        .chain(entry.project_primary_agent_dir.iter())
+        .chain(entry.compatible_agent_dirs.iter())
+    {
+        let path = std::path::Path::new(directory);
+        ensure!(
+            !directory.trim().is_empty()
+                && path.is_relative()
+                && !path.components().any(|component| {
+                    matches!(component.as_os_str().to_str(), Some("." | ".."))
+                }),
+            "Agent `{}` has an invalid Skill directory",
+            entry.id
+        );
+    }
+    let mut excluded = std::collections::BTreeSet::new();
+    for platform in &entry.excluded_platforms {
+        ensure!(
+            excluded.insert(*platform),
+            "Agent `{}` has duplicate platform exclusion `{}/{}`",
+            entry.id,
+            platform.os.as_str(),
+            platform.arch.as_str()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -117,5 +221,40 @@ mod tests {
         let kimi = builtin_agent("kimi").unwrap();
         assert_eq!(kimi.primary_agent_dir.as_deref(), Some(".kimi-code"));
         assert_eq!(kimi.compatible_agent_dirs, [".agents"]);
+        assert!(catalog.agents.iter().all(|entry| {
+            entry.provenance.source_kind == AgentCatalogSourceKind::OfficialRegistry
+                && entry.provenance.integration_origin == AgentIntegrationOrigin::Official
+                && !entry.provenance.validated_version.is_empty()
+                && entry.excluded_platforms.is_empty()
+        }));
+    }
+
+    #[test]
+    fn platform_exclusions_are_typed_and_reject_duplicates() {
+        let entry = serde_json::from_str::<AgentCatalogEntry>(
+            r#"{
+              "id": "qoder",
+              "label": "Qoder",
+              "version": "0.2.14",
+              "provenance": {
+                "sourceKind": "official-registry",
+                "integrationOrigin": "official",
+                "validatedVersion": "0.2.14"
+              },
+              "description": "fixture",
+              "repository": null,
+              "website": null,
+              "iconKey": "qoder",
+              "command": "npx",
+              "args": ["-y", "@qoder-ai/qodercli@0.2.14", "--acp"],
+              "excludedPlatforms": [
+                {"os": "windows", "arch": "aarch64"},
+                {"os": "windows", "arch": "aarch64"}
+              ]
+            }"#,
+        )
+        .unwrap();
+        let error = validate_entry(&entry).unwrap_err().to_string();
+        assert!(error.contains("duplicate platform exclusion"), "{error}");
     }
 }

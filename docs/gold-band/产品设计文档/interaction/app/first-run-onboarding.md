@@ -1,8 +1,10 @@
 # 首次启动引导技术方案
 
 > 状态：2026-10-26 已补 Windows 真实客户端＋受控 ACP 的环境展示、主动重测、退出恢复、自动保存及标准版批量绑定验收；候选环境策略尚未通过全部供应商／平台的发布矩阵。\
-> 调研日期：2026-10-16；范围更新：2026-11-02。范围：Gold Band 桌面客户端，优先验收 Windows，沿用现有跨平台进程边界。\
+> 调研日期：2026-10-16；范围更新：2026-11-09。范围：Gold Band 桌面客户端，优先验收 Windows，沿用现有跨平台进程边界。\
 > 配套计划：[首次启动引导开发计划](../../../开发计划/新增流程/首次启动引导开发计划.md)。
+
+> 后续 Catalog 扩展：[DeepSeek Harness / ZCode / Qoder ACP 接入技术方案](../../../开发计划/acp接入/DeepSeek-ZCode-Qoder-ACP接入技术方案.md) 不改变本文 onboarding 状态机。当前发布版消费 11 项；DeepSeek/Qoder 完成第一阶段准入后消费 13 项，ZCode 只有真实后端完整验收通过后才消费第二阶段 14 项。未准入或当前平台不支持的条目不会成为候选。
 
 ## 1. 推荐决策
 
@@ -22,11 +24,13 @@
 
 ### 2.1 复用既有 Agent 接入
 
-本期围绕现有精选 Catalog、ACP client、Doctor 和 Agent 管理能力完成首次启动引导，保留现有供应商条目与配置。供应商新增、替换、退役及对应设置迁移不属于本需求。
+本期围绕现有精选 Catalog、ACP client、Doctor 和 Agent 管理能力完成首次启动引导，保留现有供应商条目与配置。供应商新增、替换、退役及对应设置迁移不属于本需求；后续新增条目只有在独立接入方案通过发布门槛并进入 Catalog 后，才由本文既有发现链路自动消费，不为供应商复制 onboarding 状态。
 
 引导面向新安装客户端：发现来源是精选 Catalog 与当前电脑的本机程序，不是 Agent 管理中已配置的实例数量；即使 `SettingsConfig.agents` 为空也必须完成发现。既有配置只用于复用稳定 ID、用户字段和冲突基线，不能作为可用性证据。
 
 Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使用已安装的 ACP 命令；对已发现的 Claude、Codex、Pi CLI，缺少 ACP 适配器时自动衔接对应 Catalog 的受控 npx 启动流程。仅有启动器不算安装了 Agent，只有实际 ACP 诊断成功并保存的项才算可用；不自动下载电脑上没有安装的全部精选 Agent。
+
+候选生成先调用后端统一的类型化平台判定，再进行本机发现。Catalog 平台值统一为 `windows/macos/linux` 与 `x86_64/aarch64`；Web 不解释 Node `win32/arm64` 字符串。平台不支持的内置条目不进入引导候选，直接绕过 UI 调用创建接口时仍由后端返回 `agent.unsupported-platform`。已经配置的实例不因后续限制被删除；引导继续只投影其匹配的健康诊断。
 
 ### 2.2 版本建议与事实区分
 
@@ -161,6 +165,7 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 - `executablePath` 必须由后端路径校验；运行、Doctor、发现共同使用同一解析函数。此字段用于定位已安装但不在 PATH 中的程序，不引入第二 Agent ID。
 - Catalog 的 `localLaunch` 保存已核实的本机 ACP 命令与 ACP 参数，`installedCommand` 保存需要单独适配器的底层 CLI 命令；这些是静态模板元数据，不增加实例持久字段。发现与普通运行共用 `executable_adapter`，优先采用本机 ACP 命令及正确参数，不将 npx 的包名、`-y` 传给本机 CLI。显式 `executablePath` 仍优先，但它只替换 `localLaunch.command` 的程序位置，必须继续使用 `localLaunch.args`；条目没有 `localLaunch` 时才保留原 Catalog 参数。
 - Skills 根目录与兼容目录沿用既有 Catalog 中已验证的配置，不根据底层 CLI 的目录推断适配组件目录。
+- Catalog entry 的 `sourceKind`、`integrationOrigin` 与 `validatedVersion` 只用于来源、信任和验证范围，不代替当前本机能力。社区桥接器只有通过独立真实后端门槛后才进入发布 Catalog；引导不把 candidate 或未验证条目展示给用户。
 
 ### 5.2 安装发现是只读的
 
@@ -180,6 +185,8 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 当前 ACP client 未实现 `authMethods` 投影与 `authenticate` 交互，本期不增加虚假的内嵌登录接口；账号认证由供应商流程处理，完成后重新检测。检测页不恢复准备指引或自定义 ACP 折叠区。后续若实现协议认证，必须依据 initialize.authMethods 区分协议方法和 terminal 方法，不能向 terminal 类型直接发送 authenticate。来源 S4。
 
 本期主路径为官方图形／浏览器准备指引，登录凭据由供应商处理。若 Agent 仅支持终端登录，属于供应商的外部准备步骤；向导不新建终端产品界面，不宣称支持尚未实现的 auth capability。
+
+引导不收集或保存供应商 token。若用户在 Agent 管理页显式使用 env 配置凭据，该 env 属于正式 Agent 配置并会保存到本机 settings；引导只复用配置指纹匹配的健康结果，不读取、展示或复制凭据正文。Qoder 等支持供应商登录的 Agent 优先使用其登录流程。
 
 统一候选处理顺序：未配置候选走 `discovered → checking → 保存正式配置与匹配诊断 → ready`；已配置候选先按稳定 Agent ID 与配置 fingerprint 读取 Agent 管理领域的 canonical Doctor 快照，只有 `available=true` 且 fingerprint 匹配才直接投影为 `ready`。已配置诊断缺失、失败或过期时不在引导中展示，也不由引导再次写入失败快照；用户在 Agent 管理页重新诊断后，下一次引导再消费新的 canonical 结果。认证缺失、协议不支持、诊断失败或保存失败均不进入可选列表。`ready` 直接由正式 Agent 配置和匹配的成功诊断投影，不新增持久化注册状态机。`missing` 与 `checking` 不混用；模型目录成功不保证未来额度充足，页面称“连接正常”，不承诺一定能推理。
 
@@ -285,7 +292,7 @@ DefaultExecutionProfile
 | `check_setup_environment` / `cancel_setup_environment` | request ID | 返回并保留 4 项检查的完整报告；同页主动重测替换旧请求与报告，退出引导释放；原生 `git`／`node` 每项最多 5 秒，`npm`／`npx` launcher 每项最多 15 秒 |
 | `skip_setup_git` | 当前引导意图 | 更新 skip 意图并返回权威状态；没有 npm skip 接口 |
 | `start_setup_agent_detection` / `cancel_setup_detection` | after cursor、refresh、事件 channel／generation | 校验本次后端环境报告，不启动环境命令；编排只读发现、有界诊断和成功后自动配置；不创建或迁移模板与默认配置；逐项返回正式健康 Agent 与进度 |
-| `discovery::candidates`（内部） | 已配置实例、after cursor | 11 个 Catalog 候选与每批至多 50 个自定义实例；当前产品验收规模不超过 50 个自定义 Agent，after cursor 只是有界防御边界；不隐式下载或登录 |
+| `discovery::candidates`（内部） | 已配置实例、after cursor | 当前发布 11 个、第一阶段 13 个、第二阶段最多 14 个经过平台过滤的 Catalog 候选，以及每批至多 50 个自定义实例；当前产品验收规模不超过 50 个自定义 Agent，after cursor 只是有界防御边界；不隐式下载或登录 |
 | `probe_setup_model` | 已配置且诊断成功的 Agent ID、model ID、generation | 复用模型探测，返回目标模型配置目录 |
 | `preview_default_setup` | 默认选择、当前诊断引用 | 模板与 slot 更新数量、冲突、预览指纹；无写副作用 |
 | `apply_default_setup` | 默认选择、预览指纹、operation ID | 读取本次后端已完成环境报告，校验能力与预览后提交；不启动环境命令，成功后前端重新读取状态。相同请求重投保持幂等 |
@@ -352,7 +359,7 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 | 数据 | 规模／增长 | 控制方式 |
 | --- | --- | --- |
 | 环境检查 | Git、Node、npm、npx 共 4 项 | 每项有限时命令，结果逐项返回 |
-| 精选 Agent | 当前 11 项 | 读取打包摘要；仅对本机已准备的候选启动有界自动诊断 |
+| 精选 Agent | 当前 11 项；第一阶段 13 项；ZCode 准入后最多 14 项 | 先按当前平台过滤，再读取打包摘要；仅对本机已准备的候选启动有界自动诊断 |
 | 自定义 Agent | 当前产品验收规模不超过 50 项 | 内部候选每批至多 50 项并保持有界诊断；超过 50 项的跨批场景不是本版本产品承诺，UI 仅投影已验证且已配置项 |
 | 内置工作流 | 标准版 2 个，WB 3 个，后续受构建清单约束 | 在第三步预览时读取；算法 O(内置执行 slot 总数) |
 | 用户模板存储 | 与用户模板数及正文大小一起增长 | 现有单 JSON 预览／提交为 O(文件大小)，不假装只扫描内置就免去解析成本 |
@@ -364,7 +371,7 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 - 引导空壳与 loading 在触发后 100ms 内可见；状态 IPC 不等待外部进程，参考验收机 p95 ≤200ms。
 - 本地版本命令按工具类别使用有界截止时间：原生 `git`／`node` 5 秒，经 Windows shim 冷启动的 `npm`／`npx` 15 秒；结果立即投影，异常慢命令不会阻塞其它项。两类预算必须来自同一环境策略，不得在探测实现里按名称特判。
 - Doctor 沿用既有 3 分钟总预算和 4 个全局并发上限，不强行缩短为几秒；单个慢 Agent 不影响可见列表和其它可用选择。
-- 全局发现进程数量有界，不启动 11 个远程 npm 下载；首屏检测网络请求为 0。
+- 全局发现进程数量有界，不按 Catalog 总数启动远程 npm 下载；11/13/14 项都只探测本机已准备候选，首屏检测网络请求为 0。
 - 以 1,000 个用户模板、约 10 MiB 模板存储作为初始压力样本，预览／提交在后台执行，记录解析、校验、写入、锁持有时间；参考机目标分别 ≤1 秒。若超标，先拆分纯读取／维护路径或内置模板投影，不先加缓存。
 - 生产构建测量干净环境、已安装环境、单项超时和上述大模板样本；保存基线与结果，不用开发模式主观观感验收。
 
@@ -400,6 +407,9 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 | 缓存安装锁缺失、包名或精确版本不一致 | 不得直接启动该缓存，沿用已有受控准备或不可用路径 |
 | 已安装 Claude／Codex／Pi CLI，尚缺 ACP 适配组件 | 自动进入对应适配器的受控准备与诊断，成功并保存后才算可用 |
 | 只有 npx 启动器，没有对应 Agent 或已准备包 | 不下载全部精选 Agent，不判为 Gold Band 可用 |
+| 当前 OS／CPU 被 Catalog 排除 | 内置候选不进入引导；直接创建由后端返回 `agent.unsupported-platform`；既有实例和引用不被删除 |
+| Qoder 本机 CLI 与 Registry 固定 npx fallback | 两条路径分别使用各自命令与参数并独立通过 Doctor；不得用本机较新版本替代固定 fallback 的证据 |
+| ZCode 尚未通过真实后端发布门槛 | 不进入发布 Catalog 和引导候选；社区桥接器 metadata 或 mock 握手不能解除阻断 |
 | 管理页已有成功诊断且配置 fingerprint 未变 | 引导直接复用健康快照，不重复启动 Doctor，不改写管理页诊断 |
 | 管理页诊断缺失、失败、过期或配置 fingerprint 已变 | 引导隐藏该 Agent，不展示失败详情或修复入口；用户在管理页重新诊断后再运行引导 |
 | 既有 Agent 未登录／权限请求／取消 | 分别呈现状态；不自动批准，不遗留进程 |

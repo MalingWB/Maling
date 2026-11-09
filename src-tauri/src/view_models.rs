@@ -34,6 +34,7 @@ use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::AgentDiagnosticState;
 use crate::updater::{UpdateStatusVm, UpdaterSettingsVm, persisted_update_info, updater_settings};
 use crate::window_chrome::{DesktopWindowChromeVm, desktop_window_chrome_vm};
+use gold_band::platform::DesktopPlatform;
 use gold_band::storage::read_json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -315,6 +316,7 @@ pub struct AgentCatalogEntryVm {
     pub label: String,
     pub icon_key: String,
     pub version: String,
+    pub provenance: AgentCatalogProvenanceVm,
     pub description: String,
     pub repository: Option<String>,
     pub website: Option<String>,
@@ -328,6 +330,14 @@ pub struct AgentCatalogEntryVm {
     pub default_command: String,
     pub default_args: Vec<String>,
     pub default_env: Vec<AgentEnvEntryVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCatalogProvenanceVm {
+    pub source_kind: gold_band::agent_catalog::AgentCatalogSourceKind,
+    pub integration_origin: gold_band::agent_catalog::AgentIntegrationOrigin,
+    pub validated_version: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1392,6 +1402,14 @@ pub fn agent_registry_vm(
     app: &App,
     diagnostics: &std::collections::BTreeMap<ManagedAgentId, AgentDiagnosticState>,
 ) -> AgentRegistryVm {
+    agent_registry_vm_for_platform(app, diagnostics, DesktopPlatform::current())
+}
+
+pub fn agent_registry_vm_for_platform(
+    app: &App,
+    diagnostics: &std::collections::BTreeMap<ManagedAgentId, AgentDiagnosticState>,
+    platform: DesktopPlatform,
+) -> AgentRegistryVm {
     let agents = app
         .managed_agents()
         .iter()
@@ -1402,6 +1420,7 @@ pub fn agent_registry_vm(
     let catalog = gold_band::agent_catalog::builtin_agent_catalog()
         .agents
         .iter()
+        .filter(|entry| entry.supports_platform(platform))
         .map(|entry| {
             let agent_id =
                 ManagedAgentId::from_str(&entry.id).expect("built-in Agent catalog ids are valid");
@@ -1411,6 +1430,11 @@ pub fn agent_registry_vm(
                 label: entry.label.clone(),
                 icon_key: entry.icon_key.clone(),
                 version: entry.version.clone(),
+                provenance: AgentCatalogProvenanceVm {
+                    source_kind: entry.provenance.source_kind,
+                    integration_origin: entry.provenance.integration_origin,
+                    validated_version: entry.provenance.validated_version.clone(),
+                },
                 description: entry.description.clone(),
                 repository: entry.repository.clone(),
                 website: entry.website.clone(),

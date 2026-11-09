@@ -923,6 +923,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}} 已存在。",
+      "unsupported-platform": "Agent {{agentType}} 不支援目前平台（{{os}}/{{arch}}）。",
       "not-configured": "Agent {{agentType}} 尚未設定。",
       "display-name-required": "請填寫 Agent 名稱。",
       "command-required": "請填寫 Agent 啟動命令。"
@@ -1248,6 +1249,9 @@
     "customAgentIdPlaceholder": "例如 my-agent",
     "pending": "待支援",
     "configured": "已新增",
+    "integrationOrigin": {
+      "communityAdapter": "社群橋接"
+    },
     "empty": "目前還沒有已設定的 agent",
     "createTitle": "新增 Agent",
     "createDescription": "建立一個可用於節點執行的 agent 設定。",

@@ -923,6 +923,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}} already exists.",
+      "unsupported-platform": "Agent {{agentType}} does not support the current platform ({{os}}/{{arch}}).",
       "not-configured": "Agent {{agentType}} is not configured.",
       "display-name-required": "Enter an Agent name.",
       "command-required": "Enter an Agent launch command."
@@ -1248,6 +1249,9 @@
     "customAgentIdPlaceholder": "For example, my-agent",
     "pending": "Pending",
     "configured": "Added",
+    "integrationOrigin": {
+      "communityAdapter": "Community adapter"
+    },
     "empty": "No configured agents yet",
     "createTitle": "Add Agent",
     "createDescription": "Create an agent configuration for node execution.",

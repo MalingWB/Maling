@@ -923,6 +923,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}}가 이미 존재합니다.",
+      "unsupported-platform": "Agent {{agentType}}는 현재 플랫폼({{os}}/{{arch}})을 지원하지 않습니다.",
       "not-configured": "Agent {{agentType}}가 구성되어 있지 않습니다.",
       "display-name-required": "Agent 이름을 입력해 주세요.",
       "command-required": "Agent 시작 명령을 입력하세요."
@@ -1248,6 +1249,9 @@
     "customAgentIdPlaceholder": "예: my-agent",
     "pending": "지원 예정",
     "configured": "추가됨",
+    "integrationOrigin": {
+      "communityAdapter": "커뮤니티 어댑터"
+    },
     "empty": "구성된 agent 없음",
     "createTitle": "Agent 추가",
     "createDescription": "노드 실행에 쓸 agent 구성을 만듭니다.",

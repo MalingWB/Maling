@@ -1,226 +1,401 @@
 # DeepSeek Harness / ZCode / Qoder ACP 接入技术方案
 
-> 状态：技术方案，未实施。调研时间：2026-11-09。
+> 状态：评审修订稿，未实施。调研与修订时间：2026-11-09。
+> 实施准入：DeepSeek Harness、Qoder 在本文验收门槛通过后进入第一阶段；ZCode 仅确认架构可行，真实 ZCode 后端验证通过前不得进入发布 Catalog。
 
 ## 1. 结论与范围
 
-目标是把 DeepSeek Harness、智谱 ZCode、Qoder 加入 Agent 管理的精选 Catalog，并沿用现有 ACP client、Doctor、首次引导、Skill 同步和 Agent 管理页能力。
+本需求的根因不是 Gold Band 缺少新的 provider client，而是现有方案尚未完整区分以下事实：
 
-| Agent | 稳定 ID | 来源 | 启动模板 | 结论 |
+1. Catalog 只提供构建期候选模板与来源信息，不代表本机可运行或具备某项会话能力。
+2. Agent 的 ACP 能力必须来自当前真实 `initialize`、Doctor 和会话结果，不能来自旧 README、Agent ID 或品牌推断。
+3. 平台支持、凭据持久化、生成产物原子性和恢复语义属于通用接入契约，不能在三个 Agent 的调用点分别打补丁。
+4. “代码可桥接”不等于“达到发布准入”；没有真实后端、认证、工具调用和恢复证据的条目不得进入精选 Catalog。
+
+| Agent | 稳定 ID | 集成来源 | 候选启动模板 | 修订后结论 |
 | --- | --- | --- | --- | --- |
-| DeepSeek Harness | `deepseek-harness` | 官方 CLI 本地命令 | `dsh --profile acp` | 可以接入；本机已实测 `initialize` / `session/new` |
-| ZCode（智谱） | `zcode-acp` | 社区 ACP 桥接 `zcode-acp-server` | `zcode-acp-server` | 可以接入，但必须先安装桥接器和 ZCode，并保留社区项目风险标注 |
-| Qoder | `qoder` | 官方 ACP Registry | `npx -y @qoder-ai/qodercli@<registry-version> --acp` | 可以接入；优先复用本机 `qoder --acp` |
+| DeepSeek Harness | `deepseek-harness` | DeepSeek 官方 CLI / ACP profile | `dsh --profile acp` | 第一阶段候选；必须补真实工具调用、停止、恢复和 Skill 验收 |
+| Qoder | `qoder` | 官方 ACP Registry | `npx -y @qoder-ai/qodercli@0.2.14 --acp`，本机优先 `qoder --acp` | 第一阶段候选；Registry fallback 与本机 CLI 两条路径必须分别验收 |
+| ZCode（智谱） | `zcode-acp` | 社区桥接器 `zcode-acp-server` | `zcode-acp-server` | 仅架构可行；真实 ZCode 后端握手与会话能力验收前阻断发布 |
 
-不新增 provider-specific client、状态机或持久化字段。Gold Band 只维护启动模板、Skill 目录和候选入口；真实能力仍以 Doctor 的 ACP `initialize.agentCapabilities` 为准。
+当前发布 Catalog 为 11 项。实施分两阶段：
 
-## 2. 现有接入链路调研
+- 第一阶段完成通用契约、DeepSeek Harness 与 Qoder，目标为 13 项。
+- 第二阶段仅在 ZCode 发布门槛全部通过后加入 ZCode，目标为 14 项。
 
-| 链路 | 当前实现 | 对新增 Agent 的含义 |
+不新增 provider-specific client、并行状态机或 Agent 实例 canonical state。继续复用现有 ACP client、Doctor、首次引导、Skill 同步、Agent 管理页和 `ManagedAgentConfig`；只补齐 Catalog 元数据、统一平台判定、生成事务和接口级验收。
+
+## 2. 现有接入链路与修订边界
+
+| 链路 | 当前实现 | 本方案要求 |
 | --- | --- | --- |
-| Catalog 生成 | `scripts/prepare-agent-catalog.mjs` 从官方 Registry 拉取快照，筛选 `BUILTIN_AGENT_IDS`，应用 override 与 version pin，下载 SVG | Qoder 已在官方 Registry；DeepSeek 与 ZCode 不在 Registry，需要受控补充源 |
-| Rust 加载 | `resources/agent-catalog.json` 编译进 `src/agent_catalog.rs`，校验 schema、唯一 ID 与目录字段 | 只需扩展字段和数量断言，不需要新的运行时事实源 |
-| 实例配置 | `ManagedAgentConfig::from_catalog` 深拷贝模板；内置 Agent 的 command/args 由 Catalog 归属，实例可覆盖 executable location | 三个 Agent 可复用创建、编辑、持久化和 workflow provider 引用 |
-| 本机发现 | 未配置 Catalog 候选优先使用本地 ACP 命令或已准备 npx 缓存；只有 npx launcher 不判为已安装 | DeepSeek / ZCode 走 native command；Qoder 优先 `qoder`，否则要求已准备 npx 缓存 |
-| Doctor | 启动 standalone ACP 进程，执行 `initialize`、`session/new`，有界等待 command update，再尝试 `session/delete` / `session/close` 并保存 capabilities | DeepSeek 实测能力可承接；无 command update 不是失败 |
-| 会话能力 | 图片、音频、embedded context、MCP、resume/load 全部读取 Agent capabilities；缺失时降级或返回结构化错误 | 不需要按三个新 ID 写分支 |
-| Skill 同步 | 主目录与兼容目录统一追加 `skills`；全局和项目作用域可拆分 | 三个 Agent 均可映射到官方或桥接器声明的用户/项目目录 |
+| Catalog 生成 | `scripts/prepare-agent-catalog.mjs` 从官方 Registry 生成 snapshot、Catalog 与图标 | 增加受控本地补充源、逐项 provenance、类型化平台限制和事务化发布 |
+| Rust 加载 | `resources/agent-catalog.json` 编译进 `src/agent_catalog.rs` | Catalog 仍是只读构建产物；统一校验 schema、来源、平台和目录字段 |
+| Agent 实例 | `ManagedAgentConfig::from_catalog` 创建实例；内置 `command/args` 由当前 Catalog 注入 | 不新增实例字段；现有实例继续保留名称、图标、环境变量、目录和 executable location |
+| 本机发现 | 优先本地 ACP 命令或已准备的 npx 包；只有 npx launcher 不算 Agent 已安装 | 先做统一平台过滤，再执行现有只读发现；不自动下载未准备 Agent |
+| Doctor | 通用 ACP 初始化、空会话、能力目录与有界清理 | 不把 `available_commands_update` 当成功条件；补充真实 prompt、工具与恢复验收 |
+| 会话恢复 | 根据 `sessionCapabilities` 与 `loadSession` 决定 resume/load | 为每个新增 Agent 固定 new、stop、continue、load/resume、history、cleanup 契约 |
+| Skill 同步 | 主目录可按全局/项目拆分，兼容目录只读 | 按 Agent 实际扫描路径配置；项目写入路径必须经后端接口验证 |
 
-当前存在一个必须同步修正的文档偏差：`agent-management.md` 仍写“已创建实例不跟随 Catalog command/args 变化”，而当前实现是内置 Agent 的 command/args 由 Catalog 归属并在设置序列化时恢复；知识库文档也描述为升级后跟随 Catalog。实施时必须把产品文档收敛到当前实现，避免新增内置 Agent 后继续出现两套口径。
+产品文档中的历史冲突必须同时收敛：内置 Agent 的 `command/args` 由当前客户端 Catalog 唯一维护，升级后既有实例也使用新 Catalog 启动配置；自定义 Agent 才由用户维护启动命令。不得继续保留“Catalog 只影响之后新建实例”的旧口径。
 
-## 3. 候选调研结果
+## 3. 数据结构与领域归属
 
-### 3.1 DeepSeek Harness
+### 3.1 Catalog provenance
 
-官方入口是 `dsh --profile acp`。`dsh` 是唯一公开 Node 应用 launcher，ACP 是 profile，不是独立公共 bin。用户数据根目录默认 `~/.dsh`；Skill 文件系统提供方默认读取项目 `.dsh/skills`、项目 `.agents/skills`、用户 `~/.dsh/skills` 与用户 `~/.agents/skills`。
-
-本机已安装 `@deepseek-ai/dsh@0.2.1-rc.2`，Node 为 `v22.22.3`。实测最小 ACP 握手结果：
-
-- `initialize` 成功，`agentInfo.name = deepseek-harness-acp`。
-- 声明 `promptCapabilities: image=false, audio=false, embeddedContext=false`。
-- 声明 `mcpCapabilities.http=true`。
-- 声明 `sessionCapabilities: close/list/resume`。
-- `session/new` 成功，返回模型与 `reasoning_effort` 配置目录。
-- `session/new` 携带 stdio MCP server 配置也能成功创建。
-
-官方 `@deepseek-ai/dsh-acp` 包说明强调 automation-only：只输出 committed assistant text，不输出工具过程、reasoning、plan、title、usage，也不支持完整会话回放。本机 0.2.1-rc.2 的实际握手比该说明多了 `close/list/resume`。Gold Band 必须以 Doctor 实际返回为准：普通继续会话可用时走 `session/resume`；未声明 `loadSession` 时完整历史同步保持不可用。
-
-主要体验限制：
-
-- 首次回复可能长时间没有 tool/reasoning 流，只在 committed message 到达时出现正文；UI 不得把静默误判为失败。
-- 图片、音频和 embedded resource 按路径文本降级。
-- system prompt 不能通过 ACP metadata 传递，沿用现有首轮回合内隐藏上下文方案，恢复会话不重复注入。
-- `session/delete` 未声明时 Doctor 先尝试 delete 再 close；实际 close 已声明，能走有界清理。
-
-### 3.2 ZCode（智谱）
-
-采用社区项目 `zcode-acp-server`，当前调研版本 `0.82.3`，Apache-2.0，Node >= 22。它启动真实 `zcode app-server --stdio`，不是重新实现 ZCode Agent。
-
-推荐模板使用 native command：
+Catalog 每个条目增加构建期来源信息：
 
 ```text
-command: zcode-acp-server
-args: []
+CatalogProvenance
+  sourceKind: official-registry | local-supplement
+  integrationOrigin: official | community-adapter
+  validatedVersion: string
 ```
 
-前置条件：
+- `sourceKind` 说明条目定义来自官方 Registry 还是 Gold Band 本地精选补充源。
+- `integrationOrigin` 说明 ACP 实现由供应商官方维护还是社区桥接，不通过英文 `description` 暗示。
+- `validatedVersion` 表示 Gold Band 完整执行本文真实验收的版本，不表示自动锁定用户本机版本。
+- 官方 Registry 条目的 `validatedVersion` 来自 `configs/agent-catalog-policy.json` 的显式 `validatedVersions` 映射；Registry 升级只改变候选 `version`，不得自动改写验收证据。本地补充条目在自身 provenance 中声明同一字段。
+- 没有完整真实验收的版本不能写入 `validatedVersion`，也不能进入发布 Catalog。ZCode 在第二阶段准入前不生成正式 Catalog 条目。
+- UI 只消费结构化 `integrationOrigin`，通过七语言 key 展示简短来源标签或帮助说明；上游 `description` 不承担信任边界或对客本地化。
 
-- 用户全局安装 `zcode-acp-server`。
-- ZCode CLI 可由 `ZCODE_BIN`、PATH 或桌面安装目录自动发现。
-- ZCode 凭据位于 `~/.zcode/v2/config.json`。
-- Node >= 22。
+这些字段属于构建期 Catalog，不复制到 `SettingsConfig.agents`，不形成第二份 Agent 实例事实源。
 
-目录约定：主目录和项目主目录均为 `.zcode`；兼容目录暂不声明 `.agents`，待桥接器实测确认后再加入。
+### 3.2 类型化平台约束
 
-桥接器文档声明支持流式 diff、权限、plan、skills、MCP、auto-compaction、session resume/fork，并会把任务索引同步回 ZCode 应用。它是社区项目且迭代快，因此 Catalog 显示版本只作为 Gold Band 验证版本，不强制用户安装该版本；Doctor 负责实际可用性。
+禁止使用 `win32-arm64` 这类把 Node、Rust 和产品命名拼接在一起的字符串。Catalog 使用稳定 wire format：
 
-本机没有 `zcode` 和 `zcode-acp-server`。固定 `0.82.3` npx 握手在 120 秒内没有返回 `initialize`，被脚本终止；这不能证明协议不兼容，但说明缺少 ZCode 后端时可能出现长等待。选择 native command 可以让未安装桥接器在启动阶段快速失败，避免首次引导自动下载社区包后悬等到 Doctor 180 秒超时。
+```text
+PlatformSelector
+  os: windows | macos | linux
+  arch: x86_64 | aarch64
 
-### 3.3 Qoder
+AgentCatalogEntry
+  excludedPlatforms: PlatformSelector[]
+```
 
-Qoder 已在官方 ACP Registry 快照中，当前快照条目为 `qoder@0.2.14`，npx 包是 `@qoder-ai/qodercli@0.2.14 --acp`。npm 最新版本已到 `1.1.84`，说明 Registry 存在滞后；首期不得绕过 Registry 手动 pin 到 npm latest，应先使用官方 Registry 快照完成验证。若 0.2.14 不可用，优先推动或等待 Registry 更新，再重新生成快照。
+运行时由一个平台规范化入口把 Rust `std::env::consts::{OS, ARCH}` 转成上述类型，并由一个 `supports_platform(entry, current_platform)` 判定函数统一消费。Web 不再自行解释 `win32`、`arm64` 或拼接字符串，只接收后端已过滤的 Catalog 投影。
 
-启动与目录：
+平台限制的写入者与消费方：
 
-- npx 模板：`npx -y @qoder-ai/qodercli@<registry-version> --acp`。
-- 本机优先：`qoder --acp`；`installedCommand` 为 `qoder`。
-- 主目录：`.qoder`；兼容目录：`.agents`。
+1. 构建脚本只校验 `os/arch` 枚举、重复项和 schema，不承担运行时平台推断。
+2. Rust Catalog 加载器校验并保存类型化约束。
+3. onboarding 候选生成调用统一判定，排除当前平台不支持的条目。
+4. Agent 管理的 Catalog 投影调用同一判定，不把不支持条目发送给新增选择器。
+5. `create_agent` 后端再次调用同一判定，防止绕过 UI；返回结构化错误 `agent.unsupported-platform`，参数至少包含 `agentType`、`os`、`arch`。
 
-认证可由用户先执行 `qoder login`，或在 Agent 环境变量中配置 `QODER_PERSONAL_ACCESS_TOKEN`；Gold Band 不保存、生成或代填 token。
+已经配置的实例、workflow 引用和 Doctor 结果不得因 Catalog 新增限制而被删除或隐藏；用户仍可查看、编辑本机路径和诊断。平台限制只阻止从内置 Catalog 新建不受支持的实例。
 
-官方能力声明包括 Subagent、MCP、权限配置、上下文压缩和图片输入。平台支持 macOS/Linux/Windows 的 arm64 与 amd64，但 Windows ARM64 暂不支持。npm 安装路径要求 Node >= 20；当前引导策略的 Node 22/24 矩阵满足。
+### 3.3 能力与持久化边界
 
-## 4. 数据结构与生成方案
+- Catalog 是候选模板，不声明当前实例必然支持 resume、load、image、MCP 或工具调用。
+- Doctor capability snapshot 与正式 ACP 会话是运行能力事实源。
+- `AcpAdapterConfig.env` 会随 Agent 配置持久化；它不是临时进程环境，也不是系统密钥库。
+- Session、timeline、stop/continue 和 cleanup 继续使用现有会话 canonical state，不为三个 Agent 新增旁路生命周期。
 
-### 4.1 本地精选补充源
+## 4. 候选调研与修订后的接入契约
 
-新增 `resources/acp-registry-local.json`，只存放尚未进入官方 Registry、但 Gold Band 决定精选的 `deepseek-harness` 与 `zcode-acp`。文件使用与官方 Registry agent entry 兼容的结构，并额外允许 Gold Band 需要的本地覆盖字段。
+### 4.1 DeepSeek Harness
 
-构建规则：
+官方入口为 `dsh --profile acp`。`dsh` 是公开 launcher，ACP 是 profile，不是独立公共 bin。用户数据根目录默认 `~/.dsh`；Skill 文件系统提供方读取项目 `.dsh/skills`、项目 `.agents/skills`、用户 `~/.dsh/skills` 与用户 `~/.agents/skills`。
 
-1. 读取官方 Registry 快照或在线 Registry。
-2. 读取 local supplement，按 ID 合并；官方与本地 ID 冲突时构建失败。
-3. `BUILTIN_AGENT_IDS` 从 11 个扩展为 14 个，仍要求全部存在。
-4. Qoder 使用官方 entry；DeepSeek 与 ZCode 使用 local entry。
-5. 生成 catalog 的 source 同时记录官方 Registry 与 local supplement，避免来源谎称全部来自官方 CDN。
-6. online 模式只更新官方 snapshot，不重写 local supplement。
-7. offline 模式固定读取已提交官方 snapshot 与 local supplement，保证可重复构建。
+当前验证基线为 `@deepseek-ai/dsh@0.2.1-rc.2`，Node `v22.22.3`。已完成的最小握手证据：
 
-这样避免把完整 Agent 定义硬编码在脚本里，也不需要为两个 Agent 引入远端私有 Registry。
+- `initialize` 成功，`agentInfo.name = deepseek-harness-acp`。
+- `promptCapabilities` 声明 image/audio/embedded context 为 false。
+- `mcpCapabilities.http = true`。
+- `sessionCapabilities` 声明 close/list/resume，未声明 `loadSession`。
+- `session/new` 返回模型和 `reasoning_effort` 配置目录，携带 stdio MCP server 也可建立。
 
-### 4.2 Catalog 模板
+旧版 `@deepseek-ai/dsh-acp` 的 automation-only 说明不能作为 0.2.1-rc.2 的完整能力依据。当前适配器已经包含 committed thought、通用 tool lifecycle、config update、usage/context update 的事件映射；但握手或源码存在映射不等于 Gold Band 已完成真实显示验收。因此发布前必须执行至少一个真实工具调用回合，确认 thought、tool start/update/completion、usage/context 和最终正文均能进入现有通用事件模型，不能只测文本回复。
 
-| 字段 | DeepSeek Harness | ZCode | Qoder |
+恢复策略严格按实测 capability：
+
+- 普通继续在声明可用时使用 `session/resume`。
+- 未声明 `loadSession` 时不得尝试完整外部历史加载；Gold Band 只展示自身已持久化 timeline。
+- 图片、音频和 embedded resource 按现有路径文本策略降级；stdio MCP 继续随 `session/new` 传入，远程 MCP 只按实际 capability 开放。
+- Catalog 不声明 system prompt metadata 能力，沿用现有首轮 user turn 内的隐藏稳定上下文；恢复同一会话时不重复注入。
+- Doctor 清理按 capability 选择 delete/close；未声明 delete 时不得把 delete 失败当成 Agent 不可用，close 与进程树回收仍必须有界完成。
+- UI 使用现有 composer 处理中状态，不因某一阶段暂时没有正文误判失败，也不伪造工具进度。
+
+### 4.2 Qoder
+
+Qoder 使用官方 ACP Registry 条目 `qoder@0.2.14`。Registry fallback 固定为：
+
+```text
+npx -y @qoder-ai/qodercli@0.2.14 --acp
+```
+
+本机安装路径单独使用：
+
+```text
+qoder --acp
+```
+
+两条路径必须独立验收，不能用本机较新 `qoder` CLI 的成功结果代替 Registry 固定版本，也不能用 Registry fallback 代替本机发现路径。
+
+认证主路径为供应商的 `qoder login`。`QODER_PERSONAL_ACCESS_TOKEN` 仅作为用户显式选择的高级环境变量方式；由于 `AcpAdapterConfig.env` 会持久化到本机 settings，产品和技术方案不得再声称 Gold Band “不保存 token”。Agent 编辑器在 env 区域说明其内容会保存到本机配置，优先建议使用供应商登录；日志、诊断摘要和遥测不得输出环境变量值。本文不新增密钥库或临时凭据状态。
+
+当前 0.2.14 验证重点：
+
+- `loadSession = true`，并提供 session list；必须真实验证 list/load/history，而不是只断言 initialize JSON。
+- 验证模型目录、权限、图片输入声明、MCP、停止与 cleanup。
+- npm 路径要求 Node >= 20；仍需进入统一版本/engines/平台矩阵。
+- 官方限制 Windows ARM64，Catalog 使用 `excludedPlatforms: [{ os: windows, arch: aarch64 }]`。
+- 首次引导只在发现本机 `qoder` 或确认固定 0.2.14 npx 包已准备时启动 Doctor，不因存在 npx launcher 自动下载；用户在 Agent 管理页显式创建后仍可走现有受控 npx 准备流程。
+
+### 4.3 ZCode（智谱）
+
+候选桥接器为社区项目 `zcode-acp-server@0.82.3`，Node >= 22。它调用真实 `zcode app-server --stdio`，架构上可以复用 Gold Band 通用 ACP client，但社区项目声明不能替代真实兼容性证据。
+
+当前证据只支持“架构可行，尚未达到发布准入”：在没有真实 ZCode 后端的环境中，固定 0.82.3 桥接器 120 秒内没有返回 `initialize`。这不能证明协议不兼容，也不能证明可用。第一阶段不得把 ZCode 加入发布 Catalog、Agent 管理新增列表或首次引导候选。
+
+第二阶段发现只认已经安装的 native `zcode-acp-server`；桥接器再通过 `ZCODE_BIN`、PATH 或自身支持的安装位置寻找 ZCode。Gold Band 不自动下载社区桥接器，也不为 ZCode 添加专属桌面目录扫描。
+
+桥接器实际 Skill 扫描路径为：
+
+- 用户：`~/.zcode/skills`、`~/.agents/skills`。
+- 项目：`<cwd>/.agents/skills`。
+
+没有证据支持项目 `<cwd>/.zcode/skills`。第二阶段若通过真实验收，Catalog 目录映射应为：
+
+- `primaryAgentDir: .zcode`。
+- `projectPrimaryAgentDir: .agents`。
+- `compatibleAgentDirs: [.agents]`，扫描时按规范路径去重。
+
+这使 Gold Band 全局写入 `~/.zcode/skills`，项目写入 `<project>/.agents/skills`，同时读取用户通用目录；不得向项目 `.zcode/skills` 写入。项目写入必须通过真实后端/Skill 接口测试确认，而不是只断言目录字符串。
+
+现有目录数据结构能够表达该策略，不新增全局/项目两套 compatible 字段：`.agents` 在全局作用域是额外读取目录，在项目作用域与项目主目录相同，由 `skill_directory_policy` 按作用域去重。必须修正当前编辑输入把“与任一主目录相同”的 compatible 目录全局删除的归一化逻辑；只有当某目录同时等于全局主目录和项目有效主目录、因而在两个作用域都冗余时才删除。比较前统一规范化相对目录的分隔符、`.` 段和 Windows 大小写，保存时保留用户配置的相对目录语义。否则 ZCode 经 Agent 管理保存一次后会丢失用户 `~/.agents/skills` 的读取能力。
+
+ZCode 第二阶段发布门槛：
+
+1. 安装真实 ZCode 与桥接器，完成认证和 `initialize`。
+2. 验证 new、真实 prompt、工具/权限、stop、continue、resume/load、history、fork 和 cleanup。
+3. 验证用户与项目 Skill 实际被 ZCode 发现，且不写项目 `.zcode/skills`。
+4. 验证缺失 ZCode、版本不兼容、认证失败和协议超时均返回结构化原因并回收进程树。
+5. 核对桥接器 license、repository、发布包内容和固定版本供应链信息。
+
+## 5. Catalog 生成与发布事务
+
+### 5.1 本地精选补充源
+
+新增 `resources/acp-registry-local.json`，只保存未进入官方 Registry、且已通过发布准入的 Gold Band 精选条目：
+
+- 第一阶段只加入 `deepseek-harness`。
+- `qoder` 继续来自官方 Registry。
+- `zcode-acp` 只有在第二阶段真实验收通过后才加入本地补充源和 `BUILTIN_AGENT_IDS`。
+
+合并规则：
+
+1. 读取官方 Registry snapshot 或在线 Registry。
+2. 读取 local supplement；官方与本地 ID 冲突时构建失败，不定义覆盖优先级。
+3. 第一阶段 `BUILTIN_AGENT_IDS` 为 13 项；第二阶段通过后为 14 项。
+4. online 模式只刷新官方 snapshot，不重写 local supplement。
+5. offline 模式固定读取已提交 snapshot 与 local supplement，保证可重复构建。
+6. Catalog 顶层 source 同时记录官方 Registry 与 local supplement 的位置、版本/摘要和生成时间；每个条目写入自己的 provenance。
+
+### 5.2 事务化生成
+
+当前脚本依次写 snapshot、Catalog 和图标，任一步失败都可能留下半套产物。修订后采用单一发布函数：
+
+1. 在仓库外或系统临时目录创建本次 staging 目录，不直接写正式路径。
+2. 在 staging 中生成 snapshot、Catalog 和完整图标集合；offline 模式复制并校验已有图标，不访问网络。
+3. 对 staging 执行全部校验：schema、ID/顺序、provenance、固定版本、平台枚举、目录字段、HTTPS SVG、文件名、内容摘要和预期数量。
+4. 所有校验通过后，发布函数先写入一个有界 recovery journal，记录目标、原内容摘要、同目录备份和提交阶段；journal 自身使用临时文件原子替换。
+5. 为每个正式目标创建同目录临时文件并使用原子 rename/replace 发布；每完成一项就原子推进 journal。普通失败立即恢复已替换目标；进程崩溃后，下次生成先读取 journal 并完成回滚或继续，不在半完成状态上开始新生成。
+6. online snapshot 也属于同一次提交，不能先写 snapshot 再下载图标。全部目标及摘要确认一致后删除 journal 与备份。
+7. 失败或取消后清理 staging；不得修改 local supplement。
+
+测试必须提供失败注入点，至少覆盖 registry fetch、npm pin 校验、图标下载、SVG 校验、Catalog 校验和正式替换失败。每一种普通失败都要断言 snapshot、Catalog 和正式图标目录与执行前逐字节一致；替换阶段失败还要验证已发布目标被回滚。另模拟在第 N 个替换后中断，再次运行时必须先消费 recovery journal，使正式产物恢复为旧全集或完成为新全集，不能保留混合版本。
+
+## 6. Catalog 模板
+
+| 字段 | DeepSeek Harness（第一阶段） | Qoder（第一阶段） | ZCode（第二阶段门槛通过后） |
 | --- | --- | --- | --- |
-| id | `deepseek-harness` | `zcode-acp` | `qoder` |
-| label | DeepSeek Harness | ZCode | Qoder |
-| command | `dsh` | `zcode-acp-server` | `npx` |
-| args | `--profile acp` | 无 | `-y @qoder-ai/qodercli@<version> --acp` |
-| localLaunch | 无，command 本身就是本机命令 | 无 | `qoder --acp` |
-| installedCommand | 无 | 无 | `qoder` |
-| primaryAgentDir | `.dsh` | `.zcode` | `.qoder` |
-| projectPrimaryAgentDir | `null`（回退 `.dsh`） | `null`（回退 `.zcode`） | `null`（回退 `.qoder`） |
-| compatibleAgentDirs | `.agents` | 空 | `.agents` |
+| id | `deepseek-harness` | `qoder` | `zcode-acp` |
+| command / args | `dsh` / `--profile acp` | `npx` / `-y @qoder-ai/qodercli@0.2.14 --acp` | `zcode-acp-server` / 无 |
+| localLaunch | 无 | `qoder --acp` | 无 |
+| installedCommand | 无 | `qoder` | 无 |
+| primaryAgentDir | `.dsh` | `.qoder` | `.zcode` |
+| projectPrimaryAgentDir | `null`（回退 `.dsh`） | `null`（回退 `.qoder`） | `.agents` |
+| compatibleAgentDirs | `.agents` | `.agents` | `.agents` |
+| sourceKind | `local-supplement` | `official-registry` | `local-supplement` |
+| integrationOrigin | `official` | `official` | `community-adapter` |
+| validatedVersion | 本文验收通过后写 `0.2.1-rc.2` | 本文验收通过后写 `0.2.14` | 真实验收通过的固定版本 |
+| excludedPlatforms | 空；以发布矩阵收敛 | Windows aarch64 | 以发布矩阵收敛 |
 | supportsSystemPrompt | false | false | false |
 | supportsExternalSessionSync | false | false | false |
 
-三个 Agent 的全局与项目资源目录当前语义相同，先保持 `projectPrimaryAgentDir: null`，项目作用域回退到各自 `primaryAgentDir`；只有确认项目资源必须拆分时才启用拆分，不提前增加作用域模型。
+`validatedVersion` 是发布证据与审计信息，不改变 native command 的实际版本。Doctor 仍验证用户本机 executable 与 ACP 握手；若协议或 Agent 明确返回实际版本，则与已验证范围比较并给出结构化版本诊断，无法获得版本时标记 unknown 并继续按真实 capability 判断，不能把 unknown 伪装成已验证或不支持。
 
-### 4.3 平台排除
+## 7. 运行时、平台与错误契约
 
-新增可选 Catalog 字段 `excludedPlatforms`，初始只配置 Qoder 的 `win32-arm64`。Agent 管理新增下拉和首次引导候选过滤该组合；已配置实例、workflow provider 引用和 Doctor 重试不因此被隐藏或删除。该字段来自 Qoder 官方限制，不引入通用安装器或平台猜测。
+### 7.1 ACP client
 
-## 5. 运行时与交互方案
+不新增 Agent ID 分支，继续复用现有能力协商：
 
-### 5.1 ACP client
-
-不新增 provider-specific 分支。现有能力协商已满足：
-
-- `promptCapabilities` 缺失时，图片/资源按路径文本降级。
-- `mcpCapabilities` 只影响远程 MCP；stdio MCP 继续按协议默认传入。
+- `promptCapabilities` 缺失时，图片/资源按既有路径文本策略降级。
+- `mcpCapabilities` 只控制声明的 MCP 能力；不得因 Agent 品牌推断远程 MCP。
 - `sessionCapabilities.resume` 与顶层 `loadSession` 决定恢复策略。
-- `configOptions` 支持模型与 `thought_level`。
-- permission / elicitation 继续走通用卡片。
+- `configOptions` 继续承载模型、`thought_level` 与其他配置。
+- permission / elicitation、tool、thought、usage/context 继续进入通用 ACP 事件模型。
 
-DeepSeek 的 `reasoning_effort` 属于 `category=thought_level`，可复用现有档位 remap 规则。它的模型 value 是 JSON 字符串时，前端继续展示 option name，提交原 value，不做字符串拆包。
+DeepSeek 的 `reasoning_effort` 若以 `category=thought_level` 返回，复用现有档位映射；模型 value 即使是 JSON 字符串也按 ACP 原值提交，只展示 option name，不做 provider-specific 解包。
 
-### 5.2 Doctor 与首次引导
+### 7.2 结构化错误
 
-- DeepSeek：发现 PATH 中 `dsh` 后直接 Doctor；成功后保存默认模型与 thought level 目录。
-- ZCode：只发现 PATH 中 `zcode-acp-server`；桥接器自己发现 ZCode CLI 或读取用户配置的 `ZCODE_BIN`。Gold Band 不扫描 ZCode 桌面安装目录，也不自动安装桥接器。
-- Qoder：优先 PATH 中 `qoder`；没有本机命令且 npx 缓存未准备时不自动下载。用户手动在 Agent 管理页新增后，Doctor 可按现有 npx 路径准备。
+后端不得返回对客文案。优先复用现有错误码，并补齐缺失语义：
 
-Doctor 验收不要求 `available_commands_update`；无命令时返回空目录，再由 Skill 扫描补充。
+| 场景 | 错误码/契约 |
+| --- | --- |
+| Catalog 平台不支持 | 新增 `agent.unsupported-platform`，参数包含 Agent、OS、CPU |
+| ACP 要求认证 | 复用 `provider.auth-required`，保留原始 ACP 结构化原因 |
+| CLI/桥接器/底层 Agent 缺失 | 使用稳定 prerequisite 错误，参数区分 `adapter`、`agent-cli`、`runtime`，不靠 stderr 文案分类 |
+| Node/npm/Agent 版本不支持 | 复用 setup/runtime 版本错误结构，参数返回 actual/required/validatedVersion |
+| initialize/session 阶段超时 | 复用 `acp.doctor-timeout`，参数必须包含 phase；回收进程树 |
 
-### 5.3 Skill 同步
+新增 prerequisite 错误前先检索现有错误 catalog；已有等价码时收紧参数，不建立同义错误。前端七语言根据 code/params 显示恢复动作。
 
-| Agent | 写入目录 | 读取目录 |
-| --- | --- | --- |
-| DeepSeek | `.dsh/skills` | `.dsh/skills`、`.agents/skills` |
-| ZCode | `.zcode/skills` | `.zcode/skills` |
-| Qoder | `.qoder/skills` | `.qoder/skills`、`.agents/skills` |
+### 7.3 Agent 管理与来源展示
 
-实施时必须分别验证官方 CLI 重启或 watcher 是否能发现 Gold Band 写入的 skill；不能只断言文件路径存在。
+- 不新增布局或基础控件，继续使用现有 shadcn/ui `Command + Popover` 与 Sheet。
+- Agent 管理只接收当前平台可新建的 Catalog 条目；后端仍在创建命令二次校验。
+- `community-adapter` 使用本地化来源标签/帮助说明，链接到 Catalog repository/website；不得仅在英文 description 写 “community”。
+- env 区域明确说明内容会保存到本机配置；Qoder 帮助优先引导供应商登录，不要求用户在主路径输入 token。
+- 图标只使用来源明确、允许分发的项目/官方 SVG，并在 staging 校验 HTTPS 来源和 SVG 内容；缺失或无法确认授权时阻断条目发布，不以占位图标冒充内置品牌。
+- 平台、来源和凭据说明只展示帮助用户决策的信息，不解释内部字段或构建实现。
 
-### 5.4 Agent 管理页
+## 8. Skill 同步契约
 
-UI 不新增布局或新控件，只让现有 Catalog 下拉出现 14 项。图标沿用官方/项目 SVG 并下载到 `web/public/agent-icons`；品牌色图标保持原色，缺失官方授权图标时构建失败，不用占位图标冒充内置品牌。
+| Agent | Gold Band 全局写入 | Gold Band 项目写入 | 读取范围 |
+| --- | --- | --- | --- |
+| DeepSeek | `~/.dsh/skills` | `<project>/.dsh/skills` | 主目录及对应 `.agents/skills` |
+| Qoder | `~/.qoder/skills` | `<project>/.qoder/skills` | 主目录及对应 `.agents/skills` |
+| ZCode（第二阶段） | `~/.zcode/skills` | `<project>/.agents/skills` | `~/.zcode/skills`、`~/.agents/skills`、项目 `.agents/skills` |
 
-帮助链接使用 Catalog 的 repository/website。ZCode 的描述必须能看出它是 community adapter，避免用户误以为是智谱官方 ACP 包。
+兼容目录只参与读取，不作为额外写入目标；ZCode 的项目 `.agents` 是显式 `projectPrimaryAgentDir`，因此是项目主写入目标，不是兼容目录旁路。目录解析、规范化、去重和软链接边界继续由后端统一处理。
 
-## 6. 实施步骤
+真实验收不能只检查文件存在：写入 Skill 后必须让对应 Agent 重启或触发其正式 reload/watcher，再通过 Agent 自身能力确认 Skill 可发现。
 
-1. 扩展 Catalog 生成器：local supplement、14 个精选 ID、source provenance、平台排除、图标校验与测试。
-2. 生成并提交 `resources/agent-catalog.json` 与图标；保留当前工作区已有 Registry 快照更新，不回退无关版本变化。
-3. 扩展 Rust Catalog schema、数量断言、目录断言与平台过滤。
-4. 扩展 onboarding 候选与测试：14 项、native command 优先、Qoder Windows ARM64 过滤、不自动下载未准备 Agent。
-5. 补齐 Web 类型与既有 Agent 管理测试的 Catalog 断言；不改页面结构。
-6. 用 mock ACP fixture 增加回归：baseline prompt 降级、resume without load、无 available commands、配置目录保留。
-7. 在安装了前置条件的机器上执行真实 Doctor 与最小会话验收。
-8. 同步产品文档、首次引导文档、知识库计数与支持说明。
+## 9. 会话恢复与清理验收矩阵
 
-## 7. 测试与验收
+每个 Agent 都必须覆盖同一组生命周期场景；fixture 固定通用接口契约，真实验收固定供应商实现。
 
-自动化测试：
+| 场景 | DeepSeek Harness | Qoder 0.2.14 | ZCode 第二阶段 |
+| --- | --- | --- | --- |
+| new | initialize + session/new，核对模型/思考目录 | 两条 launcher 分别 initialize + session/new | 真实后端 initialize + session/new |
+| prompt | 文本回合 + 至少一个真实工具调用，核对 thought/tool/usage/final | 文本、工具、权限、图片声明与 MCP | 文本、流式 diff、工具与权限 |
+| stop | 发送通用 cancel，确认终态和进程仍可控 | 同左 | 同左 |
+| continue | capability 声明时使用 `session/resume`，停止后可继续 | 验证同一活动 session 继续；不得以 latest native 代替 0.2.14 | 验证真实 resume 语义 |
+| load-or-resume | 不声明 load 时不得调用 load | 验证 `session/list` + loadSession/history | 验证 resume/load；能力缺失时按结构化不可用处理 |
+| history | 只使用 Gold Band 已持久化 timeline，不宣称外部完整回放 | 加载后核对历史顺序、工具与正文 | 核对桥接器声明的历史与 fork |
+| cleanup | 优先已声明 close；确认临时会话和进程树回收 | delete/close 按 capability 清理，两条 launcher 均无残留 | close/delete/fork 临时资源与桥接进程均回收 |
+
+任何一个 Agent 的真实验收失败只阻断该条目，不回滚其他已通过条目，也不得用 mock 成功替代真实发布证据。
+
+## 10. 版本、engines 与平台矩阵
+
+新增受版本控制的验证报告或生成测试 fixture，至少记录：
+
+| 字段 | 要求 |
+| --- | --- |
+| Agent / adapter | 稳定 ID、包名或 native CLI 名称 |
+| tested version | Catalog `validatedVersion` 对应的精确版本 |
+| launcher | native 与 npx 分行记录，不合并结果 |
+| Node/npm/npx | 实际版本及包 `engines` 解析结果 |
+| OS / CPU | 使用 `windows/macos/linux` 与 `x86_64/aarch64` |
+| authentication | 未登录、已登录、失效凭据的结果 |
+| ACP lifecycle | initialize/new/prompt/stop/continue/load-or-resume/history/cleanup |
+| Skill | 全局/项目写入路径及 Agent 实际发现结果 |
+| result/evidence | pass/fail/blocked、日期和可复现命令/测试名 |
+
+已知约束：Qoder npm 路径 Node >= 20，ZCode bridge Node >= 22，DeepSeek 当前实测 Node 为 22.22.3；最终矩阵以固定包 metadata 与真实运行结果为准。未知平台保持 `not-tested`，不得默认为支持。Qoder Windows aarch64 直接标记 unsupported，不要求执行无意义安装测试。
+
+## 11. 分阶段实施步骤
+
+### 第一阶段：通用契约、DeepSeek 与 Qoder
+
+> 实施进度（2026-11-09）：第 2—5 项已在保持现有 11 项正式 Catalog 的前提下落地，并通过 Catalog 事务、平台契约、目录作用域和前端相关自动化回归。第 6—9 项仍未完成；DeepSeek 与 Qoder 在真实验收通过前不得进入正式 Catalog。
+
+1. 同步产品设计文档中的 Catalog 启动配置归属、来源展示、凭据持久化和阶段数量。
+2. 扩展 Catalog schema：provenance、类型化 `excludedPlatforms` 与 source 摘要。
+3. 将 Catalog 生成改成 staging、完整校验、recovery journal、原子替换和失败回滚；此时仍保持现有 11 项正式输出。
+4. 在 Rust 建立唯一平台规范化/判定函数，并接入 onboarding、Agent Catalog 投影与 `create_agent`。
+5. 将 Agent 目录归一化改为按全局/项目作用域去重，允许 compatible 目录只与其中一个主目录相同；增加保存往返测试。
+6. 使用独立测试 fixture 补 DeepSeek 当前事件契约，并执行真实工具调用/恢复验收；验收前不把候选写入正式 `BUILTIN_AGENT_IDS`。
+7. 分别验证 `qoder --acp` 与 Registry 固定 `npx ...@0.2.14 --acp`，包括登录、load/history 和 Skill；验收前不把 Qoder 加入正式精选集合。
+8. 两者全部通过后，才把 DeepSeek 写入 local supplement、把 DeepSeek/Qoder 加入 `BUILTIN_AGENT_IDS`，生成并提交 13 项 Catalog 与图标。
+9. 运行完整自动化、真实 Windows x64 和发布矩阵回归；失败则不发布 13 项产物。
+
+### 第二阶段：ZCode 发布门槛
+
+1. 在可运行真实 ZCode 的机器安装固定 bridge 版本并完成供应链核对。
+2. 完成第 4.3 节与第 9 节全部真实验收，确定实际 `validatedVersion` 和平台矩阵。
+3. 将 ZCode 加入 local supplement 与 `BUILTIN_AGENT_IDS`，目录配置使用全局 `.zcode` / 项目 `.agents`。
+4. 重新运行完整 Catalog、onboarding、Agent 管理、Skill 与会话恢复回归。
+5. 全部通过后，精选 Catalog 才从 13 增至 14。
+
+## 12. 自动化测试与真实验收
+
+### 12.1 自动化测试
 
 - `node --test scripts/prepare-agent-catalog.test.mjs`
 - `cargo test agent_catalog`
 - `cargo test managed_agent_catalog`
 - `cargo test onboarding`
-- `pnpm --dir web test -- agent-management agent-icons onboarding`
+- ACP client/fixture 中与 prompt、tool、resume/load、history、cleanup 相关的专项测试
+- `pnpm --dir web test -- agent-management agent-icons onboarding i18n-loading`
 - `pnpm --dir web exec tsc -p tsconfig.build.json`
 
-关键断言：
+关键接口断言：
 
-1. Catalog 恰好包含 14 个精选 Agent，ID 唯一且顺序稳定。
-2. Qoder 来自官方 Registry，DeepSeek/ZCode 来自 local supplement，来源冲突构建失败。
-3. 三个 Agent 的 command/args、localLaunch、installedCommand、Skill 目录符合本方案。
-4. Qoder 在 `win32-arm64` 不出现在新增下拉和首次引导候选中。
-5. 已配置实例仍能编辑 executable location、环境变量和目录；Agent ID 不变。
-6. 未安装 `dsh` / `zcode-acp-server` / `qoder` 且 npx 未准备时不触发自动下载。
-7. DeepSeek fixture 的 baseline prompt、resume-without-load、无 command update 和 thought level 目录被现有 runtime 正确处理。
-8. Catalog 生成失败时禁止输出残缺文件。
+1. 第一阶段恰好 13 项；ZCode 门槛通过后的第二阶段恰好 14 项，ID 唯一且顺序稳定。
+2. Qoder 来源为 `official-registry/official`；DeepSeek 为 `local-supplement/official`；ZCode 发布后为 `local-supplement/community-adapter`。
+3. source 冲突、缺失 provenance、无效平台枚举、重复平台、缺失图标或未验证版本均构建失败。
+4. 任一普通生成失败时，正式 snapshot、Catalog 和图标逐字节不变；替换失败恢复原文件；模拟中断后重启可通过 recovery journal 收敛到完整旧版或完整新版。
+5. Qoder 在 `windows/aarch64` 不进入 onboarding 和 Agent 管理 Catalog；直接调用 `create_agent(qoder)` 返回 `agent.unsupported-platform`。
+6. 已配置实例仍可显示、编辑和诊断，不因当前平台限制被删除。
+7. Qoder env token 输入按普通 env 持久化，UI 明确提示本机保存；日志与诊断不包含值。
+8. ZCode 项目写入定位到 `.agents/skills`，不得写 `.zcode/skills`；`.agents` 在项目策略中去重、在全局策略中仍保留，Agent 管理保存往返后语义不变。
+9. DeepSeek fixture 覆盖 thought、tool lifecycle、config、usage/context、resume-without-load 和无 command update。
+10. Qoder fixture 覆盖 list/load/history；真实验收分别覆盖 native 与固定 npx launcher。
+11. 所有错误返回 `{ code, params }`，前端按七语言 key 处理，不依赖英文 description 或 stderr 文本。
 
-真实验收：
+### 12.2 真实验收
 
-- DeepSeek：本机 `dsh` Doctor 通过；发起一个最小文本回合；停止/继续按 capabilities 行为验收；`.dsh/skills` 写入后被 CLI 识别。
-- Qoder：登录后 Doctor 通过；验证模型目录、权限、图片输入声明与 `.qoder/skills`。
-- ZCode：安装桥接器与 ZCode 后 Doctor 通过；验证权限、流式 diff、resume/fork 声明与 `.zcode/skills`。
-- Windows x64 完整回归；Windows ARM64 确认 Qoder 隐藏且 DeepSeek/ZCode 不受影响。
+- DeepSeek：固定版本 Doctor；文本和真实工具回合；stop/resume；不调用 load；全局/项目 Skill 被识别；cleanup 无残留。
+- Qoder native：`qoder --acp` 登录后完成完整生命周期。
+- Qoder Registry fallback：`npx -y @qoder-ai/qodercli@0.2.14 --acp` 独立完成相同生命周期。
+- Windows x64 完成第一阶段回归；其余平台按矩阵逐项记录，不把未测试写成支持。
+- Windows aarch64 验证 Qoder 在两个新增入口均不可创建，后端错误稳定；DeepSeek 不受 Qoder 限制影响。
+- ZCode：只有真实后端完整生命周期、Skill 和供应链验收全部通过后才执行第二阶段。
 
-## 8. 风险与取舍
+## 13. 风险与取舍
 
 | 风险 | 处理 |
 | --- | --- |
-| ZCode 是社区桥接器，缺失后端时 initialize 可能长等待 | 使用 native command 快速失败；首次引导不自动下载；描述标注 community |
-| Qoder Registry 版本落后 npm latest | 首期信任官方 Registry；实测失败时更新 Registry 快照，不直接 pin latest |
-| DeepSeek 输出 committed message，过程静默 | 复用 composer 处理中状态与 Doctor 超时；不为它伪造工具进度 |
-| DeepSeek 不支持 loadSession | 禁用完整历史同步；普通 continue 按 resume capability |
-| 本地补充源图标与版本维护成本 | 构建期校验 HTTPS SVG 和来源；禁止缺失图标时生成 Catalog |
-| Catalog 平台限制可能被误用成安装器规则 | 字段只表达排除，不触发下载、安装或版本猜测 |
+| ZCode 社区桥接器在缺失后端时长时间无 initialize | 第一阶段不发布；真实后端通过前不进入 Catalog，不靠缩短超时伪装修复 |
+| Qoder Registry 固定版本与本机版本行为不同 | 两条 launcher 独立验收；Catalog fallback 只认 Registry 固定版本 |
+| Qoder token 被误认为临时环境 | 明确 env 会持久化，主路径使用 `qoder login`，敏感值不进日志/遥测 |
+| DeepSeek 旧说明与当前事件能力不一致 | 以固定版本真实握手和工具回合为准，旧说明仅作历史资料 |
+| 多文件 Catalog 生成留下半成品 | staging 后完整校验，原子替换并在失败时回滚，逐字节失败测试固化 |
+| 平台字符串跨层不一致 | Catalog 统一 `os/arch`，Rust 单一规范化和判定，Web 不自行推断 |
+| Skill 路径被目录命名直觉误导 | 以 Agent 实际扫描为准；ZCode 项目只写 `.agents/skills` |
+| 未测试平台被当作支持 | 验证矩阵显式区分 pass/fail/blocked/not-tested，发布范围只包含 pass |
 
-## 9. 方案自评审
+## 14. 文档同步范围
 
-过度设计评审：local supplement 和 `excludedPlatforms` 都是实际需求驱动的最小扩展。前者解决两个精选 Agent 不在官方 Registry 的来源问题，后者解决 Qoder 官方声明的 Windows ARM64 限制；不新增运行时状态机、安装器或 provider-specific adapter。
+实施前后必须同步维护：
 
-性能评审：精选 Catalog 从 11 项增加到 14 项，仍是构建期小常数数据；首屏只读内存 Catalog，不增加文件扫描或远程请求。首次引导仍只对已准备的本机候选启动有界 Doctor，不会并发下载三个 Agent。图标下载只发生在 Catalog 生成阶段。运行期无新增缓存、队列或锁。
+- `docs/gold-band/产品设计文档/interaction/app/agent-management.md`：Catalog 数量、启动配置归属、provenance、平台过滤、env 持久化与来源文案。
+- `docs/gold-band/产品设计文档/interaction/app/first-run-onboarding.md`：候选数量、平台过滤、第一/第二阶段准入和不自动下载边界。
+- `docs/gold-band/产品设计文档/provider/overview.md`：Catalog 来源、当前客户端启动配置归属和小规模性能结论。
+- `docs/gold-band/开发计划/新增流程/首次启动引导开发计划.md`：保留历史 11 项验收事实，新增后续 13/14 项扩展说明，不改写历史记录。
+
+若实现涉及 UI 文案，七语言必须同步；`community-adapter`、本机保存 env、平台不支持和准备条件使用稳定 i18n key，不把英文 description 直接展示为唯一说明。
+
+## 15. 方案自评审
+
+过度设计评审：本方案没有新增 Agent 运行状态机、实例身份、缓存、队列或 provider-specific client。provenance 和平台约束是构建期小型 Catalog 元数据；统一平台函数替代跨层字符串特判；生成 staging/rollback 只解决现有多文件半写风险。ZCode 采用发布门槛而不是为未知兼容性预建 fallback，复杂度与已确认风险匹配。
+
+性能评审：第一阶段 Catalog 从 11 增至 13、第二阶段最多 14，运行时查找和过滤均为小常数线性处理，不增加首屏网络请求、目录全量扫描、N+1、缓存或订阅范围。事务化生成只发生在构建/发版阶段；staging 会多保留一份有限 Catalog 与图标集合，但不进入 EXE 运行路径。Doctor 继续只对已准备候选使用现有有界并发和 deadline，ZCode 未准入时不会增加长等待进程。

@@ -923,6 +923,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}} já existe.",
+      "unsupported-platform": "O Agent {{agentType}} não suporta a plataforma atual ({{os}}/{{arch}}).",
       "not-configured": "Agent {{agentType}} não está configurado.",
       "display-name-required": "Informe um nome de Agent.",
       "command-required": "Informe um comando de inicialização do Agent."
@@ -1248,6 +1249,9 @@
     "customAgentIdPlaceholder": "Por exemplo, my-agent",
     "pending": "Pendente",
     "configured": "Adicionado",
+    "integrationOrigin": {
+      "communityAdapter": "Adaptador da comunidade"
+    },
     "empty": "Nenhum agent configurado ainda",
     "createTitle": "Adicionar Agent",
     "createDescription": "Crie uma configuração de agent para execução de nós.",

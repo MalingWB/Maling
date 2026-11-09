@@ -4,6 +4,7 @@ use crate::{
         AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot,
         SettingsConfig,
     },
+    platform::DesktopPlatform,
     process::{find_executable_in_paths, resolved_child_path},
     storage::{
         GoldBandPaths, configuration::with_configuration, load_settings_file, read_json,
@@ -61,7 +62,11 @@ pub fn candidates(
     let configured = settings.agents.as_ref().unwrap_or(&empty);
     let mut candidates = Vec::new();
     if after.is_none() {
+        let platform = DesktopPlatform::current();
         for entry in &crate::agent_catalog::builtin_agent_catalog().agents {
+            if !entry.supports_platform(platform) {
+                continue;
+            }
             let id: ManagedAgentId = entry.id.parse()?;
             let existing = configured.get(&id);
             candidates.push(SetupCandidate {

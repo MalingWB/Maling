@@ -923,6 +923,7 @@
     },
     "agent": {
       "already-exists": "Agent {{agentType}} は既に存在します。",
+      "unsupported-platform": "Agent {{agentType}} は現在のプラットフォーム（{{os}}/{{arch}}）に対応していません。",
       "not-configured": "Agent {{agentType}} は設定されていません。",
       "display-name-required": "Agent 名を入力してください。",
       "command-required": "Agent の起動コマンドを入力してください。"
@@ -1248,6 +1249,9 @@
     "customAgentIdPlaceholder": "たとえば my-agent",
     "pending": "保留中",
     "configured": "追加した",
+    "integrationOrigin": {
+      "communityAdapter": "コミュニティアダプター"
+    },
     "empty": "構成済みの Agent はまだありません",
     "createTitle": "Agentの追加",
     "createDescription": "ノード実行に使う Agent 構成を作成します。",

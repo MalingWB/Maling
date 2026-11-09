@@ -685,6 +685,7 @@ export interface AgentCatalogEntryVm {
   label: string;
   iconKey: string;
   version: string;
+  provenance: AgentCatalogProvenanceVm;
   description: string;
   repository?: string | null;
   website?: string | null;
@@ -698,6 +699,15 @@ export interface AgentCatalogEntryVm {
   defaultCommand: string;
   defaultArgs: string[];
   defaultEnv: AgentEnvEntryVm[];
+}
+
+export type AgentCatalogSourceKind = 'official-registry' | 'local-supplement';
+export type AgentIntegrationOrigin = 'official' | 'community-adapter';
+
+export interface AgentCatalogProvenanceVm {
+  sourceKind: AgentCatalogSourceKind;
+  integrationOrigin: AgentIntegrationOrigin;
+  validatedVersion: string;
 }
 
 export interface ManagedAgentInput {

@@ -392,6 +392,9 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                         >
                           <img src={agentIconSrc(agentType.iconKey)} alt="" className={agentIconClass(agentType.iconKey, 'size-4')} />
                           <span className="min-w-0 flex-1 truncate">{agentType.label}</span>
+                          {agentType.provenance.integrationOrigin === 'community-adapter' ? (
+                            <Badge variant="outline" className="px-2 py-0 text-ui-caption">{t('agentManagement.integrationOrigin.communityAdapter')}</Badge>
+                          ) : null}
                           {agentType.configured ? <Badge variant="secondary">{t('agentManagement.configured')}</Badge> : null}
                         </CommandItem>
                       ))}
@@ -885,7 +888,7 @@ export function buildAgentInput(
       : form.projectPrimaryAgentDir.trim(),
     compatibleAgentDirs: parseAgentDirs(
       compatibleAgentDirsText,
-      [form.primaryAgentDir, form.projectPrimaryAgentDir ?? ''],
+      [form.primaryAgentDir],
     ),
     externalSessionSyncSupported: form.externalSessionSyncSupported,
     externalSessionSyncEnabled: form.externalSessionSyncSupported && form.externalSessionSyncEnabled,
@@ -917,7 +920,7 @@ function managedAgentInputFingerprint(input: ManagedAgentInput): string {
       ? null
       : input.projectPrimaryAgentDir.trim(),
     compatibleAgentDirs: [...new Set(input.compatibleAgentDirs.map((directory) => directory.trim()).filter(Boolean))]
-      .filter((directory) => ![input.primaryAgentDir.trim(), input.projectPrimaryAgentDir?.trim()].includes(directory)),
+      .filter((directory) => directory !== input.primaryAgentDir.trim()),
     externalSessionSyncSupported: input.externalSessionSyncSupported,
     externalSessionSyncEnabled: input.externalSessionSyncSupported && input.externalSessionSyncEnabled,
   });

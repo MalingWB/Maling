@@ -632,6 +632,11 @@ export const mockAgentRegistry: AgentRegistryVm = {
 function mockCatalogEntry(input: Partial<AgentCatalogEntryVm> & Pick<AgentCatalogEntryVm, 'agentType' | 'label' | 'iconKey'>): AgentCatalogEntryVm {
   return {
     version: '1.0.0',
+    provenance: {
+      sourceKind: 'official-registry',
+      integrationOrigin: 'official',
+      validatedVersion: '1.0.0',
+    },
     description: '',
     repository: null,
     website: null,
