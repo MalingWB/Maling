@@ -57,13 +57,15 @@ export function createBrowserSetupApi(): SetupApi {
       return result;
     },
     skipGit: async () => { status.state = { status: 'pending', gitDecision: 'skip' }; },
+    deferSetup: async () => { status.state = { status: 'deferred' }; },
     cancelEnvironment: async (requestId) => { if (environment?.requestId === requestId) environment = null; },
     start: async (receive) => {
       requireEnvironment();
       const generation = crypto.randomUUID();
       receive({ type: 'checking', generation, agentId: agent.agentType, label: agent.displayName });
       timers.set(generation, setTimeout(() => {
-        receive({ type: 'ready', generation, agent });
+        if (fixture === 'no-agents') receive({ type: 'unavailable', generation, agentId: agent.agentType });
+        else receive({ type: 'ready', generation, agent });
         receive({ type: 'unavailable', generation, agentId: 'needs-login' });
         receive({ type: 'finished', generation, nextCursor: null });
       }, 600));

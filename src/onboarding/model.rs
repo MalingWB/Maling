@@ -21,6 +21,10 @@ pub enum OnboardingState {
         request_fingerprint: String,
     },
     ExistingInstall,
+    /// New install where the user chose to enter the app and finish setup later.
+    /// This state does not bypass the runtime gate: it can only be written after
+    /// the current environment report passes.
+    Deferred,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

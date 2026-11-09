@@ -323,6 +323,25 @@ pub fn skip_setup_git(state: State<'_, DesktopState>) -> CommandResult<()> {
         .map_err(command_error)
 }
 
+#[tauri::command]
+pub fn defer_setup(
+    handle: AppHandle,
+    state: State<'_, DesktopState>,
+    controller: State<'_, SetupController>,
+) -> CommandResult<()> {
+    // Deferring is only valid after the current environment report has passed.
+    // Reuse the same controller boundary as apply so npm cannot be bypassed.
+    controller.checked_environment().map_err(command_error)?;
+    let app = state.app().map_err(command_error)?;
+    let settings =
+        gold_band::onboarding::initialization::defer(&app.paths).map_err(command_error)?;
+    state
+        .update_settings_config(&settings)
+        .map_err(command_error)?;
+    crate::start_business_runtime(handle);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
