@@ -267,9 +267,9 @@ DefaultExecutionProfile
 | 模板绑定 | `WorkflowTemplateStore` 内 `WorkflowModelBindings` | 是，继续使用既有 revision |
 | 应用中的跨文件操作 | 一个有界的提交恢复记录 | 临时持久化，完成即清理 |
 
-建议 onboarding 持久态为 `pending { gitDecision } | deferred | completed { schemaVersion, completedAt, lastApplyId, requestFingerprint } | existing-install`。当前步骤由策略、意图和本次探测结果推导，不另存三个 `stepCompleted` 布尔值。`deferred` 只表示用户主动选择稍后完成首次配置，不表示配置已完成。
+建议 onboarding 持久态为 `pending { gitDecision } | deferred { gitDecision } | completed { schemaVersion, completedAt, lastApplyId, requestFingerprint } | existing-install`。当前步骤由策略、意图和本次探测结果推导，不另存三个 `stepCompleted` 布尔值。`deferred` 只表示用户主动选择稍后完成首次配置，不表示配置已完成。
 
-`gitDecision` 仅记录 `undecided | skip`；通过版本检查属于实时事实。只有运行环境报告已通过后才允许写入 `deferred`，因此该状态不绕过 npm 门槛；它也不保留 Agent、模型或工作流绑定的部分提交。已有用户主动进入引导时保留既有 completed/existing-install 状态，只有最后提交成功才更新默认偏好和工作流绑定；此前成功诊断的新 Agent 已独立保存，取消不删除这些成果，也不破坏既有配置。
+`gitDecision` 仅记录 `undecided | skip`；通过版本检查属于实时事实。`deferred` 保留进入该状态时的 Git 决策，后续从设置应用默认配置时可直接复用，不要求用户重复选择。只有运行环境报告已通过后才允许写入 `deferred`，因此该状态不绕过 npm 门槛；它也不保留 Agent、模型或工作流绑定的部分提交。已有用户主动进入引导时保留既有 completed/existing-install 状态，只有最后提交成功才更新默认偏好和工作流绑定；此前成功诊断的新 Agent 已独立保存，取消不删除这些成果，也不破坏既有配置。
 
 新增持久数据的必要性：默认选择和首次完成意图无法从已有各模板绑定中唯一推导；跨文件操作 ID 表示一次明确应用，不能由单模板 binding revision 表达。所有模板、Agent、项目继续复用现有 canonical identity，不新增 workspace identity、候选 Agent 数据库或额外模型配置表。
 
@@ -286,7 +286,7 @@ DefaultExecutionProfile
 | `get_onboarding_status` | 无 | 状态、策略摘要、渠道；不运行 Doctor、不读历史或模板正文 |
 | `check_setup_environment` / `cancel_setup_environment` | request ID | 返回并保留 4 项检查的完整报告；同页主动重测替换旧请求与报告，退出引导释放；原生 `git`／`node` 每项最多 5 秒，`npm`／`npx` launcher 每项最多 15 秒 |
 | `skip_setup_git` | 当前引导意图 | 更新 skip 意图并返回权威状态；没有 npm skip 接口 |
-| `defer_setup` | 当前引导生命周期与本次环境报告 | 仅在 controller 持有已通过的环境报告时把 `pending` 转为 `deferred`；不修改 Agent、默认偏好或工作流，成功后启动业务 runtime；重复调用幂等 |
+| `defer_setup` | 当前引导生命周期与本次环境报告 | 仅在 controller 持有已通过的环境报告时把 `pending { gitDecision }` 转为 `deferred { gitDecision }`；通过 `spawn_blocking` 执行配置写入与 runtime 启动，不阻塞 IPC/主线程；不修改 Agent、默认偏好或工作流；重复调用幂等 |
 | `start_setup_agent_detection` / `cancel_setup_detection` | after cursor、refresh、事件 channel／generation | 校验本次后端环境报告，不启动环境命令；编排只读发现、有界诊断和成功后自动配置；不创建或迁移模板与默认配置；逐项返回正式健康 Agent 与进度 |
 | `discovery::candidates`（内部） | 已配置实例、after cursor | 11 个 Catalog 候选与每批至多 50 个自定义实例；当前产品验收规模不超过 50 个自定义 Agent，after cursor 只是有界防御边界；不隐式下载或登录 |
 | `probe_setup_model` | 已配置且诊断成功的 Agent ID、model ID、generation | 复用模型探测，返回目标模型配置目录 |
@@ -476,10 +476,12 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 - 现象：首次安装用户在 Agent 步骤检测结束仍无可用 Agent 时只能重新检测或关闭客户端，无法进入主界面；同时产品要求检测结束后允许用户先进入应用，即使已有可用 Agent。
 - 根因：`OnboardingGate` 把 `pending` 作为硬门禁，第三步的 `canSelect` 又要求已选择可用 Agent；持久态没有“用户主动稍后设置”的合法状态。属于正确设计下的实现缺口，不是探测逻辑错误。
 - 修复：新增 `deferred` 生命周期态与 `defer_setup` 命令；命令复用 `SetupController.checked_environment()`，只在本次运行环境报告已通过时把 `pending` 转为 `deferred`，不修改 Agent、默认偏好或工作流，成功后启动业务 runtime。Agent 步骤在检测结束（无论是否有可用 Agent）或检测失败时显示“稍后设置”，点击后持久化并进入主界面；下次启动看到 `deferred` 直接挂载业务 App，设置页的重新运行引导保持可用。
+- 审查修复：`deferred` 保留 `gitDecision`，`defaults::apply` 对 `pending` 与 `deferred` 统一消费该决策；`defer_setup` 改为 `async` + `spawn_blocking`，避免配置写入和 runtime 启动阻塞 IPC/主线程。
 - 红测试证据：`enters the business application when no Agent is available and the user chooses to set up later` 在旧实现上失败于找不到“稍后设置”按钮；放宽为“检测完成即有可用 Agent 也显示”后，`offers set up later after detection completes even when an Agent is available` 在修改前同样失败于按钮不存在。两次修改后对应测试均通过。另补 `deferred_setup_survives_restart_and_is_idempotent`、pending 批次结束清理和 deferred 启动挂载业务 App 的回归。
-- 自动化验收：`npx vitest run --config web/vitest.config.ts web/tests/onboarding.test.tsx` 42 项通过；相关 i18n、设置与关闭保护测试 24 项通过；`cargo test -p gold-band --lib onboarding::initialization` 5 项通过；`cargo check -p gold-band-desktop --all-targets` 通过，保留既有未使用代码告警；`npm run web:build` 通过。浏览器 fixture 以 `onboardingFixture=no-agents` 验证无 Agent 空结果、稍后设置、URL 离开引导页及 600×640 窄窗布局，页面 error 日志为空；浏览器无法承载依赖 Tauri 的业务运行时，业务主界面挂载由 DOM 回归测试固定。
-- 过度设计复核：只新增一个生命周期枚举值、一个命令和一个次要按钮；复用既有环境报告、`SettingsConfig` 事实源和 `start_business_runtime`，不新增 aggregate、持久表、缓存、队列或依赖。
-- 性能复核：defer 路径只执行一次已通过报告的读取、一次 settings 原子写和一次既有 runtime 启动调用；不增加扫描、轮询、高频 IPC 或 UI 全量订阅，数据规模与引导原有 11 个精选候选／50 个自定义实例一致。
+- 后端回归：新增 `deferred_setup_preserves_git_skip_for_later_apply`，固定跳过 Git 后 defer 仍保留决策，并可在 `request.git_skipped=false` 时完成默认配置应用。
+- 自动化验收：`npx vitest run --config web/vitest.config.ts web/tests/onboarding.test.tsx` 43 项通过；相关 i18n、设置与关闭保护测试 24 项通过；`cargo test -p gold-band --lib onboarding::initialization` 6 项通过；`cargo test -p gold-band --lib onboarding::tests::deferred_setup_preserves_git_skip_for_later_apply` 1 项通过；`cargo check -p gold-band-desktop --all-targets` 通过，保留既有未使用代码告警；`npm run web:build` 通过。浏览器 fixture 以 `onboardingFixture=no-agents` 验证无 Agent 空结果、稍后设置、URL 离开引导页及 600×640 窄窗布局，页面 error 日志为空；浏览器无法承载依赖 Tauri 的业务运行时，业务主界面挂载由 DOM 回归测试固定。
+- 过度设计复核：只新增一个带 Git 决策的生命周期状态、一个命令和一个次要按钮；复用既有环境报告、`SettingsConfig` 事实源和 `start_business_runtime`，不新增 aggregate、持久表、缓存、队列或依赖。
+- 性能复核：defer 路径只执行一次已通过报告的读取、一次 settings 原子写和一次既有 runtime 启动调用，并通过 `spawn_blocking` 将阻塞性 I/O 移出 IPC/主线程；不增加扫描、轮询、高频 IPC 或 UI 全量订阅，数据规模与引导原有 11 个精选候选／50 个自定义实例一致。
 
 ## 14. 官方资料与代码证据
 

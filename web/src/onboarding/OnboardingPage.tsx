@@ -28,7 +28,8 @@ export function OnboardingPage({ api, status, onDone, onExit, initialStep = 0 }:
   const { report: environment, progress: environmentProgress } = environmentState;
   const checking = environmentState.phase === 'checking';
   const runtimeReady = environmentState.phase === 'ready' && environment?.runtimeReady;
-  const [gitSkipped, setGitSkipped] = useState(status.state.status === 'pending' && status.state.gitDecision === 'skip');
+  const persistedGitDecision = status.state.status === 'pending' || status.state.status === 'deferred' ? status.state.gitDecision : 'undecided';
+  const [gitSkipped, setGitSkipped] = useState(persistedGitDecision === 'skip');
   const detecting = detection.phase === 'detecting';
   const runtimeBlocked = detection.phase === 'blocked-environment' || (!checking && !runtimeReady);
   const [selectedId, setSelectedId] = useState(status.defaultExecutionProfile?.agentId ?? '');

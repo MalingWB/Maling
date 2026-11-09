@@ -6,9 +6,10 @@ export interface DefaultExecutionProfile {
   configOptions: Record<string, string>;
   modelBoundOverrides: Record<string, Record<string, string>>;
 }
+export type SetupGitDecision = 'undecided' | 'skip';
 export interface SetupStatus {
   platform: DesktopPlatform;
-  state: { status: 'pending'; gitDecision: 'undecided' | 'skip' } | { status: 'deferred' } | { status: 'completed' | 'existing-install' };
+  state: { status: 'pending'; gitDecision: SetupGitDecision } | { status: 'deferred'; gitDecision: SetupGitDecision } | { status: 'completed' | 'existing-install' };
   gitMinimumVersion: string;
   environmentPolicy: { node: { ranges: string[]; recommendedVersion: string; helpUrl: string }; npm: { ranges: string[] }; gitHelpUrl: string };
   defaultExecutionProfile: DefaultExecutionProfile | null;

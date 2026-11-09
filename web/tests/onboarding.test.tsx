@@ -100,6 +100,21 @@ it('shows completed Git before a slow runtime check finishes', async () => {
   expect(mocks.business).not.toHaveBeenCalled();
 });
 
+it('restores a deferred Git skip decision for a later setup run', async () => {
+  status.state = { status: 'deferred', gitDecision: 'skip' };
+  vi.spyOn(api, 'environment').mockResolvedValue({
+    runtimeReady: true,
+    checks: [
+      { tool: 'git', status: 'missing', version: null, executablePath: null },
+      { tool: 'node', status: 'ready', version: '24.22.0', executablePath: null },
+      { tool: 'npm', status: 'ready', version: '11.19.1', executablePath: null },
+      { tool: 'npx', status: 'ready', version: '11.19.1', executablePath: null },
+    ],
+  });
+  await render();
+  expect(button('Next').disabled).toBe(false);
+});
+
 it('does not let late preliminary progress overwrite final runtime validation', async () => {
   let progress: ((check: EnvironmentCheck) => void) | undefined;
   vi.spyOn(api, 'environment').mockImplementation(async (_id, onChecked) => {
@@ -580,7 +595,7 @@ it('enters the business application when no Agent is available and the user choo
 });
 
 it('opens the business application on startup after setup was deferred', async () => {
-  status.state = { status: 'deferred' };
+  status.state = { status: 'deferred', gitDecision: 'undecided' };
   window.location.hash = '#/tasks';
   await act(async () => root.render(<OnboardingGate />));
   await act(async () => { await vi.dynamicImportSettled(); });

@@ -57,7 +57,7 @@ export function createBrowserSetupApi(): SetupApi {
       return result;
     },
     skipGit: async () => { status.state = { status: 'pending', gitDecision: 'skip' }; },
-    deferSetup: async () => { status.state = { status: 'deferred' }; },
+    deferSetup: async () => { if (status.state.status === 'pending') status.state = { status: 'deferred', gitDecision: status.state.gitDecision }; },
     cancelEnvironment: async (requestId) => { if (environment?.requestId === requestId) environment = null; },
     start: async (receive) => {
       requireEnvironment();
