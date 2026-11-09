@@ -1090,6 +1090,16 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "El Workflow está en ejecución, así que no se puede reintentar el nodo actual.",
+        "run-terminal": "El Workflow ha finalizado, así que no se puede reintentar el nodo actual.",
+        "node-not-retryable": "El nodo actual no se puede reintentar en su estado actual.",
+        "error-blocked": "El Workflow está bloqueado por un error, así que no se puede reintentar el nodo actual.",
+        "manual-check-pending": "El nodo actual está esperando confirmación manual y no se puede reintentar.",
+        "unsupported-node": "Este tipo de nodo no admite reintentos.",
+        "stale-locator": "El nodo actual ha cambiado. Continúa desde el estado más reciente.",
+        "workflow-invalid": "La configuración del Workflow o el entorno de ejecución no son válidos, así que no se puede reintentar el nodo actual."
+      },
       "agent-doctor-failed": "El Agent {{agentType}} no ha superado doctor.",
       "agent-doctor-required": "El Agent {{agentType}} debe superar doctor primero.",
       "permission-mode-unsupported": "El Agent {{agentType}} no admite el modo de permiso {{permissionMode}}.",
@@ -2548,7 +2558,7 @@
     "viewSession": "Ver sesión",
     "viewLog": "Ver registro",
     "copyNodeId": "Copiar node id",
-    "retryFromNode": "Reintentar desde este nodo",
+    "retryCurrentNode": "Reintentar nodo actual",
     "layoutPending": "Organizando el gráfico del flujo de trabajo",
     "layoutFailed": "No se pudo organizar el gráfico del flujo de trabajo"
   },

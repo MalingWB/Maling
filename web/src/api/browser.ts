@@ -813,6 +813,9 @@ function browserPausedWorkflowFixture() {
   lifecycle.composer = { mode: 'normal', submitTarget: 'acp-prompt', processingKind: 'responding', canStop: false, lockInput: false };
   round.runtimeDisplay = node.runtimeDisplay = attempt.runtimeDisplay = lifecycle.runtimeDisplay;
   run.workflowGraph.nodes[0].runtimeDisplay = lifecycle.runtimeDisplay;
+  run.workflowGraph.nodes[0].roundId = browserPausedWorkflowLocator.roundId;
+  run.workflowGraph.nodes[0].nodeId = browserPausedWorkflowLocator.nodeId;
+  run.workflowGraph.nodes[0].retryable = true;
   attempt.sessionId = 'browser-session-054';
   attempt.sessionEstablished = true;
   const session: AcpSessionVm = {
@@ -2296,8 +2299,77 @@ export const browserApi: RuntimeApi = {
   submitManualCheck(_projectId, taskId, runId, _roundId, _nodeId, _attemptId, _outcome) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
   },
-  retryRun(taskId: string, runId: string) {
-    return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
+  retryCurrentNode(request: import('../types').RetryCurrentNodeRequest) {
+    if (request.expectedAttemptId === 'attempt-stale') {
+      return Promise.reject({
+        code: 'workflow.retry.stale-locator',
+        params: {
+          taskId: request.taskId,
+          runId: request.runId,
+          currentRoundId: request.expectedRoundId,
+          currentNodeId: request.expectedNodeId,
+          currentAttemptId: 'attempt-001',
+        },
+      });
+    }
+    if (request.runId === 'run-055') {
+      return Promise.reject(new Error('workflow.retry.manual-check-pending'));
+    }
+    if (request.runId === 'run-051') {
+      return Promise.reject(new Error('workflow.retry.error-blocked'));
+    }
+    if (request.runId === 'run-052') {
+      return Promise.reject(new Error('workflow.retry.run-terminal'));
+    }
+    if (request.runId === 'run-053') {
+      return Promise.reject(new Error('workflow.retry.run-active'));
+    }
+    const nextAttemptNumber = Number.parseInt(request.expectedAttemptId.replace(/^attempt-/, ''), 10) + 1;
+    const nextAttemptId = `attempt-${String(Number.isFinite(nextAttemptNumber) ? nextAttemptNumber : 2).padStart(3, '0')}`;
+    if (
+      request.projectId === browserPausedWorkflowLocator.projectId
+      && request.taskId === browserPausedWorkflowLocator.taskId
+      && request.runId === browserPausedWorkflowLocator.runId
+    ) {
+      const { run } = browserPausedWorkflowFixture();
+      run.runStatus = 'running';
+      run.pauseReason = null;
+      run.runtimeError = null;
+      run.runtimeErrorMessage = null;
+      run.resumable = false;
+      run.workflowGraph.nodes[0].attemptId = nextAttemptId;
+      run.workflowGraph.nodes[0].retryable = false;
+      run.workflowGraph.nodes[0].runtimeDisplay = {
+        ...run.workflowGraph.nodes[0].runtimeDisplay,
+        code: 'running',
+        tone: 'running',
+        icon: 'dot',
+        terminal: false,
+        resumable: false,
+        reasonCode: null,
+        blockingError: false,
+      };
+    }
+    return Promise.resolve({
+      operationId: 'browser-retry-current-node',
+      locator: {
+        projectId: request.projectId,
+        taskId: request.taskId,
+        runId: request.runId,
+        roundId: request.expectedRoundId,
+        nodeId: request.expectedNodeId,
+        attemptId: nextAttemptId,
+      },
+      run: {
+        ...mockRunDetail.run,
+        taskId: request.taskId,
+        id: request.runId,
+        status: 'running',
+        currentRound: request.expectedRoundId,
+        currentNode: request.expectedNodeId,
+        currentAttempt: nextAttemptId,
+      },
+    });
   },
   getLogPage(query: LogQueryInput) {
     return Promise.resolve(mockLogPage(query));

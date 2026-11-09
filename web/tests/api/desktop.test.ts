@@ -116,6 +116,26 @@ describe('desktopApi', () => {
     });
   });
 
+  it('passes the complete canonical locator to the current-node retry command', async () => {
+    await desktopApi.retryCurrentNode({
+      projectId: 'project-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      expectedRoundId: 'round-1',
+      expectedNodeId: 'node-1',
+      expectedAttemptId: 'attempt-1',
+    });
+
+    expect(invokeCommand).toHaveBeenCalledWith('retry_current_node', {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      expectedRoundId: 'round-1',
+      expectedNodeId: 'node-1',
+      expectedAttemptId: 'attempt-1',
+    });
+  });
+
   it('forwards the visible input and attachments with one runtime continue command', async () => {
     const input = {
       displayText: '请继续并补充测试',

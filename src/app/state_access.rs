@@ -1,7 +1,10 @@
 use anyhow::{Result, anyhow};
 
 use crate::dsl::WorkflowDsl;
-use crate::runtime::{NodeState, RoundState, RunState, RuntimeAttemptLocator, write_node_state};
+use crate::runtime::{
+    NodeState, RoundState, RunState, RuntimeAttemptLocator, canonical_trace_for_round,
+    write_node_state,
+};
 use crate::storage::{read_json, write_json};
 
 use super::App;
@@ -58,7 +61,8 @@ pub(crate) fn current_attempt_state(
         .current_attempt
         .as_ref()
         .ok_or_else(|| anyhow!("run has no current attempt"))?;
-    let round: RoundState = read_json(&app.paths.round_file(task_id, &run.id, round_id))?;
+    let mut round: RoundState = read_json(&app.paths.round_file(task_id, &run.id, round_id))?;
+    round.trace = canonical_trace_for_round(run, std::slice::from_ref(&round), &round)?;
     let node: NodeState = read_json(
         &app.paths
             .node_file(task_id, &run.id, round_id, node_id, attempt_id),

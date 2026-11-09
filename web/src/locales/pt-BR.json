@@ -1090,6 +1090,16 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "O Workflow está em execução, então o nó atual não pode ser repetido.",
+        "run-terminal": "O Workflow terminou, então o nó atual não pode ser repetido.",
+        "node-not-retryable": "O nó atual não pode ser repetido no estado em que está.",
+        "error-blocked": "O Workflow está bloqueado por um erro, então o nó atual não pode ser repetido.",
+        "manual-check-pending": "O nó atual está aguardando confirmação manual e não pode ser repetido.",
+        "unsupported-node": "Este tipo de nó não oferece suporte à repetição.",
+        "stale-locator": "O nó atual foi alterado. Continue a partir do estado mais recente.",
+        "workflow-invalid": "A configuração do Workflow ou o ambiente de execução é inválido, então o nó atual não pode ser repetido."
+      },
       "agent-doctor-failed": "Agent {{agentType}} não passou no doctor.",
       "agent-doctor-required": "Agent {{agentType}} deve passar no doctor primeiro.",
       "permission-mode-unsupported": "Agent {{agentType}} não suporta modo de permissão {{permissionMode}}.",
@@ -2548,7 +2558,7 @@
     "viewSession": "Ver sessão",
     "viewLog": "Ver log",
     "copyNodeId": "Copiar node id",
-    "retryFromNode": "Tentar novamente a partir deste nó",
+    "retryCurrentNode": "Tentar o nó atual novamente",
     "layoutPending": "Organizando o grafo do fluxo de trabalho",
     "layoutFailed": "Não foi possível organizar o grafo do fluxo de trabalho"
   },

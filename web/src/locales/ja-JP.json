@@ -1090,6 +1090,16 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "Workflow は実行中です。現在のノードは再試行できません。",
+        "run-terminal": "Workflow は終了しています。現在のノードは再試行できません。",
+        "node-not-retryable": "現在のノードは現在の状態では再試行できません。",
+        "error-blocked": "Workflow はエラーでブロックされています。現在のノードは再試行できません。",
+        "manual-check-pending": "現在のノードは手動確認を待っているため、再試行できません。",
+        "unsupported-node": "このノード種別は再試行に対応していません。",
+        "stale-locator": "現在のノードが変更されました。最新の状態から操作してください。",
+        "workflow-invalid": "Workflow の設定または実行環境が無効なため、現在のノードを再試行できません。"
+      },
       "agent-doctor-failed": "Agent {{agentType}} は doctor を通過していません。",
       "agent-doctor-required": "Agent {{agentType}} は先に doctor を通過する必要があります。",
       "permission-mode-unsupported": "Agent {{agentType}} は権限モード {{permissionMode}} をサポートしていません。",
@@ -2548,7 +2558,7 @@
     "viewSession": "セッションを見る",
     "viewLog": "ログを表示する",
     "copyNodeId": "node id をコピー",
-    "retryFromNode": "このノードから再試行",
+    "retryCurrentNode": "現在のノードを再試行",
     "layoutPending": "ワークフローグラフを配置中",
     "layoutFailed": "ワークフローグラフを配置できませんでした"
   },

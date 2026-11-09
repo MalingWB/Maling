@@ -1090,6 +1090,16 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "Workflow가 실행 중이므로 현재 노드를 다시 시도할 수 없습니다.",
+        "run-terminal": "Workflow가 종료되었으므로 현재 노드를 다시 시도할 수 없습니다.",
+        "node-not-retryable": "현재 노드는 현재 상태에서 다시 시도할 수 없습니다.",
+        "error-blocked": "Workflow가 오류로 차단되어 현재 노드를 다시 시도할 수 없습니다.",
+        "manual-check-pending": "현재 노드가 수동 확인을 기다리고 있어 다시 시도할 수 없습니다.",
+        "unsupported-node": "이 노드 유형은 다시 시도를 지원하지 않습니다.",
+        "stale-locator": "현재 노드가 변경되었습니다. 최신 상태에서 작업하세요.",
+        "workflow-invalid": "Workflow 구성 또는 실행 환경이 유효하지 않아 현재 노드를 다시 시도할 수 없습니다."
+      },
       "agent-doctor-failed": "Agent {{agentType}}가 doctor를 통과하지 못했습니다.",
       "agent-doctor-required": "Agent {{agentType}}는 먼저 doctor를 통과해야 합니다.",
       "permission-mode-unsupported": "Agent {{agentType}}는 권한 모드 {{permissionMode}}를 지원하지 않습니다.",
@@ -2548,7 +2558,7 @@
     "viewSession": "세션 보기",
     "viewLog": "로그 보기",
     "copyNodeId": "node id 복사",
-    "retryFromNode": "이 노드부터 다시 시도",
+    "retryCurrentNode": "현재 노드 다시 시도",
     "layoutPending": "워크플로 그래프 배치 중",
     "layoutFailed": "워크플로 그래프를 배치하지 못했습니다"
   },

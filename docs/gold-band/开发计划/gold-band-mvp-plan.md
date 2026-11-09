@@ -1,5 +1,15 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-11-09 工作流当前节点重试设计方案
+
+- 状态：已实现并完成定向验收。详细设计及实施证据见[工作流当前节点重试设计方案](生命周期整理/工作流当前节点重试设计方案.md)。
+- 根因定性：现有 `run_retry` 已能按 canonical `current_round/current_node/current_attempt` 创建新 attempt，但缺少显式“当前节点可重试”契约、expected locator CAS、并发防护和后台 accepted 语义；会话页运行图的“从该节点重试”仍是硬编码禁用占位。修订后明确 Completed Run 生命周期不可回退，`Completed + Failure` 走 successor run / handoff；本方案只处理 `Paused + RuntimeAbnormal` 且当前 node 为 `Paused + outcome=null` 的未终结 Run。ErrorBlocked 不依赖事件日志猜测错误类别，第一阶段一律拒绝。继续复用 Run/Round/Node/Attempt 状态机、round trace、runtime candidate、既有后台驱动和错误契约，不新增持久字段、队列或平行状态机。
+- 命令设计：以 `retry_current_node(projectId, taskId, runId, expectedRoundId, expectedNodeId, expectedAttemptId)` 替换语义模糊的 `retry_run(taskId, runId)`。后端在旧 attempt 锁内重读权威状态并校验纯生命周期 readiness 与 expected locator，按旧 current locator 截断 canonical trace 后通过原子目录预留创建同 node 新 attempt（将现有 `next_attempt_id` 的读最大值逻辑收敛为 `reserve_next_attempt_dir`），按 node -> round -> run 原子替换提交；只有 run current pointer 指向新 locator 才算 durable accepted。该 pointer 只是当前位置转移与新 trace step 的 commit marker，不是同 locator 状态更新的通用 revision；已完成的更早 round 使用完整已校验 trace。返回 `RetryCurrentNodeAcceptedVm`（Run summary、完整新 locator、稳定 operationId），执行交由后台线程。相同 expected locator 重投时，如果 current 是它在 canonical trace 中的直接 retry successor，则返回同一 `operationId + locator` 和重投时的最新 Run summary，而不创建新 attempt；其他 locator 变化才返回 stale。运行中、终态 Run、ErrorBlocked、已完成节点、人工检查等待和 AI-DYNAMIC 内部节点分别映射稳定错误码；Agent/profile/model/Git 属于提交前 executable preflight，不进入 Graph VM 常数级投影。手动 retry 不改变 `control.max_attempts` 仅统计 failure 修复跳转的既有语义。
+- UI 契约：`GraphNodeVm` 新增后端派生的 `retryable` 投影；当前可重试节点右键显示“重试当前节点”，不可重试节点隐藏入口。回调经运行图资源面板、会话页到 App 的既有命令链路传递，pending 按完整 locator 去重，stale locator 只刷新并提示，不自动重试。七语言同步删除 `graph.retryFromNode` 并新增 `graph.retryCurrentNode`。
+- 验收计划：Rust 覆盖 `Paused + RuntimeAbnormal + node Paused/outcome=null` 重试、Completed + Success/Failure 原地拒绝且状态不回退、ErrorBlocked 与 `recover-completed-attempt` 边界、旧 attempt 保留、canonical trace 截断、原子 attempt 目录预留与崩溃遗留编号空洞、stale locator 拒绝、并发重复请求只成功一次、running/manual check/dynamic 内部节点拒绝、accepted operation identity、spawn 失败与重启恢复只做一次 terminalize、后台失败收敛和 AI-DYNAMIC Git 前置校验；Web 覆盖菜单显隐与点击回调、全屏图透传、pending 去重、stale 刷新、七语言契约和右侧工作区 memo 隔离；随后执行类型检查、生产构建与内置浏览器 deep link 实测。
+- 过度设计与性能评审：不引入第三方组件、新持久字段、新缓存或平行状态机；readiness、accepted DTO 与 canonical trace helper 只显式化既有生命周期和提交边界。第一阶段排除需要新增结构化错误事实才能安全判断的 ErrorBlocked retry。后端 JSON 读取为常数个文件，canonical trace 截断为 `O(t)`，attempt ID 正常通过原子目录预留为 `O(1)`，不扫描全量 attempt 目录；前端仅增加菜单谓词和 memo 比较字段，无全量历史扫描、N+1 或扩大订阅范围；无需新增 benchmark。
+- 实施结果：`retry_current_node` 完整 locator、CAS、canonical trace 截断、幂等 accepted identity、后台驱动与 `GraphNodeVm.retryable` 已落地；旧 `retry_run`、旧 `RunDetailPage` 和 `graph.retryFromNode` 已删除，七语言与运行图回调链路已同步。定向验收共通过 Rust 27 项、Web 35 项，`cargo check`、Web 类型检查和生产构建通过；内置浏览器验证当前节点菜单显隐、480px 窄窗口以及浅色/深色主题，验证后已关闭页面并停止 Vite。
+
 ## 2026-10-21 首次启动引导
 
 三步引导、首次／旧安装分流、只读发现与成功后自动登记、真实模型目录、默认工作流批量绑定及两文件恢复已实现；七语言、设置重跑入口与 Direct／AUTO 新配置初值同步接入。候选 Node/npm 策略仍待真实供应商与跨平台安装矩阵，未把元数据检查当作发布验收。实施清单和验证证据统一见[首次启动引导开发计划](新增流程/首次启动引导开发计划.md)。
@@ -1637,7 +1647,8 @@ enum ControlDecision {
 例如：
 - `start_run()`
 - `continue_run()`
-- `retry_run()`
+- `retry_current_node()`（仅未终结 Run 的当前失败节点，完整 locator CAS）
+- `create_successor_run()`（已完成 Run / Attempt 的重跑与 handoff）
 - `pause_run()`
 - `open_session()`
 

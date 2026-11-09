@@ -1769,6 +1769,30 @@ export interface RunSummaryVm {
   pauseReason?: string | null;
 }
 
+export interface RetryCurrentNodeRequest {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  expectedRoundId: string;
+  expectedNodeId: string;
+  expectedAttemptId: string;
+}
+
+export interface RetryCurrentNodeLocatorVm {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+}
+
+export interface RetryCurrentNodeAcceptedVm {
+  operationId: string;
+  locator: RetryCurrentNodeLocatorVm;
+  run: RunSummaryVm;
+}
+
 export interface RoundSummaryVm {
   id: string;
   runId: string;
@@ -1806,6 +1830,7 @@ export interface RuntimeDisplayVm {
 
 export interface GraphNodeVm {
   id: string;
+  roundId?: string | null;
   nodeId?: string | null;
   sequence?: number | null;
   label: string;
@@ -1821,6 +1846,7 @@ export interface GraphNodeVm {
   artifactCount: number;
   attachmentCount: number;
   current: boolean;
+  retryable: boolean;
   iconKey?: string | null;
   sessionMode?: string | null;
   continueFromNodeId?: string | null;

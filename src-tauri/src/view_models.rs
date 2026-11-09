@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::Result;
 use gold_band::acp::client::PromptActivity;
-use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
+use gold_band::app::{App, ConversationMetadata, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     AppearancePreference, BrowserPreferences, DesktopLanguage, DesktopUpdateBadgeState,
     DiagnosticError, ManagedAgentConfig, ManagedAgentId, McpServerDiagnosticState,
@@ -26,7 +26,10 @@ use gold_band::provider::{
     model_bound_catalogs_from_capabilities, select_config_options_from_capabilities,
     supported_models_from_capabilities, supported_modes_from_capabilities,
 };
-use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
+use gold_band::runtime::{
+    CurrentNodeRetryReadiness, NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState,
+    canonical_trace_for_round, current_node_retry_readiness,
+};
 
 use crate::channel::current_channel_config;
 use crate::i18n::Translator;
@@ -461,6 +464,25 @@ pub struct RunSummaryVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RetryCurrentNodeLocatorVm {
+    pub project_id: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryCurrentNodeAcceptedVm {
+    pub operation_id: String,
+    pub locator: RetryCurrentNodeLocatorVm,
+    pub run: RunSummaryVm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RoundSummaryVm {
     pub id: String,
     pub run_id: String,
@@ -506,6 +528,7 @@ pub struct RuntimeDisplayVm {
 #[serde(rename_all = "camelCase")]
 pub struct GraphNodeVm {
     pub id: String,
+    pub round_id: Option<String>,
     pub node_id: Option<String>,
     pub sequence: Option<u32>,
     pub label: String,
@@ -521,6 +544,7 @@ pub struct GraphNodeVm {
     pub artifact_count: usize,
     pub attachment_count: usize,
     pub current: bool,
+    pub retryable: bool,
     pub icon_key: Option<String>,
     pub session_mode: Option<String>,
     pub continue_from_node_id: Option<String>,
@@ -1677,14 +1701,23 @@ pub fn round_detail_vm(
     selection: Option<RoundSelectionInput>,
 ) -> Result<RoundDetailVm> {
     let run = app.run_status(task_id, run_id)?;
-    let round = app
+    let mut round = app
         .round_list(task_id, run_id)?
         .into_iter()
         .find(|round| round.id == round_id)
         .ok_or_else(|| anyhow::anyhow!("round not found: {round_id}"))?;
-    let nodes = round_attempt_nodes(app, task_id, run_id, &round)?;
+    round.trace = canonical_round_trace(app, task_id, &run, &round)?;
+    let nodes = round_attempt_nodes(app, task_id, run_id, &round, &round.trace)?;
     let control_failure = latest_control_failure_vm(app, task_id, run_id)?;
-    let graph = round_graph_vm(app, task_id, &run, &round, &nodes, control_failure.as_ref())?;
+    let graph = round_graph_vm(
+        app,
+        task_id,
+        &run,
+        &round,
+        &nodes,
+        control_failure.as_ref(),
+        conversation_workflow_mode(app, task_id),
+    )?;
     let selection = selection.unwrap_or(RoundSelectionInput::Round {
         context_node_id: None,
     });
@@ -1722,6 +1755,23 @@ pub fn run_summary_vm(run: RunState) -> RunSummaryVm {
         current_attempt: run.current_attempt,
         resumable,
         pause_reason: run.pause_reason.map(|reason| enum_label(&reason)),
+    }
+}
+
+pub fn retry_current_node_accepted_vm(
+    accepted: gold_band::app::RetryCurrentNodeAccepted,
+) -> RetryCurrentNodeAcceptedVm {
+    RetryCurrentNodeAcceptedVm {
+        operation_id: accepted.operation_id,
+        locator: RetryCurrentNodeLocatorVm {
+            project_id: accepted.locator.project_id,
+            task_id: accepted.locator.task_id,
+            run_id: accepted.locator.run_id,
+            round_id: accepted.locator.round_id,
+            node_id: accepted.locator.node_id,
+            attempt_id: accepted.locator.attempt_id,
+        },
+        run: run_summary_vm(accepted.run),
     }
 }
 
@@ -2075,13 +2125,10 @@ fn round_attempt_nodes(
     task_id: &str,
     run_id: &str,
     round: &RoundState,
+    trace: &[RoundTraceStep],
 ) -> Result<Vec<NodeState>> {
-    if round.trace.is_empty() {
-        return app.node_list(task_id, run_id, &round.id);
-    }
-
     let mut node_ids = Vec::<String>::new();
-    for step in &round.trace {
+    for step in trace {
         if !node_ids.iter().any(|node_id| node_id == &step.node_id) {
             node_ids.push(step.node_id.clone());
         }
@@ -2094,6 +2141,34 @@ fn round_attempt_nodes(
     Ok(nodes)
 }
 
+fn conversation_workflow_mode(app: &App, task_id: &str) -> bool {
+    read_json::<ConversationMetadata>(
+        &app.paths
+            .task_dir(task_id)
+            .join("authoring")
+            .join("conversation.json"),
+    )
+    .map(|metadata| metadata.run_mode == "workflow")
+    .unwrap_or(false)
+}
+
+fn canonical_round_trace(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+) -> Result<Vec<RoundTraceStep>> {
+    let Some(current_round_id) = run.current_round.as_deref() else {
+        anyhow::bail!("runtime.current-round-missing");
+    };
+    if round.id == current_round_id {
+        return canonical_trace_for_round(run, std::slice::from_ref(round), round);
+    }
+    let current_round: RoundState =
+        read_json(&app.paths.round_file(task_id, &run.id, current_round_id))?;
+    canonical_trace_for_round(run, &[round.clone(), current_round], round)
+}
+
 pub fn workflow_graph_vm(app: &App, workflow: &WorkflowDsl) -> GraphVm {
     GraphVm {
         nodes: workflow
@@ -2101,6 +2176,7 @@ pub fn workflow_graph_vm(app: &App, workflow: &WorkflowDsl) -> GraphVm {
             .iter()
             .map(|node| GraphNodeVm {
                 id: node.id().to_string(),
+                round_id: None,
                 node_id: Some(node.id().to_string()),
                 sequence: None,
                 label: node_label(node),
@@ -2116,6 +2192,7 @@ pub fn workflow_graph_vm(app: &App, workflow: &WorkflowDsl) -> GraphVm {
                 artifact_count: 0,
                 attachment_count: 0,
                 current: false,
+                retryable: false,
                 icon_key: node
                     .provider()
                     .and_then(|provider| provider_icon_key(app, provider)),
@@ -2148,6 +2225,7 @@ fn round_graph_vm(
     round: &RoundState,
     nodes: &[NodeState],
     control_failure: Option<&ControlFailureVm>,
+    workflow_mode: bool,
 ) -> Result<GraphVm> {
     let node_labels = workflow_node_labels(app, task_id, &run.id);
     if !round.trace.is_empty() {
@@ -2159,6 +2237,7 @@ fn round_graph_vm(
             nodes,
             &node_labels,
             control_failure,
+            workflow_mode,
         );
     }
 
@@ -2210,6 +2289,7 @@ fn round_trace_graph_vm(
     nodes: &[NodeState],
     node_labels: &HashMap<String, String>,
     control_failure: Option<&ControlFailureVm>,
+    workflow_mode: bool,
 ) -> Result<GraphVm> {
     const TRACE_SEQUENCE_RANK_WIDTH: u32 = 100;
     fn trace_rank_sequence(sequence: u32) -> u32 {
@@ -2372,6 +2452,11 @@ fn round_trace_graph_vm(
             latest_node.and_then(|node| node.outcome.map(|outcome| enum_label(&outcome)));
         let current = run.current_round.as_deref() == Some(&round.id)
             && run.current_node.as_deref() == Some(&latest_step.node_id);
+        let retryable = current
+            && workflow_mode
+            && latest_node.is_some_and(|node| {
+                current_node_retry_readiness(run, node, true) == CurrentNodeRetryReadiness::Ready
+            });
         let pause_reason = run.pause_reason.as_ref().map(enum_label);
         let runtime_display = runtime_display_vm(
             latest_status.as_deref(),
@@ -2382,6 +2467,7 @@ fn round_trace_graph_vm(
         );
         graph_nodes.push(GraphNodeVm {
             id: latest_step.node_id.clone(),
+            round_id: Some(round.id.clone()),
             node_id: Some(latest_step.node_id.clone()),
             sequence: first_sequence,
             label: node_labels
@@ -2402,6 +2488,7 @@ fn round_trace_graph_vm(
             artifact_count: artifacts,
             attachment_count: attachments,
             current,
+            retryable,
             icon_key: latest_node.and_then(|n| {
                 n.resolved_config
                     .get("provider")
@@ -2713,6 +2800,7 @@ fn dynamic_node_graph_vm(
     );
     GraphNodeVm {
         id: dynamic_graph_node_vm_id(outer_node_id, outer_attempt_id, &node.id),
+        round_id: Some(round_id.to_string()),
         node_id: Some(node.id.clone()),
         sequence: Some(sequence_hint.unwrap_or(sequence)),
         label: node.title.clone(),
@@ -2737,6 +2825,7 @@ fn dynamic_node_graph_vm(
         artifact_count,
         attachment_count,
         current,
+        retryable: false,
         icon_key: node
             .provider
             .as_deref()
@@ -3030,6 +3119,7 @@ fn round_node_graph_vm(
     );
     Ok(GraphNodeVm {
         id: format!("{}:{}:{}", sequence, node.node_id, node.attempt_id),
+        round_id: Some(round.id.clone()),
         node_id: Some(node.node_id.clone()),
         sequence: Some(sequence),
         label: node_labels
@@ -3071,6 +3161,7 @@ fn round_node_graph_vm(
         artifact_count: artifacts,
         attachment_count: attachments,
         current: node_current,
+        retryable: false,
         icon_key: node
             .resolved_config
             .get("provider")
@@ -9249,6 +9340,146 @@ mod tests {
         assert!(!runtime_abnormal.blocking_error);
         assert!(runtime_abnormal.resumable);
         assert!(killed.blocking_error);
+    }
+
+    #[test]
+    fn round_detail_truncates_uncommitted_trace_and_marks_only_current_attempt_retryable() {
+        let directory = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = App::new(repo_root);
+        let task_id = "task-retry-projection";
+        let run_id = "run-retry";
+        let round_id = "round-retry";
+        let now = "2026-11-09T00:00:00Z".to_string();
+        let mut run = RunState {
+            version: VERSION.to_string(),
+            id: run_id.to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: now.clone(),
+            updated_at: now.clone(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some(round_id.to_string()),
+            current_node: Some("worker".to_string()),
+            current_attempt: Some("attempt-002".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::RuntimeAbnormal),
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: RuntimeExecutionState::default(),
+        };
+        run.execution.phase = RuntimeExecutionPhase::Paused;
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: round_id.to_string(),
+            run_id: run_id.to_string(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: gold_band::domain::RoundTrigger::Initial,
+            started_at: now.clone(),
+            trace: vec![
+                RoundTraceStep {
+                    sequence: 1,
+                    node_id: "worker".to_string(),
+                    attempt_id: "attempt-001".to_string(),
+                    from_node_id: None,
+                    edge_outcome: None,
+                    entered_at: now.clone(),
+                },
+                RoundTraceStep {
+                    sequence: 2,
+                    node_id: "worker".to_string(),
+                    attempt_id: "attempt-002".to_string(),
+                    from_node_id: Some("worker".to_string()),
+                    edge_outcome: Some("retry".to_string()),
+                    entered_at: now.clone(),
+                },
+                RoundTraceStep {
+                    sequence: 3,
+                    node_id: "orphan".to_string(),
+                    attempt_id: "attempt-001".to_string(),
+                    from_node_id: Some("worker".to_string()),
+                    edge_outcome: Some("success".to_string()),
+                    entered_at: now.clone(),
+                },
+            ],
+            uuid: None,
+        };
+        let mut first_node = NodeState {
+            version: VERSION.to_string(),
+            acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+            node_id: "worker".to_string(),
+            node_type: NodeType::Worker,
+            run_id: run_id.to_string(),
+            round_id: round_id.to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: now.clone(),
+            finished_at: Some(now.clone()),
+            manual_check_pending: false,
+            runtime_execution_id: None,
+            resolved_config: Default::default(),
+            uuid: None,
+        };
+        let current_node = NodeState {
+            attempt_id: "attempt-002".to_string(),
+            ..first_node.clone()
+        };
+        let orphan_node = NodeState {
+            node_id: "orphan".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            ..first_node.clone()
+        };
+        first_node.attempt_id = "attempt-001".to_string();
+        std::fs::create_dir_all(app.paths.run_dir(task_id, run_id).as_std_path()).unwrap();
+        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
+        write_json(&app.paths.round_file(task_id, run_id, round_id), &round).unwrap();
+        for node in [first_node, current_node, orphan_node] {
+            let node_dir = app.paths.node_dir(task_id, run_id, round_id, &node.node_id);
+            std::fs::create_dir_all(node_dir.join(&node.attempt_id).as_std_path()).unwrap();
+            write_json(&node_dir.join(&node.attempt_id).join("node.json"), &node).unwrap();
+        }
+        let metadata = ConversationMetadata {
+            resident: false,
+            version: gold_band::app::CONVERSATION_METADATA_VERSION.to_string(),
+            source: "desktop".to_string(),
+            run_mode: "workflow".to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: None,
+            agent_identity: None,
+            title_auto_generated: true,
+            initial_attachment_names: None,
+            initial_workspace_files: Vec::new(),
+            created_at: now,
+            last_activity_at: None,
+            work_location: Default::default(),
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+        };
+        let metadata_dir = app.paths.task_dir(task_id).join("authoring");
+        std::fs::create_dir_all(metadata_dir.as_std_path()).unwrap();
+        write_json(&metadata_dir.join("conversation.json"), &metadata).unwrap();
+
+        let detail = round_detail_vm(&app, task_id, run_id, round_id, None).unwrap();
+
+        assert_eq!(
+            detail
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["worker"]
+        );
+        let worker = &detail.graph.nodes[0];
+        assert_eq!(worker.attempt_id.as_deref(), Some("attempt-002"));
+        assert!(worker.retryable);
     }
 
     #[test]

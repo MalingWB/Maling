@@ -108,12 +108,13 @@ use crate::view_models::{
     AcpActivityDetailQueryInput, AcpActivityDetailVm, AcpRawFramePageVm, AcpRawFrameQueryInput,
     AcpSessionConfigVm, AcpSessionQueryInput, AcpSessionVm, AcpToolDetailQueryInput,
     AcpToolDetailVm, AgentRegistryVm, AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm,
-    LogQueryInput, McpServerVm, PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm,
-    RunSummaryVm, SkillContentVm, SkillListVm, SkillMetaVm, SyncStatusEntryVm, TaskDetailVm,
-    TaskListVm, UpdateBadgeStateVm, WorkflowVm, acp_activity_detail_vm_for_attempt,
-    acp_raw_frame_page_vm, acp_session_config_vm, acp_session_vm, acp_tool_detail_vm_for_attempt,
-    agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm,
-    preferences_vm, round_detail_vm, run_detail_vm, run_summary_vm,
+    LogQueryInput, McpServerVm, PreferencesVm, RetryCurrentNodeAcceptedVm, RoundDetailVm,
+    RoundSelectionInput, RunDetailVm, RunSummaryVm, SkillContentVm, SkillListVm, SkillMetaVm,
+    SyncStatusEntryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, WorkflowVm,
+    acp_activity_detail_vm_for_attempt, acp_raw_frame_page_vm, acp_session_config_vm,
+    acp_session_vm, acp_tool_detail_vm_for_attempt, agent_registry_vm, bootstrap_vm,
+    dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm, preferences_vm,
+    retry_current_node_accepted_vm, round_detail_vm, run_detail_vm, run_summary_vm,
     session_metadata_from_attempt_dir, skill_content_vm, skill_list_vm, skill_meta_vm,
     task_detail_vm, task_list_vm, workflow_vm,
 };
@@ -5264,18 +5265,27 @@ pub async fn submit_manual_check(
 }
 
 #[tauri::command]
-pub fn retry_run(
+pub fn retry_current_node(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
+    project_id: String,
     task_id: String,
     run_id: String,
-) -> CommandResult<RunSummaryVm> {
+    expected_round_id: String,
+    expected_node_id: String,
+    expected_attempt_id: String,
+) -> CommandResult<RetryCurrentNodeAcceptedVm> {
     let _ = state.record_heartbeat_activity();
-    let base_app = state.app().map_err(command_error)?;
-    let app = configure_conversation_runtime_callbacks(base_app, app_handle, None);
-    app.run_retry(&task_id, &run_id)
-        .map(run_summary_vm)
-        .map_err(command_error)
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), Some(&project_id))?;
+    app.retry_current_node(
+        &task_id,
+        &run_id,
+        &expected_round_id,
+        &expected_node_id,
+        &expected_attempt_id,
+    )
+    .map(retry_current_node_accepted_vm)
+    .map_err(command_error)
 }
 
 #[tauri::command]

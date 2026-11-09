@@ -79,9 +79,10 @@ use crate::provider::{
     supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
-    NodeState, RoundState, RoundTraceStep, RunState, RunWorktreeState, RuntimeAttemptLocator,
-    RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState, validate_round_state,
-    validate_run_state, validate_worker_ref_state, write_node_state,
+    CurrentNodeRetryReadiness, NodeState, RoundState, RoundTraceStep, RunState, RunWorktreeState,
+    RuntimeAttemptLocator, RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState,
+    canonical_trace_for_round, current_node_retry_readiness, direct_retry_successor,
+    validate_round_state, validate_run_state, validate_worker_ref_state, write_node_state,
 };
 use crate::runtime_error::{
     RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
@@ -93,8 +94,8 @@ use crate::workflow_model_binding::{
 };
 
 use super::ids::{
-    generate_uuid, next_attempt_id, next_dynamic_resume_request_id, next_runtime_execution_id,
-    now_rfc3339_like, reserve_next_run_dir,
+    generate_uuid, next_dynamic_resume_request_id, next_runtime_execution_id, now_rfc3339_like,
+    reserve_next_attempt_dir, reserve_next_run_dir,
 };
 use super::node_executor::{build_new_round_trigger_context, execute_ai_node, re_evaluate_attempt};
 use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profiles};
@@ -3647,74 +3648,491 @@ pub(crate) fn submit_manual_check_background(
     wait_for_runtime_continue_launch(launch_receiver)
 }
 
-pub(crate) fn run_retry(app: &App, task_id: &str, run_id: &str) -> Result<RunState> {
-    let workflow = load_run_workflow(app, task_id, run_id)?;
-    let validated = validate_workflow_snapshot(workflow)?;
-    if workflow_contains_ai_dynamic(&validated.raw) {
-        GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
+#[derive(Debug, Clone)]
+pub struct RetryCurrentNodeLocator {
+    pub project_id: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RetryCurrentNodeAccepted {
+    pub run: RunState,
+    pub operation_id: String,
+    pub locator: RetryCurrentNodeLocator,
+}
+
+fn retry_operation_id(locator: &RetryCurrentNodeLocator) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for part in [
+        locator.project_id.as_str(),
+        locator.task_id.as_str(),
+        locator.run_id.as_str(),
+        locator.round_id.as_str(),
+        locator.node_id.as_str(),
+        locator.attempt_id.as_str(),
+    ] {
+        hasher.update(&(part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
     }
-    app.validate_workflow_agents(&validated)?;
-    let resolved_profiles =
-        resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
-    let mut run = app.run_status(task_id, run_id)?;
-    let (mut round, node) = current_attempt_state(app, task_id, &run)?;
-    let node_id = node.node_id.clone();
-    let attempt_id = next_attempt_id(&app.paths.node_dir(task_id, run_id, &round.id, &node_id))?;
-    let fresh_node = validated.get_node(&node_id).expect("validated node exists");
-    let fresh_profile = fresh_node
-        .profile()
-        .and_then(|name| resolve_profile_for_node(&resolved_profiles, name));
-    let fresh = create_node_state(
-        run_id,
-        &round.id,
-        &node_id,
-        &attempt_id,
-        fresh_node,
-        fresh_profile,
+    format!("retry-{}", hasher.finalize().to_hex())
+}
+
+fn retry_error(
+    code: &'static str,
+    task_id: &str,
+    run_id: &str,
+    extra: serde_json::Value,
+) -> anyhow::Error {
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "taskId".to_string(),
+        serde_json::Value::String(task_id.to_string()),
     );
-    let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
-    if let Some(runtime_candidate) = runtime_candidate.as_ref() {
-        run.execution.recovery_candidate_token = Some(runtime_candidate.token().to_string());
+    params.insert(
+        "runId".to_string(),
+        serde_json::Value::String(run_id.to_string()),
+    );
+    if let serde_json::Value::Object(extra) = extra {
+        params.extend(extra);
     }
-    round.trace.push(round_trace_step(
-        next_trace_sequence(&round),
-        &node_id,
-        &attempt_id,
-        Some(node_id.clone()),
-        Some("retry".to_string()),
-        now_rfc3339_like(),
-    ));
-    let ctx = ExecutionContext::for_run(task_id, &run.id)
-        .with_round(round.id.clone())
-        .with_node(node_id.clone())
-        .with_attempt(attempt_id.clone());
-    let summary = format!("retrying node {} with {}", node_id, attempt_id);
-    progress(&summary);
+    runtime_error(manual_runtime_error_info(
+        RuntimeErrorDomain::Workflow,
+        code,
+        code,
+        serde_json::Value::Object(params),
+    ))
+}
+
+fn retry_readiness_error(
+    readiness: CurrentNodeRetryReadiness,
+    task_id: &str,
+    run_id: &str,
+) -> anyhow::Error {
+    let code = match readiness {
+        CurrentNodeRetryReadiness::Ready => {
+            return retry_error(
+                "workflow.retry.node-not-retryable",
+                task_id,
+                run_id,
+                serde_json::json!({}),
+            );
+        }
+        CurrentNodeRetryReadiness::RunActive => "workflow.retry.run-active",
+        CurrentNodeRetryReadiness::RunTerminal => "workflow.retry.run-terminal",
+        CurrentNodeRetryReadiness::RunNotRetryable
+        | CurrentNodeRetryReadiness::AttemptNotRetryable => "workflow.retry.node-not-retryable",
+        CurrentNodeRetryReadiness::ErrorBlocked => "workflow.retry.error-blocked",
+        CurrentNodeRetryReadiness::ManualCheckPending => "workflow.retry.manual-check-pending",
+        CurrentNodeRetryReadiness::UnsupportedNode => "workflow.retry.unsupported-node",
+    };
+    retry_error(code, task_id, run_id, serde_json::json!({}))
+}
+
+fn retry_stale_error(task_id: &str, run_id: &str, run: &RunState) -> anyhow::Error {
+    retry_error(
+        "workflow.retry.stale-locator",
+        task_id,
+        run_id,
+        serde_json::json!({
+            "currentRoundId": run.current_round,
+            "currentNodeId": run.current_node,
+            "currentAttemptId": run.current_attempt,
+        }),
+    )
+}
+
+fn retry_state_error(task_id: &str, run_id: &str, error: &anyhow::Error) -> anyhow::Error {
+    retry_error(
+        "workflow.retry.workflow-invalid",
+        task_id,
+        run_id,
+        serde_json::json!({
+            "causeCode": "runtime.state-invalid",
+            "diagnostic": format!("{error:#}"),
+        }),
+    )
+}
+
+fn retry_current_locator(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+) -> Result<RetryCurrentNodeLocator> {
+    Ok(RetryCurrentNodeLocator {
+        project_id: app.paths.project_id.clone(),
+        task_id: task_id.to_string(),
+        run_id: run.id.clone(),
+        round_id: run
+            .current_round
+            .clone()
+            .ok_or_else(|| anyhow!("runtime.current-round-missing"))?,
+        node_id: run
+            .current_node
+            .clone()
+            .ok_or_else(|| anyhow!("runtime.current-node-missing"))?,
+        attempt_id: run
+            .current_attempt
+            .clone()
+            .ok_or_else(|| anyhow!("runtime.current-attempt-missing"))?,
+    })
+}
+
+fn accepted_retry_for_run(
+    app: &App,
+    task_id: &str,
+    run: RunState,
+) -> Result<RetryCurrentNodeAccepted> {
+    let locator = retry_current_locator(app, task_id, &run)?;
+    Ok(RetryCurrentNodeAccepted {
+        operation_id: retry_operation_id(&locator),
+        locator,
+        run,
+    })
+}
+
+fn load_retry_current_state(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+) -> Result<(RunState, RoundState, NodeState)> {
+    let run = app.run_status(task_id, run_id)?;
+    let round_id = run
+        .current_round
+        .as_deref()
+        .ok_or_else(|| anyhow!("runtime.current-round-missing"))?;
+    let node_id = run
+        .current_node
+        .as_deref()
+        .ok_or_else(|| anyhow!("runtime.current-node-missing"))?;
+    let attempt_id = run
+        .current_attempt
+        .as_deref()
+        .ok_or_else(|| anyhow!("runtime.current-attempt-missing"))?;
+    let round: RoundState = read_json(&app.paths.round_file(task_id, run_id, round_id))?;
+    let node: NodeState = read_json(
+        &app.paths
+            .node_file(task_id, run_id, round_id, node_id, attempt_id),
+    )?;
+    validate_round_state(&round)?;
+    crate::runtime::validate_node_state(&node)?;
+    Ok((run, round, node))
+}
+
+fn retry_successor_attempt_for_expected(
+    run: &RunState,
+    round: &RoundState,
+    expected_round_id: &str,
+    expected_node_id: &str,
+    expected_attempt_id: &str,
+) -> Result<Option<String>> {
+    if run.current_round.as_deref() != Some(expected_round_id)
+        || run.current_node.as_deref() != Some(expected_node_id)
+        || run.current_attempt.as_deref() == Some(expected_attempt_id)
+    {
+        return Ok(None);
+    }
+    let Some(current_attempt_id) = run.current_attempt.as_deref() else {
+        return Ok(None);
+    };
+    let canonical = canonical_trace_for_round(run, std::slice::from_ref(round), round)?;
+    Ok(direct_retry_successor(
+        &canonical,
+        expected_node_id,
+        expected_attempt_id,
+        expected_node_id,
+        current_attempt_id,
+    ))
+}
+
+fn conversation_workflow_mode(app: &App, task_id: &str) -> Result<bool> {
+    let metadata: super::ConversationMetadata = read_json(
+        &app.paths
+            .task_dir(task_id)
+            .join("authoring")
+            .join("conversation.json"),
+    )?;
+    Ok(metadata.run_mode == "workflow")
+}
+
+/// Accepts a retry at the canonical current node and drives it asynchronously.
+/// The returned identity is stable for the newly committed locator, so a
+/// duplicate request can safely reconstruct the same accepted result.
+pub(crate) fn retry_current_node(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    expected_round_id: &str,
+    expected_node_id: &str,
+    expected_attempt_id: &str,
+) -> Result<RetryCurrentNodeAccepted> {
+    let workflow_mode = conversation_workflow_mode(app, task_id).map_err(|_error| {
+        retry_error(
+            "workflow.retry.node-not-retryable",
+            task_id,
+            run_id,
+            serde_json::json!({ "causeCode": "conversation.run-mode-unavailable" }),
+        )
+    })?;
+    if !workflow_mode {
+        return Err(retry_error(
+            "workflow.retry.node-not-retryable",
+            task_id,
+            run_id,
+            serde_json::json!({ "causeCode": "conversation.run-mode-not-workflow" }),
+        ));
+    }
+
+    let state_lock = super::attempt_runtime_state_lock(
+        app,
+        task_id,
+        run_id,
+        expected_round_id,
+        expected_node_id,
+        expected_attempt_id,
+    );
+    {
+        let _guard = state_lock
+            .lock()
+            .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+        let (run, round, node) = load_retry_current_state(app, task_id, run_id)?;
+        if retry_successor_attempt_for_expected(
+            &run,
+            &round,
+            expected_round_id,
+            expected_node_id,
+            expected_attempt_id,
+        )?
+        .is_some()
+        {
+            return accepted_retry_for_run(app, task_id, run);
+        }
+        if run.current_round.as_deref() != Some(expected_round_id)
+            || run.current_node.as_deref() != Some(expected_node_id)
+            || run.current_attempt.as_deref() != Some(expected_attempt_id)
+            || node.round_id != expected_round_id
+            || node.node_id != expected_node_id
+            || node.attempt_id != expected_attempt_id
+        {
+            return Err(retry_stale_error(task_id, run_id, &run));
+        }
+        let readiness = current_node_retry_readiness(&run, &node, workflow_mode);
+        if readiness != CurrentNodeRetryReadiness::Ready {
+            return Err(retry_readiness_error(readiness, task_id, run_id));
+        }
+    }
+
+    let workflow = load_run_workflow(app, task_id, run_id)
+        .map_err(|error| retry_state_error(task_id, run_id, &error))?;
+    let validated = validate_workflow_snapshot(workflow)
+        .map_err(|error| retry_state_error(task_id, run_id, &error.into()))?;
+    if workflow_contains_ai_dynamic(&validated.raw) {
+        GitRepositoryService::default()
+            .require_worktree(&app.paths.repo_root)
+            .map_err(|error| retry_state_error(task_id, run_id, &error))?;
+    }
+    app.validate_workflow_agents(&validated)
+        .map_err(|error| retry_state_error(task_id, run_id, &error))?;
+    let resolved_profiles =
+        resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)
+            .map_err(|error| retry_state_error(task_id, run_id, &error))?;
+
+    let (accepted, runtime_candidate, committed_round, committed_node) = {
+        let _guard = state_lock
+            .lock()
+            .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+        let (mut run, mut round, node) = load_retry_current_state(app, task_id, run_id)?;
+        if retry_successor_attempt_for_expected(
+            &run,
+            &round,
+            expected_round_id,
+            expected_node_id,
+            expected_attempt_id,
+        )?
+        .is_some()
+        {
+            return accepted_retry_for_run(app, task_id, run);
+        }
+        if run.current_round.as_deref() != Some(expected_round_id)
+            || run.current_node.as_deref() != Some(expected_node_id)
+            || run.current_attempt.as_deref() != Some(expected_attempt_id)
+        {
+            return Err(retry_stale_error(task_id, run_id, &run));
+        }
+        let readiness = current_node_retry_readiness(&run, &node, workflow_mode);
+        if readiness != CurrentNodeRetryReadiness::Ready {
+            return Err(retry_readiness_error(readiness, task_id, run_id));
+        }
+
+        let node_dsl = validated.get_node(expected_node_id).ok_or_else(|| {
+            retry_error(
+                "workflow.retry.unsupported-node",
+                task_id,
+                run_id,
+                serde_json::json!({}),
+            )
+        })?;
+        if node_dsl.node_type() != crate::domain::NodeType::Worker {
+            return Err(retry_error(
+                "workflow.retry.unsupported-node",
+                task_id,
+                run_id,
+                serde_json::json!({}),
+            ));
+        }
+        let canonical_trace = canonical_trace_for_round(&run, std::slice::from_ref(&round), &round)
+            .map_err(|error| retry_state_error(task_id, run_id, &error))?;
+        let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
+        if let Some(candidate) = runtime_candidate.as_ref() {
+            run.execution.recovery_candidate_token = Some(candidate.token().to_string());
+        }
+        let (attempt_id, _attempt_dir) = reserve_next_attempt_dir(
+            &app.paths
+                .node_dir(task_id, run_id, expected_round_id, expected_node_id),
+            expected_attempt_id,
+        )?;
+        let fresh_profile = node_dsl
+            .profile()
+            .and_then(|name| resolve_profile_for_node(&resolved_profiles, name));
+        let fresh_node = create_node_state(
+            run_id,
+            expected_round_id,
+            expected_node_id,
+            &attempt_id,
+            node_dsl,
+            fresh_profile,
+        );
+        round.trace = canonical_trace;
+        round.trace.push(round_trace_step(
+            next_trace_sequence(&round),
+            expected_node_id,
+            &attempt_id,
+            Some(expected_node_id.to_string()),
+            Some("retry".to_string()),
+            now_rfc3339_like(),
+        ));
+        round.status = RunStatus::Running;
+        round.outcome = None;
+        run.current_attempt = Some(attempt_id.clone());
+        run.status = RunStatus::Running;
+        run.outcome = None;
+        run.pause_reason = None;
+        run.updated_at = now_rfc3339_like();
+        run.transition_current_execution(
+            RuntimeExecutionPhase::StartingNode,
+            run.updated_at.clone(),
+        )?;
+        validate_round_state(&round)?;
+        validate_run_state(&run)?;
+        crate::runtime::validate_node_state(&fresh_node)?;
+        persist_runtime_state(app, task_id, &run, &round, &fresh_node)?;
+        let accepted = accepted_retry_for_run(app, task_id, run)?;
+        (accepted, runtime_candidate, round, fresh_node)
+    };
+
+    if let Some(runtime_candidate) = runtime_candidate {
+        runtime_candidate.commit();
+    }
+
+    let ctx = ExecutionContext::for_run(task_id, &accepted.run.id)
+        .with_round(committed_round.id.clone())
+        .with_node(committed_node.node_id.clone())
+        .with_attempt(committed_node.attempt_id.clone());
     append_run_event_best_effort(
         &app.paths,
         task_id,
-        &run.id,
+        &accepted.run.id,
         "run_retry_requested",
-        run.updated_at.clone(),
+        accepted.run.updated_at.clone(),
         run_event_data(
             &ctx,
             Some(ProgressStage::Starting),
-            Some(run.status),
-            Some(summary),
+            Some(accepted.run.status),
+            Some("workflow.retry.accepted".to_string()),
             None,
         ),
     );
-    drive_from_node_with_runtime_candidate(
-        app,
-        task_id,
-        &validated,
-        &resolved_profiles,
-        &mut run,
-        &mut round,
-        fresh,
-        runtime_candidate,
-    )?;
-    Ok(run)
+
+    let background_app = app.clone_for_background();
+    let task_id_owned = task_id.to_string();
+    let validated_for_background = validated;
+    let profiles_for_background = resolved_profiles;
+    let mut fallback_run = accepted.run.clone();
+    let fallback_round = committed_round.clone();
+    let fallback_node = committed_node.clone();
+    let spawn_result = thread::Builder::new()
+        .name("gold-band-run-retry".to_string())
+        .spawn(move || {
+            let drive_result = catch_unwind(AssertUnwindSafe(|| {
+                prepare_run_worktree_background(
+                    &background_app,
+                    &task_id_owned,
+                    &mut fallback_run,
+                    &fallback_round,
+                    &fallback_node,
+                )
+                .and_then(|ready| {
+                    if !ready {
+                        return Ok(());
+                    }
+                    let mut drive_round = fallback_round.clone();
+                    drive_from_node_with_runtime_candidate(
+                        &background_app,
+                        &task_id_owned,
+                        &validated_for_background,
+                        &profiles_for_background,
+                        &mut fallback_run,
+                        &mut drive_round,
+                        fallback_node.clone(),
+                        None,
+                    )
+                })
+            }));
+            let error = match drive_result {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error),
+                Err(payload) => Some(anyhow!(
+                    "retry background drive panicked: {}",
+                    payload
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| payload.downcast_ref::<&'static str>().copied())
+                        .unwrap_or("<non-string panic payload>")
+                )),
+            };
+            if let Some(error) = error {
+                terminalize_background_drive_error(
+                    &background_app,
+                    &task_id_owned,
+                    &fallback_run,
+                    &fallback_round,
+                    &fallback_node,
+                    &error,
+                );
+            }
+        });
+    if let Err(error) = spawn_result {
+        let error: anyhow::Error = error.into();
+        terminalize_background_drive_error(
+            app,
+            task_id,
+            &accepted.run,
+            &committed_round,
+            &committed_node,
+            &error,
+        );
+        tracing::error!(
+            project_id = %app.paths.project_id,
+            task_id,
+            run_id,
+            error = %error,
+            "failed to start workflow retry background driver"
+        );
+    }
+    Ok(accepted)
 }
 
 fn round_trace_step(
@@ -4820,8 +5238,10 @@ fn apply_control_decision(
                     }
                 }
             }
-            let next_attempt_id =
-                next_attempt_id(&app.paths.node_dir(task_id, &run.id, &round.id, &node_id))?;
+            let (next_attempt_id, _attempt_dir) = reserve_next_attempt_dir(
+                &app.paths.node_dir(task_id, &run.id, &round.id, &node_id),
+                &node.attempt_id,
+            )?;
             let continue_ref = find_latest_worker_ref_for_transition(
                 app, task_id, &run.id, &round.id, node, &node_id, session,
             )?
@@ -16745,6 +17165,7 @@ fn drive_from_node_with_initial_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{CONVERSATION_METADATA_VERSION, ConversationMetadata};
     use crate::config::{ProviderDiagnosticSnapshot, RuntimeConfig};
     use crate::dsl::{AiDynamicAgentStrategy, DynamicControlDsl};
     use crate::provider::{
@@ -18656,6 +19077,94 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_retry_submission_returns_the_committed_successor_without_allocating_again() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_workflow_retry_fixture(&app, "attempt-002", PauseReason::RuntimeAbnormal);
+
+        let accepted = retry_current_node(
+            &app,
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-001",
+        )
+        .unwrap();
+
+        assert_eq!(accepted.locator.attempt_id, "attempt-002");
+        assert_eq!(accepted.run.current_attempt.as_deref(), Some("attempt-002"));
+        let expected_locator = RetryCurrentNodeLocator {
+            project_id: app.paths.project_id.clone(),
+            task_id: "task-retry".to_string(),
+            run_id: "run-retry".to_string(),
+            round_id: "round-retry".to_string(),
+            node_id: "worker".to_string(),
+            attempt_id: "attempt-002".to_string(),
+        };
+        assert_eq!(accepted.operation_id, retry_operation_id(&expected_locator));
+
+        let duplicate = retry_current_node(
+            &app,
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-001",
+        )
+        .unwrap();
+        assert_eq!(duplicate.operation_id, accepted.operation_id);
+        assert_eq!(duplicate.locator.attempt_id, "attempt-002");
+
+        let node_dir = app
+            .paths
+            .node_dir("task-retry", "run-retry", "round-retry", "worker");
+        let attempts = std::fs::read_dir(node_dir.as_std_path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let mut attempts = attempts;
+        attempts.sort();
+        assert_eq!(attempts, vec!["attempt-001", "attempt-002"]);
+    }
+
+    #[test]
+    fn retry_submission_reports_stale_locator_and_blocked_state_with_structured_errors() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_workflow_retry_fixture(&app, "attempt-001", PauseReason::RuntimeAbnormal);
+
+        let stale = retry_current_node(
+            &app,
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-002",
+        )
+        .unwrap_err();
+        let stale_info = normalize_runtime_error(&stale);
+        assert_eq!(stale_info.code_str(), "workflow.retry.stale-locator");
+        assert_eq!(stale_info.params["currentAttemptId"], "attempt-001");
+
+        write_workflow_retry_fixture(&app, "attempt-001", PauseReason::ErrorBlocked);
+        let blocked = retry_current_node(
+            &app,
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-001",
+        )
+        .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&blocked).code_str(),
+            "workflow.retry.error-blocked"
+        );
+    }
+
+    #[test]
     fn stale_background_drive_error_does_not_override_a_newer_execution() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -19681,6 +20190,118 @@ mod tests {
             uuid: None,
         };
         persist_runtime_state(app, "task-006", &run, &round, &node).unwrap();
+    }
+
+    fn write_workflow_retry_fixture(
+        app: &App,
+        current_attempt_id: &str,
+        pause_reason: PauseReason,
+    ) {
+        let now = "2026-11-09T00:00:00Z".to_string();
+        let mut run = RunState {
+            version: VERSION.to_string(),
+            id: "run-retry".to_string(),
+            task_id: "task-retry".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: now.clone(),
+            updated_at: now.clone(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-retry".to_string()),
+            current_node: Some("worker".to_string()),
+            current_attempt: Some(current_attempt_id.to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(pause_reason),
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: RuntimeExecutionState::default(),
+        };
+        run.execution.phase = RuntimeExecutionPhase::Paused;
+        let mut round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-retry".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: now.clone(),
+            trace: vec![
+                round_trace_step(1, "worker", "attempt-001", None, None, now.clone()),
+                round_trace_step(
+                    2,
+                    "worker",
+                    "attempt-002",
+                    Some("worker".to_string()),
+                    Some("retry".to_string()),
+                    now.clone(),
+                ),
+            ],
+            uuid: None,
+        };
+        if current_attempt_id == "attempt-001" {
+            round.trace.truncate(1);
+        }
+        let mut attempts = Vec::new();
+        for (sequence, attempt_id) in [(1, "attempt-001"), (2, "attempt-002")] {
+            if current_attempt_id == "attempt-001" && sequence == 2 {
+                break;
+            }
+            attempts.push(NodeState {
+                version: VERSION.to_string(),
+                acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: "worker".to_string(),
+                node_type: crate::domain::NodeType::Worker,
+                run_id: run.id.clone(),
+                round_id: round.id.clone(),
+                attempt_id: attempt_id.to_string(),
+                status: RunStatus::Paused,
+                outcome: None,
+                started_at: now.clone(),
+                finished_at: Some(now.clone()),
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: Default::default(),
+                uuid: None,
+            });
+        }
+        persist_runtime_state(app, "task-retry", &run, &round, &attempts[0]).unwrap();
+        if let Some(second) = attempts.get(1) {
+            write_node_state(
+                &app.paths.node_file(
+                    "task-retry",
+                    &run.id,
+                    &round.id,
+                    &second.node_id,
+                    &second.attempt_id,
+                ),
+                second,
+            )
+            .unwrap();
+        }
+        let metadata = ConversationMetadata {
+            resident: false,
+            version: CONVERSATION_METADATA_VERSION.to_string(),
+            source: "desktop".to_string(),
+            run_mode: "workflow".to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: None,
+            agent_identity: None,
+            title_auto_generated: true,
+            initial_attachment_names: None,
+            initial_workspace_files: Vec::new(),
+            created_at: now,
+            last_activity_at: None,
+            work_location: Default::default(),
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+        };
+        let metadata_dir = app.paths.task_dir("task-retry").join("authoring");
+        std::fs::create_dir_all(metadata_dir.as_std_path()).unwrap();
+        write_json(&metadata_dir.join("conversation.json"), &metadata).unwrap();
     }
 
     fn test_workspace(repo_root: Utf8PathBuf) -> WorkspaceState {

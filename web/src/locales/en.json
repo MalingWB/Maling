@@ -1090,6 +1090,16 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "The Workflow is running, so the current node cannot be retried.",
+        "run-terminal": "The Workflow has ended, so the current node cannot be retried.",
+        "node-not-retryable": "The current node cannot be retried in its current state.",
+        "error-blocked": "The Workflow is blocked by an error, so the current node cannot be retried.",
+        "manual-check-pending": "The current node is waiting for manual confirmation and cannot be retried.",
+        "unsupported-node": "This node type does not support retry.",
+        "stale-locator": "The current node has changed. Continue from the latest state.",
+        "workflow-invalid": "The Workflow configuration or runtime environment is invalid, so the current node cannot be retried."
+      },
       "agent-doctor-failed": "Agent {{agentType}} has not passed doctor.",
       "agent-doctor-required": "Agent {{agentType}} must pass doctor first.",
       "permission-mode-unsupported": "Agent {{agentType}} does not support permission mode {{permissionMode}}.",
@@ -2548,7 +2558,7 @@
     "viewSession": "View session",
     "viewLog": "View log",
     "copyNodeId": "Copy node id",
-    "retryFromNode": "Retry from this node",
+    "retryCurrentNode": "Retry current node",
     "layoutPending": "Arranging workflow graph",
     "layoutFailed": "Couldn’t arrange the workflow graph"
   },

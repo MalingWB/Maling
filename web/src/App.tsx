@@ -35,6 +35,7 @@ import {
   pinConversation,
   setConversationResident,
   rerunConversationTask,
+  retryCurrentNode,
   removeRecentWorkspace,
   saveDesktopPreferences,
   saveInterfaceZoomPercent,
@@ -276,6 +277,7 @@ import type {
   ConversationSessionLeafVm,
   ConversationSessionTreeVm,
   ConversationTreeNodeVm,
+  GraphNodeVm,
   WorkflowTemplateStore,
   ConversationSidebarBootstrapVm,
   ConversationSidebarVm,
@@ -471,6 +473,12 @@ function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
 /** Shell callbacks App keeps identity-stable across renders. */
 type ShellCommands = Required<Pick<ShellProps, 'onSelect' | 'onSelectConversation' | 'onToggleSidebar' | 'onOpenPersonalAnalytics' | 'onOpenReleaseNotes' | 'onChooseWorkspace' | 'onConversationNew' | 'onConversationSearch' | 'onConversationRetrySidebar' | 'onConversationRequestWorkspaceTasks' | 'onConversationRequestPinnedTasks' | 'onConversationRequestRecentTasks' | 'onConversationRequestTaskRuns' | 'onConversationPauseRun' | 'onConversationRenameTask' | 'onConversationDeleteTask' | 'onConversationSetResident' | 'onConversationPinTask' | 'onConversationUnpinTask' | 'onConversationNewInWorkspace' | 'onConversationAddWorkspace' | 'onConversationRemoveWorkspace'>>;
 
+function commandErrorCode(error: unknown) {
+  return typeof error === 'object' && error !== null && typeof (error as { code?: unknown }).code === 'string'
+    ? (error as { code: string }).code
+    : null;
+}
+
 export function App() {
   const { t } = useTranslation();
   const initialRoute = routeFromPath(window.location.pathname);
@@ -537,6 +545,7 @@ export function App() {
     };
   }, []);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
+  const conversationNodeRetryInFlightRef = useRef<Set<string>>(new Set());
   const scheduledTriggerOpenRef = useRef<(payload: ScheduledTriggerPayloadVm) => void>(() => {});
 
   const conversationNavigationRequestRef = useRef(0);
@@ -610,6 +619,64 @@ export function App() {
       return merged;
     });
   }, [conversationRunCache]);
+
+  const handleConversationNodeRetry = useCallback(async (node: GraphNodeVm) => {
+    const currentPage = conversationPageRef.current;
+    const currentRun = conversationRunRef.current;
+    if (currentPage.kind !== 'conversation-run' || !currentRun || !conversationPageMatchesRun(currentPage, currentRun)) return;
+    if (!node.retryable || !node.roundId || !node.nodeId || !node.attemptId) return;
+    const request = {
+      projectId: currentRun.projectId,
+      taskId: currentRun.taskId,
+      runId: currentRun.runId,
+      expectedRoundId: node.roundId,
+      expectedNodeId: node.nodeId,
+      expectedAttemptId: node.attemptId,
+    };
+    const requestKey = JSON.stringify(request);
+    if (conversationNodeRetryInFlightRef.current.has(requestKey)) return;
+    conversationNodeRetryInFlightRef.current.add(requestKey);
+
+    const refreshRun = async () => {
+      const page = conversationPageRef.current;
+      const run = conversationRunRef.current;
+      if (page.kind !== 'conversation-run' || !run || !conversationPageMatchesRun(page, run)) return;
+      const refreshed = await getConversationRun(
+        page.projectId,
+        page.taskId,
+        page.runId,
+        conversationSelectedSessionKeyRef.current,
+      );
+      const pageAfterRefresh = conversationPageRef.current;
+      if (
+        pageAfterRefresh.kind !== 'conversation-run'
+        || pageAfterRefresh.projectId !== page.projectId
+        || pageAfterRefresh.taskId !== page.taskId
+        || pageAfterRefresh.runId !== page.runId
+      ) return;
+      applyConversationRunSnapshot(refreshed, 'node-retry', {
+        selectedSessionKey: conversationSelectedSessionKeyRef.current,
+        preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
+      });
+    };
+
+    try {
+      await retryCurrentNode(request);
+      await refreshRun();
+    } catch (error) {
+      if (commandErrorCode(error) === 'workflow.retry.stale-locator') {
+        try {
+          await refreshRun();
+        } catch (refreshError) {
+          setError(displayAppError(t, refreshError));
+        }
+      } else {
+        setError(displayAppError(t, error));
+      }
+    } finally {
+      conversationNodeRetryInFlightRef.current.delete(requestKey);
+    }
+  }, [applyConversationRunSnapshot, t]);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const activeWorkspaceIdRef = useRef<string | null>(null);
@@ -3147,6 +3214,7 @@ export function App() {
           onEditWorkflow={() => {}}
           workflowTemplates={conversationWorkflowTemplates}
           onWorkflowTemplatesChange={setConversationWorkflowTemplates}
+          onNodeRetry={handleConversationNodeRetry}
           onExecutionPlanSaved={async () => {
             const refreshed = await getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId);
             applyConversationRunSnapshot(refreshed, 'workflow-save', {

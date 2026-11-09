@@ -34,6 +34,7 @@ use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::provider::{PromptWorkspaceFileRef, conversation_prompt_has_payload};
 use gold_band::runtime::{
     RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState,
+    canonical_trace_for_round,
 };
 use gold_band::runtime_error::RuntimeErrorInfo;
 use gold_band::storage::{read_json, write_json};
@@ -3586,10 +3587,11 @@ fn conversation_session_successors_from_state(
     workflow: Option<&WorkflowDsl>,
 ) -> anyhow::Result<HashMap<ConversationSessionLocator, ConversationSessionTargetVm>> {
     let mut direct = HashMap::<ConversationSessionLocator, ConversationSessionLocator>::new();
+    let run = app.run_status(task_id, run_id)?;
 
     if let Some(workflow) = workflow {
         for round in rounds {
-            let mut trace = round.trace.clone();
+            let mut trace = canonical_trace_for_round(&run, rounds, round)?;
             trace.sort_by_key(|step| step.sequence);
             let mut latest_by_node = HashMap::<String, ConversationSessionLocator>::new();
             for step in trace {
@@ -3854,6 +3856,12 @@ pub fn conversation_run_vm(
         .unwrap_or_default();
 
     let rounds = app.round_list(task_id, run_id)?;
+    let current_round = rounds
+        .iter()
+        .find(|round| run.current_round.as_deref() == Some(round.id.as_str()));
+    if is_orchestrated && current_round.is_none() {
+        return Err(anyhow::anyhow!("runtime.current-round-missing"));
+    }
     let session_successors = if is_orchestrated {
         conversation_session_successors_from_state(
             app,
@@ -3872,11 +3880,20 @@ pub fn conversation_run_vm(
     let runtime_resumable = is_run_continuable(&run);
 
     for round in &rounds {
+        if current_round
+            .is_some_and(|current| round.id != current.id && round.index > current.index)
+        {
+            continue;
+        }
         // List all nodes for this round (latest attempt per node)
         let mut nodes = app.node_list(task_id, run_id, &round.id)?;
         let trace_node_order: HashMap<String, usize> = {
             let mut order = HashMap::new();
-            let mut trace = round.trace.clone();
+            let mut trace = if is_orchestrated {
+                canonical_trace_for_round(&run, &rounds, round)?
+            } else {
+                round.trace.clone()
+            };
             trace.sort_by_key(|step| step.sequence);
             for (index, step) in trace.iter().enumerate() {
                 order.entry(step.node_id.clone()).or_insert(index);

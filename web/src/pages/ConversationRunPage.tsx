@@ -83,6 +83,7 @@ interface ConversationRunPageProps {
   workflowTemplates?: WorkflowTemplateStore | null;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
   onExecutionPlanSaved?: (saved: ExecutionPlanSaveResultVm) => void | Promise<void>;
+  onNodeRetry?: (node: GraphNodeVm) => void | Promise<void>;
   onSelectSession: (leaf: ConversationSessionLocator, followActive?: boolean) => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;
@@ -105,6 +106,7 @@ export function ConversationRunPage({
   workflowTemplates = null,
   onWorkflowTemplatesChange,
   onExecutionPlanSaved,
+  onNodeRetry,
   onSelectSession,
   onLifecycleSnapshot,
   onAutoFollowChange,
@@ -256,17 +258,22 @@ export function ConversationRunPage({
   const workflowTemplatesRef = useRef(workflowTemplates);
   const onWorkflowTemplatesChangeRef = useRef(onWorkflowTemplatesChange);
   const handleWorkflowNodeOpenSessionRef = useRef(handleWorkflowNodeOpenSession);
+  const onNodeRetryRef = useRef(onNodeRetry);
   runRef.current = run;
   agentRegistryRef.current = agentRegistry;
   onExecutionPlanSavedRef.current = onExecutionPlanSaved;
   workflowTemplatesRef.current = workflowTemplates;
   onWorkflowTemplatesChangeRef.current = onWorkflowTemplatesChange;
   handleWorkflowNodeOpenSessionRef.current = handleWorkflowNodeOpenSession;
+  onNodeRetryRef.current = onNodeRetry;
   const onExecutionPlanSavedStable = useCallback((saved: ExecutionPlanSaveResultVm) => {
     return onExecutionPlanSavedRef.current?.(saved);
   }, []);
   const onNodeOpenSessionStable = useCallback((node: GraphNodeVm) => {
     handleWorkflowNodeOpenSessionRef.current(node);
+  }, []);
+  const onNodeRetryStable = useCallback((node: GraphNodeVm) => {
+    return onNodeRetryRef.current?.(node);
   }, []);
 
   const renderWorkspaceResource = useCallback((resource: RightWorkspaceResource) => {
@@ -289,9 +296,10 @@ export function ConversationRunPage({
         onWorkflowTemplatesChange={(store) => onWorkflowTemplatesChangeRef.current?.(store)}
         onExecutionPlanSaved={onExecutionPlanSavedStable}
         onNodeOpenSession={onNodeOpenSessionStable}
+        onNodeRetry={onNodeRetryStable}
       />
     );
-  }, [onExecutionPlanSavedStable, onNodeOpenSessionStable]);
+  }, [onExecutionPlanSavedStable, onNodeOpenSessionStable, onNodeRetryStable]);
 
   useEffect(() => {
     const unregister = [

@@ -1090,6 +1090,16 @@
       }
     },
     "workflow": {
+      "retry": {
+        "run-active": "工作流正在运行，不能重试当前节点。",
+        "run-terminal": "工作流已结束，不能重试当前节点。",
+        "node-not-retryable": "当前节点当前状态不能重试。",
+        "error-blocked": "工作流已被错误阻塞，不能重试当前节点。",
+        "manual-check-pending": "当前节点正在等待人工确认，不能重试。",
+        "unsupported-node": "当前节点类型不支持重试。",
+        "stale-locator": "当前节点已变化，请按最新状态操作。",
+        "workflow-invalid": "工作流配置或运行环境无效，无法重试当前节点。"
+      },
       "agent-doctor-failed": "Agent {{agentType}} 未通过 doctor。",
       "agent-doctor-required": "Agent {{agentType}} 需要先通过 doctor。",
       "permission-mode-unsupported": "Agent {{agentType}} 不支持权限模式 {{permissionMode}}。",
@@ -2543,7 +2553,7 @@
     "viewSession": "查看会话",
     "viewLog": "查看日志",
     "copyNodeId": "复制 node id",
-    "retryFromNode": "从该节点重试",
+    "retryCurrentNode": "重试当前节点",
     "layoutPending": "正在排布工作流图",
     "layoutFailed": "工作流图排布失败"
   },

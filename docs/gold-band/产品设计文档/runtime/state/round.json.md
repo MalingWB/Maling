@@ -84,7 +84,7 @@
 
 ### `trace`
 - 类型：array
-- 含义：当前 round 真实进入过的 node/attempt 序列，用于 Round 详情页展示实际执行路径。
+- 含义：当前 round 按提交顺序进入过的 node/attempt 序列，用于控制上下文与 Round 详情页展示实际执行路径；当前位置转移仍以 `run.json.currentRound/currentNode/currentAttempt` 为唯一 commit marker，同 locator 内部状态更新使用各自的 lifecycle/revision 契约。
 
 每个 trace step 包含：
 - `sequence`：本 round 内的递增序号，从 1 开始。
@@ -94,7 +94,15 @@
 - `edgeOutcome`：触发转移的 outcome，如 `success | failure | retry | null`；schema 输出不合法的隐藏修复不新增 trace step。
 - `enteredAt`：进入该 node/attempt 的时间。
 
-兼容规则：旧 `round.json` 可以缺少 `trace`，runtime 反序列化时按空数组处理；桌面端旧数据 fallback 会按 node state 的 `startedAt/attemptId` 推断路径。
+canonical 读取规则：
+
+- 共享 helper 必须同时接收 run、当前 round 和目标 round：目标为 `run.currentRound` 时，执行、恢复、Graph VM、历史投影、attempt 计数和 retry 幂等判断只消费截断到 `run.current*` 唯一匹配 step 的 trace（包含该 step）。
+- 目标 round 的 `index` 严格小于当前 round 时，必须为 `completed` 并消费完整已校验 trace，否则是损坏状态；目标 round 的 `index` 更大时，将其视为未提交/孤立状态并忽略；相同 `index` 却不是 `run.currentRound` 时，判定为 identity 冲突。
+- `node -> round -> run` 多文件提交在 round 已写、run 未写时可能留下未提交尾部；该尾部不得驱动执行、显示为 running 或进入 predecessor 上下文，下一次同 round 写入必须先丢弃该尾部。
+- current step 缺失、重复，或 sequence 非严格递增时属于损坏状态；不得使用目录最大 attempt、最后一个 trace step 或显示顺序猜测 current。
+- 当前节点 retry 在 canonical 前缀后追加同 node 的新 step，`edgeOutcome=retry`；相邻的 expected step 与 retry step 可用于识别同一请求的幂等重投。
+
+兼容规则：旧 `round.json` 可以缺少 `trace`，runtime 反序列化时按空数组处理；桌面端旧数据 fallback 只允许用于只读历史展示，不能授权 retry、continue、恢复或其他写操作。
 
 ---
 
@@ -106,7 +114,10 @@
 - `status` 不在合法枚举内
 - `outcome` 不在合法枚举内且不为 null
 - `trigger` 不在合法枚举内
-- `trace` 中任一 step 的 `sequence` 不是正整数，或 `nodeId` / `attemptId` 为空
+- `trace` 中任一 step 的 `sequence` 不是正整数、sequence 非严格递增、locator 重复，或 `nodeId` / `attemptId` 为空
+- `round.id = run.currentRound` 时，trace 不包含唯一匹配的 `run.current*` step
+- 早于当前 round 的历史 round 状态不是 `completed`
+- 非当前 round 与当前 round 的 `index` 相同
 - `status = running` 但 `outcome != null`
 - `status = paused` 但 `outcome != null`
 - `status = completed` 但 `outcome = null`

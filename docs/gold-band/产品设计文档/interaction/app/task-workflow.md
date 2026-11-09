@@ -251,7 +251,32 @@ Round 详情页的实际工作图是运行排障的主入口。用户单击节�
 - AI-DYNAMIC 内部控制协议产物 `dynamic-node-completion` 也作为产物展示；runtime 必须只在 provider 已返回完整且合法的 artifact 内容后落盘该文件，不允许用 0 字节占位文件、停止前最后一句普通 assistant 文本或非法 JSON 触发产物数量和弹窗入口。
 - 点击 artifact 或 attachment 后打开二级抽屉展示完整内容；二级抽屉左上提供返回按钮，返回上一级节点详情。
 
-右键菜单只作为低频快捷入口，保留查看详情、查看会话、查看日志、复制 node id、从该节点重跑；核心浏览路径必须通过单击节点完成。
+#### 7.1.1 当前节点重试契约
+
+> 详细实施设计见[工作流当前节点重试设计方案](../../../开发计划/生命周期整理/工作流当前节点重试设计方案.md)。
+
+右键菜单只作为低频快捷入口，保留查看详情、查看会话、查看日志、复制 node id；当前失败的外层普通 Workflow 节点额外提供“重试当前节点”。核心浏览路径必须通过单击节点完成，历史节点不显示“从该节点重跑”入口。
+
+当前节点重试使用 canonical run 的 `current_round/current_node/current_attempt` 作为唯一执行位置，在同 round、同 node 下创建新 attempt。旧 attempt、旧产物、旧 ACP session 与日志全部保留；新 attempt 使用新 ACP session 和新产物目录。该操作不回滚下游节点，只允许用于尚未成功推进的当前节点。
+
+可用条件：
+
+- 节点是当前 canonical 外层普通 Workflow 节点，且存在稳定 attempt locator；当前 Run 尚未进入终态。
+- 当前 Run 必须为 `Paused + RuntimeAbnormal`，且当前 node 为 `Paused + outcome=null`、没有仍在推进的 runtime execution。`ErrorBlocked` 第一阶段一律不得用重试绕过；修复 workflow、profile、Agent、Git、DSL、continuation identity 或 runtime invariant 后创建 successor/new run。
+- 当前 attempt 没有 `manual_check_pending`；人工检查必须先被显式处理，不能用重试绕过。
+- 运行时 workflow snapshot、Agent、profile 与 Git/worktree 能力校验通过。
+- `Completed + Success/Failure` 均不提供当前节点重试；已完成 Run 需要使用 successor run / handoff 能力。
+- `Paused + RuntimeAbnormal` 但当前 node 已 `Completed + Success` 时使用既有 `recover-completed-attempt`，不创建新 attempt。
+
+命令契约使用 `retry_current_node(projectId, taskId, runId, expectedRoundId, expectedNodeId, expectedAttemptId)`。`expected` locator 是 durable CAS 条件：后端在旧 attempt 锁内重读权威状态，三者完全匹配才允许创建新 attempt；进程内锁只负责同一桌面 runtime instance 的临界区串行化，不能冒充跨进程 CAS。若 current attempt 已是 expected attempt 在 canonical trace 中的直接 retry successor，则把请求视为首次提交的幂等重投，返回同一 `operationId + locator` 与当前最新 Run 摘要；其他不匹配返回 `workflow.retry.stale-locator`，前端刷新最新 run，不得自动再次提交。终态 Run 和 ErrorBlocked 分别返回 `workflow.retry.run-terminal`、`workflow.retry.error-blocked`。重复点击、并发请求和响应丢失后的同一请求最多创建一个新 attempt。
+
+状态提交顺序沿用 node -> round -> run：锁内先按旧 current locator 截断 `round.trace` 为 canonical 前缀，再分配下一个 attempt、创建 fresh node state、更新 current pointer、清理暂停原因并追加 retry step。`run.current_round/current_node/current_attempt` 是本次当前位置转移和新 trace step 的 durable commit marker，不是同 locator 状态更新的通用 revision；当前 round 的图、历史、恢复和执行上下文都按该 locator 截断 trace，已完成的更早 round 则使用完整已校验 trace。不能从当前 trace 尾部猜测 attempt。只有 run 文件成功原子替换并指向新 locator 后才算 accepted。
+
+新 attempt ID 通过共享目录预留 helper 原子创建：从 current attempt 的下一编号开始，已存在则递增重试，允许崩溃遗留目录造成编号空洞；不得依赖“扫描最大编号后再创建”的竞态窗口。该手动重试不改变 Workflow Control 中 `max_attempts` 仅统计 failure 修复跳转的既有语义。
+
+命令返回 `RetryCurrentNodeAcceptedVm`：包含最新 Run summary、新 attempt 完整 locator 和稳定 `operationId`；幂等重投保持 `operationId + locator` 不变，Run summary 取重投时的最新权威状态。accepted 不表示后台已完成。后续执行交由后台驱动和既有 runtime candidate / interrupted 恢复语义；后台 spawn 失败必须只做一次 terminalize，不能留下永久 running 或返回第二个 accepted。结构化错误码集中管理，后端只返回 code 与 params，不生成对客文案。
+
+前端运行图投影为每个节点提供 `retryable` 布尔值，由后端从同一纯生命周期 readiness 规则派生；`retryable=true` 只表示生命周期允许发起操作，不预先执行 Agent、profile、模型或 Git/worktree 的 executable preflight。只有 `retryable` 的当前节点显示可点击的“重试当前节点”；不可重试节点不显示该菜单项。点击后菜单关闭，节点显示目标级 pending 指示但不伪造 running 生命周期；请求 pending 按完整 locator 去重，成功后立即刷新当前 conversation run，后续交给既有 live event 收敛。
 
 ### 7.2 会话页
 

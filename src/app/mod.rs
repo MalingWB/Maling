@@ -26,7 +26,7 @@ pub use self::notification::{
     direct_conversation_agent_label, make_completion_dedup_key, make_dedup_key,
     make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
 };
-pub use self::orchestrator::{AcceptedRun, PreparedRun};
+pub use self::orchestrator::{AcceptedRun, PreparedRun, RetryCurrentNodeAccepted};
 pub use self::runtime_recovery::{
     RuntimeCandidateRegistration, RuntimeRecoveryCoordinator, RuntimeRecoveryError,
 };
@@ -99,12 +99,12 @@ use self::orchestrator::{
     prepare_run_in_worktree_at as orchestrator_prepare_run_in_worktree_at,
     prepare_run_with_authoring as orchestrator_prepare_run_with_authoring,
     reserve_manual_check_submission as orchestrator_reserve_manual_check_submission,
+    retry_current_node as orchestrator_retry_current_node,
     run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
     run_continue_with_prompt_input as orchestrator_run_continue_with_prompt_input,
     run_recover_completed_background as orchestrator_run_recover_completed_background,
-    run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
-    run_start_background as orchestrator_run_start_background,
+    run_start as orchestrator_run_start, run_start_background as orchestrator_run_start_background,
     submit_manual_check as orchestrator_submit_manual_check,
     submit_manual_check_background as orchestrator_submit_manual_check_background,
     validate_manual_check_submission as orchestrator_validate_manual_check_submission,
@@ -6413,8 +6413,22 @@ impl App {
         )
     }
 
-    pub fn run_retry(&self, task_id: &str, run_id: &str) -> Result<RunState> {
-        orchestrator_run_retry(self, task_id, run_id)
+    pub fn retry_current_node(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        expected_round_id: &str,
+        expected_node_id: &str,
+        expected_attempt_id: &str,
+    ) -> Result<RetryCurrentNodeAccepted> {
+        orchestrator_retry_current_node(
+            self,
+            task_id,
+            run_id,
+            expected_round_id,
+            expected_node_id,
+            expected_attempt_id,
+        )
     }
 
     pub fn run_start(
