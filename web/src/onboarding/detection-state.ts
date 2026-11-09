@@ -57,7 +57,7 @@ export function setupDetectionReducer(state: SetupDetectionState, action: Action
         return setupDetectionReducer(current, report ? { type: 'runtime-blocked', report } : { type: 'detection-failed' });
       }
       if (event.type === 'checking') return { ...current, pending: { ...state.pending, [event.agentId]: event.label } };
-      if (event.type === 'finished') return { ...current, phase: 'completed', nextCursor: event.nextCursor };
+      if (event.type === 'finished') return { ...current, phase: 'completed', pending: {}, nextCursor: event.nextCursor };
       const id = event.type === 'ready' ? event.agent.agentType : event.agentId;
       const pending = { ...state.pending }; delete pending[id];
       const agents = { ...state.agents };
