@@ -323,6 +323,30 @@ pub fn skip_setup_git(state: State<'_, DesktopState>) -> CommandResult<()> {
         .map_err(command_error)
 }
 
+#[tauri::command]
+pub async fn defer_setup(handle: AppHandle) -> CommandResult<()> {
+    // Configuration writes and runtime startup touch disk; keep them off the IPC thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<DesktopState>();
+        // Deferring is only valid after the current environment report has passed.
+        // Reuse the same controller boundary as apply so npm cannot be bypassed.
+        handle
+            .state::<SetupController>()
+            .checked_environment()
+            .map_err(command_error)?;
+        let app = state.app().map_err(command_error)?;
+        let settings =
+            gold_band::onboarding::initialization::defer(&app.paths).map_err(command_error)?;
+        state
+            .update_settings_config(&settings)
+            .map_err(command_error)?;
+        crate::start_business_runtime(handle);
+        Ok(())
+    })
+    .await
+    .map_err(|error| command_error(error.into()))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

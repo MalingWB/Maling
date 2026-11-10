@@ -2,18 +2,32 @@ export type Language = 'zh' | 'en';
 export type Page = 'home' | 'documentation' | 'demo' | 'not-found';
 export const CHAPTER_IDS = ['before', 'during', 'after', 'personalize'] as const;
 export type ChapterId = typeof CHAPTER_IDS[number];
-export const GITHUB = 'https://github.com/diodeme/Gold-Band';
+export const GITHUB = 'https://github.com/MalingWB/Maling';
 export const DESKTOP_QUERY = '(min-width: 1024px)';
 export const CAPTURE = { width: 1440, height: 880, minimum: 560 };
 
-export function parseRoute(path: string, fallback: Language = 'zh'): { language: Language; page: Page } {
+export type SiteRoute = { language: Language; page: Page; docId: string | null };
+
+export function parseRoute(path: string, fallback: Language = 'zh'): SiteRoute {
   const parts = path.split('/').filter(Boolean);
   const language = parts[0] === 'en' ? 'en' : parts[0] === 'zh' ? 'zh' : fallback;
   if (parts[0] === 'en' || parts[0] === 'zh') parts.shift();
-  const page = parts.length === 0 ? 'home' : parts.length === 1 && (parts[0] === 'documentation' || parts[0] === 'demo') ? parts[0] : 'not-found';
-  return { language, page };
+  let page: Page = 'not-found';
+  let docId: string | null = null;
+  if (parts.length === 0) page = 'home';
+  else if (parts[0] === 'demo' && parts.length === 1) page = 'demo';
+  else if (parts[0] === 'documentation') {
+    page = 'documentation';
+    try { docId = parts.length > 1 ? parts.slice(1).map(part => decodeURIComponent(part)).join('/').split(/[?#]/)[0] : null; }
+    catch { docId = parts.slice(1).join('/'); }
+  }
+  return { language, page, docId };
 }
-export function pageHref(language: Language, page: Page, base = '/') {
+export function pageHref(language: Language, page: Page, base = '/', docId: string | null = null) {
+  if (page === 'documentation' && docId) {
+    const encodedDocId = docId.split('/').map(segment => encodeURIComponent(segment)).join('/');
+    return `${base}${language}/documentation/${encodedDocId}`;
+  }
   return `${base}${language}/${page === 'home' ? '' : page === 'not-found' ? '404' : page}`;
 }
 export const SCENE_DIRECTORIES = { before: 'before', during: 'workflow', after: 'after', personalize: 'personalize' } as const;
@@ -23,15 +37,24 @@ export function posterPath(base: string, language: Language, chapter: ChapterId,
 }
 export const copy = {
   zh: {
-    nav: ['首页', '文档', 'Demo'], download: '下载 Gold Band', source: '源代码',
+    nav: ['首页', '文档', 'Demo'], download: '下载 MALING', source: '源代码',
     tagline: '你的 Agent，你的工作方式。', intro: '把 AI 对话、工作流和代码审阅，放进同一个桌面工作区。',
     kicker: '开源 · 本地优先 · ACP', story: '从一个想法，到一次交付。',
     foot: '在自己的桌面，掌握每一步。', footText: '连接你选择的 Agent，让对话与工程流程一起工作。',
     play: '播放演示', loading: '正在加载演示', retry: '重新加载', error: '演示暂时无法加载',
     interactive: '亲手试试', recording: '观看演示', preview: '交互预览', resize: '调整预览宽度',
     dark: '深色', light: '浅色', system: '跟随系统', appearance: '外观', openDemo: '打开 Demo', font: '字体', defaultFont: '默认', monoFont: '等宽', reset: '重置预览',
-    homeTitle: '敬请期待', homeText: '产品页面正在准备。可以先打开 Demo。',
-    placeholder: '正在准备中', docsText: '文档正在整理，当前可在 GitHub 查看安装与使用说明。', demoText: '更多示例正在准备中。可以打开 Demo 查看会话。',
+    demoText: '更多示例正在准备中。可以打开 Demo 查看会话。',
+    downloadMenu: { inline: '行内', external: '行外', mac: 'Mac', windows: 'Windows x64', linux: 'Linux x64', github: 'GitHub Releases' },
+    docs: {
+      overview: '知识库总览',
+      sections: { product: '产品', practice: '实践指南', reference: '参考手册' },
+      loading: '正在加载文档',
+      retry: '重试',
+      notFound: '文档不存在',
+      error: '文档暂时无法加载',
+      languageNotice: '',
+    },
     back: '返回首页', missing: '页面不存在',
     chapters: [
       { id: 'before', eyebrow: '会话前', title: '配置你的 Harness。', body: '选择 Agent，组合角色与 Skill，让 Direct、Workflow 或 AUTO 适合这次任务。', points: ['Agent、角色与 Skill', '多 Agent 管理与同步', 'Direct / Workflow / AUTO'] },
@@ -41,15 +64,24 @@ export const copy = {
     ],
   },
   en: {
-    nav: ['Home', 'Documentation', 'Demo'], download: 'Download Gold Band', source: 'Source code',
+    nav: ['Home', 'Documentation', 'Demo'], download: 'Download MALING', source: 'Source code',
     tagline: 'Your agents. Your way of working.', intro: 'AI conversations, workflows and code review, together in one desktop workspace.',
     kicker: 'Open source · Local first · ACP', story: 'From an idea to a delivery.',
     foot: 'Make every step your own.', footText: 'Connect your agent of choice. Bring conversation and engineering together.',
     play: 'Play demo', loading: 'Loading demo', retry: 'Retry', error: 'Demo could not be loaded',
     interactive: 'Try it yourself', recording: 'Watch demo', preview: 'Interactive preview', resize: 'Resize preview',
     dark: 'Dark', light: 'Light', system: 'System', appearance: 'Appearance', openDemo: 'Open Demo', font: 'Font', defaultFont: 'Default', monoFont: 'Monospace', reset: 'Reset preview',
-    homeTitle: 'Coming soon', homeText: 'The product pages are being prepared. The demo is available now.',
-    placeholder: 'Coming soon', docsText: 'Documentation is being prepared. Installation and usage instructions are available on GitHub.', demoText: 'More examples are on the way. Open the demo to look at a session.',
+    demoText: 'More examples are on the way. Open the demo to look at a session.',
+    downloadMenu: { inline: 'Inline', external: 'External', mac: 'Mac', windows: 'Windows x64', linux: 'Linux x64', github: 'GitHub Releases' },
+    docs: {
+      overview: 'Overview',
+      sections: { product: 'Product', practice: 'Practice', reference: 'Reference' },
+      loading: 'Loading documentation',
+      retry: 'Retry',
+      notFound: 'Document not found',
+      error: 'Documentation could not be loaded',
+      languageNotice: 'Documentation is currently available in Simplified Chinese.',
+    },
     back: 'Back to home', missing: 'Page not found',
     chapters: [
       { id: 'before', eyebrow: 'Before the session', title: 'Configure your harness.', body: 'Choose an agent, combine roles and skills, and use Direct, Workflow or AUTO for the task.', points: ['Agents, roles and skills', 'Multi-agent management and sync', 'Direct / Workflow / AUTO'] },

@@ -110,7 +110,7 @@ describe('public demo runtime', () => {
     const api = createDemoApi();
     const servers = await api.listMcpServers();
     expect(servers.map((server) => server.transport)).toEqual(['stdio', 'http', 'sse']);
-    expect(servers[0]).toMatchObject({ id: 'gold-band-memory', managed: true, args: ['--gold-band-memory-mcp'] });
+    expect(servers[0]).toMatchObject({ id: 'gold-band-memory', managed: true, args: ['--maling-memory-mcp'] });
     const agents = (await api.getAgentRegistry()).agents.filter((agent) => agent.mcpHttpSupported != null);
     expect(agents.map((agent) => agent.agentType)).toEqual(['claude-acp', 'codex-acp']);
     for (const agent of agents) {

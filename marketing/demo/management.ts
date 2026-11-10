@@ -2,7 +2,7 @@ import type { RuntimeApi } from '@/api/client';
 import type { DesktopLanguage, RemoteTaskVm, ScheduledOccurrenceVm, ScheduledTaskVm } from '@/types';
 import { DEMO_PROJECT_ID, DEMO_RUN_ID } from './fixtures';
 
-const workspace = { id: 'demo-team', name: 'Gold Band', slug: 'gold-band', provider: 'multica' };
+const workspace = { id: 'demo-team', name: 'MALING', slug: 'maling', provider: 'multica' };
 const timestamp = '2026-09-09T01:00:00Z';
 const missing = () => { throw { code: 'demo.resource-not-found', params: {} }; };
 
@@ -33,7 +33,7 @@ export function demoManagementApi(language: () => DesktopLanguage): Partial<Runt
     return ['queued', 'running', 'completed', 'failed'].map((status, index) => ({ id: `demo-requirement-${index}`, issueRef: `GB-${101 + index}`, status,
       workspaceId: workspace.id, title: titles[index], requirement: null, lastActivityAt: timestamp,
       localTaskId: index > 1 ? 'demo-review' : null, runId: index > 1 ? index === 2 ? DEMO_RUN_ID : 'run-051' : null, projectId: index > 1 ? DEMO_PROJECT_ID : null,
-      kind: null, readiness: null, attachments: [] }));
+      kind: null, readiness: null, attachments: [], issueStatusCategory: null, issueStatusName: null, rerunOfTaskId: null, dpmsLinkPending: false }));
   }
   return {
     async listScheduledTasks(projectId) { return tasks().filter((item) => !projectId || item.projectId === projectId); },
