@@ -1,0 +1,29 @@
+{
+  "$schema": "../../theme-sdk/schema/theme-manifest-v2.schema.json",
+  "schemaVersion": 2,
+  "contractVersion": 2,
+  "id": "builtin.mobius",
+  "version": "1.0.0",
+  "source": "builtin",
+  "name": {
+    "zh-CN": "莫比乌斯",
+    "en": "Möbius"
+  },
+  "author": "Gold Band",
+  "schemes": [
+    "light",
+    "dark"
+  ],
+  "capabilities": [
+    "tokens",
+    "component-recipes",
+    "avatars",
+    "wallpapers",
+    "visual-quality-profiles"
+  ],
+  "visualQualityProfiles": {
+    "default": "full",
+    "supported": ["full", "performance"],
+    "performance": "visual-quality/performance.json"
+  }
+}

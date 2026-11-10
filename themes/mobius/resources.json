@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 2,
+  "assets": [
+    {
+      "id": "mobius-band-dark",
+      "kind": "wallpaper",
+      "path": "assets/wallpapers/mobius-band-dark.png",
+      "licenseId": "mobius-inhouse",
+      "required": true
+    },
+    {
+      "id": "mobius-band-light",
+      "kind": "wallpaper",
+      "path": "assets/wallpapers/mobius-band-light.png",
+      "licenseId": "mobius-inhouse",
+      "required": true
+    }
+  ]
+}

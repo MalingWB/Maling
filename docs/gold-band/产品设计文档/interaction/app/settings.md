@@ -46,6 +46,7 @@
 ### 4.1 选项
 当前支持：
 - Gold Band：默认设计风格，采用类 OpenAI 的白/近黑编辑界面；浅色以纯白画布、墨黑主操作和青绿色焦点建立层级，深色以近黑画布、克制灰阶和同一青绿色焦点保持一致。
+- 莫比乌斯（Möbius，`builtin.mobius`）：以产品 Logo 的莫比乌斯环带配色为基准的品牌主题。深色取 Logo 原生画布——近黑底 + 杏橙 `#E99D54` 主色；浅色做纸墨反转——暖纸底 + 藏蓝 `#244892` 主色；品牌朱红 `#CC332B` 承担 danger 族。会话页与设置页铺深浅对称的莫比乌斯环带壁纸（一根连续缎带：朱红/藏蓝在带端平滑过渡、中心交叉穿插、两环开口内侧杏橙月牙衬底），性能档自动关闭壁纸。主题不携带字体资产，排版继承全局 canonical 字体注册。
 - 技术中性：更克制的无彩工具风格，浅色与深色都只让业务状态使用彩色。
 - 明暗偏好独立为 `跟随系统 / 浅色 / 深色`；每个正式主题包必须同时提供浅色和深色，`跟随系统` 不跨主题包切换。
 
@@ -73,7 +74,7 @@
 
 点击当前主题
   主题抽屉
-    [ Gold Band ] [ 技术中性 ]
+    [ Gold Band ] [ 莫比乌斯 ] [ 技术中性 ]
 ```
 
 视觉规则：
@@ -187,8 +188,8 @@
 
 - 外观权威字段改为 `appearance`：`schemaVersion = 2`、稳定 `themeId`、`colorScheme = system | light | dark`、按主题隔离的 `visualQualityByTheme`。旧 `desktopTheme` 在 settings schema v5 一次性迁移后删除，不双写。
 - 个性化权威字段为 `personalization`：`schemaVersion = 5`，显式保存两套有序字体栈、字号、按明暗模式隔离的壁纸来源/可见度、Agent / 个人头像图片与形状的 `source`、界面缩放 `interfaceZoomPercent`（50–250，默认 100）以及工作流图布局方向 `workflowGraphDirection`（`auto | horizontal | vertical`，默认 `auto`）。v4 及更早文件在加载时由 `normalized()` 升级并补默认值，不保留双读。settings schema v8 破坏式删除 v1 单字体字段；settings schema v9 增加单壁纸；settings schema v10 将它一次性升级为 light/dark 两份配置，不保留双读。主题来源持续跟随当前主题，用户资产历史全局共享。
-- 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。主题 Catalog、Schema、主题包 `dist` 文本产物、Web generated catalog/CSS 与 Agent SVG 图标在仓库层固定为 LF 文本；`.gitattributes` 的精确路径规则优先于本机 `core.autocrlf`，避免生成脚本重写相同内容后在 Windows Changes 中反复出现假变更。
-- 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。当前两个内置主题均不声明视觉质量能力，因此不显示质量档控件。
+- 内置 `builtin.gold-band`、`builtin.mobius`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。主题 Catalog、Schema、主题包 `dist` 文本产物、Web generated catalog/CSS 与 Agent SVG 图标在仓库层固定为 LF 文本；`.gitattributes` 的精确路径规则优先于本机 `core.autocrlf`，避免生成脚本重写相同内容后在 Windows Changes 中反复出现假变更。
+- 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。`builtin.mobius` 声明 `wallpapers` 与 `visual-quality-profiles` 能力，会话页与设置页铺深浅对称的环带壁纸，质量档可一键关闭壁纸；Gold Band 与技术中性不声明质量能力，不显示质量档控件。
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
 - 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。
 - Theme Contract v2 将 shape、elevation、motion、scrollbar、完整组件状态 recipe、字体资源、语义图标槽和四类壁纸 surface 纳入同一封闭契约。设置页提供用户壁纸覆盖入口，但不改变主题包声明；“默认字体”显示当前主题 stack 的本地化 `displayName`，语言不参与 family 解析。
@@ -207,6 +208,7 @@
 - 2026-08-14 测试节点复验：Theme SDK 构建正例及缺失 token、alias 循环、非法 recipe、质量档越界负例通过；Web、Rust Catalog、旧外观迁移、偏好持久化与个性化迁移定向用例覆盖当前主题契约。
 - 2026-08-14 覆盖率工具链收敛：与 Vitest 同版本的 V8 coverage provider 作为固定开发依赖随 lockfile 安装，并提供统一 `web:test:coverage` 入口；后续测试节点不再临时修改依赖树，覆盖率结果仍必须以该节点实际执行为准。
 - 2026-08-14 内置主题收敛：删除 `builtin.glass` 与 `builtin.neo-brutalist` 的源包、运行时产物和选择入口，Catalog 只保留 Gold Band 与技术中性。退役或未知 `themeId` 由现有 resolver 统一规范化为 Gold Band，并清理不再受支持的质量档记录，不增加兼容主题或业务组件特判。
+- 2026-11-10 新增第三套内置主题 `builtin.mobius`（莫比乌斯）：以 Logo 莫比乌斯环带三色（朱红 `#CC332B`、藏蓝 `#244892`、杏橙 `#E99D54`）为基准的品牌主题，深色近黑底 + 杏橙主色、浅色暖纸底 + 藏蓝主色，深浅各铺一张对称的莫比乌斯环带壁纸（`conversation` + `settings` 槽位；一根连续缎带，朱红/藏蓝带端渐变衔接、中心交叉上压下穿插并带投影、两环开口内侧杏橙月牙衬底），性能档禁用壁纸。主题不声明 `fonts` 能力，排版复用 gold-band 全局注册的 canonical 字体族，不重复打包字体资产；壁纸由 `scripts/generate-mobius-wallpapers.mjs` 零依赖光栅化生成。
 
 MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri command `save_desktop_preferences` 保存用户偏好。
 
