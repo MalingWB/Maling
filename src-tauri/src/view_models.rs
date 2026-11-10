@@ -8955,9 +8955,9 @@ mod tests {
                 "started_at": "2026-06-17T10:00:00Z",
                 "updated_at": "2026-06-17T10:03:00Z",
                 "workflow_snapshot": "workflow.snapshot.json",
-                "current_round": null,
-                "current_node": null,
-                "current_attempt": null,
+                "current_round": round_id,
+                "current_node": "accept",
+                "current_attempt": "attempt-001",
                 "new_rounds_opened": 0,
                 "pause_reason": null
             }),

@@ -15909,10 +15909,8 @@ mod tests {
 
     #[test]
     fn composer_draft_save_publishes_attachments_into_task_storage() {
-        let root = std::env::temp_dir().join(format!(
-            "gold-band-draft-attachment-publish-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
         let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
         let task_dir = app.paths.task_dir("task-1");
         std::fs::create_dir_all(task_dir.join("authoring").as_std_path()).unwrap();
@@ -15974,12 +15972,10 @@ mod tests {
         // resolve against the relocated root.
         let project_root = task_dir.ancestors().nth(2).unwrap().to_path_buf();
         let task_suffix = task_dir.strip_prefix(&project_root).unwrap().to_path_buf();
-        let moved_parent = std::env::temp_dir().join(format!(
-            "gold-band-draft-attachment-moved-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&moved_parent).unwrap();
-        let moved_project_root = moved_parent.join(project_root.file_name().unwrap_or_default());
+        let moved_parent = tempfile::tempdir().unwrap();
+        let moved_project_root = moved_parent
+            .path()
+            .join(project_root.file_name().unwrap_or_default());
         std::fs::rename(&project_root, &moved_project_root).unwrap();
         let moved_task_dir =
             Utf8PathBuf::from_path_buf(moved_project_root.join(&task_suffix)).unwrap();
@@ -16402,7 +16398,14 @@ mod tests {
                 "outcome": null,
                 "trigger": "initial",
                 "started_at": "2026-08-12T00:00:00Z",
-                "trace": []
+                "trace": [{
+                    "sequence": 1,
+                    "node_id": locator.node_id,
+                    "attempt_id": locator.attempt_id,
+                    "from_node_id": null,
+                    "edge_outcome": null,
+                    "entered_at": "2026-08-12T00:00:00Z"
+                }]
             }),
         )
         .unwrap();
@@ -16427,6 +16430,7 @@ mod tests {
             execution: Default::default(),
         };
 
+        write_json(&app.paths.run_file(&locator.task_id, &locator.run_id), &run).unwrap();
         assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
         assert!(!attempt_is_runtime_controlled(&app, &locator).unwrap());
         assert!(ensure_conversation_prompt_available(&app, &locator).is_ok());
@@ -16509,6 +16513,55 @@ mod tests {
             }),
         )
         .unwrap();
+        let run = RunState {
+            version: gold_band::domain::VERSION.to_string(),
+            id: run_id.to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Completed,
+            outcome: Some(RunOutcome::Success),
+            started_at: "2026-08-16T00:00:00Z".to_string(),
+            updated_at: "2026-08-16T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some(round_id.to_string()),
+            current_node: Some("review".to_string()),
+            current_attempt: Some("attempt-002".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
+        for (attempt_id, outcome) in [
+            ("attempt-001", NodeOutcome::Failure),
+            ("attempt-002", NodeOutcome::Success),
+        ] {
+            let node = NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: "review".to_string(),
+                node_type: gold_band::domain::NodeType::Worker,
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                attempt_id: attempt_id.to_string(),
+                status: RunStatus::Completed,
+                outcome: Some(outcome),
+                started_at: "2026-08-16T00:00:00Z".to_string(),
+                finished_at: Some("2026-08-16T00:00:01Z".to_string()),
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: Default::default(),
+                uuid: None,
+            };
+            write_json(
+                &app.paths
+                    .node_file(task_id, run_id, round_id, "review", attempt_id),
+                &node,
+            )
+            .unwrap();
+        }
         write_json(
             &app.paths
                 .worker_ref_file(task_id, run_id, round_id, "review", "attempt-001"),
