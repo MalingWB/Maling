@@ -21,6 +21,7 @@ export default defineConfig(({ command, mode }) => {
       }
     },
   }],
+  envPrefix: ['VITE_', 'GOLD_BAND_'],
   resolve: { alias: { '@': resolve('web/src') } },
   server: { strictPort: true },
   build: {

@@ -241,9 +241,9 @@ export function demoSidebar(language: DesktopLanguage): ConversationSidebarVm {
     runHistoryStatus: 'ready', runsNextCursor: null, pinned: false,
   }));
   return {
-    loadStatus: 'ready', workspaces: [{ projectId: DEMO_PROJECT_ID, workspacePath: '/default', name: 'Gold Band' }],
+    loadStatus: 'ready', workspaces: [{ projectId: DEMO_PROJECT_ID, workspacePath: '/default', name: 'MALING' }],
     pinRefs: [], pinnedTasks: [], pinnedTaskPage: { status: 'ready' },
-    recentTasks: tasks.slice(0, 6).map((task) => ({ ...task, workspaceName: 'Gold Band' })),
+    recentTasks: tasks.slice(0, 6).map((task) => ({ ...task, workspaceName: 'MALING' })),
     recentTaskPage: { status: 'ready' },
     tasksByWorkspace: { [DEMO_PROJECT_ID]: tasks }, workspaceTaskPages: { [DEMO_PROJECT_ID]: { status: 'ready' } },
     lastActiveWorkspaceId: DEMO_PROJECT_ID, preferences: { 'workspaces.collapsed': false },

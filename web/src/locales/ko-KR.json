@@ -1389,7 +1389,7 @@
       "diagnosticPassed": "최근 MCP 구성 확인 통과",
       "diagnosticFailed": "최근 MCP 구성 확인 실패",
       "diagnosticAuthRequired": "최근 확인에 인증 필요",
-      "goldBandMemoryName": "Gold Band 공유 메모리",
+      "goldBandMemoryName": "MALING 공유 메모리",
       "toggleServer": "{{name}} 사용 또는 사용 안 함",
       "emptyServers": "MCP 서버 없음",
       "helpInfo": "도움말",

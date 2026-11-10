@@ -11,9 +11,16 @@ import { loadSceneEvents, loadSceneManifest } from './replay-assets';
 import { MOBILE_REPLAY_WIDTH, playbackPosition, selectSceneAsset, type SceneAsset } from './replay-model';
 import 'rrweb/dist/style.css';
 
+/** Rebrands recorded DOM strings at replay time without changing canonical historical assets. */
+export function rebrandSceneEvents(data: unknown): eventWithTime[] {
+  return JSON.parse(JSON.stringify(data), (_key, value: unknown) => (
+    typeof value === 'string' ? value.replaceAll('Gold Band', 'MALING') : value
+  )) as eventWithTime[];
+}
+
 export function createSceneEngine(data: unknown, source: SceneAsset, root: HTMLDivElement) {
   // Virtual fast-forward drops reused nodes when these scenes return to chat.
-  const replayer = new Replayer(data as eventWithTime[], { root, showWarning: false, showDebug: false, skipInactive: false, mouseTail: false, UNSAFE_replayCanvas: false, useVirtualDom: source.scene !== 'before' && source.scene !== 'personalize',
+  const replayer = new Replayer(rebrandSceneEvents(data), { root, showWarning: false, showDebug: false, skipInactive: false, mouseTail: false, UNSAFE_replayCanvas: false, useVirtualDom: source.scene !== 'before' && source.scene !== 'personalize',
     insertStyleRules: source.scene === 'before' ? ['html.rrweb-paused :is([data-state="open"], [data-state="delayed-open"], [data-state="instant-open"]), html.rrweb-paused :is([data-state="open"], [data-state="delayed-open"], [data-state="instant-open"]) * { animation: none !important; }']
       : source.scene === 'after' ? ['html.rrweb-paused :is([data-slot="sheet-content"], [data-slot="sheet-overlay"])[data-state="open"] { animation: none !important; }']
       : source.scene === 'personalize' ? ['html.rrweb-paused [data-slot="popover-content"][data-state="open"] { animation: none !important; }'] : [],

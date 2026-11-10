@@ -1389,7 +1389,7 @@
       "diagnosticPassed": "最新の MCP 構成チェックに合格しました",
       "diagnosticFailed": "最新の MCP 構成チェックに失敗しました",
       "diagnosticAuthRequired": "最新のチェックには認証が必要です",
-      "goldBandMemoryName": "Gold Band の共有メモリ",
+      "goldBandMemoryName": "MALING の共有メモリ",
       "toggleServer": "{{name}} を有効または無効にする",
       "emptyServers": "MCP サーバーが構成されていません",
       "helpInfo": "ヘルプ情報",

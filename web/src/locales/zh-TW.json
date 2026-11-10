@@ -1389,7 +1389,7 @@
       "diagnosticPassed": "最近一次 MCP 設定檢測通過",
       "diagnosticFailed": "最近一次 MCP 設定檢測失敗",
       "diagnosticAuthRequired": "最近一次檢測需要授權",
-      "goldBandMemoryName": "Gold Band 共享記憶",
+      "goldBandMemoryName": "MALING 共享記憶",
       "toggleServer": "啟用或關閉 {{name}}",
       "emptyServers": "沒有 MCP 伺服器",
       "helpInfo": "說明資訊",

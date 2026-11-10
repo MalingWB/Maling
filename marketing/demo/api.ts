@@ -102,7 +102,7 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
     async getAutoTemplates() { return { version: '0.1', templates: [] }; },
     async listMcpServers() {
       return [
-        { id: 'gold-band-memory', name: 'gold-band-memory', enabled: true, transport: 'stdio', command: 'gold-band-desktop', args: ['--gold-band-memory-mcp'], env: [], managed: true, healthStatus: null },
+        { id: 'gold-band-memory', name: 'gold-band-memory', enabled: true, transport: 'stdio', command: 'maling-desktop', args: ['--maling-memory-mcp'], env: [], managed: true, healthStatus: null },
         { id: 'demo-http', name: 'Project Docs', enabled: true, transport: 'http', url: 'https://docs.example.com/mcp', managed: false, healthStatus: 'healthy' },
         { id: 'demo-sse', name: 'Project Search', enabled: true, transport: 'sse', url: 'https://search.example.com/sse', managed: false, healthStatus: 'healthy' },
       ];
@@ -178,7 +178,7 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
       catch { throw { code: 'demo.operation-unavailable', params: { operation: 'saveConversationPreference', key } }; }
       layout = next;
     },
-    async getConversationWorkspaces() { return [{ projectId: 'default', workspacePath: '/default', name: 'Gold Band' }]; },
+    async getConversationWorkspaces() { return [{ projectId: 'default', workspacePath: '/default', name: 'MALING' }]; },
     async listSkills() { return { global: [skill().meta], project: [] }; },
     async listProjectSkills() { return []; },
     async readSkill(name) {
@@ -212,7 +212,7 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
   function skill(): SkillContentVm {
     const en = state.getPreferences().language === 'en';
     return {
-      meta: { name: 'project-review', description: en ? 'Review project structure and document the result.' : '检查项目结构，整理问题并记录审阅结果。', source: 'global', directoryPath: '/demo/skills/project-review', agentSource: '.gold-band', loadWarnings: [], syncedAgentTypes: demoAgentRegistry.agents.map((agent) => agent.agentType) },
+      meta: { name: 'project-review', description: en ? 'Review project structure and document the result.' : '检查项目结构，整理问题并记录审阅结果。', source: 'global', directoryPath: '/demo/skills/project-review', agentSource: '.maling', loadWarnings: [], syncedAgentTypes: demoAgentRegistry.agents.map((agent) => agent.agentType) },
       body: en ? '# Project review\n\n1. Read the project documentation.\n2. Inspect the relevant implementation.\n3. Record findings with file references.\n4. Verify the result.\n' : '# 项目审阅\n\n1. 阅读项目说明与设计文档。\n2. 检查相关实现。\n3. 记录问题及对应的文件位置。\n4. 验证结果。\n',
     };
   }

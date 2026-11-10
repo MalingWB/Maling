@@ -41,7 +41,7 @@ function makeSkill(overrides: Partial<SkillMetaVm>): SkillMetaVm {
     description: '',
     source: 'project',
     directoryPath: 'E:/AI_PROJECT/Gold-Band/.gold-band/skills/test-skill',
-    agentSource: '.gold-band',
+    agentSource: '.maling',
     loadWarnings: [],
     syncedAgentTypes: [],
     ...overrides,
@@ -118,7 +118,7 @@ describe('skill agent display helpers', () => {
     ]);
   });
 
-  it('uses Gold Band as the source icon for self-managed skills', () => {
+  it('uses MALING as the source icon for self-managed skills', () => {
     const skill = makeSkill({
       syncedAgentTypes: ['claude-acp'],
     });

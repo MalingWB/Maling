@@ -35,7 +35,7 @@ const ScheduledTaskDetailPage = lazy(() => import('@/pages/ScheduledTaskDetailPa
 const noop = () => {};
 const unusedAction = async () => undefined;
 const emptyExpansion = {};
-const demoWorkspaces = [{ projectId: DEMO_PROJECT_ID, workspacePath: '/default', name: 'Gold Band' }];
+const demoWorkspaces = [{ projectId: DEMO_PROJECT_ID, workspacePath: '/default', name: 'MALING' }];
 const historyReader = createDatasetReader(`${import.meta.env.BASE_URL}data/ji-history/`);
 
 function pageFromHash(): ConversationPage {
@@ -113,13 +113,13 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
       titleBarTrailingContent={<Select value={preferences.language} onValueChange={(language) => {
         void browserApi.saveDesktopPreferences(preferences.appearance, preferences.personalization, language as PreferencesVm['language'], preferences.useLocalClaude, preferences.verboseLogging, preferences.browser).then(updatePreferences);
       }}><SelectTrigger aria-label={t('settings.language')} className="demo-language mr-2 h-7 w-auto gap-2 border-0 bg-transparent shadow-none"><Languages className="size-3.5" /><SelectValue /></SelectTrigger><SelectContent><SelectItem value="zh-cn">简体中文</SelectItem><SelectItem value="en">English</SelectItem></SelectContent></Select>}
-      appName="Gold Band" platform={null} windowFrameStyle="native-compositor"
+      appName="MALING" platform={null} windowFrameStyle="native-compositor"
       feedbackEnabled={false} appConfig={bootstrap.appConfig} vm={sidebar} active={page}
       sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleNavigation}
       onSelect={navigate} onOpenPersonalAnalytics={noop} onNewConversation={() => navigate({ kind: 'conversation-home' })} onSearch={noop}
       onPinTask={noop} onUnpinTask={noop} onRenameTask={noop} onDeleteTask={noop}
       onNewConversationInWorkspace={noop} onRetryBootstrap={noop} onRequestWorkspaceTasks={noop}
-      onRequestPinnedTasks={noop} onRequestTaskRuns={noop}
+      onRequestPinnedTasks={noop} onRequestRecentTasks={noop} onRequestTaskRuns={noop}
       activeWorkspaceId={page.kind === 'conversation-run' ? page.projectId : DEMO_PROJECT_ID} defaultExpandedWorkspaceId={page.kind === 'conversation-run' ? page.projectId : DEMO_PROJECT_ID}
       conversationTaskUuid={page.kind === 'conversation-run' ? page.projectId === history?.projectId ? history.taskUuid : `demo-${page.taskId}` : null}
       conversationWorkspaceStore={store}
@@ -135,7 +135,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
           : page.kind === 'conversation-home' || page.kind === 'scheduled-task-create' ? <ConversationHomePage
             initialScheduledMode={page.kind === 'scheduled-task-create'}
             onScheduledModeExit={() => navigate({ kind: 'conversation-home' })}
-            projectId={DEMO_PROJECT_ID} workspaceName="Gold Band" workspaces={demoWorkspaces}
+            projectId={DEMO_PROJECT_ID} workspaceName="MALING" workspaces={demoWorkspaces}
             runMode={runMode} onRunModeChange={setRunMode} agentRegistry={demoAgentRegistry}
             workflowTemplates={demoWorkflowTemplates} profiles={demoProfiles(preferences.language)}
             busy={false} inlineContentMaxBytes={0} workLocation="main"
@@ -145,7 +145,7 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
             onOpenRunModeSettings={() => navigate({ kind: 'run-mode-management' })}
             onWorkspaceChange={noop} onWorkLocationChange={noop} />
           : page.kind === 'run-mode-management' ? <RunModeManagementPage key={preferences.language}
-            projectId={DEMO_PROJECT_ID} workspaceName="Gold Band" workspaces={demoWorkspaces}
+            projectId={DEMO_PROJECT_ID} workspaceName="MALING" workspaces={demoWorkspaces}
             runMode={runMode} agentRegistry={demoAgentRegistry} workflowTemplates={demoWorkflowTemplates}
             onProjectChange={noop} onSave={setRunMode} />
           : page.kind === 'settings' ? <SettingsPage
@@ -164,12 +164,12 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
     </DemoFrame>
     <Sheet open={navigationOpen} onOpenChange={setNavigationOpen}>
       <SheetContent side="left" className="w-[min(100%,320px)] gap-0 p-0" closeLabel={t('common.close')}>
-        <SheetHeader className="px-4 py-3"><SheetTitle>Gold Band</SheetTitle></SheetHeader>
+        <SheetHeader className="px-4 py-3"><SheetTitle>MALING</SheetTitle></SheetHeader>
         <ConversationSidebar vm={sidebar} active={page} defaultExpandedWorkspaceId={DEMO_PROJECT_ID}
           showRemoteTaskManagement={false}
           onSelect={navigate} onNewConversation={() => navigate({ kind: 'conversation-home' })} onSearch={noop} onPinTask={noop} onUnpinTask={noop}
           onRenameTask={noop} onDeleteTask={noop} onRetryBootstrap={noop} onRequestWorkspaceTasks={noop}
-          onRequestPinnedTasks={noop} onRequestTaskRuns={noop} />
+          onRequestPinnedTasks={noop} onRequestRecentTasks={noop} onRequestTaskRuns={noop} />
       </SheetContent>
     </Sheet>
   </AvatarPreferencesProvider>;
