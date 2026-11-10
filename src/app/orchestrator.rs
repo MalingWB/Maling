@@ -105,7 +105,7 @@ use super::state_access::{
     persist_runtime_state_if_expected_execution_current, refresh_runtime_execution_if_current,
 };
 use super::state_factory::create_node_state;
-use super::transition_context::find_latest_worker_ref_for_transition;
+use super::transition_context::worker_ref_for_transition;
 use super::{
     AcpLiveEventContext, App, AttemptRuntimePauseResult, PreparedAcpPrompt,
     RuntimeInterventionKind, RuntimeLifecycleEvent, is_run_continuable,
@@ -1057,14 +1057,17 @@ pub(crate) fn run_prepared_run_foreground(
 /// errors and panics are terminalized into the canonical run state instead of
 /// being returned, so every caller observes the same lifecycle facts.
 fn drive_accepted_run(app: &App, task_id: &str, prepared: AcceptedRun) {
+    drive_committed_run(app, task_id, prepared.data);
+}
+
+fn drive_committed_run(app: &App, task_id: &str, data: PreparedRunData) {
     let PreparedRunData {
         validated,
         resolved_profiles,
         mut run,
         mut round,
-        node,
-    } = prepared.data;
-    let fallback_node = node.clone();
+        mut node,
+    } = data;
     // 用 catch_unwind 包裹 drive_from_node：panic 也走 terminalize_background_drive_error，
     // 否则后台线程 panic 会跳过终止事件，导致订阅 scheduled_occurrence 的 occurrence 永久卡 running。
     let drive_result = catch_unwind(AssertUnwindSafe(|| {
@@ -1072,14 +1075,15 @@ fn drive_accepted_run(app: &App, task_id: &str, prepared: AcceptedRun) {
             if !ready {
                 return Ok(());
             }
-            drive_from_node(
+            drive_from_node_with_runtime_candidate(
                 app,
                 task_id,
                 &validated,
                 &resolved_profiles,
                 &mut run,
                 &mut round,
-                node,
+                &mut node,
+                None,
             )
         })
     }));
@@ -1096,7 +1100,7 @@ fn drive_accepted_run(app: &App, task_id: &str, prepared: AcceptedRun) {
         )),
     };
     if let Some(err) = err {
-        terminalize_background_drive_error(app, task_id, &run, &round, &fallback_node, &err);
+        terminalize_background_drive_error(app, task_id, &run, &round, &node, &err);
         let _ = std::fs::create_dir_all(app.paths.runs_dir(task_id).as_std_path());
         let _ = std::fs::write(
             app.paths
@@ -2168,7 +2172,7 @@ fn run_continue_with_launch_signal(
         &resolved_profiles,
         &mut run,
         &mut round,
-        node,
+        &mut node,
         initial_session_mode,
         initial_continue_ref,
         initial_resume_prompt,
@@ -2377,7 +2381,7 @@ fn run_continue_dynamic_inner(
         &resolved_profiles,
         &mut run,
         &mut round,
-        outer_node,
+        &mut outer_node,
         prompt_state.session_mode,
         prompt_state.continue_ref,
         prompt_state.resume_prompt,
@@ -3264,7 +3268,7 @@ pub(crate) fn run_recover_completed_background(
     };
 
     let initial_run = run.clone();
-    let fallback_node = next.node.clone();
+    let mut current_node = next.node;
     let prompt_state = AcpInvocationPromptState::workflow_transition(
         app.config.desktop_language,
         next.session_mode,
@@ -3283,7 +3287,7 @@ pub(crate) fn run_recover_completed_background(
                 &resolved_profiles,
                 &mut run,
                 &mut round,
-                next.node,
+                &mut current_node,
                 prompt_state.session_mode,
                 prompt_state.continue_ref,
                 prompt_state.resume_prompt,
@@ -3306,7 +3310,7 @@ pub(crate) fn run_recover_completed_background(
                     &background_task_id,
                     &run,
                     &round,
-                    &fallback_node,
+                    &current_node,
                     &error,
                 );
             }
@@ -3459,7 +3463,7 @@ fn submit_manual_check_with_launch_signal(
             });
     }
     notify_runtime_continue_started(&mut launch, &run);
-    if let Some(next) = next {
+    if let Some(mut next) = next {
         let prompt_state = AcpInvocationPromptState::workflow_transition(
             app.config.desktop_language,
             next.session_mode,
@@ -3472,7 +3476,7 @@ fn submit_manual_check_with_launch_signal(
             &resolved_profiles,
             &mut run,
             &mut round,
-            next.node,
+            &mut next.node,
             prompt_state.session_mode,
             prompt_state.continue_ref,
             prompt_state.resume_prompt,
@@ -3992,7 +3996,7 @@ pub(crate) fn retry_current_node(
         let (attempt_id, _attempt_dir) = reserve_next_attempt_dir(
             &app.paths
                 .node_dir(task_id, run_id, expected_round_id, expected_node_id),
-            expected_attempt_id,
+            Some(expected_attempt_id),
         )?;
         let fresh_profile = node_dsl
             .profile()
@@ -4058,62 +4062,16 @@ pub(crate) fn retry_current_node(
 
     let background_app = app.clone_for_background();
     let task_id_owned = task_id.to_string();
-    let validated_for_background = validated;
-    let profiles_for_background = resolved_profiles;
-    let mut fallback_run = accepted.run.clone();
-    let fallback_round = committed_round.clone();
-    let fallback_node = committed_node.clone();
+    let drive = PreparedRunData {
+        validated,
+        resolved_profiles,
+        run: accepted.run.clone(),
+        round: committed_round.clone(),
+        node: committed_node.clone(),
+    };
     let spawn_result = thread::Builder::new()
         .name("gold-band-run-retry".to_string())
-        .spawn(move || {
-            let drive_result = catch_unwind(AssertUnwindSafe(|| {
-                prepare_run_worktree_background(
-                    &background_app,
-                    &task_id_owned,
-                    &mut fallback_run,
-                    &fallback_round,
-                    &fallback_node,
-                )
-                .and_then(|ready| {
-                    if !ready {
-                        return Ok(());
-                    }
-                    let mut drive_round = fallback_round.clone();
-                    drive_from_node_with_runtime_candidate(
-                        &background_app,
-                        &task_id_owned,
-                        &validated_for_background,
-                        &profiles_for_background,
-                        &mut fallback_run,
-                        &mut drive_round,
-                        fallback_node.clone(),
-                        None,
-                    )
-                })
-            }));
-            let error = match drive_result {
-                Ok(Ok(())) => None,
-                Ok(Err(error)) => Some(error),
-                Err(payload) => Some(anyhow!(
-                    "retry background drive panicked: {}",
-                    payload
-                        .downcast_ref::<String>()
-                        .map(String::as_str)
-                        .or_else(|| payload.downcast_ref::<&'static str>().copied())
-                        .unwrap_or("<non-string panic payload>")
-                )),
-            };
-            if let Some(error) = error {
-                terminalize_background_drive_error(
-                    &background_app,
-                    &task_id_owned,
-                    &fallback_run,
-                    &fallback_round,
-                    &fallback_node,
-                    &error,
-                );
-            }
-        });
+        .spawn(move || drive_committed_run(&background_app, &task_id_owned, drive));
     if let Err(error) = spawn_result {
         let error: anyhow::Error = error.into();
         terminalize_background_drive_error(
@@ -5198,12 +5156,13 @@ fn apply_control_decision(
                 .expect("validated transition target exists");
             let previous_node_id = node.node_id.clone();
             let edge_outcome = node.outcome.map(edge_outcome_label);
+            let canonical_trace =
+                canonical_trace_for_round(run, std::slice::from_ref(round), round)?;
             if let (Some(max_attempts), Some(outcome)) =
                 (workflow.raw.control.max_attempts, edge_outcome.as_deref())
             {
                 if is_repair_outcome(outcome) {
-                    let proposed_attempts = round
-                        .trace
+                    let proposed_attempts = canonical_trace
                         .iter()
                         .filter(|step| {
                             step.from_node_id.as_deref() == Some(previous_node_id.as_str())
@@ -5238,16 +5197,26 @@ fn apply_control_decision(
                     }
                 }
             }
-            let (next_attempt_id, _attempt_dir) = reserve_next_attempt_dir(
-                &app.paths.node_dir(task_id, &run.id, &round.id, &node_id),
-                &node.attempt_id,
-            )?;
-            let continue_ref = find_latest_worker_ref_for_transition(
-                app, task_id, &run.id, &round.id, node, &node_id, session,
+            let target_current_attempt_id = canonical_trace
+                .iter()
+                .rev()
+                .find(|step| step.node_id == node_id)
+                .map(|step| step.attempt_id.as_str());
+            let continue_ref = worker_ref_for_transition(
+                app,
+                task_id,
+                &run.id,
+                &round.id,
+                &node_id,
+                target_current_attempt_id,
+                session,
             )?
             .map(|path| read_json::<WorkerRefState>(&path))
             .transpose()?
             .and_then(|worker_ref| worker_ref.continue_ref);
+            let target_node_dir = app.paths.node_dir(task_id, &run.id, &round.id, &node_id);
+            let (next_attempt_id, _attempt_dir) =
+                reserve_next_attempt_dir(&target_node_dir, target_current_attempt_id)?;
             let next_profile = next_node_dsl
                 .profile()
                 .and_then(|name| resolve_profile_for_node(resolved_profiles, name));
@@ -5261,6 +5230,7 @@ fn apply_control_decision(
             );
             run.current_node = Some(node_id.clone());
             run.current_attempt = Some(next_attempt_id.clone());
+            round.trace = canonical_trace;
             round.trace.push(round_trace_step(
                 next_trace_sequence(round),
                 &node_id,
@@ -5571,7 +5541,7 @@ pub(crate) fn drive_from_node(
     resolved_profiles: &super::profile_resolver::ResolvedWorkflowMetadata,
     run: &mut RunState,
     round: &mut RoundState,
-    node: NodeState,
+    mut node: NodeState,
 ) -> Result<()> {
     drive_from_node_with_runtime_candidate(
         app,
@@ -5580,7 +5550,7 @@ pub(crate) fn drive_from_node(
         resolved_profiles,
         run,
         round,
-        node,
+        &mut node,
         None,
     )
 }
@@ -5592,7 +5562,7 @@ fn drive_from_node_with_runtime_candidate(
     resolved_profiles: &super::profile_resolver::ResolvedWorkflowMetadata,
     run: &mut RunState,
     round: &mut RoundState,
-    node: NodeState,
+    node: &mut NodeState,
     runtime_candidate: Option<super::RuntimeCandidateRegistration>,
 ) -> Result<()> {
     drive_from_node_with_initial_session(
@@ -16301,7 +16271,7 @@ fn drive_from_node_with_initial_session(
     resolved_profiles: &super::profile_resolver::ResolvedWorkflowMetadata,
     run: &mut RunState,
     round: &mut RoundState,
-    mut node: NodeState,
+    node: &mut NodeState,
     initial_session_mode: SessionMode,
     initial_continue_ref: Option<serde_json::Value>,
     initial_resume_prompt: Option<String>,
@@ -16684,7 +16654,7 @@ fn drive_from_node_with_initial_session(
             return Ok(());
         }
 
-        node = match execution_result {
+        *node = match execution_result {
             Ok(node) => node,
             Err(err) => {
                 let info = normalize_runtime_error(&err);
@@ -16711,7 +16681,7 @@ fn drive_from_node_with_initial_session(
                     run.updated_at.clone(),
                 )?;
                 round.status = RunStatus::Paused;
-                let mut failed_node = node;
+                let mut failed_node = node.clone();
                 failed_node.status = RunStatus::Paused;
                 failed_node.outcome = None;
                 failed_node.finished_at = Some(run.updated_at.clone());
@@ -17126,7 +17096,7 @@ fn drive_from_node_with_initial_session(
 
         if let Some(next) = next_execution {
             active_workflow = Cow::Owned(successor_workflow);
-            node = next.node;
+            *node = next.node;
             let prompt_state = AcpInvocationPromptState::workflow_transition(
                 app.config.desktop_language,
                 next.session_mode,
@@ -18935,7 +18905,14 @@ mod tests {
             outcome: None,
             trigger: RoundTrigger::Initial,
             started_at: "2026-08-06T00:00:00Z".to_string(),
-            trace: Vec::new(),
+            trace: vec![round_trace_step(
+                1,
+                "worker",
+                "attempt-001",
+                None,
+                None,
+                run.started_at.clone(),
+            )],
             uuid: None,
         };
         let node = NodeState {
@@ -19077,6 +19054,181 @@ mod tests {
     }
 
     #[test]
+    fn accepted_retry_drive_terminalizes_a_successor_panic_in_the_same_round() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = App::with_provider(repo_root, Box::new(SuccessorPanicProvider))
+            .with_provider_diagnostics_source(Arc::new(|| {
+                Ok(BTreeMap::from([(
+                    "claude-acp".to_string(),
+                    ProviderDiagnosticSnapshot {
+                        config_fingerprint: None,
+                        available: true,
+                        error: None,
+                        checked_at: "2026-11-09T00:00:00Z".to_string(),
+                        capabilities: None,
+                    },
+                )]))
+            }));
+        write_workflow_retry_fixture(&app, "attempt-002", PauseReason::RuntimeAbnormal);
+        write_json(
+            &app.paths.task_file("task-retry"),
+            &serde_json::json!({ "version": VERSION, "id": "task-retry" }),
+        )
+        .unwrap();
+        let mut workflow = dispatch_plan_workflow(
+            vec![
+                dispatch_plan_worker("worker", "retry worker", "entry-model", None),
+                dispatch_plan_worker("next", "successor worker", "entry-model", None),
+            ],
+            vec![
+                dispatch_plan_edge("worker", "next"),
+                dispatch_plan_edge("next", "$end"),
+            ],
+        );
+        workflow.entry = "worker".to_string();
+        crate::execution_plan::publish_initial_workflow(
+            &app.paths,
+            "task-retry",
+            "run-retry",
+            workflow.clone(),
+            WorkflowModelBindings::default(),
+        )
+        .unwrap();
+        let validated = validate_workflow_snapshot(workflow).unwrap();
+        let resolved_profiles =
+            resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)
+                .unwrap();
+        let mut run = app.run_status("task-retry", "run-retry").unwrap();
+        let (mut round, _) = current_attempt_state(&app, "task-retry", &run).unwrap();
+        let node = create_node_state(
+            &run.id,
+            &round.id,
+            "worker",
+            "attempt-002",
+            validated.get_node("worker").unwrap(),
+            None,
+        );
+        run.status = RunStatus::Running;
+        run.pause_reason = None;
+        run.transition_current_execution(
+            RuntimeExecutionPhase::StartingNode,
+            run.updated_at.clone(),
+        )
+        .unwrap();
+        round.status = RunStatus::Running;
+        persist_runtime_state(&app, "task-retry", &run, &round, &node).unwrap();
+
+        let settled = run_prepared_run_foreground(
+            &app,
+            "task-retry",
+            AcceptedRun {
+                data: PreparedRunData {
+                    validated,
+                    resolved_profiles,
+                    run,
+                    round,
+                    node,
+                },
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            settled.current_node.as_deref(),
+            Some("next"),
+            "the retry must reach the successor"
+        );
+        assert_eq!(
+            settled.status,
+            RunStatus::Paused,
+            "a successor panic must not leave an ownerless running run"
+        );
+        assert_eq!(settled.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(settled.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(settled.current_round.as_deref(), Some("round-retry"));
+        let (round, node) = current_attempt_state(&app, "task-retry", &settled).unwrap();
+        assert_eq!(round.status, RunStatus::Paused);
+        assert_eq!(node.status, RunStatus::Paused);
+        assert!(node.runtime_execution_id.is_none());
+        let journal =
+            std::fs::read_to_string(app.paths.run_events_file("task-retry", "run-retry")).unwrap();
+        let paused: serde_json::Value =
+            serde_json::from_str(journal.lines().last().unwrap()).unwrap();
+        assert_eq!(paused["type"], "run_paused");
+        assert_eq!(paused["data"]["nodeId"], "next");
+    }
+
+    struct SuccessorPanicProvider;
+
+    impl ProviderAdapter for SuccessorPanicProvider {
+        fn describe_provider(&self) -> ProviderInfo {
+            ProviderInfo {
+                provider_id: "claude-acp".to_string(),
+                display_name: "Successor panic test".to_string(),
+                capabilities: ProviderCapabilities {
+                    supports_open_session: true,
+                    supports_continue_session: true,
+                    supports_system_prompt: true,
+                    supports_raw_stream: false,
+                },
+                is_default: true,
+            }
+        }
+
+        fn doctor(&self) -> DoctorResult {
+            DoctorResult {
+                available: true,
+                error: None,
+                capabilities: None,
+            }
+        }
+
+        fn run_worker_with_runtime_callbacks(
+            &self,
+            req: WorkerInvocation,
+            _live_update: Option<crate::provider::AcpLiveUpdate<'_>>,
+            _session_update: Option<crate::provider::AcpSessionUpdate<'_>>,
+            prompt_accepted: Option<crate::provider::AcpPromptAccepted<'_>>,
+            _runtime_phase_update: Option<crate::provider::ProviderRuntimePhaseUpdate<'_>>,
+        ) -> Result<ProviderRunResult> {
+            if let Some(callback) = prompt_accepted {
+                callback("successor-panic-test")?;
+            }
+            self.run_worker(req)
+        }
+
+        fn run_worker(&self, req: WorkerInvocation) -> Result<ProviderRunResult> {
+            if req.runtime_context.node_id == "next" {
+                panic!("successor driver panic");
+            }
+            Ok(ProviderRunResult {
+                status: ProviderRunStatus::Success,
+                exit_code: Some(0),
+                result_payload: None,
+                worker_ref_seed: Some(SessionRef {
+                    provider: "claude-acp".to_string(),
+                    mode: SessionMode::New,
+                    supports_open_session: true,
+                    supports_continue_session: true,
+                    continue_ref: Some(serde_json::json!({ "acpSessionId": "retry-worker" })),
+                    open_command: None,
+                }),
+                stream_path: None,
+                runtime_error: None,
+                runtime_control_output: None,
+            })
+        }
+
+        fn open_session(&self, _worker_ref: &SessionRef) -> Result<()> {
+            Ok(())
+        }
+        fn build_continue_command(&self, _worker_ref: &SessionRef) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
     fn duplicate_retry_submission_returns_the_committed_successor_without_allocating_again() {
         let temp = tempdir().unwrap();
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
@@ -19215,7 +19367,14 @@ mod tests {
             outcome: None,
             trigger: RoundTrigger::Initial,
             started_at: "2026-08-06T00:00:00Z".to_string(),
-            trace: Vec::new(),
+            trace: vec![round_trace_step(
+                1,
+                "worker",
+                "attempt-001",
+                None,
+                None,
+                run.started_at.clone(),
+            )],
             uuid: None,
         };
         let current_node = NodeState {

@@ -123,6 +123,8 @@
 
 `currentRound/currentNode/currentAttempt` 三元组是跨 `node.json -> round.json -> run.json` 当前位置转移和新 trace step 的 durable commit marker，不是同 locator 内部状态更新的通用事务 revision。`round.trace`、attempt 目录和事件日志都不能反向覆盖该三元组。读取当前 round 的 trace 时，Graph、执行上下文、恢复和历史投影只能消费截至该 locator 的 canonical 前缀。目标 round 的 `index` 严格小于当前 round 时，必须为 `completed` 并消费完整已校验 trace，否则是损坏状态；`index` 更大的 round 是未提交/孤立状态并忽略；相同 `index` 却不是 current round 则是 identity 冲突。若当前 round 的 trace 不包含唯一匹配的 current locator，活动 Run 必须判定为状态损坏并拒绝继续写入，不能猜测 trace 尾部。
 
+会话树中每个节点及其 attempts 同样以该 commit marker 限定的 trace 为成员事实源，目录存在不代表已提交。后台 driver 推进后，异常收敛使用它当前持有的完整 locator 和 execution owner，不能把初始节点快照当作整个 Run 生命周期内固定不变的 owner；迟到失败继续由现有 execution identity 校验拦截，不增加持久字段。
+
 ### `acceptanceLoopsUsed`
 - 类型：number
 - 含义：当前 run 已实际消耗的 acceptance loop 次数

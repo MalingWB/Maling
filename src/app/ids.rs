@@ -77,17 +77,18 @@ pub(crate) fn next_dynamic_resume_request_id() -> String {
 
 /// Atomically reserves the next attempt directory for a node.
 ///
-/// The current attempt is the normal starting point. A leftover directory
+/// The committed target attempt is the normal starting point, or `None` for
+/// a node's first execution. A leftover directory
 /// from a crashed submission is skipped by the filesystem's exclusive
 /// `create_dir` operation, so numbering holes are harmless and no directory
 /// scan is needed on the uncontended path.
 pub(crate) fn reserve_next_attempt_dir(
     node_dir: &Utf8Path,
-    current_attempt_id: &str,
+    current_attempt_id: Option<&str>,
 ) -> Result<(String, Utf8PathBuf)> {
     fs::create_dir_all(node_dir.as_std_path())?;
     let mut next = current_attempt_id
-        .strip_prefix("attempt-")
+        .and_then(|attempt_id| attempt_id.strip_prefix("attempt-"))
         .and_then(|value| value.parse::<u32>().ok())
         .unwrap_or_default()
         .saturating_add(1)
@@ -102,27 +103,6 @@ pub(crate) fn reserve_next_attempt_dir(
             }
             Err(error) => return Err(error.into()),
         }
-    }
-}
-
-pub(crate) fn latest_attempt_id(node_dir: &Utf8Path) -> Result<Option<String>> {
-    if !node_dir.exists() {
-        return Ok(None);
-    }
-    let mut max_id = 0_u32;
-    for entry in fs::read_dir(node_dir.as_std_path())? {
-        let entry = entry?;
-        if let Some(name) = entry.file_name().to_str()
-            && let Some(number) = name.strip_prefix("attempt-")
-            && let Ok(parsed) = number.parse::<u32>()
-        {
-            max_id = max_id.max(parsed);
-        }
-    }
-    if max_id == 0 {
-        Ok(None)
-    } else {
-        Ok(Some(format!("attempt-{max_id:03}")))
     }
 }
 
@@ -233,12 +213,25 @@ mod tests {
     }
 
     #[test]
+    fn reserve_first_attempt_dir_uses_the_target_node_sequence() {
+        let dir = TempDir::new().unwrap();
+        let node_dir = camino::Utf8Path::from_path(dir.path()).unwrap();
+        std::fs::create_dir_all(node_dir.join("attempt-999")).unwrap();
+
+        let (attempt_id, attempt_dir) = reserve_next_attempt_dir(node_dir, None).unwrap();
+
+        assert_eq!(attempt_id, "attempt-001");
+        assert!(attempt_dir.exists());
+    }
+
+    #[test]
     fn reserve_next_attempt_dir_skips_crash_leftovers_without_scanning_maximum() {
         let dir = TempDir::new().unwrap();
         let node_dir = camino::Utf8Path::from_path(dir.path()).unwrap();
         std::fs::create_dir_all(node_dir.join("attempt-002")).unwrap();
 
-        let (attempt_id, attempt_dir) = reserve_next_attempt_dir(node_dir, "attempt-001").unwrap();
+        let (attempt_id, attempt_dir) =
+            reserve_next_attempt_dir(node_dir, Some("attempt-001")).unwrap();
 
         assert_eq!(attempt_id, "attempt-003");
         assert!(attempt_dir.exists());
@@ -258,7 +251,7 @@ mod tests {
                 let allocated = allocated.clone();
                 std::thread::spawn(move || {
                     let (attempt_id, attempt_dir) =
-                        reserve_next_attempt_dir(&node_dir, "attempt-001").unwrap();
+                        reserve_next_attempt_dir(&node_dir, Some("attempt-001")).unwrap();
                     assert!(attempt_dir.exists());
                     allocated.lock().unwrap().push(attempt_id);
                 })

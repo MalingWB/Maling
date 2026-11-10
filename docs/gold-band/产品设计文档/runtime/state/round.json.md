@@ -101,8 +101,10 @@ canonical 读取规则：
 - `node -> round -> run` 多文件提交在 round 已写、run 未写时可能留下未提交尾部；该尾部不得驱动执行、显示为 running 或进入 predecessor 上下文，下一次同 round 写入必须先丢弃该尾部。
 - current step 缺失、重复，或 sequence 非严格递增时属于损坏状态；不得使用目录最大 attempt、最后一个 trace step 或显示顺序猜测 current。
 - 当前节点 retry 在 canonical 前缀后追加同 node 的新 step，`edgeOutcome=retry`；相邻的 expected step 与 retry step 可用于识别同一请求的幂等重投。
+- 会话树的节点集合、各节点最新状态、attempt 列表及 session 续接关系必须由同一 canonical trace 投影。按 trace locator 精确读取并校验 `node.json`，保留 trace 顺序；预留空目录、孤立 node 文件和未提交 trace 尾部都不进入会话树或 active sessions。已提交 locator 对应文件缺失或身份不匹配时返回错误，不回退到物理目录猜测。
+- 查询单个历史 round 的会话续接关系时，必须同时提供 `run.currentRound` 的上下文；只消费目标 round 的 canonical trace。读取目标与当前两个 round 即可，不为一次历史会话查询扫描其他 round 的节点或会话正文。
 
-兼容规则：旧 `round.json` 可以缺少 `trace`，runtime 反序列化时按空数组处理；桌面端旧数据 fallback 只允许用于只读历史展示，不能授权 retry、continue、恢复或其他写操作。
+缺失 `trace` 的旧 `round.json` 仍可反序列化为空数组，但不能据此绕过 current locator 校验，也不能通过目录扫描重建 Workflow/AUTO 会话树。Direct 不使用 Workflow trace 授权，继续使用其既有会话读取契约。
 
 ---
 

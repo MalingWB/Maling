@@ -122,7 +122,8 @@ edge target 规则：
 ## 4. session 继承
 - `session=new`：目标 worker 新开会话。
 - `session=continue`：仅当目标 provider 支持 continue session 时可用。
-- continue ref 来自目标 worker 节点当前最新 attempt 的 worker ref；找不到时降级为普通新会话上下文。
+- continue ref 来自当前 round 的 canonical trace 中目标 worker 最后一个已提交 attempt 的 worker ref；必须在预留新 attempt 目录前解析，不能用物理目录最大编号查找。目标从未执行或已提交 attempt 没有 continue ref 时，使用普通新会话上下文。
+- 新 attempt 编号属于目标节点自己的序列：目标首次执行从 `attempt-001` 开始，后续从目标最后一个已提交 attempt 递增；原子目录预留只用于跳过冲突/崩溃遗留目录，不把源节点编号或孤立目录当作执行历史。
 - 上一节点的 primary/output artifact 可作为 feedback summary 进入下一次 worker 调用。
 
 ACP invocation 的 continue prompt state 由 runtime 统一决策，普通 workflow worker 与 AI-DYNAMIC 内部 worker / acceptance / merge 复用同一套规则：
@@ -178,6 +179,8 @@ ACP 会话传输与 Runtime 控制权转换必须正交建模。`SessionMode` �
 `runtime-abnormal` 与用户停止的 `process-interrupted` 都保留当前 run / round / node / attempt，并允许通过显式“继续工作流”动作恢复；区别是前者需要以异常视觉提醒用户排查本地、协议层或 provider/config 条件。暂停期间输入区继续提供 NonRuntime 普通对话，独立 continue action 才恢复 Runtime。用户点击继续且后端接受后，会话输入区立即进入 runtime 控制态并保持锁定，直到 runtime active、停止中、错误或下一次可交互暂停事实到达；后台写入 running 文件前残留的旧 paused UI snapshot 不得让输入区短暂降级。错误分类优先使用 runtime 内部 typed error 与 source chain 中的 `std::io::Error` / transport error；只有 adapter、ACP 或第三方库没有稳定错误类型时，才允许在统一 normalization 层用字符串特征作为最后兜底。
 
 后台失败收敛成功后，状态写入方返回本次已提交的暂停时间；错误事件与生命周期投影复用同一时间，不在发布时重新取时钟。迟到错误遇到已暂停的同一 attempt 时，沿用已存 `Run.updated_at`，不能把诊断时间当作新的状态转换。Direct 后台 Stop 的 `expiresAtMs` 是单调时钟活动窗口到壁钟的显示投影，session 与 connection generation 才是操作身份；分次读取按采样区间和毫秒舍入验证，不要求投影时间逐字相等。
+
+新 Run 与当前节点 retry 共用后台驱动。driver 在进入后继节点或新 round 后，必须同步更新自己持有的 run、round、node；后续 error/panic 只按这组当前 locator 与 `runtime_execution_id` 收敛实际拥有的执行，不得始终使用最初启动节点。仍需保留 stale owner 防护，用户已停止或新 execution 已接管时，旧 driver 不得改写新事实。
 
 ### 8.1 用户停止优先级与 ACP 收尾
 

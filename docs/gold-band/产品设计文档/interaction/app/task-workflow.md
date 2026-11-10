@@ -272,9 +272,13 @@ Round 详情页的实际工作图是运行排障的主入口。用户单击节�
 
 状态提交顺序沿用 node -> round -> run：锁内先按旧 current locator 截断 `round.trace` 为 canonical 前缀，再分配下一个 attempt、创建 fresh node state、更新 current pointer、清理暂停原因并追加 retry step。`run.current_round/current_node/current_attempt` 是本次当前位置转移和新 trace step 的 durable commit marker，不是同 locator 状态更新的通用 revision；当前 round 的图、历史、恢复和执行上下文都按该 locator 截断 trace，已完成的更早 round 则使用完整已校验 trace。不能从当前 trace 尾部猜测 attempt。只有 run 文件成功原子替换并指向新 locator 后才算 accepted。
 
+会话树只展示 canonical trace 引用的节点和 attempts，节点状态来自该节点最后一个已提交 attempt。创建新 attempt 过程中留下的空目录、孤立文件和未提交尾部不得隐藏旧会话或显示额外的运行中会话；已提交节点文件损坏则明确返回读取错误。浏览历史 round 时，后端同时读取当前 round 上下文，进入新 round 后仍可打开之前的会话。
+
 新 attempt ID 通过共享目录预留 helper 原子创建：从 current attempt 的下一编号开始，已存在则递增重试，允许崩溃遗留目录造成编号空洞；不得依赖“扫描最大编号后再创建”的竞态窗口。该手动重试不改变 Workflow Control 中 `max_attempts` 仅统计 failure 修复跳转的既有语义。
 
 命令返回 `RetryCurrentNodeAcceptedVm`：包含最新 Run summary、新 attempt 完整 locator 和稳定 `operationId`；幂等重投保持 `operationId + locator` 不变，Run summary 取重投时的最新权威状态。accepted 不表示后台已完成。后续执行交由后台驱动和既有 runtime candidate / interrupted 恢复语义；后台 spawn 失败必须只做一次 terminalize，不能留下永久 running 或返回第二个 accepted。结构化错误码集中管理，后端只返回 code 与 params，不生成对客文案。
+
+retry 成功进入后继节点后发生异常时，暂停和错误事件必须指向实际出错的当前节点；后台驱动持续跟踪自己的执行位置，并按现有 execution identity 防止迟到失败覆盖用户停止或新执行。
 
 前端运行图投影为每个节点提供 `retryable` 布尔值，由后端从同一纯生命周期 readiness 规则派生；`retryable=true` 只表示生命周期允许发起操作，不预先执行 Agent、profile、模型或 Git/worktree 的 executable preflight。只有 `retryable` 的当前节点显示可点击的“重试当前节点”；不可重试节点不显示该菜单项。点击后菜单关闭，节点显示目标级 pending 指示但不伪造 running 生命周期；请求 pending 按完整 locator 去重，成功后立即刷新当前 conversation run，后续交给既有 live event 收敛。
 
