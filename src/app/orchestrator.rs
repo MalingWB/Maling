@@ -2962,27 +2962,16 @@ pub(crate) fn run_continue_foreground(
     Ok(run)
 }
 
-pub(crate) fn run_continue_background(
+// Owns the fixed-run admission transition separately from provider launch.
+fn commit_fixed_run_continue(
     app: &App,
     task_id: &str,
     run_id: &str,
-    prompt_id: Option<String>,
-    input: Option<ConversationPromptInput>,
-    attachment_paths: Vec<String>,
-    model_override: Option<String>,
-    permission_mode_override: Option<String>,
-) -> Result<RunState> {
-    let continue_lease = FixedRunContinueLease::acquire(app, task_id, run_id)?;
-    let initial_run = app.run_status(task_id, run_id)?;
-    if !is_run_continuable(&initial_run) {
-        bail!("current run is not resumable by continue");
-    }
-    let (round, mut node) = current_attempt_state(app, task_id, &initial_run)?;
-    if node.manual_check_pending {
-        bail!("current attempt is waiting for manual check");
-    }
-    let execution_id = next_runtime_execution_id();
-    let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
+    round: &RoundState,
+    node: &mut NodeState,
+    execution_id: &str,
+) -> Result<RuntimeResumeMetricsContext> {
+    let runtime_candidate;
     let resume_metrics_context;
     {
         let state_lock = super::attempt_runtime_state_lock(
@@ -3002,9 +2991,20 @@ pub(crate) fn run_continue_background(
                 && current_run.current_round.as_deref() == Some(round.id.as_str())
                 && current_run.current_node.as_deref() == Some(node.node_id.as_str())
                 && current_run.current_attempt.as_deref() == Some(node.attempt_id.as_str()),
-            "current run is not resumable by continue"
+            runtime_error(manual_runtime_error_info(
+                RuntimeErrorDomain::Workflow,
+                "runtime.continue-superseded",
+                "runtime continue was superseded before admission",
+                serde_json::json!({
+                    "taskId": task_id,
+                    "runId": run_id,
+                    "roundId": round.id,
+                    "nodeId": node.node_id,
+                    "attemptId": node.attempt_id,
+                }),
+            ))
         );
-        node = read_json(&app.paths.node_file(
+        *node = read_json(&app.paths.node_file(
             task_id,
             run_id,
             &round.id,
@@ -3017,7 +3017,7 @@ pub(crate) fn run_continue_background(
                 && !node.manual_check_pending,
             "current attempt is not resumable by continue"
         );
-        node.runtime_execution_id = Some(execution_id.clone());
+        node.runtime_execution_id = Some(execution_id.to_string());
         let previous_pause_reason = current_run
             .pause_reason
             .ok_or_else(|| anyhow!("continuable run is missing its pause reason"))?;
@@ -3031,6 +3031,9 @@ pub(crate) fn run_continue_background(
             } else {
                 RuntimeExecutionPhase::StartingNode
             };
+        // A losing continue must reject before it can replace another execution's
+        // recovery token. Retry uses this same attempt lock for its locator CAS.
+        runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
         current_run.status = RunStatus::Running;
         current_run.pause_reason = None;
         current_run.updated_at = resumed_at.clone();
@@ -3058,6 +3061,31 @@ pub(crate) fn run_continue_background(
     if let Some(runtime_candidate) = runtime_candidate {
         runtime_candidate.commit();
     }
+    Ok(resume_metrics_context)
+}
+
+pub(crate) fn run_continue_background(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    prompt_id: Option<String>,
+    input: Option<ConversationPromptInput>,
+    attachment_paths: Vec<String>,
+    model_override: Option<String>,
+    permission_mode_override: Option<String>,
+) -> Result<RunState> {
+    let continue_lease = FixedRunContinueLease::acquire(app, task_id, run_id)?;
+    let initial_run = app.run_status(task_id, run_id)?;
+    if !is_run_continuable(&initial_run) {
+        bail!("current run is not resumable by continue");
+    }
+    let (round, mut node) = current_attempt_state(app, task_id, &initial_run)?;
+    if node.manual_check_pending {
+        bail!("current attempt is waiting for manual check");
+    }
+    let execution_id = next_runtime_execution_id();
+    let resume_metrics_context =
+        commit_fixed_run_continue(app, task_id, run_id, &round, &mut node, &execution_id)?;
     let background_app = app.clone_for_background();
     let task_uuid = initial_run.task_uuid.clone();
     let task_id = task_id.to_string();
@@ -3193,7 +3221,7 @@ pub(crate) fn run_recover_completed_background(
     let resolved_profiles =
         resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
 
-    let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
+    let runtime_candidate;
     let state_lock =
         super::attempt_runtime_state_lock(app, task_id, run_id, round_id, node_id, attempt_id);
     let mut run;
@@ -3220,6 +3248,7 @@ pub(crate) fn run_recover_completed_background(
             "current completed attempt is not recoverable"
         );
 
+        runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
         node.runtime_execution_id = Some(next_runtime_execution_id());
         run.status = RunStatus::Running;
         run.outcome = None;
@@ -3929,8 +3958,13 @@ pub(crate) fn retry_current_node(
         }
     }
 
-    let workflow = load_run_workflow(app, task_id, run_id)
-        .map_err(|error| retry_state_error(task_id, run_id, &error))?;
+    // Load outside the dispatch lock so legacy plan migration and executable
+    // preflight never wait for a write lock or call providers inside that lock.
+    let plan = crate::execution_plan::load_current(&app.paths, task_id, run_id)
+        .map_err(|error| retry_state_error(task_id, run_id, &error.into()))?;
+    let expected_plan_revision = plan.plan_revision;
+    let workflow = crate::execution_plan::workflow_from_snapshot(&plan);
+    drop(plan);
     let validated = validate_workflow_snapshot(workflow)
         .map_err(|error| retry_state_error(task_id, run_id, &error.into()))?;
     if workflow_contains_ai_dynamic(&validated.raw) {
@@ -3945,6 +3979,10 @@ pub(crate) fn retry_current_node(
             .map_err(|error| retry_state_error(task_id, run_id, &error))?;
 
     let (accepted, runtime_candidate, committed_round, committed_node) = {
+        // Match successor dispatch lock order: execution plan, then attempt.
+        // The validated plan stays current until the new attempt is committed.
+        let dispatch_key = crate::execution_plan::lock_key(&app.paths, task_id, run_id);
+        let _dispatch_guard = crate::execution_plan::acquire_dispatch_read(&dispatch_key)?;
         let _guard = state_lock
             .lock()
             .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
@@ -3969,6 +4007,18 @@ pub(crate) fn retry_current_node(
         let readiness = current_node_retry_readiness(&run, &node, workflow_mode);
         if readiness != CurrentNodeRetryReadiness::Ready {
             return Err(retry_readiness_error(readiness, task_id, run_id));
+        }
+
+        let current_plan = crate::execution_plan::load_current(&app.paths, task_id, run_id)?;
+        if current_plan.plan_revision != expected_plan_revision {
+            return Err(crate::execution_plan::ExecutionPlanError::new(
+                crate::execution_plan::error::REVISION_CONFLICT,
+                serde_json::json!({
+                    "expectedPlanRevision": expected_plan_revision,
+                    "planRevision": current_plan.plan_revision,
+                }),
+            )
+            .into());
         }
 
         let node_dsl = validated.get_node(expected_node_id).ok_or_else(|| {
@@ -17494,7 +17544,14 @@ mod tests {
             outcome: None,
             trigger: RoundTrigger::Initial,
             started_at: started_at.clone(),
-            trace: Vec::new(),
+            trace: vec![round_trace_step(
+                1,
+                "dev",
+                "attempt-001",
+                None,
+                None,
+                started_at.clone(),
+            )],
             uuid: None,
         };
         let node = super::super::state_factory::create_node_state(
@@ -19228,6 +19285,494 @@ mod tests {
         }
     }
 
+    struct RetryAdmissionProvider {
+        invocations: mpsc::Sender<WorkerInvocation>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl ProviderAdapter for RetryAdmissionProvider {
+        fn describe_provider(&self) -> ProviderInfo {
+            SuccessorPanicProvider.describe_provider()
+        }
+
+        fn doctor(&self) -> DoctorResult {
+            SuccessorPanicProvider.doctor()
+        }
+
+        fn run_worker_with_runtime_callbacks(
+            &self,
+            req: WorkerInvocation,
+            _live_update: Option<crate::provider::AcpLiveUpdate<'_>>,
+            _session_update: Option<crate::provider::AcpSessionUpdate<'_>>,
+            prompt_accepted: Option<crate::provider::AcpPromptAccepted<'_>>,
+            _runtime_phase_update: Option<crate::provider::ProviderRuntimePhaseUpdate<'_>>,
+        ) -> Result<ProviderRunResult> {
+            if let Some(callback) = prompt_accepted {
+                callback("retry-admission-test")?;
+            }
+            self.run_worker(req)
+        }
+
+        fn run_worker(&self, req: WorkerInvocation) -> Result<ProviderRunResult> {
+            self.invocations.send(req.clone())?;
+            self.release.lock().unwrap().recv()?;
+            SuccessorPanicProvider.run_worker(req)
+        }
+
+        fn open_session(&self, _worker_ref: &SessionRef) -> Result<()> {
+            Ok(())
+        }
+
+        fn build_continue_command(&self, _worker_ref: &SessionRef) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    const RETRY_ADMISSION_TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+    fn retry_admission_diagnostics() -> BTreeMap<String, ProviderDiagnosticSnapshot> {
+        BTreeMap::from([(
+            "claude-acp".to_string(),
+            ProviderDiagnosticSnapshot {
+                config_fingerprint: None,
+                available: true,
+                error: None,
+                checked_at: "2026-11-10T00:00:00Z".to_string(),
+                capabilities: None,
+            },
+        )])
+    }
+
+    fn retry_admission_test_app(
+        repo_root: Utf8PathBuf,
+    ) -> (
+        App,
+        mpsc::Receiver<WorkerInvocation>,
+        mpsc::Sender<()>,
+        mpsc::Receiver<()>,
+    ) {
+        let (invocation_sender, invocations) = mpsc::channel();
+        let (release, release_receiver) = mpsc::channel();
+        let (settled_sender, settled) = mpsc::channel();
+        let app = App::with_provider(
+            repo_root,
+            Box::new(RetryAdmissionProvider {
+                invocations: invocation_sender,
+                release: Mutex::new(release_receiver),
+            }),
+        )
+        .with_provider_diagnostics_source(Arc::new(|| Ok(retry_admission_diagnostics())))
+        .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+            if matches!(
+                event,
+                RuntimeLifecycleEvent::RunCompleted { .. }
+                    | RuntimeLifecycleEvent::RunPaused { .. }
+            ) {
+                let _ = settled_sender.send(());
+            }
+        }));
+        write_workflow_retry_fixture(&app, "attempt-001", PauseReason::RuntimeAbnormal);
+        write_json(
+            &app.paths.task_file("task-retry"),
+            &TaskState {
+                version: VERSION.to_string(),
+                id: "task-retry".to_string(),
+                title: None,
+                description: None,
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let mut workflow = dispatch_plan_workflow(
+            vec![dispatch_plan_worker(
+                "worker",
+                "original-goal",
+                "original-model",
+                None,
+            )],
+            vec![dispatch_plan_edge("worker", "$end")],
+        );
+        workflow.entry = "worker".to_string();
+        crate::execution_plan::publish_initial_workflow(
+            &app.paths,
+            "task-retry",
+            "run-retry",
+            workflow,
+            WorkflowModelBindings::default(),
+        )
+        .unwrap();
+        (app, invocations, release, settled)
+    }
+
+    #[test]
+    fn retry_preserves_recovery_candidate_when_an_inflight_continue_loses_the_locator() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let (app, invocations, release, settled) = retry_admission_test_app(repo_root);
+        let coordinator = crate::app::RuntimeRecoveryCoordinator::new(
+            Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+        );
+        coordinator
+            .complete_startup_recovery(HashSet::new())
+            .unwrap();
+        let app = app.with_runtime_recovery(coordinator.clone());
+
+        // A continue has completed its initial reads and is delayed before admission.
+        // These are the same lease and transition used by run_continue_background.
+        let _continue_lease =
+            FixedRunContinueLease::acquire(&app, "task-retry", "run-retry").unwrap();
+        let paused = app.run_status("task-retry", "run-retry").unwrap();
+        let (round, mut old_node) = current_attempt_state(&app, "task-retry", &paused).unwrap();
+        let accepted = app
+            .retry_current_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap();
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        let expected_token = accepted
+            .run
+            .execution
+            .recovery_candidate_token
+            .as_deref()
+            .unwrap();
+
+        let rejected = commit_fixed_run_continue(
+            &app,
+            "task-retry",
+            "run-retry",
+            &round,
+            &mut old_node,
+            &next_runtime_execution_id(),
+        );
+        let persisted = coordinator.list_persisted_candidates().unwrap();
+        let active = coordinator.begin_shutdown().unwrap();
+        let current = app.run_status("task-retry", "run-retry").unwrap();
+
+        release.send(()).unwrap();
+        settled.recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT).unwrap();
+        assert_eq!(
+            normalize_runtime_error(&rejected.unwrap_err()).code_str(),
+            "runtime.continue-superseded",
+        );
+        assert_eq!(current.current_attempt, accepted.run.current_attempt);
+        assert_eq!(
+            current.execution.recovery_candidate_token.as_deref(),
+            Some(expected_token)
+        );
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(
+            persisted[0].candidate_token, expected_token,
+            "stale admission must not overwrite the durable recovery candidate"
+        );
+        assert_eq!(
+            active.len(),
+            1,
+            "shutdown must still see the accepted retry"
+        );
+        assert_eq!(active[0].candidate_token, expected_token);
+    }
+
+    #[test]
+    fn retry_rejects_an_admitted_continue_without_changing_its_recovery_candidate() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let (app, invocations, _release, _settled) = retry_admission_test_app(repo_root);
+        let coordinator = crate::app::RuntimeRecoveryCoordinator::new(
+            Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+        );
+        coordinator
+            .complete_startup_recovery(HashSet::new())
+            .unwrap();
+        let app = app.with_runtime_recovery(coordinator.clone());
+        let paused = app.run_status("task-retry", "run-retry").unwrap();
+        let (round, mut node) = current_attempt_state(&app, "task-retry", &paused).unwrap();
+        commit_fixed_run_continue(
+            &app,
+            "task-retry",
+            "run-retry",
+            &round,
+            &mut node,
+            &next_runtime_execution_id(),
+        )
+        .unwrap();
+        let continued = app.run_status("task-retry", "run-retry").unwrap();
+        let error = app
+            .retry_current_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "workflow.retry.run-active"
+        );
+        let persisted = coordinator.list_persisted_candidates().unwrap();
+        let active = coordinator.begin_shutdown().unwrap();
+        let expected_token = continued
+            .execution
+            .recovery_candidate_token
+            .as_deref()
+            .unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(active.len(), 1);
+        assert_eq!(persisted[0].candidate_token, expected_token);
+        assert_eq!(active[0].candidate_token, expected_token);
+        assert!(
+            !app.paths
+                .attempt_dir(
+                    "task-retry",
+                    "run-retry",
+                    "round-retry",
+                    "worker",
+                    "attempt-002"
+                )
+                .exists()
+        );
+        assert!(matches!(
+            invocations.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        app.run_pause("task-retry", "run-retry", PauseReason::ProcessInterrupted)
+            .unwrap();
+    }
+
+    #[test]
+    fn retry_preserves_recovery_candidate_when_a_stale_completed_recovery_is_rejected() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let (app, invocations, release, settled) = retry_admission_test_app(repo_root);
+        let coordinator = crate::app::RuntimeRecoveryCoordinator::new(
+            Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+        );
+        coordinator
+            .complete_startup_recovery(HashSet::new())
+            .unwrap();
+        let app = app.with_runtime_recovery(coordinator.clone());
+        let paused = app.run_status("task-retry", "run-retry").unwrap();
+        let accepted = app
+            .retry_current_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap();
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        let rejected = run_recover_completed_background(
+            &app,
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-001",
+            paused.execution.revision,
+        );
+        let persisted = coordinator.list_persisted_candidates().unwrap();
+        let active = coordinator.begin_shutdown().unwrap();
+        release.send(()).unwrap();
+        settled.recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT).unwrap();
+        assert!(rejected.is_err());
+        let expected_token = accepted
+            .run
+            .execution
+            .recovery_candidate_token
+            .as_deref()
+            .unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(active.len(), 1);
+        assert_eq!(persisted[0].candidate_token, expected_token);
+        assert_eq!(active[0].candidate_token, expected_token);
+    }
+
+    #[test]
+    fn concurrent_retry_submissions_share_one_attempt_and_one_provider_invocation() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let (app, invocations, release, settled) = retry_admission_test_app(repo_root);
+        let preflight = std::sync::Barrier::new(2);
+        let preflight_calls = std::sync::atomic::AtomicUsize::new(0);
+        let app = app.with_provider_diagnostics_source(Arc::new(move || {
+            if preflight_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                preflight.wait();
+            }
+            Ok(retry_admission_diagnostics())
+        }));
+        let (first, duplicate) = thread::scope(|scope| {
+            let submit = || {
+                app.retry_current_node(
+                    "task-retry",
+                    "run-retry",
+                    "round-retry",
+                    "worker",
+                    "attempt-001",
+                )
+            };
+            let first = scope.spawn(submit);
+            let duplicate = scope.spawn(submit);
+            (
+                first.join().unwrap().unwrap(),
+                duplicate.join().unwrap().unwrap(),
+            )
+        });
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        release.send(()).unwrap();
+        settled.recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT).unwrap();
+        assert_eq!(first.operation_id, duplicate.operation_id);
+        assert_eq!(first.locator.attempt_id, "attempt-002");
+        assert_eq!(duplicate.locator.attempt_id, "attempt-002");
+        assert!(
+            !app.paths
+                .attempt_dir(
+                    "task-retry",
+                    "run-retry",
+                    "round-retry",
+                    "worker",
+                    "attempt-003"
+                )
+                .exists()
+        );
+        assert!(matches!(
+            invocations.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn retry_rejects_a_plan_published_during_preflight_and_reuses_the_latest_on_resubmission() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let (app, invocations, release, settled) = retry_admission_test_app(repo_root);
+        let paths = app.paths.clone();
+        let mut updated = load_run_workflow(&app, "task-retry", "run-retry").unwrap();
+        updated.nodes = vec![dispatch_plan_worker(
+            "worker",
+            "published-goal",
+            "published-model",
+            None,
+        )];
+        let published = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let published_in_preflight = published.clone();
+        let app = app.with_provider_diagnostics_source(Arc::new(move || {
+            if !published_in_preflight.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                crate::execution_plan::publish_revision_checked(
+                    &paths,
+                    "task-retry",
+                    "run-retry",
+                    1,
+                    crate::execution_plan::ExecutionPlanRunMode::Workflow,
+                    0,
+                    crate::execution_plan::ExecutionPlanPayload::Workflow {
+                        workflow: updated.clone(),
+                        model_bindings: WorkflowModelBindings::default(),
+                    },
+                    |_| Ok(()),
+                )
+                .unwrap();
+            }
+            Ok(retry_admission_diagnostics())
+        }));
+
+        let result = app.retry_current_node(
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-001",
+        );
+        // Clean up the old implementation's accepted drive before reporting the regression.
+        if result.is_ok() {
+            invocations
+                .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+                .unwrap();
+            release.send(()).unwrap();
+            settled.recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT).unwrap();
+        }
+        let error = result.expect_err("a retry must not accept a stale execution plan");
+        let error = error
+            .downcast_ref::<crate::execution_plan::ExecutionPlanError>()
+            .unwrap();
+        assert_eq!(
+            error.code(),
+            crate::execution_plan::error::REVISION_CONFLICT
+        );
+        assert_eq!(error.context()["expectedPlanRevision"], 1);
+        assert_eq!(error.context()["planRevision"], 2);
+        assert!(published.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            app.run_status("task-retry", "run-retry")
+                .unwrap()
+                .current_attempt
+                .as_deref(),
+            Some("attempt-001")
+        );
+        assert!(
+            !app.paths
+                .attempt_dir(
+                    "task-retry",
+                    "run-retry",
+                    "round-retry",
+                    "worker",
+                    "attempt-002"
+                )
+                .exists()
+        );
+        assert!(matches!(
+            invocations.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        let accepted = app
+            .retry_current_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap();
+        let invocation = invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        // A running provider must not hold the dispatch lock. A later publication
+        // also cannot rewrite the config already captured by this attempt.
+        let current_plan =
+            crate::execution_plan::load_current(&app.paths, "task-retry", "run-retry").unwrap();
+        let published_while_running = crate::execution_plan::publish_revision_checked(
+            &app.paths,
+            "task-retry",
+            "run-retry",
+            2,
+            current_plan.run_mode,
+            0,
+            current_plan.payload,
+            |_| Ok(()),
+        );
+        release.send(()).unwrap();
+        settled.recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT).unwrap();
+        assert_eq!(published_while_running.unwrap().plan_revision, 3);
+        assert_eq!(accepted.locator.attempt_id, "attempt-002");
+        assert_eq!(invocation.model.as_deref(), Some("published-model"));
+        assert_eq!(
+            invocation.task_instruction.as_deref(),
+            Some("published-goal")
+        );
+        assert_eq!(invocation.session_mode, SessionMode::New);
+    }
+
     #[test]
     fn duplicate_retry_submission_returns_the_committed_successor_without_allocating_again() {
         let temp = tempdir().unwrap();
@@ -19813,7 +20358,14 @@ mod tests {
             outcome: None,
             trigger: RoundTrigger::Initial,
             started_at: "1Z".to_string(),
-            trace: Vec::new(),
+            trace: vec![round_trace_step(
+                1,
+                "review",
+                "attempt-002",
+                None,
+                None,
+                "1Z".to_string(),
+            )],
             uuid: None,
         };
         let node = NodeState {
@@ -19942,7 +20494,14 @@ mod tests {
             outcome: None,
             trigger: RoundTrigger::Initial,
             started_at: "1Z".to_string(),
-            trace: Vec::new(),
+            trace: vec![round_trace_step(
+                1,
+                "review",
+                "attempt-001",
+                None,
+                None,
+                "1Z".to_string(),
+            )],
             uuid: None,
         };
         let node = NodeState {
@@ -20067,7 +20626,14 @@ mod tests {
             outcome: None,
             trigger: RoundTrigger::Initial,
             started_at: "1Z".to_string(),
-            trace: Vec::new(),
+            trace: vec![round_trace_step(
+                1,
+                "review",
+                "attempt-001",
+                None,
+                None,
+                "1Z".to_string(),
+            )],
             uuid: None,
         };
         let original_node = NodeState {
@@ -20108,9 +20674,23 @@ mod tests {
         let mut replacement_run = original_run.clone();
         replacement_run.status = RunStatus::Running;
         replacement_run.pause_reason = None;
+        replacement_run
+            .transition_current_execution(RuntimeExecutionPhase::Transitioning, "2Z")
+            .unwrap();
         replacement_run.current_attempt = Some("attempt-002".to_string());
+        replacement_run
+            .transition_current_execution(RuntimeExecutionPhase::StartingNode, "2Z")
+            .unwrap();
         let mut replacement_round = original_round.clone();
         replacement_round.status = RunStatus::Running;
+        replacement_round.trace.push(round_trace_step(
+            2,
+            "review",
+            "attempt-002",
+            Some("review".to_string()),
+            Some("retry".to_string()),
+            "2Z".to_string(),
+        ));
         let mut replacement_node = original_node.clone();
         replacement_node.attempt_id = "attempt-002".to_string();
         replacement_node.status = RunStatus::Running;
@@ -20324,7 +20904,14 @@ mod tests {
             outcome: None,
             trigger: RoundTrigger::Initial,
             started_at: now.clone(),
-            trace: Vec::new(),
+            trace: vec![round_trace_step(
+                1,
+                "ai-dynamic",
+                "attempt-001",
+                None,
+                None,
+                now.clone(),
+            )],
             uuid: None,
         };
         let node = NodeState {

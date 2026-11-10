@@ -6970,7 +6970,14 @@ mod tests {
             outcome: None,
             trigger: RoundTrigger::Initial,
             started_at: "2026-08-10T00:00:00Z".to_string(),
-            trace: Vec::new(),
+            trace: vec![crate::runtime::RoundTraceStep {
+                sequence: 1,
+                node_id: "worker".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                from_node_id: None,
+                edge_outcome: None,
+                entered_at: "2026-08-10T00:00:00Z".to_string(),
+            }],
             uuid: None,
         };
         let node = NodeState {

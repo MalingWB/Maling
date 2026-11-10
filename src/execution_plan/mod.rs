@@ -19,7 +19,9 @@ pub use store::{
 };
 
 pub(crate) use guard::{affected_node_ids, current_run_editable, evaluate_current_workflow};
-pub(crate) use lock::{authoring_lock_key, try_acquire_plan_write, with_dispatch_read};
+pub(crate) use lock::{
+    acquire_dispatch_read, authoring_lock_key, try_acquire_plan_write, with_dispatch_read,
+};
 pub(crate) use store::{
     ai_dynamic_node_for_dispatch_under_lock, current_guard, lock_key, outcome_label, payload_eq,
     publish_revision_checked, read_authoring_revision, read_operation_commit, read_run_state,

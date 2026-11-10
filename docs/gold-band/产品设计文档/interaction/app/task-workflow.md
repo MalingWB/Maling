@@ -264,11 +264,15 @@ Round 详情页的实际工作图是运行排障的主入口。用户单击节�
 - 节点是当前 canonical 外层普通 Workflow 节点，且存在稳定 attempt locator；当前 Run 尚未进入终态。
 - 当前 Run 必须为 `Paused + RuntimeAbnormal`，且当前 node 为 `Paused + outcome=null`、没有仍在推进的 runtime execution。`ErrorBlocked` 第一阶段一律不得用重试绕过；修复 workflow、profile、Agent、Git、DSL、continuation identity 或 runtime invariant 后创建 successor/new run。
 - 当前 attempt 没有 `manual_check_pending`；人工检查必须先被显式处理，不能用重试绕过。
-- 运行时 workflow snapshot、Agent、profile 与 Git/worktree 能力校验通过。
+- 当前 Run 已发布的 execution plan、Agent、profile 与 Git/worktree 能力校验通过。
 - `Completed + Success/Failure` 均不提供当前节点重试；已完成 Run 需要使用 successor run / handoff 能力。
 - `Paused + RuntimeAbnormal` 但当前 node 已 `Completed + Success` 时使用既有 `recover-completed-attempt`，不创建新 attempt。
 
 命令契约使用 `retry_current_node(projectId, taskId, runId, expectedRoundId, expectedNodeId, expectedAttemptId)`。`expected` locator 是 durable CAS 条件：后端在旧 attempt 锁内重读权威状态，三者完全匹配才允许创建新 attempt；进程内锁只负责同一桌面 runtime instance 的临界区串行化，不能冒充跨进程 CAS。若 current attempt 已是 expected attempt 在 canonical trace 中的直接 retry successor，则把请求视为首次提交的幂等重投，返回同一 `operationId + locator` 与当前最新 Run 摘要；其他不匹配返回 `workflow.retry.stale-locator`，前端刷新最新 run，不得自动再次提交。终态 Run 和 ErrorBlocked 分别返回 `workflow.retry.run-terminal`、`workflow.retry.error-blocked`。重复点击、并发请求和响应丢失后的同一请求最多创建一个新 attempt。
+
+重试使用当前 Run 的 execution plan。后端在锁外按该版本完成预检，提交时按 plan read lock → attempt lock 复核版本并持锁到状态落盘。预检期间发布新版本时，返回既有 `conversation.execution-plan.revision-conflict`，不创建 attempt；刷新后重新提交使用新计划。幂等命中仍优先返回已接受操作，不因后续计划更新重复执行。新 attempt 创建后，其调用配置不随计划更新回写。
+
+“继续”、completed-attempt recovery 与 retry 在登记恢复候选前必须先复核各自的权威位置和状态。Continue 先提交时 retry 被 RunActive 拒绝；retry 先提交时迟到 Continue 或旧 completed recovery 被拒绝。失败请求不能覆盖或清理已接受执行的恢复 token，确保正常退出和重启仍能定位活跃 Run。
 
 状态提交顺序沿用 node -> round -> run：锁内先按旧 current locator 截断 `round.trace` 为 canonical 前缀，再分配下一个 attempt、创建 fresh node state、更新 current pointer、清理暂停原因并追加 retry step。`run.current_round/current_node/current_attempt` 是本次当前位置转移和新 trace step 的 durable commit marker，不是同 locator 状态更新的通用 revision；当前 round 的图、历史、恢复和执行上下文都按该 locator 截断 trace，已完成的更早 round 则使用完整已校验 trace。不能从当前 trace 尾部猜测 attempt。只有 run 文件成功原子替换并指向新 locator 后才算 accepted。
 
