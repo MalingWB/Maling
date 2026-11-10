@@ -65,10 +65,14 @@ describe('embedded website demo navigation', () => {
     await act(async () => host.querySelector<HTMLAnchorElement>('nav a[href="/zh/documentation"]')!.click());
     expect(location.pathname).toBe('/zh/documentation');
     expect(host.querySelector('header nav a[aria-current="page"]')?.textContent).toBe('文档');
-    await vi.waitFor(async () => {
-      await act(async () => {});
-      expect(host.querySelector('.docs-content')?.getAttribute('data-state')).toBe('ready');
+    // Loading the page starts a second import for the selected Markdown document.
+    await act(async () => {
+      await vi.dynamicImportSettled();
     });
+    await act(async () => {
+      await vi.dynamicImportSettled();
+    });
+    expect(host.querySelector('.docs-content')?.getAttribute('data-state')).toBe('ready');
     expect(host.querySelector('.knowledge-markdown')?.textContent?.trim()).toBeTruthy();
     expect(host.querySelector('iframe')).toBeNull();
   });
