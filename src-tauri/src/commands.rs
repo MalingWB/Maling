@@ -5265,9 +5265,8 @@ pub async fn submit_manual_check(
 }
 
 #[tauri::command]
-pub fn retry_current_node(
+pub async fn retry_current_node(
     app_handle: AppHandle,
-    state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
     run_id: String,
@@ -5275,17 +5274,44 @@ pub fn retry_current_node(
     expected_node_id: String,
     expected_attempt_id: String,
 ) -> CommandResult<RetryCurrentNodeAcceptedVm> {
-    let _ = state.record_heartbeat_activity();
-    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), Some(&project_id))?;
-    app.retry_current_node(
-        &task_id,
-        &run_id,
-        &expected_round_id,
-        &expected_node_id,
-        &expected_attempt_id,
+    retry_current_node_command(
+        move || {
+            let state = app_handle.state::<DesktopState>();
+            let _ = state.record_heartbeat_activity();
+            resolve_command_app_with_emitters(&app_handle, state.inner(), Some(&project_id))
+        },
+        task_id,
+        run_id,
+        expected_round_id,
+        expected_node_id,
+        expected_attempt_id,
     )
-    .map(retry_current_node_accepted_vm)
-    .map_err(command_error)
+    .await
+}
+
+async fn retry_current_node_command(
+    prepare_app: impl FnOnce() -> CommandResult<ConfiguredConversationApp> + Send + 'static,
+    task_id: String,
+    run_id: String,
+    expected_round_id: String,
+    expected_node_id: String,
+    expected_attempt_id: String,
+) -> CommandResult<RetryCurrentNodeAcceptedVm> {
+    // Workspace resolution, executable preflight, lock waits and durable commit
+    // belong to one blocking job; only the accepted result returns to IPC.
+    spawn_blocking_command(move || {
+        let app = prepare_app()?;
+        app.retry_current_node(
+            &task_id,
+            &run_id,
+            &expected_round_id,
+            &expected_node_id,
+            &expected_attempt_id,
+        )
+        .map(retry_current_node_accepted_vm)
+        .map_err(command_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -13534,6 +13560,87 @@ mod tests {
             error.params["detail"]
                 .as_str()
                 .is_some_and(|detail| detail.contains("simulated blocking command panic"))
+        );
+    }
+
+    #[test]
+    fn current_node_retry_command_yields_until_preparation_finishes() {
+        let caller_thread = std::thread::current().id();
+        let (entered, preparation) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let (yielded, after_poll) = std::sync::mpsc::channel();
+        let observer = std::thread::spawn(move || {
+            let preparation_thread = preparation.recv().unwrap();
+            if preparation_thread != caller_thread {
+                after_poll.recv().unwrap();
+            }
+            release.send(()).unwrap();
+            preparation_thread
+        });
+
+        let mut command = std::pin::pin!(retry_current_node_command(
+            move || {
+                entered.send(std::thread::current().id()).unwrap();
+                released.recv().unwrap();
+                Err(CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": "retry-project" }),
+                ))
+            },
+            "task-1".into(),
+            "run-1".into(),
+            "round-1".into(),
+            "worker".into(),
+            "attempt-001".into(),
+        ));
+        let first_poll = std::future::Future::poll(
+            command.as_mut(),
+            &mut std::task::Context::from_waker(std::task::Waker::noop()),
+        );
+        let returned_pending = first_poll.is_pending();
+        let _ = yielded.send(());
+        let preparation_thread = observer.join().unwrap();
+        let result = match first_poll {
+            std::task::Poll::Ready(result) => result,
+            std::task::Poll::Pending => tauri::async_runtime::block_on(command),
+        };
+        let error = result.unwrap_err();
+
+        assert_ne!(
+            preparation_thread, caller_thread,
+            "retry preparation must not run on the command caller thread"
+        );
+        assert!(
+            returned_pending,
+            "retry command must yield before blocked preparation finishes"
+        );
+        assert_eq!(error.code, "workspace.not-found");
+        assert_eq!(
+            error.params,
+            serde_json::json!({ "projectId": "retry-project" })
+        );
+    }
+
+    #[test]
+    fn current_node_retry_command_preserves_admission_error_locator() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let error = tauri::async_runtime::block_on(retry_current_node_command(
+            move || Ok(ConfiguredConversationApp(App::new(repo_root))),
+            "task-1".into(),
+            "run-1".into(),
+            "round-1".into(),
+            "worker".into(),
+            "attempt-001".into(),
+        ))
+        .unwrap_err();
+
+        assert_eq!(error.code, "workflow.retry.node-not-retryable");
+        assert_eq!(error.params["taskId"], "task-1");
+        assert_eq!(error.params["runId"], "run-1");
+        assert_eq!(
+            error.params["causeCode"],
+            "conversation.run-mode-unavailable"
         );
     }
 

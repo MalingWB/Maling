@@ -282,6 +282,8 @@ Round 详情页的实际工作图是运行排障的主入口。用户单击节�
 
 命令返回 `RetryCurrentNodeAcceptedVm`：包含最新 Run summary、新 attempt 完整 locator 和稳定 `operationId`；幂等重投保持 `operationId + locator` 不变，Run summary 取重投时的最新权威状态。accepted 不表示后台已完成。后续执行交由后台驱动和既有 runtime candidate / interrupted 恢复语义；后台 spawn 失败必须只做一次 terminalize，不能留下永久 running 或返回第二个 accepted。结构化错误码集中管理，后端只返回 code 与 params，不生成对客文案。
 
+重试命令使用异步 IPC；workspace 解析、环境预检、锁等待和状态提交完整进入既有 blocking pool，准备阶段不能占用窗口主线程或 async runtime 调度线程。界面在等待命令时继续响应用户操作，维持目标节点的 pending 指示；命令仍在 durable commit 与后台驱动交接完成后返回 accepted，不提前确认成功。
+
 retry 成功进入后继节点后发生异常时，暂停和错误事件必须指向实际出错的当前节点；后台驱动持续跟踪自己的执行位置，并按现有 execution identity 防止迟到失败覆盖用户停止或新执行。
 
 前端运行图投影为每个节点提供 `retryable` 布尔值，由后端从同一纯生命周期 readiness 规则派生；`retryable=true` 只表示生命周期允许发起操作，不预先执行 Agent、profile、模型或 Git/worktree 的 executable preflight。只有 `retryable` 的当前节点显示可点击的“重试当前节点”；不可重试节点不显示该菜单项。点击后菜单关闭，节点显示目标级 pending 指示但不伪造 running 生命周期；请求 pending 按完整 locator 去重，保持到命令与最新快照读取完成。
