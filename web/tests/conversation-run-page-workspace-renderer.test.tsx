@@ -10,6 +10,9 @@ const workspace = vi.hoisted(() => ({
   registerResourceRenderer: vi.fn((_kind: string, _renderer: unknown) => vi.fn()),
   registerResourceCloseResolver: vi.fn(() => vi.fn()),
   setConversationDirectoryEntry: vi.fn(),
+  refreshResourceRenderers: vi.fn(),
+  tabs: [{ key: 'workflow-view', kind: 'workflow-view' }],
+  activeTabKey: 'workflow-view',
 }));
 
 vi.mock('@/components/ReadOnlyExperience', () => ({
@@ -223,6 +226,40 @@ describe('ConversationRunPage workspace renderer lifecycle', () => {
 
     expect(workspace.registerResourceRenderer.mock.calls).toEqual(initialRegistrations);
     initialDisposers.forEach((dispose) => expect(dispose).not.toHaveBeenCalled());
+  });
+
+  it('refreshes an open workflow resource when the graph projection changes', async () => {
+    const graph = { nodes: [], edges: [] };
+    const first = { ...runSnapshot(1), workflowGraph: graph } as ConversationRunVm;
+    const second = {
+      ...first,
+      workflowGraph: { ...graph, nodes: [{ id: 'dev', nodeId: 'dev', status: 'running' }] },
+    } as ConversationRunVm;
+
+    await act(async () => root.render(<ConversationRunPage
+      {...({
+        taskTitle: 'Task',
+        appConfig: { turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 3 } },
+        agentRegistry: null,
+        onRerun: vi.fn(), onEditWorkflow: vi.fn(), onSelectSession: vi.fn(), followMode: 'auto',
+        initialSessionTreeExpansion: {}, onSessionTreeExpansionChange: vi.fn(),
+      } as never)}
+      run={first}
+    />));
+    const initialRefreshes = workspace.refreshResourceRenderers.mock.calls.length;
+
+    await act(async () => root.render(<ConversationRunPage
+      {...({
+        taskTitle: 'Task',
+        appConfig: { turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 3 } },
+        agentRegistry: null,
+        onRerun: vi.fn(), onEditWorkflow: vi.fn(), onSelectSession: vi.fn(), followMode: 'auto',
+        initialSessionTreeExpansion: {}, onSessionTreeExpansionChange: vi.fn(),
+      } as never)}
+      run={second}
+    />));
+
+    expect(workspace.refreshResourceRenderers.mock.calls.length).toBeGreaterThan(initialRefreshes);
   });
 
   it('opens AUTO configuration as a right-workspace tab on the current run', async () => {

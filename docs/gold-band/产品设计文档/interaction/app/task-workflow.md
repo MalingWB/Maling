@@ -284,7 +284,10 @@ Round 详情页的实际工作图是运行排障的主入口。用户单击节�
 
 retry 成功进入后继节点后发生异常时，暂停和错误事件必须指向实际出错的当前节点；后台驱动持续跟踪自己的执行位置，并按现有 execution identity 防止迟到失败覆盖用户停止或新执行。
 
-前端运行图投影为每个节点提供 `retryable` 布尔值，由后端从同一纯生命周期 readiness 规则派生；`retryable=true` 只表示生命周期允许发起操作，不预先执行 Agent、profile、模型或 Git/worktree 的 executable preflight。只有 `retryable` 的当前节点显示可点击的“重试当前节点”；不可重试节点不显示该菜单项。点击后菜单关闭，节点显示目标级 pending 指示但不伪造 running 生命周期；请求 pending 按完整 locator 去重，成功后立即刷新当前 conversation run，后续交给既有 live event 收敛。
+前端运行图投影为每个节点提供 `retryable` 布尔值，由后端从同一纯生命周期 readiness 规则派生；`retryable=true` 只表示生命周期允许发起操作，不预先执行 Agent、profile、模型或 Git/worktree 的 executable preflight。只有 `retryable` 的当前节点显示可点击的“重试当前节点”；不可重试节点不显示该菜单项。点击后菜单关闭，节点显示目标级 pending 指示但不伪造 running 生命周期；请求 pending 按完整 locator 去重，保持到命令与最新快照读取完成。
+
+首次加载、live event、重试、停止和 execution plan 保存后的 Run 读取共用同一刷新管线。同一 `projectId/taskId/runId` 最多一个读取在途，重叠刷新只保留一个最新的后续重读；有后续重读时不向消费端发布旧结果或旧失败，等待最新重读收敛。应用快照前核对操作所属的 canonical `projectId/taskUuid/runId` 与当前页面，切换 Run 或复用可读 locator 不得串数据，旧命令返回后也不得转而刷新新页面。刷新使用返回时最新的手动 session 选择，保留用户正在浏览的历史会话；读取失败保留当前图和会话，后续刷新可以恢复。
+已打开的 workflow-view 工作区跟随 `workflowGraph` 投影更新；保持 renderer 注册稳定，只在当前图引用变化时刷新右侧图，避免中心页和右侧工作区显示不同状态。
 
 ### 7.2 会话页
 

@@ -259,6 +259,7 @@ export function ConversationRunPage({
   const onWorkflowTemplatesChangeRef = useRef(onWorkflowTemplatesChange);
   const handleWorkflowNodeOpenSessionRef = useRef(handleWorkflowNodeOpenSession);
   const onNodeRetryRef = useRef(onNodeRetry);
+  const previousWorkflowGraphRef = useRef(run.workflowGraph);
   runRef.current = run;
   agentRegistryRef.current = agentRegistry;
   onExecutionPlanSavedRef.current = onExecutionPlanSaved;
@@ -266,6 +267,13 @@ export function ConversationRunPage({
   onWorkflowTemplatesChangeRef.current = onWorkflowTemplatesChange;
   handleWorkflowNodeOpenSessionRef.current = handleWorkflowNodeOpenSession;
   onNodeRetryRef.current = onNodeRetry;
+  useEffect(() => {
+    const previousGraph = previousWorkflowGraphRef.current;
+    previousWorkflowGraphRef.current = run.workflowGraph;
+    if (previousGraph === run.workflowGraph) return;
+    const activeResource = workspace.tabs?.find((tab) => tab.key === workspace.activeTabKey);
+    if (activeResource?.kind === 'workflow-view') workspace.refreshResourceRenderers?.();
+  }, [run.workflowGraph, workspace.activeTabKey, workspace.refreshResourceRenderers, workspace.tabs]);
   const onExecutionPlanSavedStable = useCallback((saved: ExecutionPlanSaveResultVm) => {
     return onExecutionPlanSavedRef.current?.(saved);
   }, []);
