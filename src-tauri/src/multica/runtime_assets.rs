@@ -1,13 +1,15 @@
 //! multica runtime-assets 工单（角色/工作流共享通道 B）处理层。
 //!
-//! 三种工单 × 两类资产（角色设计 `.claude/design/multica-role-management/` §4；工作流设计
+//! 四种工单 × 两类资产（角色设计 `.claude/design/multica-role-management/` §4；工作流设计
 //! `.claude/design/multica-workflow-management/码灵对接说明(1).md` §4；multica 网页「共享」组
-//! 的上传面板/安装入口遥控本机干活，码灵**纯被动**——唯一主动行为是既有的 15s 心跳认领）：
+//! 的上传面板/安装/卸载入口遥控本机干活，码灵**纯被动**——唯一主动行为是既有的 15s 心跳认领）：
 //! - **list（盘点）**：按详情 `asset_type` 枚举本地资产，只报摘要不报正文（正文仅在
 //!   export/install 全量传输）；asset_type 空 = 未分化的全量盘点（role + workflow 逐条带 type）；
 //! - **export（提取）**：按 `asset_key`（= 资产 id）读完整资产回传，multica 暂存后自行发布；
 //! - **push-install（推送安装）**：把 multica 推来的资产正文落为本地资产，回报实际落库名
-//!   （role 恒新用户角色；workflow 同 key 用户模板跳过、builtin id 物化用户副本，均不覆盖）。
+//!   （role 恒新用户角色；workflow 同 key 用户模板跳过、builtin id 物化用户副本，均不覆盖）；
+//! - **uninstall（卸载）**：按 `asset_key` 从本地存储移除资产（只删本地，不触碰 multica
+//!   共享目录已发布内容）；资产不存在按成功幂等处理（multica 推荐，避免竞态误报失败）。
 //!
 //! 格式转换的单一真源在 lib：角色 `gold_band::app::profiles`、工作流 `gold_band::app::workflow_share`；
 //! wire 类型在 `client.rs`。本模块只做工单分发与本地读写，与 skill 待办同模型：无状态消费、
@@ -28,7 +30,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 use crate::multica::client::{
     MulticaClient, RuntimeAssetPayload, RuntimeAssetSummary, RuntimeAssetsExportPayload,
     RuntimeAssetsInstallReport, RuntimeAssetsInstallResult, RuntimeAssetsListReport,
-    RuntimeAssetsRequest,
+    RuntimeAssetsReportResult, RuntimeAssetsRequest, RuntimeAssetsUninstallResult,
 };
 use crate::multica::local_skills::home_app;
 
@@ -42,12 +44,25 @@ const ASSET_TYPE_WORKFLOW: &str = "workflow";
 /// web `app-events.ts` 对应；常量模块自持（先例 `multica/upstream.rs`）。
 const RUNTIME_ASSET_INSTALLED_EVENT: &str = "gold-band://runtime-asset-installed";
 
+/// 被动卸载落地事件：uninstall 成功移除后 emit（与安装事件对称的本地反馈闭环——否则重现
+/// M5-cr 同类问题「multica 卸载了、本地运行中列表仍显示已删条目」）。
+const RUNTIME_ASSET_UNINSTALLED_EVENT: &str = "gold-band://runtime-asset-uninstalled";
+
 /// 安装事件载荷（wire camelCase，同 `multica/upstream.rs` 的 `UpstreamPullEventVm` 约定）。
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeAssetInstalledEventVm {
     asset_type: String,
     installed_display_name: String,
+}
+
+/// 卸载事件载荷（wire camelCase；前端只按 `assetType` 重拉列表，`uninstalledKey` 供日志/
+/// 排查对账）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeAssetUninstalledEventVm {
+    asset_type: String,
+    uninstalled_key: String,
 }
 
 /// 安装成功后广播 + INFO 日志（此前成功路径零日志，联调排查只能翻 workflows.json）。
@@ -73,6 +88,29 @@ fn emit_runtime_asset_installed<R: Runtime>(
     );
 }
 
+/// 卸载成功后广播 + INFO 日志（与安装事件对称：本地列表刷新 + 排查可观测）。
+/// emit best-effort：失败不影响工单上报。
+fn emit_runtime_asset_uninstalled<R: Runtime>(
+    app: &AppHandle<R>,
+    request_id: &str,
+    asset_type: &str,
+    uninstalled_key: &str,
+) {
+    tracing::info!(
+        request_id,
+        asset_type,
+        uninstalled_key,
+        "multica runtime-asset uninstalled locally"
+    );
+    let _ = app.emit(
+        RUNTIME_ASSET_UNINSTALLED_EVENT,
+        RuntimeAssetUninstalledEventVm {
+            asset_type: asset_type.to_string(),
+            uninstalled_key: uninstalled_key.to_string(),
+        },
+    );
+}
+
 /// 详情 → 工单分类结果（纯函数，可单测；action/asset_type 均以详情为权威，ack 里的 action
 /// 只是建议）。
 #[derive(Debug)]
@@ -87,9 +125,13 @@ pub(crate) enum RuntimeAssetsWorkOrder {
     ExportWorkflow { asset_key: String },
     /// 推送安装工作流：payload 即模板 envelope（服务端已剥 modelBindings）。
     PushInstallWorkflow { exchange: MulticaWorkflowExchange },
+    /// 卸载角色：payload `{asset_key}`（与 export 同形）；按 key 从本地角色存储移除。
+    Uninstall { asset_key: String },
+    /// 卸载工作流：payload 同 `{asset_key}` 形；按 key 从本地模板存储移除。
+    UninstallWorkflow { asset_key: String },
 }
 
-/// 把工单详情分类为五种工单之一；结构非法（payload 缺失/不合规、action/asset_type 未知）
+/// 把工单详情分类为七种工单之一；结构非法（payload 缺失/不合规、action/asset_type 未知）
 /// 返回错误文案（调用方按 failed 上报终态化，不静默吞掉——网页端要能看到失败原因）。
 ///
 /// asset_type 空 → 按角色处理（角色通道先于 asset_type 字段上线，旧 server 不发该字段时
@@ -109,6 +151,29 @@ pub(crate) fn classify_runtime_assets_request(
             match detail.asset_type.as_str() {
                 "" | ASSET_TYPE_ROLE => classify_role_install(payload, export),
                 ASSET_TYPE_WORKFLOW => classify_workflow_install(payload, export),
+                other => Err(format!("unsupported runtime-assets asset type: {other}")),
+            }
+        }
+        "uninstall" => {
+            // 与 export 同形 payload `{asset_key}`（要卸载的资产 key，与 list 清单上报的
+            // key/type 同源）；asset_type 分派语义与 install 一致（空 = 旧版 role 容忍、
+            // 未知 → failed 防御）。
+            let payload: RuntimeAssetsExportPayload = serde_json::from_value(
+                detail.payload.clone().ok_or_else(|| {
+                    "runtime-assets request missing payload".to_string()
+                })?,
+            )
+            .map_err(|error| format!("uninstall payload invalid: {error}"))?;
+            if payload.asset_key.trim().is_empty() {
+                return Err("uninstall payload asset_key empty".to_string());
+            }
+            match detail.asset_type.as_str() {
+                "" | ASSET_TYPE_ROLE => Ok(RuntimeAssetsWorkOrder::Uninstall {
+                    asset_key: payload.asset_key,
+                }),
+                ASSET_TYPE_WORKFLOW => Ok(RuntimeAssetsWorkOrder::UninstallWorkflow {
+                    asset_key: payload.asset_key,
+                }),
                 other => Err(format!("unsupported runtime-assets asset type: {other}")),
             }
         }
@@ -194,6 +259,33 @@ pub(crate) fn workflow_asset_summaries(templates: &[WorkflowTemplate]) -> Vec<Ru
         .collect()
 }
 
+/// 卸载决策（纯函数，可单测）：key 在本地资产集内的形态 → 动作。
+///
+/// 不存在 → 幂等成功（multica 推荐语义：重复卸载/竞态删除不误报失败）；内置 → 只读拒绝
+/// （failed 上报明确 error，与本地 UI 删除同约束）；用户资产 → 执行删除。role / workflow
+/// 两种本地存储同构（`(id, is_built_in)` 投影），决策单一真源。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UninstallPlan {
+    /// 资产已不在本地：按成功上报（`uninstalled_key` 原样带回）。
+    IdempotentSuccess,
+    /// 内置资产只读：failed 上报。
+    ReadonlyBuiltIn,
+    /// 用户资产存在：执行本地删除。
+    Delete,
+}
+
+/// `assets` 产出 `(id, is_built_in)` 投影。
+pub(crate) fn plan_uninstall<'a, I>(key: &str, assets: I) -> UninstallPlan
+where
+    I: IntoIterator<Item = (&'a str, bool)>,
+{
+    match assets.into_iter().find(|(id, _)| *id == key) {
+        None => UninstallPlan::IdempotentSuccess,
+        Some((_, true)) => UninstallPlan::ReadonlyBuiltIn,
+        Some((_, false)) => UninstallPlan::Delete,
+    }
+}
+
 /// 本地时间戳（`%Y-%m-%d %H:%M:%S`，本地时区无偏移后缀，`profiles::local_timestamp` 格式）
 /// → RFC3339（带本地时区偏移 `±HH:MM`）。
 ///
@@ -220,7 +312,7 @@ fn rfc3339_from_epoch_timestamp(timestamp: &str) -> String {
         .unwrap_or_else(|| timestamp.to_string())
 }
 
-/// 工单入口：拉详情（权威 action）→ 分类 → 分发三工单处理。
+/// 工单入口：拉详情（权威 action）→ 分类 → 分发各工单处理。
 ///
 /// 详情拉取失败（404 = server 内存态请求已消失/重启、网络失败重试后仍败）直接放弃该工单
 /// **不上报**——对不存在的 requestId 上报同样 404，无意义；失败仅记日志。
@@ -261,6 +353,12 @@ pub(crate) async fn handle_runtime_assets_request<R: Runtime>(
         }
         Ok(RuntimeAssetsWorkOrder::PushInstallWorkflow { exchange }) => {
             handle_push_install_workflow(app, client, runtime_id, request_id, exchange).await
+        }
+        Ok(RuntimeAssetsWorkOrder::Uninstall { asset_key }) => {
+            handle_uninstall(app, client, runtime_id, request_id, asset_key).await
+        }
+        Ok(RuntimeAssetsWorkOrder::UninstallWorkflow { asset_key }) => {
+            handle_uninstall_workflow(app, client, runtime_id, request_id, asset_key).await
         }
         Err(error) => {
             // 结构性失败（payload 非法/action/asset_type 未知）：failed 上报终态化，网页端
@@ -409,14 +507,16 @@ async fn handle_push_install<R: Runtime>(
                     RuntimeAssetsInstallReport {
                         status: "completed",
                         payload: None,
-                        result: Some(RuntimeAssetsInstallResult {
-                            // id = 资产 key（回查句柄）；展示名 = 实际落库名（改名拷贝时是「xx-2」，
-                            // multica 反馈 P3——仅市场名兜底拿不到这个值）；outcome = 落库形态
-                            //（#6：created / renamed-copy，服务端不再靠名称兜底猜）。
-                            installed_name: entry.id,
-                            installed_display_name: entry.name,
-                            outcome: outcome.as_wire_str(),
-                        }),
+                        result: Some(RuntimeAssetsReportResult::Install(
+                            RuntimeAssetsInstallResult {
+                                // id = 资产 key（回查句柄）；展示名 = 实际落库名（改名拷贝时是「xx-2」，
+                                // multica 反馈 P3——仅市场名兜底拿不到这个值）；outcome = 落库形态
+                                //（#6：created / renamed-copy，服务端不再靠名称兜底猜）。
+                                installed_name: entry.id,
+                                installed_display_name: entry.name,
+                                outcome: outcome.as_wire_str(),
+                            },
+                        )),
                         error: None,
                     }
                 }
@@ -503,14 +603,16 @@ async fn handle_push_install_workflow<R: Runtime>(
                     RuntimeAssetsInstallReport {
                         status: "completed",
                         payload: None,
-                        result: Some(RuntimeAssetsInstallResult {
-                            // 与角色同约定：id = 资产 key（跳过时是既有模板 id），展示名 = 实际
-                            // 落库名（builtin 副本派生 id 场景用户可读）；outcome = 落库形态
-                            //（#6：created / reused-existing——「已装过跳过」不再与新装混淆）。
-                            installed_name: template.id,
-                            installed_display_name: template.name,
-                            outcome: outcome.as_wire_str(),
-                        }),
+                        result: Some(RuntimeAssetsReportResult::Install(
+                            RuntimeAssetsInstallResult {
+                                // 与角色同约定：id = 资产 key（跳过时是既有模板 id），展示名 = 实际
+                                // 落库名（builtin 副本派生 id 场景用户可读）；outcome = 落库形态
+                                //（#6：created / reused-existing——「已装过跳过」不再与新装混淆）。
+                                installed_name: template.id,
+                                installed_display_name: template.name,
+                                outcome: outcome.as_wire_str(),
+                            },
+                        )),
                         error: None,
                     }
                 }
@@ -524,7 +626,139 @@ async fn handle_push_install_workflow<R: Runtime>(
     report_install(&client, &runtime_id, &request_id, report).await;
 }
 
-/// install 端点上报（export/push-install/结构失败共用）；失败记日志，服务端超时兜底。
+/// uninstall 工单（角色）：决策（存在性/内置预检）→ 删除或幂等成功 → 回报 `uninstalled_key`。
+///
+/// 删除走 `App::delete_profile(key, force=true)`：multica 确认弹窗已承担本地 UI
+/// 「引用计数二次确认」的职责（force=false 会在角色被模板/任务引用时报
+/// DeleteConfirmationRequired，远程无法交互确认，卸载会永远失败）。只删本地角色文件，
+/// 不触碰 multica 共享目录已发布内容（multica UI 文案承诺的边界）。
+async fn handle_uninstall<R: Runtime>(
+    app: AppHandle<R>,
+    client: MulticaClient,
+    runtime_id: String,
+    request_id: String,
+    asset_key: String,
+) {
+    let report = match home_app(&app) {
+        None => failed_install_report("app state unavailable".to_string()),
+        Some(home) => {
+            let key = asset_key.clone();
+            let removal =
+                tauri::async_runtime::spawn_blocking(move || -> Result<UninstallPlan, String> {
+                    let profiles = home
+                        .profiles()
+                        .map_err(|error| format!("profile scan failed: {error}"))?;
+                    let plan = plan_uninstall(
+                        &key,
+                        profiles.profiles.iter().map(|profile| {
+                            (profile.id.as_str(), profile.is_built_in)
+                        }),
+                    );
+                    if matches!(plan, UninstallPlan::Delete) {
+                        home.delete_profile(&key, true)
+                            .map_err(|error| format!("delete profile failed: {error}"))?;
+                    }
+                    Ok(plan)
+                })
+                .await;
+            uninstall_report(&app, &request_id, ASSET_TYPE_ROLE, removal, &asset_key, "profile")
+        }
+    };
+    report_install(&client, &runtime_id, &request_id, report).await;
+}
+
+/// uninstall 工单（工作流）：决策 → 删除模板或幂等成功 → 回报 `uninstalled_key`。
+///
+/// 与角色同构；`App::delete_workflow_template` 自带 builtin 只读与 `last_used_template_id`
+/// 重置语义，直接复用。
+async fn handle_uninstall_workflow<R: Runtime>(
+    app: AppHandle<R>,
+    client: MulticaClient,
+    runtime_id: String,
+    request_id: String,
+    asset_key: String,
+) {
+    let report = match home_app(&app) {
+        None => failed_install_report("app state unavailable".to_string()),
+        Some(home) => {
+            let key = asset_key.clone();
+            let removal =
+                tauri::async_runtime::spawn_blocking(move || -> Result<UninstallPlan, String> {
+                    let store = home
+                        .workflow_templates()
+                        .map_err(|error| format!("workflow template scan failed: {error}"))?;
+                    let plan = plan_uninstall(
+                        &key,
+                        store.templates.iter().map(|template| {
+                            (template.id.as_str(), template.is_built_in)
+                        }),
+                    );
+                    if matches!(plan, UninstallPlan::Delete) {
+                        home.delete_workflow_template(&key).map_err(|error| {
+                            format!("delete workflow template failed: {error}")
+                        })?;
+                    }
+                    Ok(plan)
+                })
+                .await;
+            uninstall_report(
+                &app,
+                &request_id,
+                ASSET_TYPE_WORKFLOW,
+                removal,
+                &asset_key,
+                "workflow template",
+            )
+        }
+    };
+    report_install(&client, &runtime_id, &request_id, report).await;
+}
+
+/// 卸载执行结果 → 上报 body（role/workflow 共用）。
+///
+/// 幂等成功不 emit 事件（本地无变化，列表本就不含该资产）；真删除 emit 卸载事件刷新
+/// 本地运行中列表（M5-cr 对称闭环）。`asset_kind` 仅用于 error 文案区分两类存储；
+/// 事件载荷的 `asset_type` 用权威常量。
+fn uninstall_report<R: Runtime>(
+    app: &AppHandle<R>,
+    request_id: &str,
+    asset_type: &'static str,
+    removal: Result<Result<UninstallPlan, String>, tauri::Error>,
+    asset_key: &str,
+    asset_kind: &str,
+) -> RuntimeAssetsInstallReport {
+    match removal {
+        Ok(Ok(UninstallPlan::Delete)) => {
+            emit_runtime_asset_uninstalled(app, request_id, asset_type, asset_key);
+            completed_uninstall_report(asset_key)
+        }
+        // 不存在：幂等成功（multica 推荐语义——重复卸载/竞态删除不误报失败）。
+        Ok(Ok(UninstallPlan::IdempotentSuccess)) => completed_uninstall_report(asset_key),
+        Ok(Ok(UninstallPlan::ReadonlyBuiltIn)) => failed_install_report(format!(
+            "{asset_kind} `{asset_key}` is built-in (read-only)"
+        )),
+        Ok(Err(error)) => failed_install_report(error),
+        Err(error) => failed_install_report(format!("uninstall task failed: {error}")),
+    }
+}
+
+/// uninstall completed 的上报 body：`result.uninstalled_key` 带回资产 key（multica 建议，
+/// 便于 UI 对账与排查）。
+fn completed_uninstall_report(asset_key: &str) -> RuntimeAssetsInstallReport {
+    RuntimeAssetsInstallReport {
+        status: "completed",
+        payload: None,
+        result: Some(RuntimeAssetsReportResult::Uninstall(
+            RuntimeAssetsUninstallResult {
+                uninstalled_key: asset_key.to_string(),
+            },
+        )),
+        error: None,
+    }
+}
+
+/// install 端点上报（export/push-install/uninstall/结构失败共用——端点路径段 install 为
+/// multica 历史命名，三动作共用）；失败记日志，服务端超时兜底。
 async fn report_install(
     client: &MulticaClient,
     runtime_id: &str,
@@ -579,6 +813,20 @@ mod tests {
         let wire = serde_json::to_value(&vm).unwrap();
         assert_eq!(wire["assetType"], "workflow");
         assert_eq!(wire["installedDisplayName"], "我的流水线");
+        assert_eq!(wire.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn uninstalled_event_serializes_camel_case_wire() {
+        // 跨端契约（M5-cw 被动卸载刷新，与 installed 对称）：前端
+        // `web/tests/runtime-asset-uninstalled-event.test.ts` 锁同一事件名与形状。
+        let vm = RuntimeAssetUninstalledEventVm {
+            asset_type: "role".to_string(),
+            uninstalled_key: "pf-mcx1a2".to_string(),
+        };
+        let wire = serde_json::to_value(&vm).unwrap();
+        assert_eq!(wire["assetType"], "role");
+        assert_eq!(wire["uninstalledKey"], "pf-mcx1a2");
         assert_eq!(wire.as_object().unwrap().len(), 2);
     }
 
@@ -673,6 +921,76 @@ mod tests {
             }
             other => panic!("expected push-install-workflow, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn classify_routes_uninstall_work_orders() {
+        // uninstall 工单（role）：action=uninstall + payload {asset_key}。
+        assert!(matches!(
+            classify_runtime_assets_request(&detail("uninstall", "", json!({"asset_key": "pf-abc"}))),
+            Ok(RuntimeAssetsWorkOrder::Uninstall { ref asset_key }) if asset_key == "pf-abc"
+        ));
+        // uninstall 工单（workflow）：同形 payload，按 asset_type 分派。
+        assert!(matches!(
+            classify_runtime_assets_request(&detail_typed(
+                "workflow",
+                "uninstall",
+                "",
+                json!({"asset_key": "my-pipeline"})
+            )),
+            Ok(RuntimeAssetsWorkOrder::UninstallWorkflow { ref asset_key }) if asset_key == "my-pipeline"
+        ));
+        // asset_type 空：与 install 同语义回落角色（旧 server 容忍）。
+        assert!(matches!(
+            classify_runtime_assets_request(&detail_typed(
+                "",
+                "uninstall",
+                "",
+                json!({"asset_key": "pf-abc"})
+            )),
+            Ok(RuntimeAssetsWorkOrder::Uninstall { .. })
+        ));
+        // 未知 asset_type：显式拒绝（与 install 同防御——CLI 直连可触发，不得误当 role 处理）。
+        let error = classify_runtime_assets_request(&detail_typed(
+            "agent",
+            "uninstall",
+            "",
+            json!({"asset_key": "x"}),
+        ))
+        .unwrap_err();
+        assert!(error.contains("unsupported runtime-assets asset type: agent"));
+        // payload 缺失 / asset_key 空：结构性拒绝。
+        let mut missing = detail("uninstall", "", json!({}));
+        missing.payload = None;
+        assert!(classify_runtime_assets_request(&missing).is_err());
+        assert!(
+            classify_runtime_assets_request(&detail("uninstall", "", json!({"asset_key": " "})))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn plan_uninstall_decides_by_presence_and_builtin() {
+        // 不存在 → 幂等成功（multica 推荐语义：重复卸载/竞态删除不误报失败）。
+        assert_eq!(
+            plan_uninstall("pf-gone", [("pf-abc", false), ("pf-builtin-dev", true)]),
+            UninstallPlan::IdempotentSuccess
+        );
+        // 内置 → 只读拒绝（与本地 UI 删除同约束）。
+        assert_eq!(
+            plan_uninstall("pf-builtin-dev", [("pf-abc", false), ("pf-builtin-dev", true)]),
+            UninstallPlan::ReadonlyBuiltIn
+        );
+        // 用户资产 → 执行删除。
+        assert_eq!(
+            plan_uninstall("pf-abc", [("pf-abc", false), ("pf-builtin-dev", true)]),
+            UninstallPlan::Delete
+        );
+        // 空集：key 空间整体缺失同样幂等成功。
+        assert_eq!(
+            plan_uninstall("pf-any", Vec::<(&str, bool)>::new()),
+            UninstallPlan::IdempotentSuccess
+        );
     }
 
     #[test]

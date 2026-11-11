@@ -3186,6 +3186,24 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **文件**：`configs/channels/wb.json`、`scripts/channel-config.mjs`(+test)、`scripts/wb-base-url.test.mjs`、`scripts/check-wb-domain.mjs`、`scripts/prepare-release-build.test.mjs`、`scripts/release-please-config.test.mjs`、`scripts/generate-release-assets.test.mjs`、`src-tauri/build_channel_config.rs`、`src-tauri/build.rs`、`.github/workflows/{release,release-please}.yml`；文档 `interaction/app/overview.md`、`接入方案.md`、本文件 §2.2.4/§12.30/§12.92。
 
+### 12.93 改动九十一：multica 卸载工单——daemon 被动移除本地角色/工作流（M5-cw，2026-11-11）
+
+**背景**：multica 侧上线卸载通道（「角色管理 → Runtime 页签」对某资产点「卸载」，server commit f82a4fe7）——完全复用 runtime-assets pending 通道（心跳认领 → 详情 → 回报，list/install 同款生命周期），上报共用 install result 端点（路径段 install 为历史命名，三动作 export/install/uninstall 共用，不新建 /uninstall/.../result）。码灵侧只需在工单分发处新增 uninstall 分支。
+
+**实现**：
+
+- ① **wire**（`client.rs`）：详情 `RuntimeAssetsRequest.action` 增 `uninstall`（ack 的 action 只是建议，分发器本就以详情为权威，`loop_.rs` 零改动）；`RuntimeAssetsInstallReport.result` 由 `Option<RuntimeAssetsInstallResult>` 改为 untagged enum `RuntimeAssetsReportResult::{Install, Uninstall}`（multica 对 result 仅透传 UI 不解析字段——自由 map；untagged 序列化即内层对象，wire 兼容且保留类型安全）；新增 `RuntimeAssetsUninstallResult { uninstalled_key }`（snake_case 随 `installed_name` 先例）。
+- ② **分类**（`runtime_assets.rs`）：`RuntimeAssetsWorkOrder` 增 `Uninstall { asset_key }` / `UninstallWorkflow { asset_key }`；classify 增 `"uninstall"` 分支——payload 与 export 同形 `{asset_key}`（要卸载的资产 key，与 list 清单上报的 key/type 同源），asset_type 空 = 旧版 role 容忍、未知 → failed 上报（与 install 同防御：CLI 直连可触发，不得误当 role 处理）。
+- ③ **卸载决策纯函数** `plan_uninstall(key, assets)`（`(id, is_built_in)` 投影，role/workflow 两类本地存储同构，单一真源）：**不存在 → 幂等成功**（multica 推荐语义：重复卸载/竞态删除不误报失败）、**内置 → 只读 failed**（与本地 UI 删除同约束）、**用户资产 → 删除**。删除执行：role 走 `App::delete_profile(key, force=true)`——multica 确认弹窗已承担本地「引用计数二次确认」职责（force=false 会在角色被模板/任务引用时报 DeleteConfirmationRequired，远程无法交互确认，卸载会永远失败）；workflow 走 `App::delete_workflow_template(key)`（自带 builtin 只读与 `last_used_template_id` 重置）。决策与删除同在 `spawn_blocking` 内（阻塞 FS 扫描，与 list/export 同模式）。
+- ④ **语义边界**：只删本地资产，不触碰 multica 共享目录已发布内容（multica UI 文案承诺）；3 分钟回报窗口内本地删除为快操作；终态重复上报由 multica 幂等忽略（`{"status":"ok"}`）。
+- ⑤ **本地反馈闭环**（M5-cr 对称）：真删除后 emit `gold-band://runtime-asset-uninstalled`（载荷 `{assetType, uninstalledKey}` camelCase）+ INFO 日志；前端 `App.tsx` 按 assetType 只重拉对应列表（workflow → 模板、role → 角色，data-loading §6 最小作用域，best-effort 吞错）。**幂等成功不 emit**（本地无变化，列表本就不含该资产）。前端五处对称扩展：`app-events.ts` 常量、`types.ts` VM、`client.ts`/`desktop.ts`/`browser.ts`（桩）/`api.ts` 门面。
+
+**方案自评审**：过度设计——零新增端点/持久状态/分发骨架（既有 match arm 扩展），`RuntimeAssetsReportResult` enum 是 result 字段双形态的最小建模，决策纯函数是语义固化的测试锚点而非新抽象层。性能——心跳 tick 零增量；删除为本地单文件（role）/单 store 写（workflow），spawn_blocking 同既有模式；上报 body 仅一个 key。兼容——旧 server 不下发 uninstall（纯新增分支，list/install 路径逐字节不变）；旧 daemon 收到 uninstall 走「unsupported action」failed 上报（multica UI 可见失败原因，符合预期）。
+
+**验证结果**：desktop `multica::` **263 passed / 0 failed**（新增 3 例：classify uninstall 路由〔含未知 asset_type 拒绝、空 type 容忍、payload 缺失/空 key 拒绝〕、`plan_uninstall` 三分支决策、卸载事件 camelCase wire；扩展 2 例：uninstall result body 契约〔untagged 内层对象 + 仅 uninstalled_key〕、详情 uninstall 形态解析）；web `runtime-asset-uninstalled-event.test.ts` 契约锁定；`tsc -p tsconfig.build.json` 零错误；改动文件 clippy 零新增告警。内网端到端（multica Runtime 页签卸载 → toast 成功 → 清单刷新且条目消失 → 本地文件移除 → 共享目录副本不受影响；curl 直打不存在 key 的失败路径）待打包联调验收。
+
+**文件**：`src-tauri/src/multica/client.rs`、`src-tauri/src/multica/runtime_assets.rs`、`web/src/types.ts`、`web/src/lib/app-events.ts`、`web/src/api/client.ts`、`web/src/api/desktop.ts`、`web/src/api/browser.ts`、`web/src/api.ts`、`web/src/App.tsx`、`web/tests/runtime-asset-uninstalled-event.test.ts`；文档 `接入方案.md` D5/M5-cw、本条。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检
