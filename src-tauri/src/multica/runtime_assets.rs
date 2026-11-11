@@ -2,7 +2,8 @@
 //!
 //! 四种工单 × 两类资产（角色设计 `.claude/design/multica-role-management/` §4；工作流设计
 //! `.claude/design/multica-workflow-management/码灵对接说明(1).md` §4；multica 网页「共享」组
-//! 的上传面板/安装/卸载入口遥控本机干活，码灵**纯被动**——唯一主动行为是既有的 15s 心跳认领）：
+//! 的上传面板/安装/卸载入口遥控本机干活，码灵**纯被动**——主动行为仅心跳认领：既有的 3s
+//! 定时 tick + 工单完成上报后的补发排空链（M5-cx，对齐 multica daemon handlePendingWorkHint）：
 //! - **list（盘点）**：按详情 `asset_type` 枚举本地资产，只报摘要不报正文（正文仅在
 //!   export/install 全量传输）；asset_type 空 = 未分化的全量盘点（role + workflow 逐条带 type）；
 //! - **export（提取）**：按 `asset_key`（= 资产 id）读完整资产回传，multica 暂存后自行发布；
@@ -18,6 +19,7 @@
 //! 开放，旧版 daemon 误当 role 处理不是纯理论——工作流对接说明 §6 防御项）。
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use gold_band::app::{
     MulticaRoleExchange, MulticaWorkflowExchange, ProfileEntry, WorkflowTemplate,
@@ -37,6 +39,12 @@ use crate::multica::local_skills::home_app;
 /// 工单的资产类型常量（multica ADR-0008 runtime kinds）。
 const ASSET_TYPE_ROLE: &str = "role";
 const ASSET_TYPE_WORKFLOW: &str = "workflow";
+
+/// 工单完成后补发心跳的链内节流（秒，M5-cx 改动 2）：排空链每环补发前 sleep，防止连续
+/// 工单时补发心跳打满 server（取值对齐 multica daemon handlePendingWorkHint 的 1s 节流）。
+/// 仅链内节流：与定时 tick 或并行排空链之间**不做全局协调**——心跳幂等、server 认领原子、
+/// 补发总量受 pending 队列长度有界，串严格间隔需跨任务共享状态，收益不成比例，不做。
+const DRAIN_REHEARTBEAT_THROTTLE_SECS: u64 = 1;
 
 /// 被动安装落地事件：push-install 成功落库后 emit，前端按 `assetType` 只重拉对应列表
 /// （工作流模板 / 角色）——运行中的前端列表只在会话壳就绪时加载一次，multica 网页的成功
@@ -159,9 +167,10 @@ pub(crate) fn classify_runtime_assets_request(
             // key/type 同源）；asset_type 分派语义与 install 一致（空 = 旧版 role 容忍、
             // 未知 → failed 防御）。
             let payload: RuntimeAssetsExportPayload = serde_json::from_value(
-                detail.payload.clone().ok_or_else(|| {
-                    "runtime-assets request missing payload".to_string()
-                })?,
+                detail
+                    .payload
+                    .clone()
+                    .ok_or_else(|| "runtime-assets request missing payload".to_string())?,
             )
             .map_err(|error| format!("uninstall payload invalid: {error}"))?;
             if payload.asset_key.trim().is_empty() {
@@ -312,13 +321,21 @@ fn rfc3339_from_epoch_timestamp(timestamp: &str) -> String {
         .unwrap_or_else(|| timestamp.to_string())
 }
 
-/// 工单入口：拉详情（权威 action）→ 分类 → 分发各工单处理。
+/// 工单入口：拉详情（权威 action）→ 分类 → 分发各工单处理 → 上报后补发心跳排空。
 ///
 /// 详情拉取失败（404 = server 内存态请求已消失/重启、网络失败重试后仍败）直接放弃该工单
-/// **不上报**——对不存在的 requestId 上报同样 404，无意义；失败仅记日志。
+/// **不上报**——对不存在的 requestId 上报同样 404，无意义；失败仅记日志。工单在心跳认领时
+/// 已 pending→running（对接说明 §4.1），放弃不上报由 server 60s running 超时终态化兜底、
+/// **不会重派**；提前 return 也不补发心跳（补发只会认领下一个工单，跳过本单无益）。
+///
+/// M5-cx 改动 2（工单排空）：一次心跳只认领一个工单；result 上报完成后不等下一个 3s tick，
+/// 节流 1s 立即补发一次心跳认领下一个（`loop_::heartbeat_once`）。ack 无 pending_runtime_assets
+/// 时 dispatch 不再 spawn，排空链自然终止；与定时 tick 并发心跳无害（server 认领原子）。
+/// `workspace_id` 仅为此透传（心跳按 (workspace_id, runtime_id) 定位）。
 pub(crate) async fn handle_runtime_assets_request<R: Runtime>(
     app: AppHandle<R>,
     client: MulticaClient,
+    workspace_id: String,
     runtime_id: String,
     request_id: String,
 ) {
@@ -338,40 +355,55 @@ pub(crate) async fn handle_runtime_assets_request<R: Runtime>(
         }
     };
     let work = classify_runtime_assets_request(&detail);
+    // match 臂移入一份克隆（app/client/runtime_id 尾部补发还要用原值；request_id 尾部不用、
+    // 直接移出），保持分发臂单行，避免每臂 ×4 的内联克隆样板。
+    let (arm_app, arm_client, arm_runtime_id) = (app.clone(), client.clone(), runtime_id.clone());
     match work {
         Ok(RuntimeAssetsWorkOrder::List) => {
-            handle_list(app, client, runtime_id, request_id, detail.asset_type).await
+            handle_list(
+                arm_app,
+                arm_client,
+                arm_runtime_id,
+                request_id,
+                detail.asset_type,
+            )
+            .await
         }
         Ok(RuntimeAssetsWorkOrder::Export { asset_key }) => {
-            handle_export(app, client, runtime_id, request_id, asset_key).await
+            handle_export(arm_app, arm_client, arm_runtime_id, request_id, asset_key).await
         }
         Ok(RuntimeAssetsWorkOrder::PushInstall { exchange }) => {
-            handle_push_install(app, client, runtime_id, request_id, exchange).await
+            handle_push_install(arm_app, arm_client, arm_runtime_id, request_id, exchange).await
         }
         Ok(RuntimeAssetsWorkOrder::ExportWorkflow { asset_key }) => {
-            handle_export_workflow(app, client, runtime_id, request_id, asset_key).await
+            handle_export_workflow(arm_app, arm_client, arm_runtime_id, request_id, asset_key).await
         }
         Ok(RuntimeAssetsWorkOrder::PushInstallWorkflow { exchange }) => {
-            handle_push_install_workflow(app, client, runtime_id, request_id, exchange).await
+            handle_push_install_workflow(arm_app, arm_client, arm_runtime_id, request_id, exchange)
+                .await
         }
         Ok(RuntimeAssetsWorkOrder::Uninstall { asset_key }) => {
-            handle_uninstall(app, client, runtime_id, request_id, asset_key).await
+            handle_uninstall(arm_app, arm_client, arm_runtime_id, request_id, asset_key).await
         }
         Ok(RuntimeAssetsWorkOrder::UninstallWorkflow { asset_key }) => {
-            handle_uninstall_workflow(app, client, runtime_id, request_id, asset_key).await
+            handle_uninstall_workflow(arm_app, arm_client, arm_runtime_id, request_id, asset_key)
+                .await
         }
         Err(error) => {
             // 结构性失败（payload 非法/action/asset_type 未知）：failed 上报终态化，网页端
             // 可见原因。classify 只对 install 形态工单可能失败，上报走 install 端点。
             report_install(
-                &client,
-                &runtime_id,
+                &arm_client,
+                &arm_runtime_id,
                 &request_id,
                 failed_install_report(error),
             )
             .await;
         }
     }
+    // 上报完成 → 节流补发心跳认领下一个工单（M5-cx 改动 2，注释见函数 doc）。
+    tokio::time::sleep(Duration::from_secs(DRAIN_REHEARTBEAT_THROTTLE_SECS)).await;
+    crate::multica::loop_::heartbeat_once(&app, &client, &workspace_id, &runtime_id).await;
 }
 
 /// list 工单：按详情 `asset_type` 枚举本地资产 → 摘要上报（正文不上传）。
@@ -650,9 +682,10 @@ async fn handle_uninstall<R: Runtime>(
                         .map_err(|error| format!("profile scan failed: {error}"))?;
                     let plan = plan_uninstall(
                         &key,
-                        profiles.profiles.iter().map(|profile| {
-                            (profile.id.as_str(), profile.is_built_in)
-                        }),
+                        profiles
+                            .profiles
+                            .iter()
+                            .map(|profile| (profile.id.as_str(), profile.is_built_in)),
                     );
                     if matches!(plan, UninstallPlan::Delete) {
                         home.delete_profile(&key, true)
@@ -661,7 +694,14 @@ async fn handle_uninstall<R: Runtime>(
                     Ok(plan)
                 })
                 .await;
-            uninstall_report(&app, &request_id, ASSET_TYPE_ROLE, removal, &asset_key, "profile")
+            uninstall_report(
+                &app,
+                &request_id,
+                ASSET_TYPE_ROLE,
+                removal,
+                &asset_key,
+                "profile",
+            )
         }
     };
     report_install(&client, &runtime_id, &request_id, report).await;
@@ -689,14 +729,14 @@ async fn handle_uninstall_workflow<R: Runtime>(
                         .map_err(|error| format!("workflow template scan failed: {error}"))?;
                     let plan = plan_uninstall(
                         &key,
-                        store.templates.iter().map(|template| {
-                            (template.id.as_str(), template.is_built_in)
-                        }),
+                        store
+                            .templates
+                            .iter()
+                            .map(|template| (template.id.as_str(), template.is_built_in)),
                     );
                     if matches!(plan, UninstallPlan::Delete) {
-                        home.delete_workflow_template(&key).map_err(|error| {
-                            format!("delete workflow template failed: {error}")
-                        })?;
+                        home.delete_workflow_template(&key)
+                            .map_err(|error| format!("delete workflow template failed: {error}"))?;
                     }
                     Ok(plan)
                 })
@@ -801,6 +841,13 @@ mod tests {
     use super::*;
     use gold_band::app::ProfileScope;
     use serde_json::json;
+
+    /// M5-cx 契约：工单排空链补发心跳的链内节流 1s（取值对齐 multica daemon
+    /// handlePendingWorkHint），防止连续工单时补发心跳打满 server。漂移先红。
+    #[test]
+    fn drain_reheartbeat_throttle_is_1s() {
+        assert_eq!(DRAIN_REHEARTBEAT_THROTTLE_SECS, 1);
+    }
 
     #[test]
     fn installed_event_serializes_camel_case_wire() {
@@ -978,7 +1025,10 @@ mod tests {
         );
         // 内置 → 只读拒绝（与本地 UI 删除同约束）。
         assert_eq!(
-            plan_uninstall("pf-builtin-dev", [("pf-abc", false), ("pf-builtin-dev", true)]),
+            plan_uninstall(
+                "pf-builtin-dev",
+                [("pf-abc", false), ("pf-builtin-dev", true)]
+            ),
             UninstallPlan::ReadonlyBuiltIn
         );
         // 用户资产 → 执行删除。

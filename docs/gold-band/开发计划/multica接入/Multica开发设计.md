@@ -268,7 +268,7 @@ r.Post("/runtimes/{runtimeId}/tasks/{taskId}/claim", h.ClaimSpecificTask)
 | `multica/client.rs` | reqwest client + 指数退避重试 + 全部 multica HTTP 调用 | `metrics::send_heartbeat`(metrics.rs:180-208) / `send_node_metrics_batch`(298-322) reqwest 用法；`normalize_metrics_base_url`(90-114) URL 容错 |
 | `multica/config.rs` | 配置 VM + 读写 + `pat_set` getter + `multica_settings()` 聚合（**M5-z：不再做绑定查找**——`binding_for_multica()` 已删除，本地目录改由任务级 `ActiveRemoteRun.local_project_id` + `workspace_entry_for_project` 解析） | `metrics::metrics_settings`(130-167) channel-priority + normalize；`MetricsSettingsVm`(79-89) |
 | `multica/state.rs` | 运行期内存状态（runtime_id 映射、在飞任务映射 + **任务级 `local_project_id`**）+ 持久化进 StateConfig | 不塞 `DesktopState`（见 2.5）；持久化参考 StateConfig(config/mod.rs:666-689) |
-| `multica/loop_.rs` | 启动全量 register / 新添加 register / **常驻 15s 心跳 + prepare-lease 续期（Req D）** / recover-orphans / 取消检测 | `metrics::start_heartbeat_polling`(metrics.rs:218-242) spawn + 三层 guard 样板 |
+| `multica/loop_.rs` | 启动全量 register / 新添加 register / **常驻 3s 心跳（M5-cx 由 15s 提频）+ 工单完成后补发排空（M5-cx）** / recover-orphans / 取消检测 | `metrics::start_heartbeat_polling`(metrics.rs:218-242) spawn + 三层 guard 样板 |
 | `multica/bridge.rs` | remote_task ↔ 本地 task/run 衔接（**直接调 `gold-band` 库层 App API** + 订阅 lifecycle bus，不走 Tauri command 层）；**执行注入（M5-z）**：发送时由 `start_multica_conversation_run` 接收 composer 下拉选中的 `local_project_id` 写入 `ActiveRemoteRun.local_project_id` → 按 `workspace_entry_for_project(&home_state, &local_project_id)` 解析 `workspace_path` → `App::with_config(workspace_path, config).with_lifecycle_bus(shared_bus)`(app/mod.rs) → 构造 Direct WorkflowDsl → `create_task_from_requirement` + `run_start_background` | `metrics::create_metrics_subscriber`(metrics.rs:365-638)；`lifecycle_bus.subscribe_named`(observability.rs:43-49)；`view_models_conversation.rs:2579`（Direct workflow preset 范本） |
 | `multica/error.rs` | `MulticaError` 枚举 + 映射 `CommandErrorVm` | `CommandErrorVm`(commands.rs:581-634) + `command_error`(commands.rs:3529-3547) |
 | `multica/handoff.rs` | **issue 完成输出传递（M5-bj）**：`extract_completion_output`（最终 assistant 回复中 info 恰为 `completion-output` 的围栏块、取最后一个、trim 空→None）+ `completion_output_from_reply`（组合 16k rune 截断，2026-09-21 服务端从 64k 收紧）+ `final_assistant_reply`（`AcpAttemptPaths` 定位 `acp.timeline.jsonl` → `load_timeline_items` → 取最后一条非占位 `textDelta`，复用 `is_semantically_empty_agent_content` 与 UI 投影同源）；全 fail-open。提示词侧篇幅契约（非 run 日志 / ≤2k / 超长走工作区文件 + 路径引用）见 `src/prompts/{zh-CN,en}/runtime/remote_task_completion_protocol.md` | `acp/events.rs AcpAttemptPaths::from_attempt_dir`(acp/events.rs:925) / `load_timeline_items` / `is_semantically_empty_agent_content`(3011) |
@@ -600,7 +600,7 @@ pub struct ActiveRemoteRun { pub local_task_uuid: String, pub local_project_id: 
 职责（对应接入方案 3.2.4）：
 - **启动全量 register**：遍历 `desktop_multica_workspaces` 逐个 register（幂等取回 runtime_id 缓存）。
 - **新添加 register**：用户添加 workspace 时 register 该 workspace。
-- **常驻 15s 心跳**（Req D 演示反馈调整，由「执行期」改为「常驻」）：与 multica 建立连接后即对**全部已连接 workspace 的 runtime** 持续心跳，不再仅 claim→complete 期间。迭代源由 `collect_active_runtime_ids`（仅 `active_runs`）改为 `state.all_runtime_ids()`（读 `runtime_ids`，= 所有已连接工作空间）；`active_runtime_ids` 保留给 cancel 检测用。每 15s `POST /heartbeat`（≠ metrics 的 15min，两套并存）。
+- **常驻 3s 心跳**（Req D 演示反馈调整由「执行期」改为「常驻」；M5-cx 由 15s 提频，multica 侧心跳优化对齐）：与 multica 建立连接后即对**全部已连接 workspace 的 runtime** 持续心跳，不再仅 claim→complete 期间。迭代源由 `collect_active_runtime_ids`（仅 `active_runs`）改为 `state.all_runtime_ids()`（读 `runtime_ids`，= 所有已连接工作空间）；`active_runtime_ids` 保留给 cancel 检测用。每 3s `POST /heartbeat`（≠ metrics 的 15min，两套并存）；runtime-assets 工单处理完成后经 `heartbeat_once` 补发排空（§12.94）。
 - **prepare-lease 续期**（Req D 新增，claim-at-click 后、start 前）：同循环遍历 `state.prepare_leases`（claim 写入 / start 移除），对每条调 `client.extend_prepare_lease(runtime_id, task_id)`（`POST /api/daemon/runtimes/{rid}/tasks/{tid}/prepare-lease`），避免用户在 composer 选模型/改需求（可能 >45s）期间被 `ReclaimStaleDispatchedTaskForRuntime` 回收、发送时 `start_task` 失败。与 multica daemon 自带的 `startTaskPrepareLeaseExtender`（每 15s）同构。
 - **recover-orphans**：启动 register 后，对每个 runtime_id 调 `POST /runtimes/{rid}/recover-orphans`（残留在飞任务无条件清为 `runtime_recovery` 失败态；multica server 对 `runtime_recovery` 等 retryable reason 自动重试 `max_attempts=2`——**本期接受该行为**，见接入方案 3.2.3）。
 - **取消检测**：长任务执行期周期 `GET /tasks/{id}/status`，cancelled/failed/404 → 中断本地 run。
@@ -850,7 +850,7 @@ start_multica_runtime()
   │     │      + 落 multica_task_conversations[tid]（session_id=None 待 bridge 回填）+ client.start_task(tid)（dispatched→running，lease 移除）
   │     └─ 返回 ConversationRunVm（前端按本地会话同一回调导航 conversation-run；写本地侧栏）→ 该远程任务出现在本地侧栏对应工作区
   │     NodeCompleted 后 worker_ref_show 读 continue_ref.acpSessionId → pin_task_session + 回填 multica_task_conversations[tid]
-  ├─ 执行期：常驻心跳每 15s POST /heartbeat {runtime_id}（**Req D：已常驻，非仅执行期**；维持在线，否则 150s 判离线→fail）
+  ├─ 执行期：常驻心跳每 3s POST /heartbeat {runtime_id}（**Req D：已常驻，非仅执行期**；维持在线，否则 150s 判离线→fail；M5-cx 由 15s 提频）
   │          本期只基础状态（start/complete/fail + 心跳），不上报 step/total 进度
   │          周期 GET /tasks/{tid}/status 检测取消（cancelled/failed/404 → 中断本地 run）
   └─ run outcome（**首轮 run 终结即触发，单轮即完成**；码灵不在单 remote task 多轮，多轮走新 task 续跑同 session，见 4.4）。订阅器穷举 4 分支（见 2.5 终态表）：
@@ -965,7 +965,7 @@ start_multica_runtime()
 | B1 | `/api/daemon/runtimes/{rid}/tasks/pending` | GET | PAT | 只读列表 |
 | B2 | `/api/daemon/runtimes/{rid}/tasks/{tid}/claim` | POST | PAT | **M0 新增 selective claim**；body 可带 prior_session_id（断点续跑） |
 | B3 | `/api/attachments/{id}/download` | GET | **mat_ 任务令牌**（claim 响应） | **M5-bu 新增消费**：issue 直属附件下载（claim 响应 `issue_attachments` 清单；DPMS 需求文件服务端实时代理；码灵中介下载后并入原生任务输入附件通道，见 §12.61）。路由语义（webank `file.go`）：`/api/attachments/{id}` 是 workspace 作用域**元数据 JSON**（id/url/filename），文件本体在 `/download` 子路径（user-scoped auth-only，接受 mat_ actor 凭证；服务端 CloudFront 302 / presign 302 / proxy 直出三模式，客户端默认跟随重定向、跨主机自动剥 Authorization，对签名 URL 正确）——M5-bu 首版误用元数据路由，§12.63 修正 |
-| C1 | `/api/daemon/heartbeat` | POST | PAT | **常驻 15s（Req D：建立连接后即对全部已连接 workspace 持续，非仅执行期）** |
+| C1 | `/api/daemon/heartbeat` | POST | PAT | **常驻 3s（Req D：建立连接后即对全部已连接 workspace 持续，非仅执行期；M5-cx 由 15s 提频 + 工单完成后补发排空）** |
 | C2 | `/api/daemon/tasks/{tid}/start` | POST | PAT | dispatched→running；body `force_fresh_session`（整任务重跑=true） |
 | C2.5 | `/api/daemon/runtimes/{rid}/tasks/{tid}/prepare-lease` | POST | PAT | **Req D 新增续期**：claim-at-click 后、start 前（用户在 composer 选模型/改需求期间）每 15s 续期 45s lease，防 `ReclaimStaleDispatchedTaskForRuntime` 回收（与 multica daemon 自带 `startTaskPrepareLeaseExtender` 同构） |
 | C3 | `/api/daemon/tasks/{tid}/progress` | POST | PAT | **本期不接入**（状态只基础 start/complete/fail） |
@@ -1075,7 +1075,7 @@ start_multica_runtime()
 |---|---|---|
 | 1 | **浏览器登录依赖 multica Web 可达**：localhost callback 要求 `<MULTICA_APP_URL>` 浏览器可访问；Web 不可达则无法登录 | 确保企业内 multica Web 可达；登录失败给明确网络提示。复用原生邮箱登录，**无新增 server 信任通道**（无内网冒充暴露面） |
 | 2 | **selective claim rebase 成本**：与 ClaimTaskByRuntime 收尾链强相关 | handler 顶部注释标注复制源 commit；升级时 diff 该锚点（见 1.3） |
-| 3 | **两套心跳并存**：metrics 15min + multica 15s | 独立循环，互不干扰；**multica 心跳 Req D 起改为常驻**（建立连接后对全部已连接 workspace 的 runtime 持续，非仅执行期）；同一常驻循环还承载 claim-at-click 后的 prepare-lease 续期 |
+| 3 | **两套心跳并存**：metrics 15min + multica 3s | 独立循环，互不干扰；**multica 心跳 Req D 起改为常驻**（建立连接后对全部已连接 workspace 的 runtime 持续，非仅执行期；M5-cx 由 15s 提频，工单完成后另有补发排空）；同一常驻循环还承载 claim-at-click 后的 prepare-lease 续期 |
 | 4 | **PAT 明文存储** | 项目无 keyring，与 metrics API Key 一致；永不回显明文（pat_set）；换机器/账号强制重连不复用 PAT |
 | 5 | **multica 版本升级** | M0 唯一改造（selective claim）为独立增量，rebase 成本可控（见 1.3）；登录无 server 改动零 rebase |
 | 6 | **接受 multica auto-retry + 断点续跑** | resume-safe 失败（runtime_recovery 等）server 自动重试 max_attempts=2，克隆新 id 子任务 T'；客户端 claim T' 时按响应 parent_task_id 反查父 T 本地索引续跑（§12.14）；resume-unsafe（agent_error）用户 rerun；session 已死降级整任务重跑（4.4） |
@@ -3203,6 +3203,25 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **验证结果**：desktop `multica::` **263 passed / 0 failed**（新增 3 例：classify uninstall 路由〔含未知 asset_type 拒绝、空 type 容忍、payload 缺失/空 key 拒绝〕、`plan_uninstall` 三分支决策、卸载事件 camelCase wire；扩展 2 例：uninstall result body 契约〔untagged 内层对象 + 仅 uninstalled_key〕、详情 uninstall 形态解析）；web `runtime-asset-uninstalled-event.test.ts` 契约锁定；`tsc -p tsconfig.build.json` 零错误；改动文件 clippy 零新增告警。内网端到端（multica Runtime 页签卸载 → toast 成功 → 清单刷新且条目消失 → 本地文件移除 → 共享目录副本不受影响；curl 直打不存在 key 的失败路径）待打包联调验收。
 
 **文件**：`src-tauri/src/multica/client.rs`、`src-tauri/src/multica/runtime_assets.rs`、`web/src/types.ts`、`web/src/lib/app-events.ts`、`web/src/api/client.ts`、`web/src/api/desktop.ts`、`web/src/api/browser.ts`、`web/src/api.ts`、`web/src/App.tsx`、`web/tests/runtime-asset-uninstalled-event.test.ts`；文档 `接入方案.md` D5/M5-cw、本条。
+
+---
+
+### 12.94 改动九十二：心跳优化——间隔 15s→3s + 工单完成后补发排空（M5-cx，2026-11-11）
+
+**背景**：multica 侧心跳优化改动说明（对齐其 daemon `handlePendingWorkHint` 模式）：runtime-assets/待办均为拉取式通道（一次心跳最多认领一个工单），码灵无 WS/企微中继，网页端操作需等周期心跳才被认领——15s 间隔下感知等待 avg ~7.5s / max 15s。协议字段零变化，纯 daemon 行为：改动 1（必做）间隔 15s→3s；改动 2（建议做）认领请求处理完成（result 上报完成）后不等下一个 tick 立即补发心跳认领下一个，直到 ack 无 `pending_runtime_assets`（1s 最小间隔防打满）。验收口径：单操作等待 0~3s（avg ~1.5s），连续排队操作几乎无额外等待。
+
+**实现**：
+
+- ① **改动 1**（`loop_.rs`）：`MULTICA_HEARTBEAT_INTERVAL_SECS` 15→3。tick 内其余维护随同一节奏加速，逐一评估后**保持单循环不拆双节奏**：自愈注册正常态零 server 调用（仅对缺 runtime_id 的 workspace 动作）；rerun 排空空集零开销（锁内判空即返回）；取消检测在有任务在飞时为每 run 一次轻量 GET（×5 后约 20 req/min/run，相对执行期快照/DPMS 流量可忽略）。overrun warn 阈值 30s 不变（只报警不强停）。
+- ② **改动 2 之真源抽取**（`loop_.rs`）：把 tick 循环体内「单 runtime 心跳 + ack 全字段消费」抽为 `pub(crate) async fn heartbeat_once(app, client, workspace_id, runtime_id)`——readiness diff 事件、runtime-assets 工单分发（spawn）、skill 待办分发（spawn）、`TaskNotFound` 404 清缓存触发自愈重注册，全部原样搬移；定时 tick 与补发共用同一真源，**任何 ack 信号都不因补发路径丢失**（补发心跳若带回 skill 待办/readiness diff 也被完整消费）。
+- ③ **改动 2 之排空链**（`runtime_assets.rs`）：`dispatch_pending_runtime_assets` 透传 `workspace_id`（心跳按 (workspace_id, runtime_id) 定位，handler 原只有 runtime_id）；`handle_runtime_assets_request` 各分支 result 上报完成后，链内节流 `DRAIN_REHEARTBEAT_THROTTLE_SECS = 1` 秒调 `loop_::heartbeat_once` 补发——ack 又有 pending 则 dispatch spawn 新处理任务，其完成后再补发，**排空链由既有 spawn 模型自然涌现**（无显式循环/无新状态/无 Notify）；ack 无 pending 时 dispatch 不 spawn，链条自然终止（终止性：每环认领一个工单，server 队列有限）。节流**仅链内**：与定时 tick 或并行排空链之间不做全局协调——心跳幂等、server 认领原子、补发总量受队列长度有界，严格全局间隔需跨任务共享状态，收益不成比例（multica handlePendingWorkHint 的限流器守护的是其 WS 事件高频触发路径，与本通道触发频率不可比）。详情拉取失败的提前 return 不补发：工单在心跳认领时已 pending→running（对接说明 §4.1），放弃不上报由 server 60s running 超时终态化兜底、**不会重派**，补发只会认领下一个工单、跳过本单无益；补发心跳失败仅 warn，3s 定时 tick 兜底；与定时 tick 并发心跳无害（server 认领原子，最坏各认领一个）。
+- ④ **模块可见性**：`runtime_assets` → `loop_::heartbeat_once` 同 crate 兄弟模块引用（`pub mod loop_` 既有可见性，无循环依赖问题——loop_ 本就引用 runtime_assets，反向仅此一处且为心跳单一真源服务）。
+
+**方案自评审**：过度设计——无新状态/队列/Notify/WS/配置项，复用心跳函数做 ack 消费单一真源，排空链零显式编排结构；1s 节流是 multica spec 要求。性能——每 daemon 每 3s 一次心跳负载 multica 侧已评估可忽略；补发链每环一次短超时 HTTP（liveness 10s）+ 1s sleep，总量有界（pending 队列长度）；无全量扫描/无界队列/长持锁引入。正确性——排空链各环 spawn 独立任务，与 tick 并发心跳依赖 server 原子认领（既有语义），无双重处理风险。
+
+**验证结果**：desktop `multica::` **265 passed / 0 failed**（新增 2 例契约断言：心跳间隔 3s、排空节流 1s——与 multica 侧对齐值，漂移先红；既有 263 例含 readiness 谓词/工单路由全绿，证 heartbeat_once 为行为等价搬移）；`cargo check -p gold-band-desktop` 通过（仅既有无关 dead-code 警告）。内网感知延迟验收（网页操作 → 本地生效计时：单操作 ≤3s、连续操作近似无缝）待打包联调。
+
+**文件**：`src-tauri/src/multica/loop_.rs`、`src-tauri/src/multica/runtime_assets.rs`、`src-tauri/src/multica/mod.rs`、`src-tauri/src/multica/client.rs`（doc 同步）；文档 `接入方案.md` §2.1/§3.2.4/C1/D5/时序图/M5-cx、本条。
 
 ---
 

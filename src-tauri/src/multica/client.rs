@@ -71,7 +71,7 @@ const NETWORK_RETRY_BASE_SECS: u64 = 1;
 /// 心跳 tick 内的高频调用（heartbeat / 取消检测 / 自愈 register）正常 <1s；server 慢响应或网络抖动时，
 /// 若沿用 30s 全局超时，单 tick 串行阻塞会累积，威胁 runtime 在线维持（离线超 150s 被 sweeper 回收）
 /// 与取消检测的及时性。给这些调用更短的 per-request 上界，使退化网络下单 tick 也能快速失败、
-/// 下一 tick（15s）重试——而非一个 tick 阻塞数分钟。
+/// 下一 tick（3s）重试——而非一个 tick 阻塞数分钟。
 const LIVENESS_TIMEOUT_SECS: u64 = 10;
 
 /// 单个 issue 附件下载超时（秒），覆盖 client 级 30s 默认值（M5-bu）。
@@ -836,7 +836,7 @@ impl MulticaClient {
     /// 发送已认证请求并按状态码映射错误（map_status）。
     ///
     /// `per_request_timeout` 覆盖 client 级 30s 默认——liveness/轻量调用（取消检测）传短超时，
-    /// 使单次调用在 server 慢响应时快速失败，避免拖垮整个心跳 tick（15s 周期，单 tick 阻塞会延误
+    /// 使单次调用在 server 慢响应时快速失败，避免拖垮整个心跳 tick（3s 周期，单 tick 阻塞会延误
     /// runtime 在线维持与取消检测）。`workspace_id` 注入 `X-Workspace-ID` 头（skill 拉取 REST 是
     /// workspace 维度接口，与 [`json_send`] 对称）。
     async fn send(
@@ -1051,7 +1051,7 @@ impl MulticaClient {
     /// `POST /api/daemon/register` —— 单次注册（无 client 内重试 + liveness 短超时），供常驻心跳 tick 自愈用。
     ///
     /// 与 [`register`](MulticaClient::register) 的区别：后者带 `with_network_retry`（3 次，单次最长 30s），
-    /// 适合一次性调用。而自愈注册由 15s 心跳 tick 驱动——**循环即重试**；若再嵌套 client 内 3×30s 退避，
+    /// 适合一次性调用。而自愈注册由 3s 心跳 tick 驱动——**循环即重试**；若再嵌套 client 内 3×30s 退避，
     /// 弱网下单 tick 可超 90s，阻塞后续心跳/取消检测（runtime 离线超 150s 会被 sweeper 回收）。
     /// 故自愈路径用单次 register + per-request 短超时：失败下 tick 自然重试，单 tick 耗时有界。
     pub async fn register_once(
@@ -1072,7 +1072,7 @@ impl MulticaClient {
         })
     }
 
-    /// `POST /api/daemon/heartbeat` —— 维持 runtime 在线（执行期 15s）并取回待办 ack。
+    /// `POST /api/daemon/heartbeat` —— 维持 runtime 在线（常驻 3s）并取回待办 ack。
     ///
     /// body `{runtime_id, supports_batch_import: true}`。响应携带 skill 发现/导入待办
     /// （[`HeartbeatAck`]，仅非空时下发）——调用方（心跳 tick）据 ack 分发处理，**绝不**在本方法内
