@@ -4,12 +4,12 @@
     "officialRegistry": {
       "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
       "registryVersion": "1.0.0",
-      "fetchedAt": "2026-11-12T07:57:40.221Z"
+      "fetchedAt": "2026-11-12T08:43:27.565Z"
     },
     "localSupplement": {
       "path": "resources/acp-registry-local.json",
       "sha256": "a6ee69655e357d2867a7c38b1433e9abb0c196f5cae5608e03903a297603c757",
-      "fetchedAt": "2026-11-12T07:57:40.221Z"
+      "fetchedAt": "2026-11-12T08:43:27.565Z"
     }
   },
   "agents": [
@@ -46,6 +46,41 @@
       "excludedPlatforms": []
     },
     {
+      "id": "codebuddy-code",
+      "label": "WorkBuddy",
+      "version": "2.183.0",
+      "provenance": {
+        "sourceKind": "official-registry",
+        "integrationOrigin": "official",
+        "validatedVersion": "2.179.3"
+      },
+      "description": "Tencent Cloud's official intelligent coding tool",
+      "repository": null,
+      "website": "https://www.codebuddy.cn/cli/",
+      "iconKey": "codebuddy-code",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/codebuddy-code.svg",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@tencent-ai/codebuddy-code@2.183.0",
+        "--acp"
+      ],
+      "localLaunch": {
+        "command": "codebuddy",
+        "args": [
+          "--acp"
+        ]
+      },
+      "installedCommand": null,
+      "env": {},
+      "primaryAgentDir": ".codebuddy",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false,
+      "excludedPlatforms": []
+    },
+    {
       "id": "codex-acp",
       "label": "Codex",
       "version": "2.1.1",
@@ -71,6 +106,171 @@
       "installedCommand": "codex",
       "env": {},
       "primaryAgentDir": ".codex",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false,
+      "excludedPlatforms": []
+    },
+    {
+      "id": "pi-acp",
+      "label": "Pi",
+      "version": "0.0.34",
+      "provenance": {
+        "sourceKind": "official-registry",
+        "integrationOrigin": "official",
+        "validatedVersion": "0.0.34"
+      },
+      "description": "ACP adapter for pi coding agent",
+      "repository": "https://github.com/svkozak/pi-acp",
+      "website": null,
+      "iconKey": "pi-acp",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/pi-acp.svg",
+      "command": "npx",
+      "args": [
+        "-y",
+        "pi-acp@0.0.34"
+      ],
+      "localLaunch": {
+        "command": "pi-acp",
+        "args": []
+      },
+      "installedCommand": "pi",
+      "env": {},
+      "primaryAgentDir": ".pi/agent",
+      "projectPrimaryAgentDir": ".pi",
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false,
+      "excludedPlatforms": []
+    },
+    {
+      "id": "deepseek-harness",
+      "label": "DeepSeek Harness",
+      "version": "0.2.1-rc.2",
+      "provenance": {
+        "sourceKind": "local-supplement",
+        "integrationOrigin": "official",
+        "validatedVersion": "0.2.1-rc.2"
+      },
+      "description": "DeepSeek's official agentic coding harness exposed through the acp profile.",
+      "repository": null,
+      "website": "https://www.deepseek.com",
+      "iconKey": "deepseek-harness",
+      "iconUrl": "https://cdn.deepseek.com/favicon.svg",
+      "command": "dsh",
+      "args": [
+        "--profile",
+        "acp"
+      ],
+      "localLaunch": null,
+      "installedCommand": null,
+      "env": {},
+      "primaryAgentDir": ".dsh",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false,
+      "excludedPlatforms": []
+    },
+    {
+      "id": "zcode-acp",
+      "label": "ZCode",
+      "version": "0.84.1",
+      "provenance": {
+        "sourceKind": "local-supplement",
+        "integrationOrigin": "community-adapter",
+        "validatedVersion": "0.84.1"
+      },
+      "description": "Community ACP bridge for the ZCode app-server and GLM Coding Plan.",
+      "repository": "https://github.com/william0wang/zcode-acp",
+      "website": "https://zcode.z.ai",
+      "iconKey": "zcode-acp",
+      "iconUrl": "https://raw.githubusercontent.com/william0wang/zcode-acp/main/registry/zcode-acp/icon.svg",
+      "command": "zcode-acp-server",
+      "args": [],
+      "localLaunch": null,
+      "installedCommand": null,
+      "env": {},
+      "primaryAgentDir": ".zcode",
+      "projectPrimaryAgentDir": ".agents",
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false,
+      "excludedPlatforms": []
+    },
+    {
+      "id": "qoder",
+      "label": "Qoder",
+      "version": "1.1.86",
+      "provenance": {
+        "sourceKind": "official-registry",
+        "integrationOrigin": "official",
+        "validatedVersion": "1.1.86"
+      },
+      "description": "AI coding assistant with agentic capabilities",
+      "repository": null,
+      "website": "https://qoder.com",
+      "iconKey": "qoder",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/qoder.svg",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@qoder-ai/qodercli@1.1.86",
+        "--acp"
+      ],
+      "localLaunch": {
+        "command": "qodercli",
+        "args": [
+          "--acp"
+        ]
+      },
+      "installedCommand": "qodercli",
+      "env": {},
+      "primaryAgentDir": ".qoder",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false,
+      "excludedPlatforms": [
+        {
+          "os": "windows",
+          "arch": "aarch64"
+        }
+      ]
+    },
+    {
+      "id": "kimi",
+      "label": "Kimi Code",
+      "version": "1.52.0",
+      "provenance": {
+        "sourceKind": "official-registry",
+        "integrationOrigin": "official",
+        "validatedVersion": "1.52.0"
+      },
+      "description": "Archived by Moonshot AI. Use Kimi Code instead",
+      "repository": "https://github.com/MoonshotAI/kimi-cli",
+      "website": "https://moonshotai.github.io/kimi-cli/",
+      "iconKey": "kimi",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/kimi.svg",
+      "command": "kimi",
+      "args": [
+        "acp"
+      ],
+      "localLaunch": null,
+      "installedCommand": null,
+      "env": {},
+      "primaryAgentDir": ".kimi-code",
       "projectPrimaryAgentDir": null,
       "compatibleAgentDirs": [
         ".agents"
@@ -142,41 +342,6 @@
       "compatibleAgentDirs": [
         ".agents"
       ],
-      "supportsSystemPrompt": false,
-      "supportsExternalSessionSync": false,
-      "excludedPlatforms": []
-    },
-    {
-      "id": "codebuddy-code",
-      "label": "CodeBuddy",
-      "version": "2.183.0",
-      "provenance": {
-        "sourceKind": "official-registry",
-        "integrationOrigin": "official",
-        "validatedVersion": "2.179.3"
-      },
-      "description": "Tencent Cloud's official intelligent coding tool",
-      "repository": null,
-      "website": "https://www.codebuddy.cn/cli/",
-      "iconKey": "codebuddy-code",
-      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/codebuddy-code.svg",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@tencent-ai/codebuddy-code@2.183.0",
-        "--acp"
-      ],
-      "localLaunch": {
-        "command": "codebuddy",
-        "args": [
-          "--acp"
-        ]
-      },
-      "installedCommand": null,
-      "env": {},
-      "primaryAgentDir": ".codebuddy",
-      "projectPrimaryAgentDir": null,
-      "compatibleAgentDirs": [],
       "supportsSystemPrompt": false,
       "supportsExternalSessionSync": false,
       "excludedPlatforms": []
@@ -277,36 +442,6 @@
       "excludedPlatforms": []
     },
     {
-      "id": "kimi",
-      "label": "Kimi Code",
-      "version": "1.52.0",
-      "provenance": {
-        "sourceKind": "official-registry",
-        "integrationOrigin": "official",
-        "validatedVersion": "1.52.0"
-      },
-      "description": "Archived by Moonshot AI. Use Kimi Code instead",
-      "repository": "https://github.com/MoonshotAI/kimi-cli",
-      "website": "https://moonshotai.github.io/kimi-cli/",
-      "iconKey": "kimi",
-      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/kimi.svg",
-      "command": "kimi",
-      "args": [
-        "acp"
-      ],
-      "localLaunch": null,
-      "installedCommand": null,
-      "env": {},
-      "primaryAgentDir": ".kimi-code",
-      "projectPrimaryAgentDir": null,
-      "compatibleAgentDirs": [
-        ".agents"
-      ],
-      "supportsSystemPrompt": false,
-      "supportsExternalSessionSync": false,
-      "excludedPlatforms": []
-    },
-    {
       "id": "amp-acp",
       "label": "Amp",
       "version": "0.12.0",
@@ -329,141 +464,6 @@
       "projectPrimaryAgentDir": null,
       "compatibleAgentDirs": [
         ".claude"
-      ],
-      "supportsSystemPrompt": false,
-      "supportsExternalSessionSync": false,
-      "excludedPlatforms": []
-    },
-    {
-      "id": "pi-acp",
-      "label": "Pi",
-      "version": "0.0.34",
-      "provenance": {
-        "sourceKind": "official-registry",
-        "integrationOrigin": "official",
-        "validatedVersion": "0.0.34"
-      },
-      "description": "ACP adapter for pi coding agent",
-      "repository": "https://github.com/svkozak/pi-acp",
-      "website": null,
-      "iconKey": "pi-acp",
-      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/pi-acp.svg",
-      "command": "npx",
-      "args": [
-        "-y",
-        "pi-acp@0.0.34"
-      ],
-      "localLaunch": {
-        "command": "pi-acp",
-        "args": []
-      },
-      "installedCommand": "pi",
-      "env": {},
-      "primaryAgentDir": ".pi/agent",
-      "projectPrimaryAgentDir": ".pi",
-      "compatibleAgentDirs": [
-        ".agents"
-      ],
-      "supportsSystemPrompt": false,
-      "supportsExternalSessionSync": false,
-      "excludedPlatforms": []
-    },
-    {
-      "id": "deepseek-harness",
-      "label": "DeepSeek Harness",
-      "version": "0.2.1-rc.2",
-      "provenance": {
-        "sourceKind": "local-supplement",
-        "integrationOrigin": "official",
-        "validatedVersion": "0.2.1-rc.2"
-      },
-      "description": "DeepSeek's official agentic coding harness exposed through the acp profile.",
-      "repository": null,
-      "website": "https://www.deepseek.com",
-      "iconKey": "deepseek-harness",
-      "iconUrl": "https://cdn.deepseek.com/favicon.svg",
-      "command": "dsh",
-      "args": [
-        "--profile",
-        "acp"
-      ],
-      "localLaunch": null,
-      "installedCommand": null,
-      "env": {},
-      "primaryAgentDir": ".dsh",
-      "projectPrimaryAgentDir": null,
-      "compatibleAgentDirs": [
-        ".agents"
-      ],
-      "supportsSystemPrompt": false,
-      "supportsExternalSessionSync": false,
-      "excludedPlatforms": []
-    },
-    {
-      "id": "qoder",
-      "label": "Qoder",
-      "version": "1.1.86",
-      "provenance": {
-        "sourceKind": "official-registry",
-        "integrationOrigin": "official",
-        "validatedVersion": "1.1.86"
-      },
-      "description": "AI coding assistant with agentic capabilities",
-      "repository": null,
-      "website": "https://qoder.com",
-      "iconKey": "qoder",
-      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/qoder.svg",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@qoder-ai/qodercli@1.1.86",
-        "--acp"
-      ],
-      "localLaunch": {
-        "command": "qodercli",
-        "args": [
-          "--acp"
-        ]
-      },
-      "installedCommand": "qodercli",
-      "env": {},
-      "primaryAgentDir": ".qoder",
-      "projectPrimaryAgentDir": null,
-      "compatibleAgentDirs": [
-        ".agents"
-      ],
-      "supportsSystemPrompt": false,
-      "supportsExternalSessionSync": false,
-      "excludedPlatforms": [
-        {
-          "os": "windows",
-          "arch": "aarch64"
-        }
-      ]
-    },
-    {
-      "id": "zcode-acp",
-      "label": "ZCode",
-      "version": "0.84.1",
-      "provenance": {
-        "sourceKind": "local-supplement",
-        "integrationOrigin": "community-adapter",
-        "validatedVersion": "0.84.1"
-      },
-      "description": "Community ACP bridge for the ZCode app-server and GLM Coding Plan.",
-      "repository": "https://github.com/william0wang/zcode-acp",
-      "website": "https://zcode.z.ai",
-      "iconKey": "zcode-acp",
-      "iconUrl": "https://raw.githubusercontent.com/william0wang/zcode-acp/main/registry/zcode-acp/icon.svg",
-      "command": "zcode-acp-server",
-      "args": [],
-      "localLaunch": null,
-      "installedCommand": null,
-      "env": {},
-      "primaryAgentDir": ".zcode",
-      "projectPrimaryAgentDir": ".agents",
-      "compatibleAgentDirs": [
-        ".agents"
       ],
       "supportsSystemPrompt": false,
       "supportsExternalSessionSync": false,

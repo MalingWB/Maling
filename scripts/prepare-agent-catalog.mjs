@@ -12,19 +12,19 @@ export const ACP_REGISTRY_URL = 'https://cdn.agentclientprotocol.com/registry/v1
 export const LOCAL_SUPPLEMENT_RESOURCE_PATH = 'resources/acp-registry-local.json';
 export const BUILTIN_AGENT_IDS = [
   'claude-acp',
+  'codebuddy-code',
   'codex-acp',
+  'pi-acp',
+  'deepseek-harness',
+  'zcode-acp',
+  'qoder',
+  'kimi',
   'cursor',
   'gemini',
-  'codebuddy-code',
   'goose',
   'qwen-code',
   'opencode',
-  'kimi',
   'amp-acp',
-  'pi-acp',
-  'deepseek-harness',
-  'qoder',
-  'zcode-acp',
 ];
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -51,7 +51,7 @@ const overrides = {
     localCommand: 'gemini',
   },
   'codebuddy-code': {
-    label: 'CodeBuddy', iconKey: 'codebuddy-code', primaryAgentDir: '.codebuddy', compatibleAgentDirs: [],
+    label: 'WorkBuddy', iconKey: 'codebuddy-code', primaryAgentDir: '.codebuddy', compatibleAgentDirs: [],
     localCommand: 'codebuddy',
   },
   goose: {
