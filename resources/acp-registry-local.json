@@ -19,6 +19,27 @@
       "env": {},
       "primaryAgentDir": ".dsh",
       "compatibleAgentDirs": [".agents"]
+    },
+    {
+      "id": "zcode-acp",
+      "label": "ZCode",
+      "version": "0.84.1",
+      "provenance": {
+        "sourceKind": "local-supplement",
+        "integrationOrigin": "community-adapter",
+        "validatedVersion": "0.84.1"
+      },
+      "description": "Community ACP bridge for the ZCode app-server and GLM Coding Plan.",
+      "repository": "https://github.com/william0wang/zcode-acp",
+      "website": "https://zcode.z.ai",
+      "iconKey": "zcode-acp",
+      "iconUrl": "https://raw.githubusercontent.com/william0wang/zcode-acp/main/registry/zcode-acp/icon.svg",
+      "command": "zcode-acp-server",
+      "args": [],
+      "env": {},
+      "primaryAgentDir": ".zcode",
+      "projectPrimaryAgentDir": ".agents",
+      "compatibleAgentDirs": [".agents"]
     }
   ]
 }

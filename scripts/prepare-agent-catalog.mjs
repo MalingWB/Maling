@@ -24,6 +24,7 @@ export const BUILTIN_AGENT_IDS = [
   'pi-acp',
   'deepseek-harness',
   'qoder',
+  'zcode-acp',
 ];
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -429,7 +430,11 @@ async function stageIcons(root, staging, catalog, offline, fetchIconImpl, hooks)
         return fetchIconImpl(agent.iconUrl);
       })();
     await hooks.beforeIconValidation?.();
-    if (!svg.includes('<svg')) throw new Error(`Agent ${agent.id} icon is not SVG.`);
+    const trimmed = svg.trimStart();
+    const svgDocument = trimmed.startsWith('<svg')
+      || trimmed.startsWith('<?xml')
+      || trimmed.startsWith('<!DOCTYPE svg');
+    if (!svgDocument || !svg.includes('<svg')) throw new Error(`Agent ${agent.id} icon is not SVG.`);
     await writeFile(join(targetDir, `${agent.iconKey}.svg`), svg, 'utf8');
   }
 }

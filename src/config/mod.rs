@@ -3208,6 +3208,12 @@ mod tests {
                 ("pi-acp", Some(".pi/agent"), Some(".pi"), vec![".agents"]),
                 ("deepseek-harness", Some(".dsh"), None, vec![".agents"]),
                 ("qoder", Some(".qoder"), None, vec![".agents"]),
+                (
+                    "zcode-acp",
+                    Some(".zcode"),
+                    Some(".agents"),
+                    vec![".agents"]
+                ),
             ]
         );
     }

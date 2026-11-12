@@ -4,7 +4,7 @@
 > 调研日期：2026-10-16；范围更新：2026-11-09。范围：Gold Band 桌面客户端，优先验收 Windows，沿用现有跨平台进程边界。\
 > 配套计划：[首次启动引导开发计划](../../../开发计划/新增流程/首次启动引导开发计划.md)。
 
-> 后续 Catalog 扩展：[DeepSeek Harness / ZCode / Qoder ACP 接入技术方案](../../../开发计划/acp接入/DeepSeek-ZCode-Qoder-ACP接入技术方案.md) 不改变本文 onboarding 状态机。当前发布版消费 13 项，新增 DeepSeek Harness 与 Qoder；Qoder 在 Windows aarch64 被平台过滤，不会成为候选。ZCode 只有真实后端完整验收通过后才消费第二阶段 14 项。未准入或当前平台不支持的条目不会成为候选。
+> 后续 Catalog 扩展：[DeepSeek Harness / ZCode / Qoder ACP 接入技术方案](../../../开发计划/acp接入/DeepSeek-ZCode-Qoder-ACP接入技术方案.md) 不改变本文 onboarding 状态机。当前发布版消费 14 项，新增 DeepSeek Harness、Qoder 与 ZCode；Qoder 在 Windows aarch64 被平台过滤，不会成为候选。未准入或当前平台不支持的条目不会成为候选。
 
 ## 1. 推荐决策
 
@@ -60,7 +60,7 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 
 | 领域 | 当前实现 | 本次用途 |
 | --- | --- | --- |
-| Agent 模板 | `scripts/prepare-agent-catalog.mjs`、`src/agent_catalog.rs`、`resources/agent-catalog.json` | 复用现有 13 类精选模板及构建期校验，作为安装发现与准备指引的来源 |
+| Agent 模板 | `scripts/prepare-agent-catalog.mjs`、`src/agent_catalog.rs`、`resources/agent-catalog.json` | 复用现有 14 类精选模板及构建期校验，作为安装发现与准备指引的来源 |
 | Agent 实例 | `SettingsConfig.agents`、`ManagedAgentId`、`ManagedAgentConfig` | 唯一实例事实源；不增加 onboarding 专用 Agent 表 |
 | Catalog 启动配置 | `src/config/managed_agents.rs` | 当前代码保存时剔除内置 command/args，读取时从 Catalog 注入；设计必须遵循实际代码 |
 | 诊断 | `src/acp/client.rs::doctor_with_deadline`、`probe_model_config` | 复用 ACP 会话建立、模型能力探测及清理；不重做健康检查 |
@@ -359,7 +359,7 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 | 数据 | 规模／增长 | 控制方式 |
 | --- | --- | --- |
 | 环境检查 | Git、Node、npm、npx 共 4 项 | 每项有限时命令，结果逐项返回 |
-| 精选 Agent | 当前 13 项；ZCode 准入后最多 14 项 | 先按当前平台过滤，再读取打包摘要；仅对本机已准备的候选启动有界自动诊断 |
+| 精选 Agent | 当前 14 项 | 先按当前平台过滤，再读取打包摘要；仅对本机已准备的候选启动有界自动诊断 |
 | 自定义 Agent | 当前产品验收规模不超过 50 项 | 内部候选每批至多 50 项并保持有界诊断；超过 50 项的跨批场景不是本版本产品承诺，UI 仅投影已验证且已配置项 |
 | 内置工作流 | 标准版 2 个，WB 3 个，后续受构建清单约束 | 在第三步预览时读取；算法 O(内置执行 slot 总数) |
 | 用户模板存储 | 与用户模板数及正文大小一起增长 | 现有单 JSON 预览／提交为 O(文件大小)，不假装只扫描内置就免去解析成本 |

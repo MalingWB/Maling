@@ -628,6 +628,7 @@ export const mockAgentRegistry: AgentRegistryVm = {
     mockCatalogEntry({ agentType: 'pi-acp', label: 'Pi', iconKey: 'pi-acp', primaryAgentDir: '.pi/agent', projectPrimaryAgentDir: '.pi', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Pi', defaultArgs: ['-y', 'pi-acp@0.0.33'] }),
     mockCatalogEntry({ agentType: 'deepseek-harness', label: 'DeepSeek Harness', iconKey: 'deepseek-harness', primaryAgentDir: '.dsh', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'DeepSeek Harness', defaultCommand: 'dsh', defaultArgs: ['--profile', 'acp'] }),
     mockCatalogEntry({ agentType: 'qoder', label: 'Qoder', iconKey: 'qoder', primaryAgentDir: '.qoder', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Qoder', defaultArgs: ['-y', '@qoder-ai/qodercli@1.1.86', '--acp'] }),
+    mockCatalogEntry({ agentType: 'zcode-acp', label: 'ZCode', iconKey: 'zcode-acp', primaryAgentDir: '.zcode', projectPrimaryAgentDir: '.agents', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'ZCode', defaultCommand: 'zcode-acp-server', defaultArgs: [] }),
   ],
 };
 

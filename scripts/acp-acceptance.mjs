@@ -438,10 +438,64 @@ async function runFullLifecycle(initializeResult) {
   const restore = await request(restoreMethod, { cwd, mcpServers: [], sessionId }, scaled(60_000));
   const restoreTurn = await promptTurn(
     sessionId,
-    'What five-character token did I ask you to remember earlier? Reply with that token only.',
+    'What token did I ask you to remember earlier? Reply with that token only.',
     scaled(180_000),
   );
   const restoreTexts = finalTextsSince(restoreStartedAt);
+
+  let forkProbe = null;
+  if (sessionCapabilities.fork) {
+    phase = 'fork checkpoint turn';
+    progress('fork checkpoint turn');
+    const checkpointTurn = await promptTurn(
+      sessionId,
+      'Create a file named acp-fork-checkpoint.txt containing exactly CHECKPOINT_OK, then reply exactly CHECKPOINT_OK.',
+      scaled(180_000),
+    );
+    phase = 'session/fork';
+    progress('session/fork');
+    const forkResult = await request('session/fork', { sessionId }, scaled(60_000));
+    const forkSessionId = forkResult.forkedSessionId ?? forkResult.sessionId;
+    if (!forkSessionId) throw new Error('session/fork did not return sessionId');
+    const forkStartedAt = events.length;
+    const forkTurn = await promptTurn(
+      forkSessionId,
+      'What token did I ask you to remember earlier? Reply with that token only.',
+      scaled(180_000),
+    );
+    forkProbe = {
+      checkpointStopReason: checkpointTurn.stopReason ?? null,
+      forkSessionId,
+      stopReason: forkTurn.stopReason ?? null,
+      rememberedTokenObserved: finalTextsSince(forkStartedAt).includes(rememberedToken),
+    };
+  }
+
+  let continueProbe = null;
+  if (sessionCapabilities.resume && capabilities.loadSession) {
+    phase = 'session/resume';
+    progress('restart transport for explicit resume');
+    const loadedChild = child;
+    await stopChild(loadedChild);
+    resetTransport();
+    child = spawnChild();
+    const continueInitialize = await initializeSession();
+    phase = 'session/resume';
+    progress('session/resume');
+    const continueStartedAt = events.length;
+    const resumed = await request('session/resume', { cwd, mcpServers: [], sessionId }, scaled(60_000));
+    const continueTurn = await promptTurn(
+      sessionId,
+      'What token did I ask you to remember at the start of this conversation? Reply with that token only.',
+      scaled(180_000),
+    );
+    continueProbe = {
+      initializeProtocolVersion: continueInitialize.protocolVersion ?? null,
+      responseKeys: Object.keys(resumed ?? {}),
+      stopReason: continueTurn.stopReason ?? null,
+      rememberedTokenObserved: finalTextsSince(continueStartedAt).includes(rememberedToken),
+    };
+  }
 
   let closeResult = null;
   let deleteResult = null;
@@ -503,6 +557,9 @@ async function runFullLifecycle(initializeResult) {
       restoreTexts,
       rememberedTokenObserved: restoreTexts.includes(rememberedToken),
       toolMarkerObserved: texts.includes(`TOOL_OK:${rememberedToken}`),
+      forkSupported: Boolean(sessionCapabilities.fork),
+      forkProbe,
+      explicitContinueProbe: continueProbe,
       closeSupported: Boolean(sessionCapabilities.close),
       closeResult,
       deleteSupported: Boolean(sessionCapabilities.delete),

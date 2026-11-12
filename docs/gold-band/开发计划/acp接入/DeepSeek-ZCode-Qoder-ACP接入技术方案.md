@@ -152,7 +152,7 @@ qodercli --acp
 
 候选桥接器为社区项目 `zcode-acp-server@0.82.3`，Node >= 22。它调用真实 `zcode app-server --stdio`，架构上可以复用 Gold Band 通用 ACP client，但社区项目声明不能替代真实兼容性证据。
 
-2026-11-11 的旧证据只支持“架构可行，尚未达到发布准入”：当时没有安装真实 ZCode，固定 0.82.3 桥接器 120 秒内没有返回 `initialize`。2026-11-12 安装官方桌面端 3.17.2 与内置 CLI 0.17.1 后，同一桥接器已用真实 GLM 后端通过 initialize、new、真实工具、stop、list、load/history、进程清理与三层 Skill 验收（见《ZCode-验收记录-2026-11-12.md》）；fork/continue、close/delete 语义、产品化启动配置与平台矩阵仍未完成。第一阶段不得把 ZCode 加入发布 Catalog、Agent 管理新增列表或首次引导候选。
+2026-11-11 的旧证据只支持“架构可行，尚未达到发布准入”：当时没有安装真实 ZCode，固定 0.82.3 桥接器 120 秒内没有返回 `initialize`。2026-11-12 安装官方桌面端 3.17.2 与内置 CLI 0.17.1，并将桥接器升级到 0.84.1 后，真实 GLM 后端已通过 initialize、new、真实工具、stop、list、load/history、显式 resume、fork、进程清理与三层 Skill 验收（见《ZCode-验收记录-2026-11-12.md》）；0.84.1 在 Windows 上自动发现 CLI 与 sqlite-capable Node，不要求手工 `ZCODE_BIN`/`ZCODE_NODE`。close/delete 未声明，清理契约映射为“关闭 stdin 后进程自然退出”。其余平台矩阵未测试。ZCode 已按第二阶段准入加入正式 Catalog，来源保持 `local-supplement/community-adapter` 并固定 `0.84.1`。
 
 第二阶段发现只认已经安装的 native `zcode-acp-server`；桥接器再通过 `ZCODE_BIN`、PATH 或自身支持的安装位置寻找 ZCode。Gold Band 不自动下载社区桥接器，也不为 ZCode 添加专属桌面目录扫描。
 
@@ -319,7 +319,7 @@ DeepSeek 的 `reasoning_effort` 若以 `category=thought_level` 返回，复用�
 
 ### 第一阶段：通用契约、DeepSeek 与 Qoder
 
-> 实施进度（2026-11-12）：第 2—5 项已在保持原有 11 项正式 Catalog 的前提下落地。DeepSeek Harness 固定 npm 基线 `0.2.1-rc.2` 已在 Windows x64 完成真实验收。Qoder CLI `0.2.14` 首次验收因认证、list/load、stop 与清理缺陷未通过；官方 Registry 已更新到 `1.1.86`，实现已更新 Registry snapshot、加入通用 AuthRequired 重试和受控 `launchOverrides`。1.1.86 在账号领取 Credits 后，固定 npm 与本机 PATH `qodercli` 命令两条路径均已通过完整生命周期（new、真实工具、stop、list、load/history、close/delete、进程清理）与项目、共享、全局 Skill 验收。2026-11-12 已确认本机路径以 PATH 命令为验收标准，Qoder Windows x64 真实验收完成；native 二进制被本机安全环境拦截的事实单独记录，不构成发布门槛。ZCode 桌面端 `3.17.2`（内含 CLI `zcode.cjs 0.17.1`）与桥接器 `0.82.3` 已安装，使用 `ZCODE_BIN` + `ZCODE_NODE` 固定后，真实 GLM 后端已通过 initialize、new、真实工具、stop、list、load/history、进程清理与项目、用户、共享三层 Skill 验收；fork/continue、close/delete 语义、产品化启动配置与平台矩阵仍未完成，ZCode 继续留在第二阶段。第一阶段产物已于 2026-11-12 生成：DeepSeek 写入 local supplement，Qoder 固定 `1.1.86` 并加入本机 `qodercli` 覆盖，正式 Catalog 扩展为 13 项并补齐图标。
+> 实施进度（2026-11-12）：第 2—5 项已在保持原有 11 项正式 Catalog 的前提下落地。DeepSeek Harness 固定 npm 基线 `0.2.1-rc.2` 已在 Windows x64 完成真实验收。Qoder CLI `0.2.14` 首次验收因认证、list/load、stop 与清理缺陷未通过；官方 Registry 已更新到 `1.1.86`，实现已更新 Registry snapshot、加入通用 AuthRequired 重试和受控 `launchOverrides`。1.1.86 在账号领取 Credits 后，固定 npm 与本机 PATH `qodercli` 命令两条路径均已通过完整生命周期（new、真实工具、stop、list、load/history、close/delete、进程清理）与项目、共享、全局 Skill 验收。2026-11-12 已确认本机路径以 PATH 命令为验收标准，Qoder Windows x64 真实验收完成；native 二进制被本机安全环境拦截的事实单独记录，不构成发布门槛。ZCode 桌面端 `3.17.2`（内含 CLI `zcode.cjs 0.17.1`）与桥接器 `0.82.3` 已安装；升级到桥接器 `0.84.1` 并移除手工 `ZCODE_BIN`/`ZCODE_NODE` 后，真实 GLM 后端通过包含显式 resume 与 fork 的完整生命周期和三层 Skill 验收，第二阶段门槛完成。第一阶段产物（DeepSeek local supplement、Qoder 固定 `1.1.86` 与本机 `qodercli` 覆盖）与第二阶段 ZCode（`local-supplement/community-adapter`，`0.84.1`）均已生成，正式 Catalog 为 14 项并补齐图标；统一完整回归按发布流程在三个 Agent 全部就绪后一次执行。
 
 1. 同步产品设计文档中的 Catalog 启动配置归属、来源展示、凭据持久化和阶段数量。
 2. 扩展 Catalog schema：provenance、类型化 `excludedPlatforms` 与 source 摘要。

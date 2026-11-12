@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn embedded_catalog_contains_the_curated_agents() {
         let catalog = builtin_agent_catalog();
-        assert_eq!(catalog.agents.len(), 13);
+        assert_eq!(catalog.agents.len(), 14);
         assert!(builtin_agent("amp-acp").is_some());
         let pi = builtin_agent("pi-acp").unwrap();
         assert_eq!(pi.command, "npx");
@@ -258,14 +258,35 @@ mod tests {
                 crate::platform::DesktopArchitecture::Aarch64,
             )]
         );
+        let zcode = builtin_agent("zcode-acp").unwrap();
+        assert_eq!(zcode.command, "zcode-acp-server");
+        assert!(zcode.args.is_empty());
+        assert_eq!(
+            zcode.provenance.source_kind,
+            AgentCatalogSourceKind::LocalSupplement
+        );
+        assert_eq!(
+            zcode.provenance.integration_origin,
+            AgentIntegrationOrigin::CommunityAdapter
+        );
+        assert_eq!(zcode.provenance.validated_version, "0.84.1");
+        assert_eq!(zcode.primary_agent_dir.as_deref(), Some(".zcode"));
+        assert_eq!(zcode.project_primary_agent_dir.as_deref(), Some(".agents"));
+        assert_eq!(zcode.compatible_agent_dirs, [".agents"]);
         assert!(catalog.agents.iter().all(|entry| {
-            let expected_source_kind = if entry.id == "deepseek-harness" {
+            let local_supplement = entry.id == "deepseek-harness" || entry.id == "zcode-acp";
+            let expected_source_kind = if local_supplement {
                 AgentCatalogSourceKind::LocalSupplement
             } else {
                 AgentCatalogSourceKind::OfficialRegistry
             };
+            let expected_origin = if entry.id == "zcode-acp" {
+                AgentIntegrationOrigin::CommunityAdapter
+            } else {
+                AgentIntegrationOrigin::Official
+            };
             entry.provenance.source_kind == expected_source_kind
-                && entry.provenance.integration_origin == AgentIntegrationOrigin::Official
+                && entry.provenance.integration_origin == expected_origin
                 && !entry.provenance.validated_version.is_empty()
                 && (entry.excluded_platforms.is_empty() || entry.id == "qoder")
         }));

@@ -4,12 +4,12 @@
     "officialRegistry": {
       "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
       "registryVersion": "1.0.0",
-      "fetchedAt": "2026-11-12T06:26:42.395Z"
+      "fetchedAt": "2026-11-12T07:57:40.221Z"
     },
     "localSupplement": {
       "path": "resources/acp-registry-local.json",
-      "sha256": "c3b9faead3e4f6a3772dcd429163617194c5f2acc5c25e05016c44c012dd09e5",
-      "fetchedAt": "2026-11-12T06:26:42.395Z"
+      "sha256": "a6ee69655e357d2867a7c38b1433e9abb0c196f5cae5608e03903a297603c757",
+      "fetchedAt": "2026-11-12T07:57:40.221Z"
     }
   },
   "agents": [
@@ -440,6 +440,34 @@
           "arch": "aarch64"
         }
       ]
+    },
+    {
+      "id": "zcode-acp",
+      "label": "ZCode",
+      "version": "0.84.1",
+      "provenance": {
+        "sourceKind": "local-supplement",
+        "integrationOrigin": "community-adapter",
+        "validatedVersion": "0.84.1"
+      },
+      "description": "Community ACP bridge for the ZCode app-server and GLM Coding Plan.",
+      "repository": "https://github.com/william0wang/zcode-acp",
+      "website": "https://zcode.z.ai",
+      "iconKey": "zcode-acp",
+      "iconUrl": "https://raw.githubusercontent.com/william0wang/zcode-acp/main/registry/zcode-acp/icon.svg",
+      "command": "zcode-acp-server",
+      "args": [],
+      "localLaunch": null,
+      "installedCommand": null,
+      "env": {},
+      "primaryAgentDir": ".zcode",
+      "projectPrimaryAgentDir": ".agents",
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false,
+      "excludedPlatforms": []
     }
   ]
 }

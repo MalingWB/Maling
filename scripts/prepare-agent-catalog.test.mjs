@@ -244,6 +244,22 @@ test('checked-in first-stage expansion pins Qoder and curates DeepSeek locally',
   assert.equal(deepseek.primaryAgentDir, '.dsh');
   assert.deepEqual(deepseek.compatibleAgentDirs, ['.agents']);
   assert.deepEqual(deepseek.excludedPlatforms, []);
+
+  const zcode = catalog.agents.find((agent) => agent.id === 'zcode-acp');
+  assert.deepEqual(zcode.provenance, {
+    sourceKind: 'local-supplement',
+    integrationOrigin: 'community-adapter',
+    validatedVersion: '0.84.1',
+  });
+  assert.equal(zcode.version, '0.84.1');
+  assert.equal(zcode.command, 'zcode-acp-server');
+  assert.deepEqual(zcode.args, []);
+  assert.equal(zcode.localLaunch, null);
+  assert.equal(zcode.installedCommand, null);
+  assert.equal(zcode.primaryAgentDir, '.zcode');
+  assert.equal(zcode.projectPrimaryAgentDir, '.agents');
+  assert.deepEqual(zcode.compatibleAgentDirs, ['.agents']);
+  assert.deepEqual(zcode.excludedPlatforms, []);
 });
 
 test('official registry versions cannot silently become validation evidence', () => {
@@ -378,6 +394,7 @@ test('ordinary catalog generation failures leave official outputs byte-for-byte 
     ['registry-fetch', { fetchJson: async () => { throw new Error('offline'); } }],
     ['npm-pin-validation', { hooks: { beforeNpmPinValidation: () => { throw new Error('pin unavailable'); } } }],
     ['icon-download', { fetchIcon: async () => { throw new Error('icon unavailable'); } }],
+    ['icon-html-response', { fetchIcon: async () => '<!DOCTYPE html><svg xmlns="https://www.w3.org/2000/svg"></svg>' }],
     ['icon-validation', { hooks: { beforeIconValidation: () => { throw new Error('invalid icon'); } } }],
     ['catalog-validation', { hooks: { beforeCatalogValidation: () => { throw new Error('invalid catalog'); } } }],
     ['official-replace', { hooks: { beforeReplace: () => { throw new Error('replace failed'); } } }],
@@ -391,7 +408,7 @@ test('ordinary catalog generation failures leave official outputs byte-for-byte 
       const before = await officialState(root);
       await assert.rejects(
         () => generateAgentCatalog({ repoRoot: root, ...generationFetchers(), ...options }),
-        /offline|unavailable|failed|invalid/,
+        /offline|unavailable|failed|invalid|svg/i,
         name,
       );
       assert.deepEqual(await officialState(root), before, name);
