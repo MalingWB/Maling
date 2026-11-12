@@ -1,3 +1,24 @@
 {
-  "agents": []
+  "agents": [
+    {
+      "id": "deepseek-harness",
+      "label": "DeepSeek Harness",
+      "version": "0.2.1-rc.2",
+      "provenance": {
+        "sourceKind": "local-supplement",
+        "integrationOrigin": "official",
+        "validatedVersion": "0.2.1-rc.2"
+      },
+      "description": "DeepSeek's official agentic coding harness exposed through the acp profile.",
+      "repository": null,
+      "website": "https://www.deepseek.com",
+      "iconKey": "deepseek-harness",
+      "iconUrl": "https://cdn.deepseek.com/favicon.svg",
+      "command": "dsh",
+      "args": ["--profile", "acp"],
+      "env": {},
+      "primaryAgentDir": ".dsh",
+      "compatibleAgentDirs": [".agents"]
+    }
+  ]
 }

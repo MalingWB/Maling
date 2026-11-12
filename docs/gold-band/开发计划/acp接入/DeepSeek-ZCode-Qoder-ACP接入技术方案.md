@@ -15,7 +15,7 @@
 | Agent | 稳定 ID | 集成来源 | 候选启动模板 | 修订后结论 |
 | --- | --- | --- | --- | --- |
 | DeepSeek Harness | `deepseek-harness` | DeepSeek 官方 CLI / ACP profile | `dsh --profile acp` | 第一阶段候选；必须补真实工具调用、停止、恢复和 Skill 验收 |
-| Qoder | `qoder` | 官方 ACP Registry | `npx -y @qoder-ai/qodercli@0.2.14 --acp`，本机优先 `qoder --acp` | 第一阶段候选；Registry fallback 与本机 CLI 两条路径必须分别验收 |
+| Qoder | `qoder` | 官方 ACP Registry | `npx -y @qoder-ai/qodercli@1.1.86 --acp`，本机优先 `qodercli --acp` | 第一阶段候选；Registry fallback 与本机 CLI 两条路径必须分别验收 |
 | ZCode（智谱） | `zcode-acp` | 社区桥接器 `zcode-acp-server` | `zcode-acp-server` | 仅架构可行；真实 ZCode 后端握手与会话能力验收前阻断发布 |
 
 当前发布 Catalog 为 11 项。实施分两阶段：
@@ -120,35 +120,39 @@ AgentCatalogEntry
 
 ### 4.2 Qoder
 
-Qoder 使用官方 ACP Registry 条目 `qoder@0.2.14`。Registry fallback 固定为：
+Qoder 使用官方 ACP Registry 条目 `qoder@1.1.86`。Registry fallback 固定为：
 
 ```text
-npx -y @qoder-ai/qodercli@0.2.14 --acp
+npx -y @qoder-ai/qodercli@1.1.86 --acp
 ```
 
 本机安装路径单独使用：
 
 ```text
-qoder --acp
+qodercli --acp
 ```
 
 两条路径必须独立验收，不能用本机较新 `qoder` CLI 的成功结果代替 Registry 固定版本，也不能用 Registry fallback 代替本机发现路径。
 
+2026-11-12 修订：本机路径的验收标准是 PATH 中实际解析到的 `qodercli` 命令；该命令可由官方 native 安装提供，也可由用户通过 npm 全局安装的同名命令提供。验收记录必须写明命令解析来源与实际版本。不得把“必须执行 native 二进制”作为 Windows x64 发布门槛；native 二进制被终端安全软件拦截时，作为环境事实记录并保留供应链证据。
+
 认证主路径为供应商的 `qoder login`。`QODER_PERSONAL_ACCESS_TOKEN` 仅作为用户显式选择的高级环境变量方式；由于 `AcpAdapterConfig.env` 会持久化到本机 settings，产品和技术方案不得再声称 Gold Band “不保存 token”。Agent 编辑器在 env 区域说明其内容会保存到本机配置，优先建议使用供应商登录；日志、诊断摘要和遥测不得输出环境变量值。本文不新增密钥库或临时凭据状态。
 
-当前 0.2.14 验证重点：
+当前 1.1.86 验证重点：
 
 - `loadSession = true`，并提供 session list；必须真实验证 list/load/history，而不是只断言 initialize JSON。
 - 验证模型目录、权限、图片输入声明、MCP、停止与 cleanup。
 - npm 路径要求 Node >= 20；仍需进入统一版本/engines/平台矩阵。
 - 官方限制 Windows ARM64，Catalog 使用 `excludedPlatforms: [{ os: windows, arch: aarch64 }]`。
-- 首次引导只在发现本机 `qoder` 或确认固定 0.2.14 npx 包已准备时启动 Doctor，不因存在 npx launcher 自动下载；用户在 Agent 管理页显式创建后仍可走现有受控 npx 准备流程。
+- 首次引导只在发现本机 `qodercli` 或确认固定 1.1.86 npx 包已准备时启动 Doctor，不因存在 npx launcher 自动下载；用户在 Agent 管理页显式创建后仍可走现有受控 npx 准备流程。
+- ACP 通用 client 必须读取 initialize 的 `authMethods`；`session/new` 返回结构化 AuthRequired 时，优先使用已配置的 `env_var` 方法认证并重试一次。终端交互认证和缺失环境变量返回 `provider.auth-required`，不无限重试。
+- Qoder Catalog 的供应商差异通过构建期 `launchOverrides` 表达；不得在 ACP client 中增加 Qoder ID 分支。
 
 ### 4.3 ZCode（智谱）
 
 候选桥接器为社区项目 `zcode-acp-server@0.82.3`，Node >= 22。它调用真实 `zcode app-server --stdio`，架构上可以复用 Gold Band 通用 ACP client，但社区项目声明不能替代真实兼容性证据。
 
-当前证据只支持“架构可行，尚未达到发布准入”：在没有真实 ZCode 后端的环境中，固定 0.82.3 桥接器 120 秒内没有返回 `initialize`。这不能证明协议不兼容，也不能证明可用。第一阶段不得把 ZCode 加入发布 Catalog、Agent 管理新增列表或首次引导候选。
+2026-11-11 的旧证据只支持“架构可行，尚未达到发布准入”：当时没有安装真实 ZCode，固定 0.82.3 桥接器 120 秒内没有返回 `initialize`。2026-11-12 安装官方桌面端 3.17.2 与内置 CLI 0.17.1 后，同一桥接器已用真实 GLM 后端通过 initialize、new、真实工具、stop、list、load/history、进程清理与三层 Skill 验收（见《ZCode-验收记录-2026-11-12.md》）；fork/continue、close/delete 语义、产品化启动配置与平台矩阵仍未完成。第一阶段不得把 ZCode 加入发布 Catalog、Agent 管理新增列表或首次引导候选。
 
 第二阶段发现只认已经安装的 native `zcode-acp-server`；桥接器再通过 `ZCODE_BIN`、PATH 或自身支持的安装位置寻找 ZCode。Gold Band 不自动下载社区桥接器，也不为 ZCode 添加专属桌面目录扫描。
 
@@ -213,15 +217,15 @@ ZCode 第二阶段发布门槛：
 | 字段 | DeepSeek Harness（第一阶段） | Qoder（第一阶段） | ZCode（第二阶段门槛通过后） |
 | --- | --- | --- | --- |
 | id | `deepseek-harness` | `qoder` | `zcode-acp` |
-| command / args | `dsh` / `--profile acp` | `npx` / `-y @qoder-ai/qodercli@0.2.14 --acp` | `zcode-acp-server` / 无 |
-| localLaunch | 无 | `qoder --acp` | 无 |
-| installedCommand | 无 | `qoder` | 无 |
+| command / args | `dsh` / `--profile acp` | `npx` / `-y @qoder-ai/qodercli@1.1.86 --acp` | `zcode-acp-server` / 无 |
+| localLaunch | 无 | `qodercli --acp` | 无 |
+| installedCommand | 无 | `qodercli` | 无 |
 | primaryAgentDir | `.dsh` | `.qoder` | `.zcode` |
 | projectPrimaryAgentDir | `null`（回退 `.dsh`） | `null`（回退 `.qoder`） | `.agents` |
 | compatibleAgentDirs | `.agents` | `.agents` | `.agents` |
 | sourceKind | `local-supplement` | `official-registry` | `local-supplement` |
 | integrationOrigin | `official` | `official` | `community-adapter` |
-| validatedVersion | 本文验收通过后写 `0.2.1-rc.2` | 本文验收通过后写 `0.2.14` | 真实验收通过的固定版本 |
+| validatedVersion | 本文验收通过后写 `0.2.1-rc.2` | 本文验收通过后写 `1.1.86` | 真实验收通过的固定版本 |
 | excludedPlatforms | 空；以发布矩阵收敛 | Windows aarch64 | 以发布矩阵收敛 |
 | supportsSystemPrompt | false | false | false |
 | supportsExternalSessionSync | false | false | false |
@@ -281,12 +285,12 @@ DeepSeek 的 `reasoning_effort` 若以 `category=thought_level` 返回，复用�
 
 每个 Agent 都必须覆盖同一组生命周期场景；fixture 固定通用接口契约，真实验收固定供应商实现。
 
-| 场景 | DeepSeek Harness | Qoder 0.2.14 | ZCode 第二阶段 |
+| 场景 | DeepSeek Harness | Qoder 1.1.86 | ZCode 第二阶段 |
 | --- | --- | --- | --- |
 | new | initialize + session/new，核对模型/思考目录 | 两条 launcher 分别 initialize + session/new | 真实后端 initialize + session/new |
 | prompt | 文本回合 + 至少一个真实工具调用，核对 thought/tool/usage/final | 文本、工具、权限、图片声明与 MCP | 文本、流式 diff、工具与权限 |
 | stop | 发送通用 cancel，确认终态和进程仍可控 | 同左 | 同左 |
-| continue | capability 声明时使用 `session/resume`，停止后可继续 | 验证同一活动 session 继续；不得以 latest native 代替 0.2.14 | 验证真实 resume 语义 |
+| continue | capability 声明时使用 `session/resume`，停止后可继续 | 根据 load/resume capability 恢复，并验证 close/delete/fork 清理 | 验证真实 resume 语义 |
 | load-or-resume | 不声明 load 时不得调用 load | 验证 `session/list` + loadSession/history | 验证 resume/load；能力缺失时按结构化不可用处理 |
 | history | 只使用 Gold Band 已持久化 timeline，不宣称外部完整回放 | 加载后核对历史顺序、工具与正文 | 核对桥接器声明的历史与 fork |
 | cleanup | 优先已声明 close；确认临时会话和进程树回收 | delete/close 按 capability 清理，两条 launcher 均无残留 | close/delete/fork 临时资源与桥接进程均回收 |
@@ -301,7 +305,7 @@ DeepSeek 的 `reasoning_effort` 若以 `category=thought_level` 返回，复用�
 | --- | --- |
 | Agent / adapter | 稳定 ID、包名或 native CLI 名称 |
 | tested version | Catalog `validatedVersion` 对应的精确版本 |
-| launcher | native 与 npx 分行记录，不合并结果 |
+| launcher | 本机 PATH 命令与 Registry npx 分行记录，不合并结果；本机命令需记录解析来源与实际版本 |
 | Node/npm/npx | 实际版本及包 `engines` 解析结果 |
 | OS / CPU | 使用 `windows/macos/linux` 与 `x86_64/aarch64` |
 | authentication | 未登录、已登录、失效凭据的结果 |
@@ -315,7 +319,7 @@ DeepSeek 的 `reasoning_effort` 若以 `category=thought_level` 返回，复用�
 
 ### 第一阶段：通用契约、DeepSeek 与 Qoder
 
-> 实施进度（2026-11-09）：第 2—5 项已在保持现有 11 项正式 Catalog 的前提下落地，并通过 Catalog 事务、平台契约、目录作用域和前端相关自动化回归。第 6—9 项仍未完成；DeepSeek 与 Qoder 在真实验收通过前不得进入正式 Catalog。
+> 实施进度（2026-11-12）：第 2—5 项已在保持原有 11 项正式 Catalog 的前提下落地。DeepSeek Harness 固定 npm 基线 `0.2.1-rc.2` 已在 Windows x64 完成真实验收。Qoder CLI `0.2.14` 首次验收因认证、list/load、stop 与清理缺陷未通过；官方 Registry 已更新到 `1.1.86`，实现已更新 Registry snapshot、加入通用 AuthRequired 重试和受控 `launchOverrides`。1.1.86 在账号领取 Credits 后，固定 npm 与本机 PATH `qodercli` 命令两条路径均已通过完整生命周期（new、真实工具、stop、list、load/history、close/delete、进程清理）与项目、共享、全局 Skill 验收。2026-11-12 已确认本机路径以 PATH 命令为验收标准，Qoder Windows x64 真实验收完成；native 二进制被本机安全环境拦截的事实单独记录，不构成发布门槛。ZCode 桌面端 `3.17.2`（内含 CLI `zcode.cjs 0.17.1`）与桥接器 `0.82.3` 已安装，使用 `ZCODE_BIN` + `ZCODE_NODE` 固定后，真实 GLM 后端已通过 initialize、new、真实工具、stop、list、load/history、进程清理与项目、用户、共享三层 Skill 验收；fork/continue、close/delete 语义、产品化启动配置与平台矩阵仍未完成，ZCode 继续留在第二阶段。第一阶段产物已于 2026-11-12 生成：DeepSeek 写入 local supplement，Qoder 固定 `1.1.86` 并加入本机 `qodercli` 覆盖，正式 Catalog 扩展为 13 项并补齐图标。
 
 1. 同步产品设计文档中的 Catalog 启动配置归属、来源展示、凭据持久化和阶段数量。
 2. 扩展 Catalog schema：provenance、类型化 `excludedPlatforms` 与 source 摘要。
@@ -323,7 +327,7 @@ DeepSeek 的 `reasoning_effort` 若以 `category=thought_level` 返回，复用�
 4. 在 Rust 建立唯一平台规范化/判定函数，并接入 onboarding、Agent Catalog 投影与 `create_agent`。
 5. 将 Agent 目录归一化改为按全局/项目作用域去重，允许 compatible 目录只与其中一个主目录相同；增加保存往返测试。
 6. 使用独立测试 fixture 补 DeepSeek 当前事件契约，并执行真实工具调用/恢复验收；验收前不把候选写入正式 `BUILTIN_AGENT_IDS`。
-7. 分别验证 `qoder --acp` 与 Registry 固定 `npx ...@0.2.14 --acp`，包括登录、load/history 和 Skill；验收前不把 Qoder 加入正式精选集合。
+7. 分别验证 `qodercli --acp` 与 Registry 固定 `npx ...@1.1.86 --acp`，包括登录、load/history 和 Skill；验收前不把 Qoder 加入正式精选集合。
 8. 两者全部通过后，才把 DeepSeek 写入 local supplement、把 DeepSeek/Qoder 加入 `BUILTIN_AGENT_IDS`，生成并提交 13 项 Catalog 与图标。
 9. 运行完整自动化、真实 Windows x64 和发布矩阵回归；失败则不发布 13 项产物。
 
@@ -358,14 +362,14 @@ DeepSeek 的 `reasoning_effort` 若以 `category=thought_level` 返回，复用�
 7. Qoder env token 输入按普通 env 持久化，UI 明确提示本机保存；日志与诊断不包含值。
 8. ZCode 项目写入定位到 `.agents/skills`，不得写 `.zcode/skills`；`.agents` 在项目策略中去重、在全局策略中仍保留，Agent 管理保存往返后语义不变。
 9. DeepSeek fixture 覆盖 thought、tool lifecycle、config、usage/context、resume-without-load 和无 command update。
-10. Qoder fixture 覆盖 list/load/history；真实验收分别覆盖 native 与固定 npx launcher。
+10. Qoder fixture 覆盖 list/load/history；真实验收分别覆盖本机 PATH 命令与固定 npx launcher。
 11. 所有错误返回 `{ code, params }`，前端按七语言 key 处理，不依赖英文 description 或 stderr 文本。
 
 ### 12.2 真实验收
 
 - DeepSeek：固定版本 Doctor；文本和真实工具回合；stop/resume；不调用 load；全局/项目 Skill 被识别；cleanup 无残留。
-- Qoder native：`qoder --acp` 登录后完成完整生命周期。
-- Qoder Registry fallback：`npx -y @qoder-ai/qodercli@0.2.14 --acp` 独立完成相同生命周期。
+- Qoder 本机 PATH 命令：`qodercli --acp` 登录后完成完整生命周期。
+- Qoder Registry fallback：`npx -y @qoder-ai/qodercli@1.1.86 --acp` 独立完成相同生命周期。
 - Windows x64 完成第一阶段回归；其余平台按矩阵逐项记录，不把未测试写成支持。
 - Windows aarch64 验证 Qoder 在两个新增入口均不可创建，后端错误稳定；DeepSeek 不受 Qoder 限制影响。
 - ZCode：只有真实后端完整生命周期、Skill 和供应链验收全部通过后才执行第二阶段。

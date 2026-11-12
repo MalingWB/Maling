@@ -4,12 +4,12 @@
     "officialRegistry": {
       "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
       "registryVersion": "1.0.0",
-      "fetchedAt": "2026-11-09T07:40:30.468Z"
+      "fetchedAt": "2026-11-12T06:26:42.395Z"
     },
     "localSupplement": {
       "path": "resources/acp-registry-local.json",
-      "sha256": "18c38c34c95484545d8402b56d605c0a0ed2d34450d9d6828ccb9f2a5dec71d8",
-      "fetchedAt": "2026-11-09T07:40:30.468Z"
+      "sha256": "c3b9faead3e4f6a3772dcd429163617194c5f2acc5c25e05016c44c012dd09e5",
+      "fetchedAt": "2026-11-12T06:26:42.395Z"
     }
   },
   "agents": [
@@ -82,7 +82,7 @@
     {
       "id": "cursor",
       "label": "Cursor",
-      "version": "2026.10.22",
+      "version": "2026.11.11",
       "provenance": {
         "sourceKind": "official-registry",
         "integrationOrigin": "official",
@@ -112,7 +112,7 @@
     {
       "id": "gemini",
       "label": "Gemini",
-      "version": "0.67.0",
+      "version": "0.68.0",
       "provenance": {
         "sourceKind": "official-registry",
         "integrationOrigin": "official",
@@ -126,7 +126,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@google/gemini-cli@0.67.0",
+        "@google/gemini-cli@0.68.0",
         "--acp"
       ],
       "localLaunch": {
@@ -149,7 +149,7 @@
     {
       "id": "codebuddy-code",
       "label": "CodeBuddy",
-      "version": "2.180.0",
+      "version": "2.183.0",
       "provenance": {
         "sourceKind": "official-registry",
         "integrationOrigin": "official",
@@ -163,7 +163,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@tencent-ai/codebuddy-code@2.180.0",
+        "@tencent-ai/codebuddy-code@2.183.0",
         "--acp"
       ],
       "localLaunch": {
@@ -184,7 +184,7 @@
     {
       "id": "goose",
       "label": "Goose",
-      "version": "1.57.0",
+      "version": "1.59.0",
       "provenance": {
         "sourceKind": "official-registry",
         "integrationOrigin": "official",
@@ -212,7 +212,7 @@
     {
       "id": "qwen-code",
       "label": "Qwen Code",
-      "version": "0.26.7",
+      "version": "0.27.2",
       "provenance": {
         "sourceKind": "official-registry",
         "integrationOrigin": "official",
@@ -226,7 +226,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@qwen-code/qwen-code@0.26.7",
+        "@qwen-code/qwen-code@0.27.2",
         "--acp",
         "--experimental-skills"
       ],
@@ -249,7 +249,7 @@
     {
       "id": "opencode",
       "label": "OpenCode",
-      "version": "2.2.5",
+      "version": "2.2.7",
       "provenance": {
         "sourceKind": "official-registry",
         "integrationOrigin": "official",
@@ -285,7 +285,7 @@
         "integrationOrigin": "official",
         "validatedVersion": "1.52.0"
       },
-      "description": "Moonshot AI's coding assistant",
+      "description": "Archived by Moonshot AI. Use Kimi Code instead",
       "repository": "https://github.com/MoonshotAI/kimi-cli",
       "website": "https://moonshotai.github.io/kimi-cli/",
       "iconKey": "kimi",
@@ -367,6 +367,79 @@
       "supportsSystemPrompt": false,
       "supportsExternalSessionSync": false,
       "excludedPlatforms": []
+    },
+    {
+      "id": "deepseek-harness",
+      "label": "DeepSeek Harness",
+      "version": "0.2.1-rc.2",
+      "provenance": {
+        "sourceKind": "local-supplement",
+        "integrationOrigin": "official",
+        "validatedVersion": "0.2.1-rc.2"
+      },
+      "description": "DeepSeek's official agentic coding harness exposed through the acp profile.",
+      "repository": null,
+      "website": "https://www.deepseek.com",
+      "iconKey": "deepseek-harness",
+      "iconUrl": "https://cdn.deepseek.com/favicon.svg",
+      "command": "dsh",
+      "args": [
+        "--profile",
+        "acp"
+      ],
+      "localLaunch": null,
+      "installedCommand": null,
+      "env": {},
+      "primaryAgentDir": ".dsh",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false,
+      "excludedPlatforms": []
+    },
+    {
+      "id": "qoder",
+      "label": "Qoder",
+      "version": "1.1.86",
+      "provenance": {
+        "sourceKind": "official-registry",
+        "integrationOrigin": "official",
+        "validatedVersion": "1.1.86"
+      },
+      "description": "AI coding assistant with agentic capabilities",
+      "repository": null,
+      "website": "https://qoder.com",
+      "iconKey": "qoder",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/qoder.svg",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@qoder-ai/qodercli@1.1.86",
+        "--acp"
+      ],
+      "localLaunch": {
+        "command": "qodercli",
+        "args": [
+          "--acp"
+        ]
+      },
+      "installedCommand": "qodercli",
+      "env": {},
+      "primaryAgentDir": ".qoder",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false,
+      "excludedPlatforms": [
+        {
+          "os": "windows",
+          "arch": "aarch64"
+        }
+      ]
     }
   ]
 }

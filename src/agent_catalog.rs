@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn embedded_catalog_contains_the_curated_agents() {
         let catalog = builtin_agent_catalog();
-        assert_eq!(catalog.agents.len(), 11);
+        assert_eq!(catalog.agents.len(), 13);
         assert!(builtin_agent("amp-acp").is_some());
         let pi = builtin_agent("pi-acp").unwrap();
         assert_eq!(pi.command, "npx");
@@ -221,11 +221,53 @@ mod tests {
         let kimi = builtin_agent("kimi").unwrap();
         assert_eq!(kimi.primary_agent_dir.as_deref(), Some(".kimi-code"));
         assert_eq!(kimi.compatible_agent_dirs, [".agents"]);
+        let deepseek = builtin_agent("deepseek-harness").unwrap();
+        assert_eq!(deepseek.command, "dsh");
+        assert_eq!(deepseek.args, ["--profile".to_string(), "acp".to_string()]);
+        assert_eq!(
+            deepseek.provenance.source_kind,
+            AgentCatalogSourceKind::LocalSupplement
+        );
+        assert_eq!(
+            deepseek.provenance.integration_origin,
+            AgentIntegrationOrigin::Official
+        );
+        assert_eq!(deepseek.provenance.validated_version, "0.2.1-rc.2");
+        assert_eq!(deepseek.primary_agent_dir.as_deref(), Some(".dsh"));
+        assert_eq!(deepseek.compatible_agent_dirs, [".agents"]);
+        let qoder = builtin_agent("qoder").unwrap();
+        assert_eq!(
+            qoder.args,
+            [
+                "-y".to_string(),
+                "@qoder-ai/qodercli@1.1.86".to_string(),
+                "--acp".to_string()
+            ]
+        );
+        assert_eq!(qoder.provenance.validated_version, "1.1.86");
+        let qoder_local_launch = qoder.local_launch.as_ref().unwrap();
+        assert_eq!(qoder_local_launch.command, "qodercli");
+        assert_eq!(qoder_local_launch.args, ["--acp".to_string()]);
+        assert_eq!(qoder.installed_command.as_deref(), Some("qodercli"));
+        assert_eq!(qoder.primary_agent_dir.as_deref(), Some(".qoder"));
+        assert_eq!(qoder.compatible_agent_dirs, [".agents"]);
+        assert_eq!(
+            qoder.excluded_platforms,
+            [crate::platform::DesktopPlatform::new(
+                crate::platform::DesktopOperatingSystem::Windows,
+                crate::platform::DesktopArchitecture::Aarch64,
+            )]
+        );
         assert!(catalog.agents.iter().all(|entry| {
-            entry.provenance.source_kind == AgentCatalogSourceKind::OfficialRegistry
+            let expected_source_kind = if entry.id == "deepseek-harness" {
+                AgentCatalogSourceKind::LocalSupplement
+            } else {
+                AgentCatalogSourceKind::OfficialRegistry
+            };
+            entry.provenance.source_kind == expected_source_kind
                 && entry.provenance.integration_origin == AgentIntegrationOrigin::Official
                 && !entry.provenance.validated_version.is_empty()
-                && entry.excluded_platforms.is_empty()
+                && (entry.excluded_platforms.is_empty() || entry.id == "qoder")
         }));
     }
 

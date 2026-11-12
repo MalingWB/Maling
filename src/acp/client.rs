@@ -2510,6 +2510,8 @@ struct AcpRuntime<'a> {
     branch_timeline_stores: HashMap<String, TimelineStore>,
     timeline_items: HashMap<String, AcpUiEvent>,
     session_id: Option<String>,
+    auth_methods: Vec<Value>,
+    adapter_env: BTreeMap<String, String>,
     native_subagents: NativeSubagents,
     prompt_output: AcpPromptOutputAccumulator,
     prompt_terminal: AcpPromptTerminalState,
@@ -3706,6 +3708,86 @@ fn session_new_params(cwd: &Utf8Path, system_prompt: &str, mcp_servers: &[Value]
     params
 }
 
+fn is_auth_required_runtime_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<RuntimeError>()
+        .and_then(|runtime| runtime.info.raw.as_ref())
+        .and_then(|raw| raw.get("code"))
+        .and_then(Value::as_i64)
+        .is_some_and(|code| code == i64::from(i32::from(ProtocolErrorCode::AuthRequired)))
+}
+
+fn authentication_method_id(method: &Value) -> Option<&str> {
+    method
+        .get("methodId")
+        .or_else(|| method.get("id"))
+        .and_then(Value::as_str)
+        .filter(|method_id| !method_id.trim().is_empty())
+}
+
+fn authentication_method_missing_env(
+    method: &Value,
+    env_exists: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    method
+        .get("vars")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|variable| variable.get("name").and_then(Value::as_str))
+        .filter(|name| !name.trim().is_empty() && !env_exists(name))
+        .map(str::to_string)
+        .collect()
+}
+
+fn select_authentication_method<'a>(
+    methods: &'a [Value],
+    env_exists: impl Fn(&str) -> bool + Copy,
+) -> Option<&'a Value> {
+    methods
+        .iter()
+        .find(|method| {
+            method.get("type").and_then(Value::as_str) == Some("env_var")
+                && authentication_method_missing_env(method, env_exists).is_empty()
+                && authentication_method_id(method).is_some()
+        })
+        .or_else(|| {
+            methods.iter().find(|method| {
+                !matches!(
+                    method.get("type").and_then(Value::as_str),
+                    Some("terminal" | "env_var")
+                ) && authentication_method_id(method).is_some()
+            })
+        })
+}
+
+fn auth_required_error(
+    methods: &[Value],
+    env_exists: impl Fn(&str) -> bool + Copy,
+    reason: Option<&str>,
+) -> anyhow::Error {
+    let missing_env = methods
+        .iter()
+        .flat_map(|method| authentication_method_missing_env(method, env_exists))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let method_ids = methods
+        .iter()
+        .filter_map(authentication_method_id)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    runtime_error(manual_runtime_error_info(
+        RuntimeErrorDomain::Provider,
+        "provider.auth-required",
+        reason.unwrap_or("ACP Agent requires authentication before creating a session"),
+        json!({
+            "methods": method_ids,
+            "missingEnv": missing_env,
+        }),
+    ))
+}
+
 fn session_load_params(
     cwd: &Utf8Path,
     session_id: &str,
@@ -4115,6 +4197,7 @@ impl<'a> AcpRuntime<'a> {
             cwd,
             Some(key),
             connection,
+            config.env.clone(),
             paths,
             control_registration.control(),
             raw_max_size,
@@ -4171,6 +4254,7 @@ impl<'a> AcpRuntime<'a> {
             cwd,
             None,
             connection,
+            config.env.clone(),
             paths,
             control_registration.control(),
             raw_max_size,
@@ -4190,6 +4274,7 @@ impl<'a> AcpRuntime<'a> {
         workspace_dir: Utf8PathBuf,
         connection_key: Option<AdapterConnectionKey>,
         connection: AdapterConnectionUse,
+        adapter_env: BTreeMap<String, String>,
         paths: AcpAttemptPaths,
         control: Arc<ProviderControl>,
         raw_max_size: u64,
@@ -4306,6 +4391,8 @@ impl<'a> AcpRuntime<'a> {
             branch_timeline_stores,
             timeline_items,
             session_id: None,
+            auth_methods: Vec::new(),
+            adapter_env,
             native_subagents: NativeSubagents::default(),
             prompt_output: AcpPromptOutputAccumulator::default(),
             prompt_terminal: AcpPromptTerminalState::default(),
@@ -4506,6 +4593,11 @@ impl<'a> AcpRuntime<'a> {
                 timeout,
             )?;
             subagents::validate_initialize_result(&result)?;
+            self.auth_methods = result
+                .get("authMethods")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             Ok(result
                 .get("agentCapabilities")
                 .cloned()
@@ -4762,10 +4854,15 @@ impl<'a> AcpRuntime<'a> {
         mcp_servers: &[Value],
     ) -> Result<bool> {
         let session_new_started_at = Instant::now();
-        let session_new_result = self.request(
-            "session/new",
-            session_new_params(cwd, adapter_system_prompt, mcp_servers),
-        );
+        let session_new_params = session_new_params(cwd, adapter_system_prompt, mcp_servers);
+        let mut session_new_result = self.request("session/new", session_new_params.clone());
+        if session_new_result
+            .as_ref()
+            .is_err_and(is_auth_required_runtime_error)
+        {
+            self.authenticate_for_session()?;
+            session_new_result = self.request("session/new", session_new_params);
+        }
         info!(
             target: "gold_band::perf",
             provider_id,
@@ -4788,6 +4885,32 @@ impl<'a> AcpRuntime<'a> {
         self.apply_session_mode_options(permission_mode, model, config_options, true)?;
         self.refresh_provider_freshness_best_effort(cwd);
         Ok(false)
+    }
+
+    fn authenticate_for_session(&mut self) -> Result<()> {
+        let adapter_env = self.adapter_env.clone();
+        let env_exists =
+            |name: &str| adapter_env.contains_key(name) || std::env::var_os(name).is_some();
+        let method = select_authentication_method(&self.auth_methods, env_exists).cloned();
+        let Some(method) = method else {
+            return Err(auth_required_error(&self.auth_methods, env_exists, None));
+        };
+        let method_id = authentication_method_id(&method)
+            .ok_or_else(|| auth_required_error(&self.auth_methods, env_exists, None))?
+            .to_string();
+        let result = self.request_with_timeout(
+            "authenticate",
+            json!({ "methodId": method_id }),
+            Some(Duration::from_secs(30)),
+        );
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) => Err(auth_required_error(
+                &self.auth_methods,
+                env_exists,
+                Some(&error.to_string()),
+            )),
+        }
     }
 
     fn record_skipped_mcp_servers(
@@ -9749,6 +9872,7 @@ mod tests {
     static DIRECT_FIXTURE_ORDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     use crate::domain::{SessionMode, TurnControlMode};
+    use crate::runtime_error::{manual_runtime_error_info, runtime_error};
 
     use super::{
         AcpAttemptUsageRecovery, AcpCancelDrainTimeout, AcpContextCompactionState,
@@ -9764,12 +9888,13 @@ mod tests {
         acp_prompt_rpc_failure, active_context_compaction, active_timeline_streams,
         active_timeline_streams_by_branch, append_bounded, append_diagnostic_best_effort,
         append_raw_frame_best_effort, append_structured_diagnostic_best_effort,
-        attached_sync_required, cancel_attempt_prompt, canonical_prompt_event_identity,
-        catalog_observation_is_newer, cleanup_doctor_acp_dir_after_success,
-        confirmed_context_usage_update, dispatch_attempt_prompt_cancel,
-        drain_available_frames_bounded, drain_available_frames_with_budget,
-        drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
-        drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
+        attached_sync_required, auth_required_error, authentication_method_id,
+        cancel_attempt_prompt, canonical_prompt_event_identity, catalog_observation_is_newer,
+        cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
+        dispatch_attempt_prompt_cancel, drain_available_frames_bounded,
+        drain_available_frames_with_budget, drain_frames_until_quiet,
+        drain_frames_until_quiet_with_timeout_error, drain_frames_until_route_watermark,
+        evaluate_provider_revision, initialize_params, is_auth_required_runtime_error,
         is_pending_retry_prompt_event, is_streaming_timeline_update, is_transport_interruption,
         latest_visible_turn_id, map_prompt_terminal_drain_error, merge_tool_revision,
         next_prompt_retry_attempt, parse_agent_capabilities, permission_decision_timeline_event,
@@ -9779,9 +9904,9 @@ mod tests {
         prompt_usage_transaction_id, provider_thread_is_active, register_provider_control,
         request_prompt_cancel, resolve_permission_mode, resolve_session_model,
         retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
-        scheduled_trigger_for_prompt, session_config_fingerprint, session_load_params,
-        session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
-        settle_attempt_prompt_interactions, settle_prompt_event,
+        scheduled_trigger_for_prompt, select_authentication_method, session_config_fingerprint,
+        session_load_params, session_new_params, session_prompt_params, session_prompt_text,
+        session_resume_params, settle_attempt_prompt_interactions, settle_prompt_event,
         should_suppress_attached_session_update, should_suppress_session_update,
         stable_message_item_id, timeline_generation_for_live_event, timeline_patch_flush_due,
         timeline_position_for_live_event, turn_file_change_set_event, unregister_provider_control,
@@ -17711,5 +17836,267 @@ do {
             update.pointer("/cost/amount").and_then(Value::as_f64),
             Some(0.25)
         );
+    }
+
+    #[test]
+    fn authentication_prefers_a_configured_env_var_method() {
+        let methods = vec![
+            json!({"id": "interactive", "name": "Interactive login"}),
+            json!({
+                "type": "env_var",
+                "id": "token",
+                "name": "Use token",
+                "vars": [{"name": "ACP_AUTH_TOKEN"}]
+            }),
+        ];
+        let configured = std::collections::BTreeSet::from(["ACP_AUTH_TOKEN"]);
+        let selected = select_authentication_method(&methods, |name| configured.contains(name))
+            .expect("configured env method");
+        assert_eq!(authentication_method_id(selected), Some("token"));
+    }
+
+    #[test]
+    fn authentication_excludes_terminal_methods_from_automatic_login() {
+        let methods = vec![json!({
+            "type": "terminal",
+            "id": "terminal-login",
+            "name": "Open a terminal and sign in"
+        })];
+        assert!(select_authentication_method(&methods, |_| false).is_none());
+        let error = auth_required_error(&methods, |_| false, None);
+        let info = normalize_runtime_error(&error);
+        assert_eq!(info.code_str(), "provider.auth-required");
+        assert_eq!(info.params["methods"], json!(["terminal-login"]));
+    }
+
+    #[test]
+    fn authentication_retry_matches_only_protocol_auth_required() {
+        let auth_required = runtime_error({
+            let mut info = manual_runtime_error_info(
+                RuntimeErrorDomain::Provider,
+                "acp.session-request-failed",
+                "session/new authentication required",
+                json!({"method": "session/new"}),
+            );
+            info.raw = Some(json!({"code": -32000, "message": "Authentication required"}));
+            info
+        });
+        assert!(is_auth_required_runtime_error(&auth_required));
+
+        let generic = runtime_error({
+            let mut info = manual_runtime_error_info(
+                RuntimeErrorDomain::Provider,
+                "acp.session-request-failed",
+                "session/new failed",
+                json!({"method": "session/new"}),
+            );
+            info.raw = Some(json!({"code": -32603, "message": "Internal error"}));
+            info
+        });
+        assert!(!is_auth_required_runtime_error(&generic));
+    }
+
+    const AUTH_FIXTURE_TOKEN_ENV: &str = "GOLD_BAND_ACP_AUTH_FIXTURE_TOKEN";
+    const AUTH_FIXTURE_TRACE: &str = "auth-fixture-trace";
+    const AUTH_FIXTURE_METHODS: &str = "auth-fixture-methods";
+
+    fn auth_fixture_config(configured_token: bool) -> crate::config::AcpAdapterConfig {
+        crate::config::AcpAdapterConfig {
+            command: std::env::current_exe()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string(),
+            args: [
+                "--ignored",
+                "--exact",
+                "acp::client::tests::auth_retry_adapter_fixture",
+                "--nocapture",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+            display_name: "Auth retry fixture".into(),
+            env: {
+                let mut env: std::collections::BTreeMap<String, String> =
+                    [("GOLD_BAND_AUTH_FIXTURE".to_string(), "retry".to_string())]
+                        .into_iter()
+                        .collect();
+                if configured_token {
+                    env.insert(
+                        AUTH_FIXTURE_TOKEN_ENV.to_string(),
+                        "fixture-token".to_string(),
+                    );
+                }
+                env
+            },
+        }
+    }
+
+    fn auth_fixture_runtime(
+        configured_token: bool,
+    ) -> (tempfile::TempDir, Utf8PathBuf, AcpRuntime<'static>) {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let attempt = cwd.join("attempt");
+        let mut runtime = AcpRuntime::start_standalone(
+            "auth-fixture",
+            &auth_fixture_config(configured_token),
+            cwd.clone(),
+            attempt,
+            false,
+            false,
+            1_000_000,
+            500_000,
+            None,
+            None,
+        )
+        .unwrap();
+        runtime.initialize().unwrap();
+        (root, cwd, runtime)
+    }
+
+    fn auth_fixture_trace(cwd: &camino::Utf8Path) -> Vec<String> {
+        std::fs::read_to_string(cwd.join(AUTH_FIXTURE_TRACE))
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn session_new_auth_required_authenticates_once_and_retries() {
+        let (_root, cwd, mut runtime) = auth_fixture_runtime(true);
+        runtime
+            .start_new_session(
+                "auth-fixture",
+                &cwd,
+                None,
+                None,
+                &std::collections::BTreeMap::new(),
+                "",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(runtime.session_id.as_deref(), Some("auth-fixture-session"));
+
+        let trace = auth_fixture_trace(&cwd);
+        assert_eq!(
+            trace.iter().filter(|line| *line == "session/new").count(),
+            2,
+            "session/new must be attempted exactly once and retried exactly once: {trace:?}"
+        );
+        assert_eq!(
+            trace.iter().filter(|line| *line == "authenticate").count(),
+            1,
+            "authentication must run exactly once: {trace:?}"
+        );
+        let methods = std::fs::read_to_string(cwd.join(AUTH_FIXTURE_METHODS)).unwrap();
+        assert_eq!(methods.trim(), "fixture-token");
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn session_new_auth_required_without_env_fails_without_authenticating() {
+        let (_root, cwd, mut runtime) = auth_fixture_runtime(false);
+        let error = runtime
+            .start_new_session(
+                "auth-fixture",
+                &cwd,
+                None,
+                None,
+                &std::collections::BTreeMap::new(),
+                "",
+                &[],
+            )
+            .unwrap_err();
+        let info = normalize_runtime_error(&error);
+        assert_eq!(info.code_str(), "provider.auth-required");
+        assert_eq!(info.params["missingEnv"], json!([AUTH_FIXTURE_TOKEN_ENV]));
+        assert_eq!(
+            info.params["methods"],
+            json!(["fixture-token", "terminal-login"])
+        );
+
+        let trace = auth_fixture_trace(&cwd);
+        assert_eq!(
+            trace.iter().filter(|line| *line == "authenticate").count(),
+            0,
+            "terminal/unconfigured env methods must not be auto-authenticated: {trace:?}"
+        );
+        assert_eq!(
+            trace.iter().filter(|line| *line == "session/new").count(),
+            1,
+            "a failed auth decision must not retry session/new: {trace:?}"
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    #[ignore]
+    fn auth_retry_adapter_fixture() {
+        use std::io::{BufRead, Write};
+        if std::env::var("GOLD_BAND_AUTH_FIXTURE").is_err() {
+            return;
+        }
+        let record = |path: &str, line: &str| {
+            let mut trace = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            writeln!(trace, "{line}").unwrap();
+        };
+        let mut session_new_calls = 0u32;
+        println!();
+        std::io::stdout().flush().unwrap();
+        for line in std::io::stdin().lock().lines() {
+            let frame: Value = serde_json::from_str(&line.unwrap()).unwrap();
+            let method = frame["method"].as_str().unwrap_or_default();
+            record(AUTH_FIXTURE_TRACE, method);
+            let reply = match method {
+                "initialize" => json!({"result": {
+                    "protocolVersion": 1,
+                    "agentCapabilities": {"loadSession": true},
+                    "authMethods": [
+                        {
+                            "type": "env_var",
+                            "id": "fixture-token",
+                            "name": "Use fixture token",
+                            "vars": [{"name": AUTH_FIXTURE_TOKEN_ENV}]
+                        },
+                        {
+                            "type": "terminal",
+                            "id": "terminal-login",
+                            "name": "Open a terminal and sign in"
+                        }
+                    ]
+                }}),
+                "session/new" => {
+                    session_new_calls += 1;
+                    match session_new_calls {
+                        1 => {
+                            json!({"error": {"code": -32000, "message": "Authentication required"}})
+                        }
+                        2 => json!({"result": {"sessionId": "auth-fixture-session"}}),
+                        _ => {
+                            json!({"error": {"code": -32603, "message": "session/new retried more than once"}})
+                        }
+                    }
+                }
+                "authenticate" => {
+                    record(
+                        AUTH_FIXTURE_METHODS,
+                        frame["params"]["methodId"].as_str().unwrap_or_default(),
+                    );
+                    json!({"result": {}})
+                }
+                _ => json!({"result": {}}),
+            };
+            let mut outbound = reply;
+            outbound["jsonrpc"] = json!("2.0");
+            outbound["id"] = frame["id"].clone();
+            println!("{outbound}");
+            std::io::stdout().flush().unwrap();
+        }
     }
 }

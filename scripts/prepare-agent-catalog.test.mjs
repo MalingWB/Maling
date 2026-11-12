@@ -87,11 +87,52 @@ test('policy rejects malformed maps and non-registry distributions', () => {
   })), /registry package/);
 });
 
+test('launch overrides append adapter arguments without changing registry source', () => {
+  const registry = registryFixture();
+  const before = structuredClone(registry);
+  const catalog = buildAgentCatalog(registry, 'fixed', officialPolicy({
+    launchOverrides: {
+      'claude-acp': {
+        extraArgs: ['--settings', '{"security":{"auth":{"selectedType":"qoder-browser"}}}'],
+        localCommand: 'claude-local',
+        installedCommand: 'claude-local',
+      },
+    },
+  }));
+  const claude = catalog.agents.find((agent) => agent.id === 'claude-acp');
+  assert.deepEqual(claude.args, [
+    '-y', '@example/claude-acp@0.73.0', '--acp',
+    '--settings', '{"security":{"auth":{"selectedType":"qoder-browser"}}}',
+  ]);
+  assert.deepEqual(claude.localLaunch, {
+    command: 'claude-local',
+    args: ['--acp', '--settings', '{"security":{"auth":{"selectedType":"qoder-browser"}}}'],
+  });
+  assert.equal(claude.installedCommand, 'claude-local');
+  assert.deepEqual(registry, before);
+  assert.throws(() => buildAgentCatalog(registry, 'fixed', officialPolicy({
+    launchOverrides: { unknown: { extraArgs: ['--x'] } },
+  })), /unknown agent launch override/i);
+  assert.throws(() => buildAgentCatalog(registry, 'fixed', officialPolicy({
+    launchOverrides: { 'claude-acp': { command: 'unsafe' } },
+  })), /unsupported field/i);
+});
+
 test('checked-in policy applies to the snapshot and future online versions', async () => {
   const policy = JSON.parse(await readFile(new URL('../configs/agent-catalog-policy.json', import.meta.url), 'utf8'));
-  assert.deepEqual(policy.versionPins, { 'claude-acp': '0.90.0', 'codex-acp': '2.1.1' });
+  assert.deepEqual(policy.versionPins, {
+    'claude-acp': '0.90.0',
+    'codex-acp': '2.1.1',
+    qoder: '1.1.86',
+  });
   assert.equal(policy.validatedVersions.gemini, '0.66.0');
   assert.equal(policy.validatedVersions['qwen-code'], '0.26.6');
+  assert.equal(policy.validatedVersions.qoder, '1.1.86');
+  assert.deepEqual(policy.launchOverrides, {
+    qoder: { localCommand: 'qodercli', installedCommand: 'qodercli' },
+  });
+  const localRaw = await readFile(new URL('../resources/acp-registry-local.json', import.meta.url), 'utf8');
+  const localSupplement = JSON.parse(localRaw);
   const registry = JSON.parse(await readFile(new URL('../resources/acp-registry.snapshot.json', import.meta.url), 'utf8'));
   for (const version of ['0.73.0', '0.75.1']) {
     const claude = registry.agents.find((entry) => entry.id === 'claude-acp');
@@ -100,7 +141,13 @@ test('checked-in policy applies to the snapshot and future online versions', asy
     const codex = registry.agents.find((entry) => entry.id === 'codex-acp');
     codex.version = version;
     codex.distribution.npx.package = `@agentclientprotocol/codex-acp@${version}`;
-    const catalog = buildAgentCatalog(registry, 'fixed', policy);
+    const catalog = buildAgentCatalog(
+      registry,
+      'fixed',
+      policy,
+      localSupplement,
+      createHash('sha256').update(localRaw).digest('hex'),
+    );
     for (const agent of registry.agents.filter((entry) => BUILTIN_AGENT_IDS.includes(entry.id))) {
       const result = catalog.agents.find((entry) => entry.id === agent.id);
       const expected = policy.versionPins?.[agent.id] ?? agent.version;
@@ -146,7 +193,57 @@ test('filters the official registry to the curated catalog without GLM', () => {
   assert.equal(claude.provenance.validatedVersion, '0.73.0');
   assert.equal(catalog.source.officialRegistry.url, 'https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json');
   assert.match(catalog.source.localSupplement.sha256, /^[a-f0-9]{64}$/);
-  assert.deepEqual(catalog.agents.map((agent) => agent.excludedPlatforms), BUILTIN_AGENT_IDS.map(() => []));
+  assert.deepEqual(
+    catalog.agents.map((agent) => agent.excludedPlatforms),
+    BUILTIN_AGENT_IDS.map((id) => (id === 'qoder' ? [{ os: 'windows', arch: 'aarch64' }] : [])),
+  );
+});
+
+test('checked-in first-stage expansion pins Qoder and curates DeepSeek locally', async () => {
+  const policy = JSON.parse(await readFile(new URL('../configs/agent-catalog-policy.json', import.meta.url), 'utf8'));
+  const localRaw = await readFile(new URL('../resources/acp-registry-local.json', import.meta.url), 'utf8');
+  const registry = JSON.parse(await readFile(new URL('../resources/acp-registry.snapshot.json', import.meta.url), 'utf8'));
+  const qoderRegistry = registry.agents.find((entry) => entry.id === 'qoder');
+  const registryQoderVersion = String(qoderRegistry.version);
+  qoderRegistry.version = '9.9.9';
+  qoderRegistry.distribution.npx.package = '@qoder-ai/qodercli@9.9.9';
+  const catalog = buildAgentCatalog(
+    registry,
+    'fixed',
+    policy,
+    JSON.parse(localRaw),
+    createHash('sha256').update(localRaw).digest('hex'),
+  );
+
+  const qoder = catalog.agents.find((agent) => agent.id === 'qoder');
+  assert.equal(qoder.version, '1.1.86');
+  assert.notEqual(registryQoderVersion, '9.9.9');
+  assert.deepEqual(qoder.provenance, {
+    sourceKind: 'official-registry',
+    integrationOrigin: 'official',
+    validatedVersion: '1.1.86',
+  });
+  assert.deepEqual(qoder.args, ['-y', '@qoder-ai/qodercli@1.1.86', '--acp']);
+  assert.deepEqual(qoder.localLaunch, { command: 'qodercli', args: ['--acp'] });
+  assert.equal(qoder.installedCommand, 'qodercli');
+  assert.equal(qoder.primaryAgentDir, '.qoder');
+  assert.deepEqual(qoder.compatibleAgentDirs, ['.agents']);
+  assert.deepEqual(qoder.excludedPlatforms, [{ os: 'windows', arch: 'aarch64' }]);
+
+  const deepseek = catalog.agents.find((agent) => agent.id === 'deepseek-harness');
+  assert.deepEqual(deepseek.provenance, {
+    sourceKind: 'local-supplement',
+    integrationOrigin: 'official',
+    validatedVersion: '0.2.1-rc.2',
+  });
+  assert.equal(deepseek.version, '0.2.1-rc.2');
+  assert.equal(deepseek.command, 'dsh');
+  assert.deepEqual(deepseek.args, ['--profile', 'acp']);
+  assert.equal(deepseek.localLaunch, null);
+  assert.equal(deepseek.installedCommand, null);
+  assert.equal(deepseek.primaryAgentDir, '.dsh');
+  assert.deepEqual(deepseek.compatibleAgentDirs, ['.agents']);
+  assert.deepEqual(deepseek.excludedPlatforms, []);
 });
 
 test('official registry versions cannot silently become validation evidence', () => {

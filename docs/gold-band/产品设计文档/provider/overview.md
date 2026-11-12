@@ -48,7 +48,7 @@ Gold Band 使用 ACP v1 并声明 `clientCapabilities.session.compaction: {}`，
 
 `session/prompt` 返回 ACP `AuthRequired`（`-32000`）时，按协议错误码映射到既有 `provider.auth-required`，保留原始错误与诊断，不依赖错误消息语言。失败按现有生命周期结束当前轮次，释放发送状态；认证问题由用户处理后手动再次发送，不自动重发或新增应用内登录流程。
 
-正式 build 继续在线刷新 Registry，再合并受控 `local supplement`、应用本地 pin，生成 Catalog 并编译进应用。原始 `acp-registry.snapshot.json` 不应用覆盖，保留上游事实；`agent-catalog.json` 的版本字段与 npx 包参数同步应用覆盖。离线生成也读取同一策略、已提交 snapshot 和 local supplement，基于同一规则重复生成。在线生成额外检查固定 npm 版本是否存在，失败则终止；离线生成仅校验配置与包规格，不访问网络。当前发布保持 11 项；DeepSeek/Qoder 第一阶段准入后为 13 项；ZCode 只有真实后端与会话/Skill 验收通过后才加入，最多 14 项。
+正式 build 继续在线刷新 Registry，再合并受控 `local supplement`、应用本地 pin，生成 Catalog 并编译进应用。原始 `acp-registry.snapshot.json` 不应用覆盖，保留上游事实；`agent-catalog.json` 的版本字段与 npx 包参数同步应用覆盖。离线生成也读取同一策略、已提交 snapshot 和 local supplement，基于同一规则重复生成。在线生成额外检查固定 npm 版本是否存在，失败则终止；离线生成仅校验配置与包规格，不访问网络。当前发布为 13 项：DeepSeek Harness 来自 local supplement（官方来源，固定 `0.2.1-rc.2`），Qoder 来自官方 Registry（固定 `1.1.86`，本机优先 `qodercli`，排除 Windows aarch64）；ZCode 只有真实后端与会话/Skill 验收通过后才加入，最多 14 项。
 
 版本 pin 仅适用于实际使用 Registry npx 分发的模板；未知 ID、非法版本、错误策略字段或 PATH 可执行文件模板的 pin 均报错。解析复用 `npm-package-arg`，不自行拆解 scoped 包名。
 

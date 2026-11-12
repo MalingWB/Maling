@@ -626,6 +626,8 @@ export const mockAgentRegistry: AgentRegistryVm = {
     mockCatalogEntry({ agentType: 'kimi', label: 'Kimi Code', iconKey: 'kimi', primaryAgentDir: '.kimi-code', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Kimi Code', defaultCommand: 'kimi', defaultArgs: ['acp'] }),
     mockCatalogEntry({ agentType: 'amp-acp', label: 'Amp', iconKey: 'amp-acp', primaryAgentDir: '.agents', compatibleAgentDirs: ['.claude'], defaultDisplayName: 'Amp', defaultCommand: 'amp-acp' }),
     mockCatalogEntry({ agentType: 'pi-acp', label: 'Pi', iconKey: 'pi-acp', primaryAgentDir: '.pi/agent', projectPrimaryAgentDir: '.pi', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Pi', defaultArgs: ['-y', 'pi-acp@0.0.33'] }),
+    mockCatalogEntry({ agentType: 'deepseek-harness', label: 'DeepSeek Harness', iconKey: 'deepseek-harness', primaryAgentDir: '.dsh', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'DeepSeek Harness', defaultCommand: 'dsh', defaultArgs: ['--profile', 'acp'] }),
+    mockCatalogEntry({ agentType: 'qoder', label: 'Qoder', iconKey: 'qoder', primaryAgentDir: '.qoder', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Qoder', defaultArgs: ['-y', '@qoder-ai/qodercli@1.1.86', '--acp'] }),
   ],
 };
 

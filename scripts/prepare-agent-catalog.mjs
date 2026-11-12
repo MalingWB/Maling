@@ -22,6 +22,8 @@ export const BUILTIN_AGENT_IDS = [
   'kimi',
   'amp-acp',
   'pi-acp',
+  'deepseek-harness',
+  'qoder',
 ];
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -76,6 +78,10 @@ const overrides = {
     localCommand: 'pi-acp', installedCommand: 'pi',
     projectPrimaryAgentDir: '.pi', compatibleAgentDirs: ['.agents'],
   },
+  qoder: {
+    label: 'Qoder', iconKey: 'qoder', primaryAgentDir: '.qoder', compatibleAgentDirs: ['.agents'],
+    excludedPlatforms: [{ os: 'windows', arch: 'aarch64' }],
+  },
 };
 
 export function buildAgentCatalog(
@@ -100,6 +106,7 @@ export function buildAgentCatalog(
 
   const pins = policy.versionPins ?? {};
   const validatedVersions = policy.validatedVersions ?? {};
+  const launchOverrides = policy.launchOverrides ?? {};
   const byId = new Map(registry.agents.map((agent) => [agent.id, agent]));
   const localById = new Map(localSupplement.agents.map((agent) => [agent.id, agent]));
   for (const id of localById.keys()) {
@@ -121,7 +128,7 @@ export function buildAgentCatalog(
     const local = localById.get(id);
     if (local) return localCatalogAgent(id, local);
     const agent = byId.get(id);
-    const override = overrides[id];
+    const override = { ...overrides[id], ...(launchOverrides[id] ?? {}) };
     const distribution = resolveDistributionDefaults(agent.distribution);
     const pin = pins[id];
     if (pin !== undefined) {
@@ -134,6 +141,7 @@ export function buildAgentCatalog(
       }
       distribution.args[1] = `${spec.name}@${pin}`;
     }
+    if (override.extraArgs?.length) distribution.args.push(...override.extraArgs);
     const version = pin ?? String(agent.version ?? '');
     const validatedVersion = validatedVersions[id];
     return {
@@ -153,7 +161,10 @@ export function buildAgentCatalog(
       command: override.command ?? distribution.command,
       args: override.args ?? distribution.args,
       localLaunch: override.localCommand
-        ? { command: override.localCommand, args: agent.distribution?.npx?.args ?? [] }
+        ? {
+          command: override.localCommand,
+          args: [...(agent.distribution?.npx?.args ?? []), ...(override.extraArgs ?? [])],
+        }
         : null,
       installedCommand: override.installedCommand ?? null,
       env: distribution.env,
@@ -162,7 +173,7 @@ export function buildAgentCatalog(
       compatibleAgentDirs: override.compatibleAgentDirs ?? [],
       supportsSystemPrompt: override.supportsSystemPrompt ?? false,
       supportsExternalSessionSync: false,
-      excludedPlatforms: [],
+      excludedPlatforms: validateExcludedPlatforms(id, override.excludedPlatforms),
     };
   });
 
@@ -186,8 +197,8 @@ export function buildAgentCatalog(
 
 function validatePolicy(policy) {
   if (!policy || typeof policy !== 'object' || Array.isArray(policy)
-      || Object.keys(policy).some((key) => key !== 'versionPins' && key !== 'validatedVersions')) {
-    throw new Error('Invalid Agent catalog policy; expected versionPins and validatedVersions.');
+      || Object.keys(policy).some((key) => !['versionPins', 'validatedVersions', 'launchOverrides'].includes(key))) {
+    throw new Error('Invalid Agent catalog policy.');
   }
   const pins = policy.versionPins === undefined ? {} : policy.versionPins;
   if (!pins || typeof pins !== 'object' || Array.isArray(pins)) {
@@ -207,6 +218,28 @@ function validatePolicy(policy) {
     if (!BUILTIN_AGENT_IDS.includes(id)) throw new Error(`Unknown Agent validated version: ${id}`);
     if (typeof version !== 'string' || !semver.valid(version)) {
       throw new Error(`Agent ${id} validated version must be an exact semantic version.`);
+    }
+  }
+  const launchOverrides = policy.launchOverrides === undefined ? {} : policy.launchOverrides;
+  if (!launchOverrides || typeof launchOverrides !== 'object' || Array.isArray(launchOverrides)) {
+    throw new Error('launchOverrides must be an object.');
+  }
+  for (const [id, override] of Object.entries(launchOverrides)) {
+    if (!BUILTIN_AGENT_IDS.includes(id)) throw new Error(`Unknown Agent launch override: ${id}`);
+    if (!override || typeof override !== 'object' || Array.isArray(override)) {
+      throw new Error(`Agent ${id} launch override must be an object.`);
+    }
+    const allowed = new Set(['extraArgs', 'localCommand', 'installedCommand']);
+    if (Object.keys(override).some((key) => !allowed.has(key))) {
+      throw new Error(`Agent ${id} launch override contains an unsupported field.`);
+    }
+    if (override.extraArgs !== undefined && (
+      !Array.isArray(override.extraArgs) || override.extraArgs.some((arg) => typeof arg !== 'string' || !arg)
+    )) throw new Error(`Agent ${id} extraArgs must be non-empty strings.`);
+    for (const field of ['localCommand', 'installedCommand']) {
+      if (override[field] !== undefined && (typeof override[field] !== 'string' || !override[field].trim())) {
+        throw new Error(`Agent ${id} ${field} must be a non-empty string.`);
+      }
     }
   }
 }

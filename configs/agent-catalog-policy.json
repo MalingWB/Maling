@@ -1,7 +1,8 @@
 {
   "versionPins": {
     "claude-acp": "0.90.0",
-    "codex-acp": "2.1.1"
+    "codex-acp": "2.1.1",
+    "qoder": "1.1.86"
   },
   "validatedVersions": {
     "claude-acp": "0.90.0",
@@ -14,6 +15,13 @@
     "opencode": "2.2.5",
     "kimi": "1.52.0",
     "amp-acp": "0.12.0",
-    "pi-acp": "0.0.34"
+    "pi-acp": "0.0.34",
+    "qoder": "1.1.86"
+  },
+  "launchOverrides": {
+    "qoder": {
+      "localCommand": "qodercli",
+      "installedCommand": "qodercli"
+    }
   }
 }
