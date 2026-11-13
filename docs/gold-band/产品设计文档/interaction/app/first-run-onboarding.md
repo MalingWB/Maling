@@ -118,7 +118,7 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 
 第二步检测完成后，由后端现有环境请求保留一份本次报告，进入第三步、返回步骤、刷新 Agent、加载下一批和最终应用均复用该报告，不再启动环境版本命令。后端仍检查本次报告确已完成且 runtimeReady=true，不能只禁用前端按钮，也不能接收前端自报的通过状态。默认配置直达入口同样先进行一次初始环境检测。
 
-只有首次进入引导或用户主动点击“重新检测”才启动环境命令；安装、升级或切换工具后由用户主动重测。重测开始立即替换旧报告，失败不得回用上次通过结果。报告保留 Node.js／npm／npx 的状态、版本、命令路径、实际 Node 路径及结构化原因；超时保留为超时，组合不一致展示实际差异，不归类为未安装。退出引导、页面卸载或客户端关闭时释放报告；下次进入重新检测，不设置 TTL、后台轮询或持久化健康标志。Agent 既有配置的启动失败由 Agent 管理页展示并重新诊断，引导仅隐藏不可用项，不自动重跑整套环境检查。用户随时可以退出，退出不等于完成引导。
+只有首次进入引导或用户主动点击“重新检测”才启动环境命令；安装、升级或切换工具后由用户主动重测。重测开始立即替换旧报告，失败不得回用上次通过结果。报告保留 Node.js／npm／npx 的状态、版本、命令路径、实际 Node 路径及结构化原因；启动命令路径只表示实际被调用的启动器，Windows `.cmd`、版本管理器 shim 或符号链接可以与真实 `node.exe` 路径不同，联合一致性以三次探针实际观测到的 `process.execPath` 为准。超时保留为超时，组合不一致展示实际差异，不归类为未安装。退出引导、页面卸载或客户端关闭时释放报告；下次进入重新检测，不设置 TTL、后台轮询或持久化健康标志。Agent 既有配置的启动失败由 Agent 管理页展示并重新诊断，引导仅隐藏不可用项，不自动重跑整套环境检查。用户随时可以退出，退出不等于完成引导。
 
 本期沿用现有非托管安装边界：由按钮打开官方安装页面／系统安装流程，安装后重新检测；不默认执行 `npm install -g npm@latest`，不自动更改全局 npm registry、代理或用户的 Node 版本管理器。帮助页走现有 `openWebTarget`；OAuth 仅在供应商流程需要时使用系统浏览器。
 
@@ -133,11 +133,11 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 5. 页面底部展示将更新的内置模板名称、模板数和执行 slot 数，所选 Agent、模型与权限保留在上方表单。
 6. 点击“应用配置并开始使用”，后端校验并提交；成功后进入 workspace 选择或默认业务入口。
 
-尚在检测且没有成功项时显示“正在检测可用 Agent”；本轮检测结束仍没有成功项时才显示“尚未发现可用 Agent”。检测页只展示成功且已持久化的 Agent、当前检测状态与重新检测操作，不展开“其他 Agent 与准备指引”，也不提供“高级：自定义 ACP 配置”或失败列表。不可用、未配置或诊断过期的 Agent 不展示名称、结构化原因、重试按钮或程序选择入口；既有配置的修复统一在 Agent 管理页完成。用户至少需要选择一个可用 Agent，本步骤不提供跳过。
+尚在检测且没有成功项时显示“正在检测可用 Agent”；本轮检测结束仍没有成功项时才显示“尚未发现可用 Agent”，并提示用户确认 Agent 命令在当前系统 PATH 中可用、已完成登录，以及安装多个 Node.js 时 Agent 位于当前生效版本的前缀下。检测页只展示成功且已持久化的 Agent、当前检测状态与重新检测操作，不展开“其他 Agent 与准备指引”，也不提供“高级：自定义 ACP 配置”或失败列表。不可用、未配置或本轮重诊断仍失败的 Agent 不展示名称、结构化原因、重试按钮或程序选择入口；既有配置的修复统一在 Agent 管理页完成。用户至少需要选择一个可用 Agent，本步骤不提供跳过。
 
 第三步直接基于本次已通过的环境报告进入 Agent 检测，不增加环境复验等待阶段。默认配置直达入口的初始环境检测、环境阻断、Agent 检测失败、检测中和正常结束后的空结果分别呈现，不能从空列表推断“无可用 Agent”。环境阻断时在当前页展示失败工具和原因，提供“重新检测运行环境”和“查看运行环境”；前者只发起一次环境检测并在通过后自动继续 Agent，后者返回第二步展示同一份失败报告，不隐式重测。若最终应用时本次后端报告已被取消或替换为失败结果，撤销预览和应用请求、禁用提交，保留 Agent／模型／思考强度／权限草稿；用户主动重测恢复后重新预览再提交，应用动作本身不启动环境命令。
 
-每轮完整检测对未配置候选验证当前本机可用性；已配置 Agent 只在配置 fingerprint 匹配且 canonical Doctor 健康时直接复用，不由引导重复诊断或把 transient 失败写回管理页。重新检测或返回第三步时先清空上一轮可选结果并禁用提交，保留所选 ID 和模型草稿；同一 Agent 重新变为健康后恢复选择。追加下一批时保留此前已验证结果。重复检测复用正式实例，不产生副本；不可用项不进入本轮可选列表。Agent 管理页继续保留已配置项及其异常状态，不能因第三步隐藏而自动删除配置。
+每轮完整检测对未配置候选验证当前本机可用性；已配置 Agent 仅在配置 fingerprint 匹配且 canonical Doctor 健康时直接复用。若上次 Doctor 成功但 fingerprint 已缺失或变化，说明该结果属于旧配置：引导对该已配置 Agent 执行一次受控重诊断，成功后更新健康快照并展示；失败只隐藏本轮结果，不覆盖管理页已有快照，也不把 transient 失败写回管理页。重新检测或返回第三步时先清空上一轮可选结果并禁用提交，保留所选 ID 和模型草稿；同一 Agent 重新变为健康后恢复选择。追加下一批时保留此前已验证结果。重复检测复用正式实例，不产生副本；不可用项不进入本轮可选列表。Agent 管理页继续保留已配置项及其异常状态，不能因第三步隐藏而自动删除配置。
 
 检测阶段只执行只读发现、诊断和成功项自动登记，不创建、迁移或升级工作流模板，也不初始化模板默认绑定。全新安装或待升级模板在预览时生成内存投影；只有最终应用在同一提交边界内写入 settings 与 workflows。取消检测保留已登记的成功 Agent，但不改变模板文件。
 
@@ -313,7 +313,7 @@ setup.recovery-required
 
 参数包含工具、Agent ID、最低／实际版本、失败阶段或冲突模板 ID。原始故障日志有界、脱敏并按需展开，不展示完整 env、token 或密码。
 
-Agent 检测的 channel 只发布 Agent 进度与结果，删除旧 `environment-checked` 事件；`failed { generation, code, params }` 保留完整结构化参数。本次环境未检测、检测中或已取消时返回 `setup.environment-check-required`；已完成但未通过时返回 `setup.runtime-incompatible`，其 `params.environment` 为完整报告。最终应用使用相同后端校验契约。单项不兼容原因采用枚举序列化的 reason（probe-unavailable、node-mismatch、node-version-mismatch、node-path-mismatch、npm-metadata-missing、npm-engines-incompatible、npm-version-mismatch、npm-package-mismatch），携带对应版本、路径或 engines 值，由前端七语言文案解释。
+Agent 检测的 channel 只发布 Agent 进度与结果，删除旧 `environment-checked` 事件；`failed { generation, code, params }` 保留完整结构化参数。本次环境未检测、检测中或已取消时返回 `setup.environment-check-required`；已完成但未通过时返回 `setup.runtime-incompatible`，其 `params.environment` 为完整报告。最终应用使用相同后端校验契约。单项不兼容原因采用枚举序列化的 reason（probe-unavailable、node-mismatch、node-version-mismatch、npm-metadata-missing、npm-engines-incompatible、npm-version-mismatch、npm-package-mismatch），携带对应版本、路径或 engines 值，由前端七语言文案解释；启动器路径与真实进程路径不同本身不构成不兼容。
 
 ## 9. 原子提交、重试与恢复
 
@@ -393,7 +393,7 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 | Git 版本边界／Windows vendor 后缀／异常输出 | 复用现有解析，最低版本上下界行为一致 |
 | npm 缺失／过低／Node 不兼容／npx 不可执行 | 按钮及后端均阻止继续或完成；无 skip 后门 |
 | 离线但本地环境齐全 | 环境步骤成功，不请求下载站 |
-| PATH 安装后变化、多套 Node、路径包含空格或中文 | 重测和正式执行使用同一有效程序组合 |
+| PATH 安装后变化、多套 Node、路径包含空格或中文、Node 启动器与真实 `node.exe` 路径不同 | 重测和正式执行使用同一有效程序组合；Node/npm/npx 观察到同一真实运行时即通过，启动器路径差异本身不阻断 |
 | Node.js 23.11.0 等稳定但未验证版本，实际 npm／npx 与 engines 兼容 | 显示“未验证版本”警告但允许继续；仍执行路径、版本和 engines 联合校验 |
 | 第二步已通过，进入第三步／返回／刷新 Agent／最终应用 | 始终复用本次报告，不追加环境命令或环境等待阶段 |
 | 环境阻断后查看／重试／取消，旧事件迟到 | 查看复用失败报告；重试通过后继续 Agent；取消后可再重测；旧批次不覆盖当前状态 |
@@ -411,7 +411,8 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 | Qoder 本机 CLI 与 Registry 固定 npx fallback | 两条路径分别使用各自命令与参数并独立通过 Doctor；不得用本机较新版本替代固定 fallback 的证据 |
 | ZCode 尚未通过真实后端发布门槛 | 不进入发布 Catalog 和引导候选；社区桥接器 metadata 或 mock 握手不能解除阻断 |
 | 管理页已有成功诊断且配置 fingerprint 未变 | 引导直接复用健康快照，不重复启动 Doctor，不改写管理页诊断 |
-| 管理页诊断缺失、失败、过期或配置 fingerprint 已变 | 引导隐藏该 Agent，不展示失败详情或修复入口；用户在管理页重新诊断后再运行引导 |
+| 管理页诊断缺失或失败 | 引导隐藏该 Agent，不展示失败详情或修复入口；用户在管理页重新诊断后再运行引导 |
+| 管理页上次诊断成功，但配置 fingerprint 缺失或已变 | 管理页显示“需重新诊断”；引导执行一次受控重诊断，成功后展示，失败不覆盖已有快照 |
 | 既有 Agent 未登录／权限请求／取消 | 分别呈现状态；不自动批准，不遗留进程 |
 | A Agent 诊断很慢，B 通过 | B 可继续选择；不等待全量结果 |
 | 待诊断、诊断中、需登录、失败与成功项混合 | 第三步只展示成功且已持久化项，其余不作为禁用选项出现 |
@@ -490,3 +491,11 @@ pending 最多一条，位于现有用户配置作用域；内容可能包含设
 | S5 | ACP 会话配置协议 | `https://agentclientprotocol.com/protocol/v1/session-config-options` |
 
 代码证据定位：`src/git.rs`、`src/process.rs`、`src/config/mod.rs`、`src/config/managed_agents.rs`、`src/agent_catalog.rs`、`src/acp/client.rs`、`src/workflow_model_binding.rs`、`src/app/mod.rs`、`src/storage/mod.rs`、`src-tauri/src/commands.rs`、`web/src/App.tsx`、`web/src/lib/workflow-model-bindings.ts`、`scripts/prepare-agent-catalog.mjs`。
+
+## 13.3 2026-11-12 陈旧诊断投影与引导复用一致性修复
+
+- 现象：CodeBuddy 在 Agent 管理页显示诊断正常，但首次引导不展示；用户无法从两处状态判断该 Agent 是否真的当前可用。
+- 根因：管理页只按 `diagnostic.available` 投影“正常”，引导还要求诊断保存的配置 fingerprint 与当前配置一致。配置或 schema 变化后，两者对同一快照给出相反结论；引导把曾成功但已陈旧的诊断当作不可用，静态隐藏了本可自动恢复的 Agent。
+- 修复：诊断投影新增 `stale`，仅在 `available=true` 且 fingerprint 匹配时显示“正常”，曾成功但 fingerprint 不匹配时显示“需重新诊断”并从可用 Agent 集合排除。引导遇到该状态时复用既有受控 Doctor 重测一次；失败只产生本轮 `unavailable`，不写回或清空管理页快照。
+- 测试：接口测试固定 stale 诊断返回 `Probe`，Desktop 投影测试固定 stale 状态与 `available=false`，前端 DOM 测试固定“需重新诊断”文案；所有语言目录同步维护该状态。
+- 过度设计与性能复核：复用现有 fingerprint、Doctor 调度、单 Agent 互斥和失败不落盘边界，不新增持久字段、状态机、缓存或队列。每个已配置 Agent 仅增加一次内存 fingerprint 计算；只有陈旧且上次成功的 Agent 进入既有有界 Doctor，正常健康项仍不启动进程。

@@ -50,6 +50,9 @@ pub fn candidate_detection<'a>(
         {
             CandidateDetection::Reuse(diagnostic)
         }
+        // A previous successful Doctor result without the current config fingerprint is
+        // stale, not a failed Agent. Setup may refresh it without overwriting that result.
+        Some(diagnostic) if diagnostic.available => CandidateDetection::Probe,
         _ => CandidateDetection::Unavailable,
     }
 }

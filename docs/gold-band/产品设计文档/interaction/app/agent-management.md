@@ -147,7 +147,7 @@ Agent Cards
 ## 6. 诊断能力
 每个 agent card 提供：
 - 手动“环境诊断”按钮
-- 诊断状态图标
+- 诊断状态图标；只有 `diagnostic.available=true` 且诊断保存的配置 fingerprint 与当前 Agent 配置一致时显示“正常”。曾成功但 fingerprint 缺失或不一致时显示“需重新诊断”，不得显示为正常，也不得参与可用 Agent、工作流或默认模型选择；配置指纹未变化的健康快照继续直接复用。
 - 最近检测时间（展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`）
 - 错误原因（如果有）
 - doctor 失败时在诊断状态旁显示问号帮助入口；该入口使用 shadcn/ui `Popover`，点击或键盘激活后展示 raw 原因与 ACP Registry 配置帮助，不使用自定义大面板。raw 原因优先取 ACP JSON-RPC `error.message`、已分类故障 stderr（`params.reason`，限 2000 字符）和启动失败 `osError`；没有这些原始原因时才回退到本地化错误句。配置帮助仅包含参考 ACP Registry 配置命令、参数、环境变量、网络和认证状态，其中 ACP Registry 为外链 `https://agentclientprotocol.com/get-started/registry`，使用产品链接样式，点击后通过统一 `openWebTarget` 在内置浏览器打开，不走系统浏览器，也不在卡片内展开具体下载步骤

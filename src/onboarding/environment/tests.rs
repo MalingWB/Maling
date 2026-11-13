@@ -5,6 +5,7 @@ struct FixtureRunner {
     results: Vec<(EnvironmentTool, Option<ProbeOutput>)>,
     failure: Option<(EnvironmentTool, EnvironmentStatus)>,
     minimum_timeouts: Vec<(EnvironmentTool, Duration)>,
+    node_launcher: PathBuf,
     calls: Mutex<Vec<EnvironmentTool>>,
     timeouts: Mutex<Vec<(EnvironmentTool, Duration)>>,
 }
@@ -56,6 +57,7 @@ impl FixtureRunner {
             ],
             failure: None,
             minimum_timeouts: vec![],
+            node_launcher: PathBuf::from("node"),
             calls: Mutex::new(vec![]),
             timeouts: Mutex::new(vec![]),
         }
@@ -82,7 +84,13 @@ impl EnvironmentRunner for FixtureRunner {
             .unwrap()
             .1
             .as_ref()
-            .map(|_| PathBuf::from(tool.command()))
+            .map(|_| {
+                if tool == EnvironmentTool::Node {
+                    self.node_launcher.clone()
+                } else {
+                    PathBuf::from(tool.command())
+                }
+            })
     }
     fn probe(
         &self,
@@ -369,16 +377,19 @@ fn stable_unverified_node_can_continue_when_the_actual_npm_toolchain_is_compatib
 }
 
 #[test]
-fn stable_unverified_node_still_has_to_match_the_observed_runtime_path() {
+fn node_launcher_shim_may_resolve_to_a_different_actual_runtime_path() {
     let mut runner = FixtureRunner::healthy();
-    runner.output(EnvironmentTool::Node).stdout = "23.11.0".into();
-    runner.output(EnvironmentTool::Node).observations[0].node_version = "23.11.0".into();
-    runner.output(EnvironmentTool::Node).observations[0].node_path = "other-node".into();
-    for tool in [EnvironmentTool::Npm, EnvironmentTool::Npx] {
+    runner.node_launcher = PathBuf::from(r"C:\Users\example\.local\bin\node.cmd");
+    for tool in [
+        EnvironmentTool::Node,
+        EnvironmentTool::Npm,
+        EnvironmentTool::Npx,
+    ] {
         let observation = &mut runner.output(tool).observations[0];
-        observation.node_version = "23.11.0".into();
-        observation.node_path = "other-node".into();
+        observation.node_version = "25.5.0".into();
+        observation.node_path = PathBuf::from(r"D:\dev\node-v25.5.0-win-x64\node.exe");
     }
+    runner.output(EnvironmentTool::Node).stdout = "25.5.0".into();
 
     let report = runner.report();
     let node = report
@@ -387,12 +398,16 @@ fn stable_unverified_node_still_has_to_match_the_observed_runtime_path() {
         .find(|check| check.tool == EnvironmentTool::Node)
         .unwrap();
 
-    assert_eq!(node.status, EnvironmentStatus::Incompatible);
+    assert_eq!(node.status, EnvironmentStatus::Unverified);
     assert_eq!(
-        node.error.as_ref().unwrap().params["reason"],
-        "node-path-mismatch"
+        node.executable_path.as_deref(),
+        Some(Path::new(r"C:\Users\example\.local\bin\node.cmd"))
     );
-    assert!(!report.runtime_ready);
+    assert_eq!(
+        node.node_executable_path.as_deref(),
+        Some(Path::new(r"D:\dev\node-v25.5.0-win-x64\node.exe"))
+    );
+    assert!(report.runtime_ready, "{:#?}", report.checks);
 }
 
 #[test]

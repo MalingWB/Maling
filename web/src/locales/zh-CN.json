@@ -1319,7 +1319,8 @@
     "status": {
       "unknown": "未检测",
       "healthy": "正常",
-      "unhealthy": "异常"
+      "unhealthy": "异常",
+      "stale": "需重新诊断"
     }
   },
   "contextManagement": {
@@ -3346,7 +3347,7 @@
     "installGuide": "官方安装指引",
     "discovering": "正在检测本地 Agent…",
     "discovered": "检测到 {{count}} 个可用 Agent",
-    "noAgents": "尚未检测到可用 Agent。请完成 Agent 安装或登录后重新检测。",
+    "noAgents": "尚未检测到可用 Agent。请确认 Agent 命令在当前系统 PATH 中可用，并完成登录后重新检测；安装多个 Node.js 时，请确认 Agent 安装在当前生效的版本下。",
     "defaultAgent": "默认 Agent",
     "chooseAgent": "选择可用 Agent",
     "defaultModel": "默认模型",
@@ -3443,7 +3444,6 @@
       "probe-unavailable": "无法确认实际使用的运行环境，请检查安装状态后重新检测。",
       "node-mismatch": "使用了不同的 Node.js。预期：{{expectedNodePath}}；实际：{{actualNodePath}}。",
       "node-version-mismatch": "Node.js 版本不一致。预期：{{expectedVersion}}；实际：{{actualVersion}}。",
-      "node-path-mismatch": "Node.js 启动路径不一致。预期：{{expectedNodePath}}；实际：{{actualNodePath}}。",
       "npm-metadata-missing": "无法确认 npm 的安装信息，请修复 Node.js/npm 安装后重新检测。",
       "npm-engines-incompatible": "此 npm 不支持当前 Node.js，要求：{{nodeRange}}。",
       "npm-version-mismatch": "npm 版本信息不一致。输出：{{expectedVersion}}；安装包：{{actualVersion}}。",

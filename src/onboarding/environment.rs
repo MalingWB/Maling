@@ -163,7 +163,6 @@ enum EnvironmentIncompatibility {
     ProbeUnavailable,
     NodeMismatch,
     NodeVersionMismatch,
-    NodePathMismatch,
     NpmMetadataMissing,
     NpmEnginesIncompatible,
     NpmVersionMismatch,
@@ -553,7 +552,9 @@ pub fn check_environment(
                         serde_json::json!({"expectedVersion": checks[1].version, "actualVersion": observed.node_version}),
                     ))
                 } else if index == 1 {
-                    (!checks[1].executable_path.as_ref().is_some_and(|p| same_path(p, &node.node_path))).then(|| (Reason::NodePathMismatch, serde_json::json!({"expectedNodePath": checks[1].executable_path, "actualNodePath": node.node_path})))
+                    // `node` may be a launcher/shim that executes a different process path.
+                    // Node/npm/npx runtime identity is established by the observed process paths above.
+                    None
                 } else if let Some(package) = observed.npm.as_ref() {
                     if package.node_range.is_none() {
                         Some((Reason::NpmMetadataMissing, serde_json::json!({})))

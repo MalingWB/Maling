@@ -1523,16 +1523,31 @@ pub(crate) fn managed_agent_vm(
         supports_system_prompt: config.supports_system_prompt(),
         external_session_sync_supported: config.external_session_sync_supported,
         external_session_sync_enabled: config.external_session_sync_enabled,
-        diagnostic: diagnostic.map(|diagnostic| ManagedAgentDiagnosticVm {
-            status: if diagnostic.available {
-                "healthy"
-            } else {
-                "unhealthy"
+        diagnostic: diagnostic.map(|diagnostic| {
+            let fingerprint_matches =
+                diagnostic
+                    .config_fingerprint
+                    .as_deref()
+                    .is_some_and(|expected| {
+                        gold_band::onboarding::model::fingerprint(config)
+                            .ok()
+                            .as_deref()
+                            == Some(expected)
+                    });
+            let available = diagnostic.available && fingerprint_matches;
+            ManagedAgentDiagnosticVm {
+                status: if available {
+                    "healthy"
+                } else if diagnostic.available {
+                    "stale"
+                } else {
+                    "unhealthy"
+                }
+                .to_string(),
+                available,
+                error: diagnostic.error.clone(),
+                checked_at: diagnostic.checked_at.clone(),
             }
-            .to_string(),
-            available: diagnostic.available,
-            error: diagnostic.error.clone(),
-            checked_at: diagnostic.checked_at.clone(),
         }),
         supported_modes: diagnostic.and_then(|diagnostic| {
             let modes = supported_modes_from_capabilities(diagnostic.capabilities.as_ref())
@@ -8155,6 +8170,27 @@ mod tests {
     use gold_band::storage::write_json;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn stale_agent_diagnostic_is_not_projected_as_healthy() {
+        let id: ManagedAgentId = "codebuddy-code".parse().unwrap();
+        let config = ManagedAgentConfig::from_catalog(
+            gold_band::agent_catalog::builtin_agent("codebuddy-code").unwrap(),
+        );
+        let diagnostic = gold_band::config::ProviderDiagnosticSnapshot {
+            available: true,
+            checked_at: "2026-11-12T00:00:00Z".to_string(),
+            error: None,
+            config_fingerprint: Some("previous-config".to_string()),
+            capabilities: None,
+        };
+
+        let vm = managed_agent_vm(&id, &config, Some(&diagnostic));
+        let projected = vm.diagnostic.unwrap();
+
+        assert_eq!(projected.status, "stale");
+        assert!(!projected.available);
+    }
 
     #[test]
     fn mcp_server_list_projects_managed_memory_as_a_standard_stdio_server() {

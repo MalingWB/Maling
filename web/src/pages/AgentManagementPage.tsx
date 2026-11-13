@@ -955,13 +955,15 @@ function parseEnv(value: string) {
   }).filter(([key]) => key));
 }
 
-function DiagnosticBadge({ diagnostic }: { diagnostic?: ManagedAgentVm['diagnostic'] }) {
+export function DiagnosticBadge({ diagnostic }: { diagnostic?: ManagedAgentVm['diagnostic'] }) {
   const { t } = useTranslation();
   const status = diagnostic?.status ?? 'unknown';
   const icon = status === 'healthy'
     ? <CheckCircle2 className="size-4 text-gold-success" />
     : status === 'unhealthy'
       ? <AlertTriangle className="size-4 text-destructive" />
-      : <CircleHelp className="size-4 text-muted-foreground" />;
+      : status === 'stale'
+        ? <RefreshCw className="size-4 text-gold-warning" />
+        : <CircleHelp className="size-4 text-muted-foreground" />;
   return <Badge variant="outline" className="rounded-full px-2 py-0 text-ui-caption">{icon}<span className="ml-1">{t(`agentManagement.status.${status}`)}</span></Badge>;
 }

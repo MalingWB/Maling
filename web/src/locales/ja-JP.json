@@ -1319,7 +1319,8 @@
     "status": {
       "unknown": "未知",
       "healthy": "正常",
-      "unhealthy": "異常"
+      "unhealthy": "異常",
+      "stale": "再診断が必要"
     }
   },
   "contextManagement": {
@@ -3351,7 +3352,7 @@
     "installGuide": "公式インストールガイド",
     "discovering": "ローカル Agent を確認中…",
     "discovered": "利用可能な Agent を {{count}} 件検出しました",
-    "noAgents": "利用可能な Agent が見つかりません。Agent のインストールまたはログインを完了してから、再度確認してください。",
+    "noAgents": "利用可能な Agent が見つかりません。Agent コマンドが現在のシステム PATH で利用でき、ログイン済みであることを確認してから再検出してください。複数の Node.js をインストールしている場合は、現在有効なバージョンに Agent がインストールされていることを確認してください。",
     "defaultAgent": "既定の Agent",
     "chooseAgent": "利用可能な Agent を選択",
     "defaultModel": "既定のモデル",
@@ -3448,7 +3449,6 @@
       "probe-unavailable": "実際に使用された実行環境を確認できませんでした。インストール状態を確認して再試行してください。",
       "node-mismatch": "別の Node.js が使用されています。想定：{{expectedNodePath}}、実際：{{actualNodePath}}。",
       "node-version-mismatch": "Node.js のバージョンが一致しません。想定：{{expectedVersion}}、実際：{{actualVersion}}。",
-      "node-path-mismatch": "Node.js の起動パスが一致しません。想定：{{expectedNodePath}}、実際：{{actualNodePath}}。",
       "npm-metadata-missing": "npm のインストール情報を確認できません。Node.js/npm のインストールを修復して再確認してください。",
       "npm-engines-incompatible": "この npm は現在の Node.js に対応していません。必要な条件：{{nodeRange}}。",
       "npm-version-mismatch": "npm のバージョン情報が一致しません。出力：{{expectedVersion}}、パッケージ：{{actualVersion}}。",

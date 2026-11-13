@@ -1319,7 +1319,8 @@
     "status": {
       "unknown": "Desconocido",
       "healthy": "Correcto",
-      "unhealthy": "Incorrecto"
+      "unhealthy": "Incorrecto",
+      "stale": "Requiere nueva comprobación"
     }
   },
   "contextManagement": {
@@ -3351,7 +3352,7 @@
     "installGuide": "Guía oficial de instalación",
     "discovering": "Comprobando Agents locales…",
     "discovered": "{{count}} Agents disponibles detectados",
-    "noAgents": "No se detectó ningún Agent disponible. Instala un Agent o inicia sesión y vuelve a comprobarlo.",
+    "noAgents": "No se detectó ningún Agent disponible. Comprueba que el comando del Agent esté disponible en el PATH actual del sistema y que hayas iniciado sesión; después, vuelve a detectar. Si tienes varias versiones de Node.js instaladas, comprueba que el Agent esté instalado en la versión activa.",
     "defaultAgent": "Agent predeterminado",
     "chooseAgent": "Elige un Agent disponible",
     "defaultModel": "Modelo predeterminado",
@@ -3448,7 +3449,6 @@
       "probe-unavailable": "No se pudo confirmar el entorno realmente utilizado. Revisa la instalación y vuelve a intentarlo.",
       "node-mismatch": "Se utilizó otra instalación de Node.js. Esperada: {{expectedNodePath}}; actual: {{actualNodePath}}.",
       "node-version-mismatch": "Las versiones de Node.js difieren. Esperada: {{expectedVersion}}; actual: {{actualVersion}}.",
-      "node-path-mismatch": "La ruta de inicio de Node.js difiere. Esperada: {{expectedNodePath}}; actual: {{actualNodePath}}.",
       "npm-metadata-missing": "No se pudieron confirmar los metadatos de instalación de npm. Repara la instalación de Node.js/npm y vuelve a comprobar.",
       "npm-engines-incompatible": "Este npm no admite el Node.js actual. Requisito: {{nodeRange}}.",
       "npm-version-mismatch": "La información de versión de npm difiere. Salida: {{expectedVersion}}; paquete: {{actualVersion}}.",

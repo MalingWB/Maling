@@ -1319,7 +1319,8 @@
     "status": {
       "unknown": "Not checked",
       "healthy": "Healthy",
-      "unhealthy": "Unhealthy"
+      "unhealthy": "Unhealthy",
+      "stale": "Needs recheck"
     }
   },
   "contextManagement": {
@@ -3351,7 +3352,7 @@
     "installGuide": "Official installation guide",
     "discovering": "Checking local Agents…",
     "discovered": "{{count}} available Agents detected",
-    "noAgents": "No available Agent was detected. Install or sign in to an Agent, then check again.",
+    "noAgents": "No available Agent was detected. Make sure the Agent command is available in the current system PATH and signed in, then check again. If multiple Node.js versions are installed, make sure the Agent is installed for the active version.",
     "defaultAgent": "Default Agent",
     "chooseAgent": "Choose an available Agent",
     "defaultModel": "Default model",
@@ -3448,7 +3449,6 @@
       "probe-unavailable": "The runtime actually used could not be confirmed. Check the installation and try again.",
       "node-mismatch": "A different Node.js installation was used. Expected: {{expectedNodePath}}; actual: {{actualNodePath}}.",
       "node-version-mismatch": "Node.js versions differ. Expected: {{expectedVersion}}; actual: {{actualVersion}}.",
-      "node-path-mismatch": "The Node.js launch path differs. Expected: {{expectedNodePath}}; actual: {{actualNodePath}}.",
       "npm-metadata-missing": "The npm installation metadata could not be confirmed. Repair the Node.js/npm installation and check again.",
       "npm-engines-incompatible": "This npm does not support the current Node.js. Required: {{nodeRange}}.",
       "npm-version-mismatch": "npm version information differs. Output: {{expectedVersion}}; package: {{actualVersion}}.",

@@ -606,7 +606,7 @@ fn setup_reuses_only_matching_healthy_configured_agent_diagnostics() {
         .config_fingerprint = Some("stale".into());
     assert!(matches!(
         candidate_detection(configured, &diagnostics),
-        CandidateDetection::Unavailable
+        CandidateDetection::Probe
     ));
     diagnostics.remove(&candidate.id);
     assert!(matches!(

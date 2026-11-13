@@ -616,22 +616,32 @@ fn publish_configured_candidate(
     let current = app.managed_agents().get(&candidate.id);
     let current_matches = current.map(fingerprint).transpose()?.as_deref()
         == candidate.expected_fingerprint.as_deref();
-    if current_matches
-        && let Some(config) = current
-        && let CandidateDetection::Reuse(diagnostic) = candidate_detection(candidate, &diagnostics)
-    {
-        publish(
-            run,
-            channel,
-            SetupEvent::Ready {
-                generation: run.generation.clone(),
-                agent: managed_agent_vm(&candidate.id, config, Some(diagnostic)).into(),
-            },
-        );
-    } else {
+    if !current_matches {
         publish_candidate_unavailable(run, candidate, channel);
+        return Ok(true);
     }
-    Ok(true)
+    match candidate_detection(candidate, &diagnostics) {
+        CandidateDetection::Reuse(diagnostic) => {
+            let Some(config) = current else {
+                publish_candidate_unavailable(run, candidate, channel);
+                return Ok(true);
+            };
+            publish(
+                run,
+                channel,
+                SetupEvent::Ready {
+                    generation: run.generation.clone(),
+                    agent: managed_agent_vm(&candidate.id, config, Some(diagnostic)).into(),
+                },
+            );
+            Ok(true)
+        }
+        CandidateDetection::Probe => Ok(false),
+        CandidateDetection::Unavailable => {
+            publish_candidate_unavailable(run, candidate, channel);
+            Ok(true)
+        }
+    }
 }
 
 #[tauri::command]
