@@ -36,6 +36,7 @@ import {
   setConversationResident,
   rerunConversationTask,
   retryCurrentNode,
+  rerunFailedNode,
   removeRecentWorkspace,
   saveDesktopPreferences,
   saveInterfaceZoomPercent,
@@ -673,8 +674,24 @@ export function App() {
     conversationNodeRetryInFlightRef.current.add(requestKey);
 
     try {
-      await retryCurrentNode(request);
-      await refreshPresentedConversationRun(currentRun, 'node-retry');
+      if (node.status === 'completed') {
+        const accepted = await rerunFailedNode(request);
+        if (!conversationPageMatchesRun(conversationPageRef.current, currentRun)) return;
+        const successor = await loadConversationRun(request.projectId, request.taskId, accepted.locator.runId, null);
+        if (!conversationPageMatchesRun(conversationPageRef.current, currentRun)) return;
+        const page: ConversationPage = {
+          kind: 'conversation-run', projectId: successor.projectId, taskId: successor.taskId,
+          taskUuid: successor.taskUuid, runId: successor.runId,
+        };
+        conversationPageRef.current = page;
+        updateConversationSessionFollow('auto', successor.sessionTree.selectedSessionKey ?? null, successor);
+        applyConversationRunSnapshot(successor, 'rerun');
+        setConversationPage(page);
+        pushRoute('task-orchestration', taskListPage, page);
+      } else {
+        await retryCurrentNode(request);
+        await refreshPresentedConversationRun(currentRun, 'node-retry');
+      }
     } catch (error) {
       if (commandErrorCode(error) === 'workflow.retry.stale-locator') {
         try {
@@ -688,7 +705,7 @@ export function App() {
     } finally {
       conversationNodeRetryInFlightRef.current.delete(requestKey);
     }
-  }, [refreshPresentedConversationRun, t]);
+  }, [applyConversationRunSnapshot, loadConversationRun, refreshPresentedConversationRun, t, updateConversationSessionFollow]);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const activeWorkspaceIdRef = useRef<string | null>(null);

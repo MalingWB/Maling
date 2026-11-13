@@ -1098,7 +1098,15 @@
         "manual-check-pending": "O nó atual está aguardando confirmação manual e não pode ser repetido.",
         "unsupported-node": "Este tipo de nó não oferece suporte à repetição.",
         "stale-locator": "O nó atual foi alterado. Continue a partir do estado mais recente.",
-        "workflow-invalid": "A configuração do Workflow ou o ambiente de execução é inválido, então o nó atual não pode ser repetido."
+        "workflow-invalid": "A configuração do Workflow ou o ambiente de execução é inválido, então o nó atual não pode ser repetido.",
+        "invalid-locator": "A posição do nó é inválida. Atualize e tente novamente.",
+        "source-sealed": "Esta execução está selada. Não pode continuar nem receber mensagens.",
+        "inherited-attempt": "Este nó foi herdado. Veja sua sessão na execução de origem.",
+        "source-busy": "A sessão de origem ainda está parando. Tente novamente em instantes.",
+        "prefix-too-large": "O histórico necessário é grande demais. Inicie uma nova execução a partir do início da tarefa.",
+        "target-missing": "Este nó não existe mais no Workflow mais recente.",
+        "workspace-unavailable": "O espaço de trabalho de origem está indisponível. Restaure-o primeiro.",
+        "plan-changed": "A configuração do Workflow mudou. Atualize e tente novamente."
       },
       "agent-doctor-failed": "Agent {{agentType}} não passou no doctor.",
       "agent-doctor-required": "Agent {{agentType}} deve passar no doctor primeiro.",
@@ -2560,7 +2568,9 @@
     "copyNodeId": "Copiar node id",
     "retryCurrentNode": "Tentar o nó atual novamente",
     "layoutPending": "Organizando o grafo do fluxo de trabalho",
-    "layoutFailed": "Não foi possível organizar o grafo do fluxo de trabalho"
+    "layoutFailed": "Não foi possível organizar o grafo do fluxo de trabalho",
+    "rerunFailedNode": "Executar novamente a partir deste nó",
+    "rerunFailedAttempt": "Executar novamente a partir de {{attempt}}"
   },
   "settings": {
     "title": "Configurações",
@@ -3191,7 +3201,12 @@
       "worktree": "worktree",
       "composerRuntimeControlledPlaceholder": "Esta sessão está sendo controlada pelo runtime, então a entrada está temporariamente indisponível",
       "composerStoppingPlaceholder": "Parando sessão atual…",
-      "composerStoppedPlaceholder": "Esta sessão parou. Você pode digitar qualquer mensagem para continuar a execução"
+      "composerStoppedPlaceholder": "Esta sessão parou. Você pode digitar qualquer mensagem para continuar a execução",
+      "nodeRerunConfirmTitle": "Executar novamente a partir de {{node}} / {{attempt}}?",
+      "nodeRerunConfirmDescription": "Interrompa a execução de origem, crie um novo Run com o Workflow mais recente e execute novamente este nó e os seguintes. Alterações existentes no espaço de trabalho e ações externas serão mantidas.",
+      "sourceSealed": "A execução de origem está selada. Seu histórico continua disponível.",
+      "rerunHistoryHint": "As sessões anteriores permanecem na execução de origem.",
+      "viewRerunSource": "Ver execução de origem"
     },
     "gitRequirement": {
       "versionUnsupportedTitle": "Git está desatualizado",

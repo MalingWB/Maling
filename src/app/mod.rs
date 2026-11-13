@@ -1,5 +1,6 @@
 mod conversation_run;
 mod execution_plan_service;
+mod failed_node_rerun;
 mod ids;
 pub mod intervention;
 mod node_executor;
@@ -21,6 +22,7 @@ pub use self::conversation_run::{
     ConversationRunLaunch, ConversationWorkLocation, CreateConversationTaskCommand,
     CreatedConversationRun, PreparedConversationTask, conversation_auto_title,
 };
+pub use self::failed_node_rerun::RunWriteAdmissionGuard;
 pub use self::notification::{
     INITIAL_DIRECT_TURN_ID, InterventionNotification, InterventionType, NotificationDedup,
     direct_conversation_agent_label, make_completion_dedup_key, make_dedup_key,
@@ -1461,7 +1463,8 @@ pub enum AcpPromptLifecycleEvent {
 }
 
 pub fn is_run_continuable(run: &RunState) -> bool {
-    run.status == RunStatus::Paused
+    !run.is_sealed()
+        && run.status == RunStatus::Paused
         && run.outcome.is_none()
         && matches!(
             run.pause_reason,
@@ -6090,6 +6093,7 @@ impl App {
         prompt_id: Option<String>,
         continue_ref: Option<serde_json::Value>,
     ) -> Result<PreparedAcpPrompt> {
+        self.ensure_attempt_writable(task_id, run_id, round_id, node_id, attempt_id)?;
         let workflow = self::state_access::load_run_workflow(self, task_id, run_id)?;
         let validated = validate_workflow_snapshot(workflow)?;
         self.validate_workflow_agents(&validated)?;
@@ -6147,6 +6151,7 @@ impl App {
         prompt_id: Option<String>,
         continue_ref: Option<serde_json::Value>,
     ) -> Result<PreparedAcpPrompt> {
+        self.ensure_attempt_writable(task_id, run_id, round_id, outer_node_id, outer_attempt_id)?;
         prepare_dynamic_acp_prompt(
             self,
             task_id,
@@ -6957,6 +6962,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: reason,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -7737,6 +7743,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(reason),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -9462,6 +9469,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: None,
                 uuid: None,
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: crate::runtime::RuntimeExecutionState::new(
@@ -9979,6 +9987,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: None,
                 uuid: None,
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),
@@ -10100,6 +10109,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: None,
                 uuid: None,
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),

@@ -468,6 +468,16 @@ export const desktopApi: RuntimeApi = {
       expectedAttemptId: request.expectedAttemptId,
     });
   },
+  rerunFailedNode(request: RetryCurrentNodeRequest) {
+    return invokeCommand('rerun_failed_node', {
+      projectId: request.projectId,
+      taskId: request.taskId,
+      runId: request.runId,
+      expectedRoundId: request.expectedRoundId,
+      expectedNodeId: request.expectedNodeId,
+      expectedAttemptId: request.expectedAttemptId,
+    });
+  },
   getLogPage(query) {
     return invokeCommand('get_log_page', { query });
   },

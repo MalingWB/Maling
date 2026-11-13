@@ -1863,6 +1863,7 @@ export interface GraphAttemptVm {
   sessionMode?: string | null;
   acpSessionId?: string | null;
   current: boolean;
+  retryable: boolean;
 }
 
 export interface GraphEdgeVm {
@@ -3117,6 +3118,7 @@ export interface ConversationSessionLeafVm {
   runtimeDisplay: RuntimeDisplayVm;
   lifecycle?: ConversationAttemptLifecycleVm | null;
   current: boolean;
+  inherited?: boolean;
   manualCheckPending: boolean;
   startedAt?: string | null;
   finishedAt?: string | null;
@@ -3254,6 +3256,18 @@ export interface ConversationRunVm {
   runtimeError?: RuntimeErrorInfoVm | null;
   scheduledTaskId?: string | null;
   worktree?: ConversationRunWorktreeVm | null;
+  sealed?: boolean;
+  rerunOrigin?: {
+    sourceRunId: string;
+    sourceRunUuid?: string | null;
+    sourceRoundId: string;
+    sourceRoundIndex: number;
+    sourceNodeId: string;
+    sourceAttemptId: string;
+    operationId: string;
+    inheritedTraceSequence: number;
+    sourceAuthoringRevision: number;
+  } | null;
 }
 
 export interface ScheduledTaskConfig {

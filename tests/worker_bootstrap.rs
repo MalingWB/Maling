@@ -2394,6 +2394,7 @@ fn error_blocked_run_is_not_continuable() {
         pause_reason: Some(PauseReason::ErrorBlocked),
         task_uuid: None,
         uuid: None,
+        rerun: None,
         last_executed_node: None,
         worktree: None,
         execution: Default::default(),

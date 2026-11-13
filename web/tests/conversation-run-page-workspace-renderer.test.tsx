@@ -32,6 +32,7 @@ vi.mock('@/components/ui/alert-dialog', () => ({
   AlertDialogAction: ({ children }: { children: unknown }) => children,
   AlertDialogCancel: ({ children }: { children: unknown }) => children,
   AlertDialogContent: ({ children }: { children: unknown }) => children,
+  AlertDialogDescription: ({ children }: { children: unknown }) => children,
   AlertDialogFooter: ({ children }: { children: unknown }) => children,
   AlertDialogHeader: ({ children }: { children: unknown }) => children,
   AlertDialogTitle: ({ children }: { children: unknown }) => children,
@@ -52,8 +53,18 @@ vi.mock('@/components/conversation/ConversationSessionSwitcher', () => ({
 }));
 
 vi.mock('@/components/acp/ACPChatDialog', () => ({
-  ACPChatDialog: ({ runtimeComposerContext }: { runtimeComposerContext?: { runtimeError?: string | null; runtimeErrorFallback?: string | null } }) => (
-    <div data-testid="acp-chat" data-runtime-error={runtimeComposerContext?.runtimeError ?? ''} data-runtime-fallback={runtimeComposerContext?.runtimeErrorFallback ?? ''} />
+  ACPChatDialog: ({ readOnly, showDisabledComposer, showBranchControl, manualCheckPending, runtimeComposerContext }: {
+    readOnly?: boolean;
+    showDisabledComposer?: boolean;
+    showBranchControl?: boolean;
+    manualCheckPending?: boolean;
+    runtimeComposerContext?: { runtimeError?: string | null; runtimeErrorFallback?: string | null };
+  }) => (
+    <div data-testid="acp-chat" data-runtime-error={runtimeComposerContext?.runtimeError ?? ''} data-runtime-fallback={runtimeComposerContext?.runtimeErrorFallback ?? ''}>
+      {showDisabledComposer ? <textarea aria-label="composer" disabled={readOnly} /> : null}
+      {showBranchControl ? <button type="button">branch</button> : null}
+      {manualCheckPending ? <button type="button">manual-check</button> : null}
+    </div>
   ),
   createAcpEventWindowCacheKey: () => 'window',
   hasHydratedAcpSessionContent: () => true,
@@ -150,6 +161,42 @@ describe('ConversationRunPage workspace renderer lifecycle', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it.each(['sealed-source', 'inherited-attempt'] as const)('renders %s as read-only history', async (mode) => {
+    const display = { code: 'failure', tone: 'danger', icon: 'x', terminal: true, resumable: false, blockingError: false } as const;
+    const leaf: ConversationSessionLeafVm = {
+      roundId: 'round-1', nodeId: 'dev', attemptId: 'attempt-1', pathLabel: 'round-1/dev/attempt-1',
+      status: 'completed', outcome: 'failure', current: true, manualCheckPending: true,
+      inherited: mode === 'inherited-attempt', sessionId: 'session-1', sessionEstablished: true,
+      workLocation: { kind: 'main' }, artifactCount: 0, attachmentCount: 0, runtimeDisplay: display,
+    };
+    const run: ConversationRunVm = {
+      ...(runSnapshot(1) as unknown as ConversationRunVm),
+      runMode: 'workflow', runStatus: 'completed', sealed: mode === 'sealed-source',
+      sessionTree: {
+        selectedSessionKey: leaf.pathLabel,
+        rounds: [{ roundId: 'round-1', index: 1, label: 'Round', status: 'completed', runtimeDisplay: display, nodes: [{
+          nodeId: 'dev', label: 'Dev', nodeType: 'worker', status: 'completed', runtimeDisplay: display, attempts: [leaf],
+        }] }],
+      },
+    };
+    await act(async () => root.render(<ConversationRunPage
+      run={run} taskTitle="Task" appConfig={{
+        acpChatEventPageSize: 20, acpChatEventWindowPageCount: 3, conversationInlineContentMaxBytes: 1000,
+        turnFiles: { cardPreviewLimit: 3, attachmentCardPreviewLimit: 3 },
+      } as never} agentRegistry={null}
+      onRerun={vi.fn()} onEditWorkflow={vi.fn()} onSelectSession={vi.fn()} followMode="manual"
+      initialSessionTreeExpansion={{}} onSessionTreeExpansionChange={vi.fn()}
+    />));
+    expect(container.querySelector('textarea[aria-label="composer"]')).toBeNull();
+    if (mode === 'inherited-attempt') {
+      expect(container.querySelector('[data-testid="acp-chat"]')).toBeNull();
+      expect(container.textContent).toContain('conversation.runtime.rerunHistoryHint');
+    }
+    expect(container.textContent).not.toContain('manual-check');
+    expect(container.textContent).not.toContain('branch');
+    if (mode === 'sealed-source') expect(container.textContent).toContain('conversation.runtime.sourceSealed');
   });
 
   it.each(['runtime-controlled', 'non-runtime-controlled'] as const)(

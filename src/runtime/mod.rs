@@ -216,6 +216,37 @@ pub struct RunWorktreeState {
     pub fork_commit: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRerunOrigin {
+    pub source_run_id: String,
+    pub source_run_uuid: Option<String>,
+    pub source_round_id: String,
+    pub source_round_index: u32,
+    pub source_node_id: String,
+    pub source_attempt_id: String,
+    pub operation_id: String,
+    pub inherited_trace_sequence: u32,
+    pub source_authoring_revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRerunSeal {
+    pub operation_id: String,
+    pub successor_run_id: String,
+    pub sealed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRerunMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<RunRerunOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed_by: Option<RunRerunSeal>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunState {
     pub version: String,
@@ -242,6 +273,10 @@ pub struct RunState {
     /// means the run executes in the project's main workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<RunWorktreeState>,
+    /// Cross-run retry provenance and the source run's immutable handoff fact.
+    /// This is optional for legacy runs and does not add a lifecycle state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun: Option<RunRerunMetadata>,
     /// Authoritative Workflow Runtime phase. ACP session/turn state must never
     /// infer or mutate this aggregate.
     #[serde(default)]
@@ -249,6 +284,21 @@ pub struct RunState {
 }
 
 impl RunState {
+    pub fn is_sealed(&self) -> bool {
+        self.rerun
+            .as_ref()
+            .is_some_and(|rerun| rerun.sealed_by.is_some())
+    }
+
+    pub fn is_inherited_step(&self, round: &RoundState, step: &RoundTraceStep) -> bool {
+        let Some(origin) = self.rerun.as_ref().and_then(|rerun| rerun.origin.as_ref()) else {
+            return false;
+        };
+        round.index < origin.source_round_index
+            || (round.id == origin.source_round_id
+                && step.sequence <= origin.inherited_trace_sequence)
+    }
+
     pub fn current_execution_locator(&self) -> Option<RuntimeAttemptLocator> {
         Some(RuntimeAttemptLocator {
             round_id: self.current_round.clone()?,
@@ -349,7 +399,7 @@ pub fn current_node_retry_readiness(
     node: &NodeState,
     workflow_mode: bool,
 ) -> CurrentNodeRetryReadiness {
-    if !workflow_mode {
+    if !workflow_mode || run.is_sealed() {
         return CurrentNodeRetryReadiness::RunNotRetryable;
     }
     if run.status == RunStatus::Running || node.runtime_execution_id.is_some() {
@@ -378,6 +428,20 @@ pub fn current_node_retry_readiness(
         return CurrentNodeRetryReadiness::AttemptNotRetryable;
     }
     CurrentNodeRetryReadiness::Ready
+}
+
+/// Completed failures fork a successor run; they must never re-open this run.
+/// The caller additionally verifies membership in the canonical trace.
+pub fn can_rerun_failed_node(run: &RunState, node: &NodeState, workflow_mode: bool) -> bool {
+    workflow_mode
+        && run.pause_reason != Some(PauseReason::ErrorBlocked)
+        && node.node_type == NodeType::Worker
+        && node.status == RunStatus::Completed
+        && matches!(
+            node.outcome,
+            Some(crate::domain::NodeOutcome::Failure | crate::domain::NodeOutcome::Invalid)
+        )
+        && !node.manual_check_pending
 }
 
 /// Returns the canonical trace projection for one round.
@@ -588,6 +652,40 @@ pub fn validate_task_state(state: &TaskState) -> Result<()> {
 }
 
 pub fn validate_run_state(state: &RunState) -> Result<()> {
+    ensure!(
+        !state.is_sealed() || state.status != RunStatus::Running,
+        "sealed run cannot be running"
+    );
+    if let Some(origin) = state.rerun.as_ref().and_then(|rerun| rerun.origin.as_ref()) {
+        ensure!(
+            origin.source_run_id != state.id && !origin.source_run_id.is_empty(),
+            "rerun source must be a different run"
+        );
+        ensure!(
+            origin.source_round_index > 0 && origin.inherited_trace_sequence > 0,
+            "rerun inheritance boundary must be positive"
+        );
+        ensure!(
+            !origin.operation_id.is_empty()
+                && !origin.source_round_id.is_empty()
+                && !origin.source_node_id.is_empty()
+                && !origin.source_attempt_id.is_empty(),
+            "rerun origin must contain a complete locator"
+        );
+    }
+    if let Some(seal) = state
+        .rerun
+        .as_ref()
+        .and_then(|rerun| rerun.sealed_by.as_ref())
+    {
+        ensure!(
+            seal.successor_run_id != state.id
+                && !seal.successor_run_id.is_empty()
+                && !seal.operation_id.is_empty()
+                && !seal.sealed_at.is_empty(),
+            "rerun seal must identify its successor"
+        );
+    }
     ensure!(state.version == VERSION, "unsupported run state version");
     ensure!(
         !(state.status != RunStatus::Completed && state.outcome.is_some()),
@@ -743,6 +841,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(

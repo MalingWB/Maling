@@ -561,6 +561,14 @@ fn attempt_is_runtime_controlled(app: &App, locator: &AttemptLocator) -> Command
 }
 
 fn ensure_conversation_prompt_available(app: &App, locator: &AttemptLocator) -> CommandResult<()> {
+    app.ensure_attempt_writable(
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        locator.outer_node_id().unwrap_or(&locator.node_id),
+        locator.outer_attempt_id().unwrap_or(&locator.attempt_id),
+    )
+    .map_err(command_error)?;
     if let Some(target) = conversation_session_successor(
         app,
         &locator.task_id,
@@ -747,6 +755,9 @@ fn admit_conversation_prompt_turn(
     input: &ConversationPromptInput,
     attachment_paths: &[String],
 ) -> CommandResult<gold_band::acp::events::AcpTurnAdmission> {
+    let _admission = app
+        .begin_run_write_admission(&locator.task_id, &locator.run_id)
+        .map_err(command_error)?;
     let turn_id = prompt_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple()));
@@ -5315,6 +5326,33 @@ async fn retry_current_node_command(
 }
 
 #[tauri::command]
+pub async fn rerun_failed_node(
+    app_handle: AppHandle,
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    expected_round_id: String,
+    expected_node_id: String,
+    expected_attempt_id: String,
+) -> CommandResult<RetryCurrentNodeAcceptedVm> {
+    spawn_blocking_command(move || {
+        let state = app_handle.state::<DesktopState>();
+        let _ = state.record_heartbeat_activity();
+        let app = resolve_command_app_with_emitters(&app_handle, state.inner(), Some(&project_id))?;
+        app.rerun_failed_node(
+            &task_id,
+            &run_id,
+            &expected_round_id,
+            &expected_node_id,
+            &expected_attempt_id,
+        )
+        .map(retry_current_node_accepted_vm)
+        .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
 pub fn show_artifact(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -8724,7 +8762,14 @@ async fn execute_admitted_acp_prompt_with_configured_app(
     let app_handle_for_task = app_handle.clone();
     let lifecycle_path_for_stop = lifecycle_path.clone();
     let turn_id_for_stop = turn_id.clone();
+    let locator_for_execution = locator.clone();
     let execution = tauri::async_runtime::spawn_blocking(move || -> CommandResult<_> {
+        {
+            let _admission = app
+                .begin_run_write_admission(&task_id, &run_id)
+                .map_err(command_error)?;
+            ensure_conversation_prompt_available(&app, &locator_for_execution)?;
+        }
         let ConversationPromptInput {
             display_text,
             quotes,
@@ -16408,6 +16453,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -16532,6 +16578,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -16636,6 +16683,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -16754,10 +16802,13 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
         };
+
+        write_json(&app.paths.run_file(&run.task_id, &run.id), &run).unwrap();
 
         assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
         assert!(!attempt_is_runtime_controlled(&app, &locator).unwrap());
@@ -16802,6 +16853,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -17026,6 +17078,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -17539,6 +17592,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: Some(PauseReason::WaitingForUserInput),
                 uuid: None,
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),
@@ -18026,6 +18080,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
                 uuid: Some(run_uuid.clone()),
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),
@@ -18190,6 +18245,7 @@ mod tests {
                 new_rounds_opened: 0,
                 pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
                 uuid: Some(run_uuid),
+                rerun: None,
                 last_executed_node: None,
                 worktree: None,
                 execution: Default::default(),

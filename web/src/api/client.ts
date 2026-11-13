@@ -507,6 +507,7 @@ export interface RuntimeApi {
   stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, backgroundControl?: import("../types").DirectBackgroundControl | null, expectedTurnId?: string | null): Promise<ActiveSessionStopVm>;
   submitManualCheck(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure'): Promise<RunSummaryVm>;
   retryCurrentNode(request: import('../types').RetryCurrentNodeRequest): Promise<import('../types').RetryCurrentNodeAcceptedVm>;
+  rerunFailedNode(request: import('../types').RetryCurrentNodeRequest): Promise<import('../types').RetryCurrentNodeAcceptedVm>;
   getLogPage(query: LogQueryInput): Promise<LogPageVm>;
   getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpActivityDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpActivityDetailVm>;

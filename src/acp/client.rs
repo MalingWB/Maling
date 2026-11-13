@@ -1346,13 +1346,24 @@ impl RuntimeStopProbe {
         if self.lifecycle_turn_is_stopped() {
             return true;
         }
+        // Sealing fences every source-run prompt, including a queued follow-up
+        // that reaches provider registration after cancellation has completed.
+        let run_state = read_json::<serde_json::Value>(&self.run_file).ok();
+        if run_state.as_ref().is_some_and(|run| {
+            run.pointer("/rerun/sealedBy")
+                .is_some_and(|seal| !seal.is_null())
+        }) {
+            return true;
+        }
         if !self.runtime_generation_owned {
             return false;
         }
         self.attempt_state_file
             .as_ref()
             .is_some_and(|path| self.attempt_state_is_stopped(path))
-            || self.run_state_is_stopped()
+            || run_state
+                .as_ref()
+                .is_some_and(|run| self.run_state_is_stopped(run))
     }
 
     fn lifecycle_turn_is_stopped(&self) -> bool {
@@ -1393,37 +1404,33 @@ impl RuntimeStopProbe {
             })
     }
 
-    fn run_state_is_stopped(&self) -> bool {
-        read_json::<serde_json::Value>(&self.run_file)
-            .ok()
-            .is_some_and(|run| {
-                let status = run
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let pause_reason = run
-                    .get("pauseReason")
-                    .or_else(|| run.get("pause_reason"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                status.eq_ignore_ascii_case("paused")
-                    && normalize_stop_code(pause_reason) == "process-interrupted"
-                    && run
-                        .get("currentRound")
-                        .or_else(|| run.get("current_round"))
-                        .and_then(Value::as_str)
-                        == Some(self.round_id.as_str())
-                    && run
-                        .get("currentNode")
-                        .or_else(|| run.get("current_node"))
-                        .and_then(Value::as_str)
-                        == Some(self.node_id.as_str())
-                    && run
-                        .get("currentAttempt")
-                        .or_else(|| run.get("current_attempt"))
-                        .and_then(Value::as_str)
-                        == Some(self.attempt_id.as_str())
-            })
+    fn run_state_is_stopped(&self, run: &Value) -> bool {
+        let status = run
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let pause_reason = run
+            .get("pauseReason")
+            .or_else(|| run.get("pause_reason"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        status.eq_ignore_ascii_case("paused")
+            && normalize_stop_code(pause_reason) == "process-interrupted"
+            && run
+                .get("currentRound")
+                .or_else(|| run.get("current_round"))
+                .and_then(Value::as_str)
+                == Some(self.round_id.as_str())
+            && run
+                .get("currentNode")
+                .or_else(|| run.get("current_node"))
+                .and_then(Value::as_str)
+                == Some(self.node_id.as_str())
+            && run
+                .get("currentAttempt")
+                .or_else(|| run.get("current_attempt"))
+                .and_then(Value::as_str)
+                == Some(self.attempt_id.as_str())
     }
 }
 
@@ -17172,6 +17179,41 @@ do {
         };
 
         assert!(!probe.is_stopped());
+    }
+
+    #[test]
+    fn runtime_stop_probe_cancels_every_queued_prompt_after_source_sealing() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = camino::Utf8PathBuf::from_path_buf(dir.path().join("run.json")).unwrap();
+        let mut run = json!({ "status": "completed", "outcome": "failure" });
+        crate::storage::write_json(&run_file, &run).unwrap();
+        let probe = RuntimeStopProbe {
+            runtime_generation_owned: false,
+            run_file: run_file.clone(),
+            round_id: "round-001".to_string(),
+            node_id: "dev".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: None,
+            lifecycle_file: None,
+            turn_id: None,
+        };
+        assert!(
+            !probe.is_stopped(),
+            "ordinary completed-run follow-ups remain usable"
+        );
+        run["rerun"] = json!({ "sealedBy": { "successorRunId": "run-002" } });
+        crate::storage::write_json(&run_file, &run).unwrap();
+        assert!(
+            probe.is_stopped(),
+            "queued NonRuntime follow-ups must observe the seal"
+        );
+        assert!(
+            RuntimeStopProbe {
+                runtime_generation_owned: true,
+                ..probe
+            }
+            .is_stopped()
+        );
     }
 
     #[test]

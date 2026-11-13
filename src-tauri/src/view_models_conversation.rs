@@ -679,6 +679,8 @@ pub struct ConversationRunVm {
     pub runtime_error: Option<RuntimeErrorInfo>,
     pub scheduled_task_id: Option<String>,
     pub worktree: Option<ConversationRunWorktreeVm>,
+    pub sealed: bool,
+    pub rerun_origin: Option<gold_band::runtime::RunRerunOrigin>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -740,6 +742,7 @@ pub struct ConversationSessionLeafVm {
     pub runtime_display: RuntimeDisplayVm,
     pub lifecycle: ConversationAttemptLifecycleVm,
     pub current: bool,
+    pub inherited: bool,
     pub manual_check_pending: bool,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -3924,6 +3927,11 @@ pub fn conversation_run_vm(
         } else {
             None
         };
+        let inherited_attempts: HashSet<(&str, &str)> = trace
+            .iter()
+            .filter(|step| run.is_inherited_step(round, step))
+            .map(|step| (step.node_id.as_str(), step.attempt_id.as_str()))
+            .collect();
         if let Some(attempts) = &committed_attempts {
             session_successors.extend(conversation_session_successors_from_state(
                 app,
@@ -4178,6 +4186,10 @@ pub fn conversation_run_vm(
                                     runtime_display: dyn_runtime_display.clone(),
                                     lifecycle: lifecycle.clone(),
                                     current: dyn_current,
+                                    inherited: inherited_attempts.contains(&(
+                                        node.node_id.as_str(),
+                                        latest_attempt.attempt_id.as_str(),
+                                    )),
                                     manual_check_pending: false,
                                     started_at: dyn_node.started_at.clone(),
                                     finished_at: dyn_node.finished_at.clone(),
@@ -4331,6 +4343,8 @@ pub fn conversation_run_vm(
                         runtime_display: runtime_display.clone(),
                         lifecycle: lifecycle.clone(),
                         current,
+                        inherited: inherited_attempts
+                            .contains(&(node.node_id.as_str(), attempt.attempt_id.as_str())),
                         manual_check_pending,
                         started_at: Some(attempt.started_at.clone()),
                         finished_at: attempt.finished_at.clone(),
@@ -4549,6 +4563,11 @@ pub fn conversation_run_vm(
             .as_ref()
             .and_then(|metadata| metadata.scheduled_task_id.clone()),
         worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+        sealed: run.is_sealed(),
+        rerun_origin: run
+            .rerun
+            .as_ref()
+            .and_then(|metadata| metadata.origin.clone()),
     })
 }
 
@@ -4955,7 +4974,7 @@ pub fn create_conversation_run_vm(
                 project_id: input.project_id.clone(),
                 task_id: task_id.clone(),
                 task_uuid: task_uuid.clone(),
-                run_id: run.id,
+                run_id: run.id.clone(),
                 run_mode: input.run_mode.clone(),
                 workflow_template_id: input.workflow_template_id.clone(),
                 direct_config: input.direct_config.clone(),
@@ -4983,6 +5002,11 @@ pub fn create_conversation_run_vm(
                 runtime_error: None,
                 scheduled_task_id: input.scheduled_task_id.clone(),
                 worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+                sealed: run.is_sealed(),
+                rerun_origin: run
+                    .rerun
+                    .as_ref()
+                    .and_then(|metadata| metadata.origin.clone()),
             }
         });
     let task = conversation_task_row_vm(app, &input.project_id, &task_id, false, None)?;
@@ -5037,7 +5061,7 @@ pub fn rerun_conversation_task_vm(
                 .ok()
                 .and_then(|task| task.uuid)
                 .or_else(|| Some(task_id.to_string())),
-            run_id: run.id,
+            run_id: run.id.clone(),
             run_mode: "workflow".to_string(),
             workflow_template_id: None,
             direct_config: read_conversation_metadata(app, task_id)
@@ -5068,6 +5092,11 @@ pub fn rerun_conversation_task_vm(
             runtime_error: None,
             scheduled_task_id: None,
             worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+            sealed: run.is_sealed(),
+            rerun_origin: run
+                .rerun
+                .as_ref()
+                .and_then(|metadata| metadata.origin.clone()),
         })
     })
 }

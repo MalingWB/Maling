@@ -119,6 +119,29 @@ afterEach(() => {
 });
 
 describe('GraphView current-node retry', () => {
+  it('reruns a historical failure even when the latest attempt succeeded', async () => {
+    const onNodeRetry = vi.fn(() => new Promise<void>((resolve) => { retryResolver = resolve; }));
+    const historical = { attemptId: 'attempt-001', status: 'completed', outcome: 'failure', runtimeDisplay: retryableNode.runtimeDisplay!, current: false, retryable: true };
+    const succeeded = { ...retryableNode, status: 'completed', outcome: 'success', attemptId: 'attempt-002', retryable: false, attempts: [historical] };
+    act(() => root!.render(<GraphView graph={{ ...graph, nodes: [succeeded] }} variant="actual" onNodeRetry={onNodeRetry} />));
+    openContextMenu(succeeded);
+    expect(document.body.textContent).not.toContain('Retry current node');
+    const action = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === 'Rerun from attempt-001');
+    expect(action).toBeDefined();
+    await act(async () => { action!.click(); });
+    expect(onNodeRetry).toHaveBeenCalledWith(expect.objectContaining({ attemptId: 'attempt-001', status: 'completed', outcome: 'failure', retryable: true }));
+    expect(latestReactFlow().nodes[0].data.retryPending).toBe(true);
+    await act(async () => { retryResolver?.(); });
+    expect(latestReactFlow().nodes[0].data.retryPending).toBe(false);
+  });
+
+  it('labels a completed failed node as a rerun', () => {
+    const failed = { ...retryableNode, status: 'completed', outcome: 'failure' };
+    act(() => root!.render(<GraphView graph={{ ...graph, nodes: [failed] }} variant="actual" onNodeRetry={vi.fn()} />));
+    openContextMenu(failed);
+    expect(document.body.textContent).toContain('Rerun from this node');
+    expect(document.body.textContent).not.toContain('Retry current node');
+  });
   it('shows retry only for the retryable current node and single-flights a pending request', async () => {
     const onNodeRetry = vi.fn(() => new Promise<void>((resolve) => {
       retryResolver = resolve;

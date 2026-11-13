@@ -9,6 +9,7 @@ import type { ConversationRunVm, ConversationSessionLeafVm } from '@/types';
 const api = vi.hoisted(() => ({
   getRun: vi.fn(),
   retry: vi.fn(),
+  rerun: vi.fn(),
   pause: vi.fn(),
   listener: null as ((event: ConversationRunStateUpdatedEventVm) => void) | null,
 }));
@@ -17,6 +18,7 @@ vi.mock('@/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/api')>(),
   getConversationRun: api.getRun,
   retryCurrentNode: api.retry,
+  rerunFailedNode: api.rerun,
   pauseRun: api.pause,
   getConversationSidebarBootstrap: async () => ({
     workspaces: [{ projectId: 'default', workspacePath: 'C:/repo', name: 'Repo' }],
@@ -136,6 +138,7 @@ beforeEach(async () => {
     roundId: 'round-001', nodeId: 'dev', attemptId: 'attempt-003',
   } });
   api.pause.mockReset().mockResolvedValue(undefined);
+  api.rerun.mockReset();
   window.history.replaceState(null, '', '/chat/projects/default/tasks/mock-task/runs/run-051');
   host = document.createElement('div');
   document.body.append(host);
@@ -156,6 +159,38 @@ afterEach(async () => {
 });
 
 describe('conversation run refresh ordering', () => {
+  it('navigates to the successor after rerunning a completed failed node', async () => {
+    const source = { ...snapshot('completed'), runId: 'run-terminal', runOutcome: 'failure' };
+    source.workflowGraph.nodes[0].retryable = true;
+    source.workflowGraph.nodes[0].outcome = 'failure';
+    const successor = { ...snapshot('running'), runId: 'run-successor' };
+    api.getRun.mockImplementation((_project: string, _task: string, runId: string) => Promise.resolve(runId === 'run-successor' ? successor : source));
+    await navigate(source.runId);
+    api.rerun.mockResolvedValue({ operationId: 'rerun', locator: { runId: successor.runId } });
+    await click('retry');
+    await settle();
+    expect(api.rerun).toHaveBeenCalledWith(expect.objectContaining({ runId: source.runId, expectedAttemptId: 'attempt-003' }));
+    expect(api.retry).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="run-id"]')?.textContent).toBe(successor.runId);
+    expect(window.location.pathname).toContain('run-successor');
+  });
+
+  it('ignores a rerun acceptance after navigation to another run', async () => {
+    const source = { ...snapshot('completed'), runId: 'run-terminal', runOutcome: 'failure' };
+    source.workflowGraph.nodes[0].retryable = true;
+    api.getRun.mockResolvedValue(source);
+    await navigate(source.runId);
+    const command = deferred<unknown>();
+    api.rerun.mockReturnValue(command.promise);
+    await click('retry');
+    api.getRun.mockResolvedValue({ ...snapshot('completed'), runId: 'run-other' });
+    await navigate('run-other');
+    api.getRun.mockClear();
+    await act(async () => command.resolve({ operationId: 'rerun', locator: { runId: 'run-successor' } }));
+    await settle();
+    expect(api.getRun).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="run-id"]')?.textContent).toBe('run-other');
+  });
   it.each(['retry', 'pause', 'save'])('keeps the completed run and graph after a delayed %s refresh settles', async (action) => {
     const delayed = deferred<ConversationRunVm>();
     api.getRun.mockImplementationOnce(() => delayed.promise).mockResolvedValue(snapshot('completed'));

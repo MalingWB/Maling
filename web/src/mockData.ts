@@ -281,6 +281,7 @@ export const mockErrorBlockedConversationSession: AcpSessionVm = {
 export const mockErrorBlockedConversationRun: ConversationRunVm = {
   projectId: 'default',
   taskId: 'mock-task',
+  taskUuid: 'browser-mock-task-uuid',
   runId: 'run-051',
   runMode: 'workflow',
   workflowTemplateId: 'default',

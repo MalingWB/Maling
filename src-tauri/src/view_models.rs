@@ -28,7 +28,7 @@ use gold_band::provider::{
 };
 use gold_band::runtime::{
     CurrentNodeRetryReadiness, NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState,
-    canonical_trace_for_round, current_node_retry_readiness,
+    can_rerun_failed_node, canonical_trace_for_round, current_node_retry_readiness,
 };
 
 use crate::channel::current_channel_config;
@@ -574,6 +574,7 @@ pub struct GraphAttemptVm {
     pub session_mode: Option<String>,
     pub acp_session_id: Option<String>,
     pub current: bool,
+    pub retryable: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2426,6 +2427,7 @@ fn round_trace_graph_vm(
                     round,
                     node_step,
                     node_attempt,
+                    workflow_mode,
                 )?);
             }
         }
@@ -2452,11 +2454,12 @@ fn round_trace_graph_vm(
             latest_node.and_then(|node| node.outcome.map(|outcome| enum_label(&outcome)));
         let current = run.current_round.as_deref() == Some(&round.id)
             && run.current_node.as_deref() == Some(&latest_step.node_id);
-        let retryable = current
-            && workflow_mode
-            && latest_node.is_some_and(|node| {
-                current_node_retry_readiness(run, node, true) == CurrentNodeRetryReadiness::Ready
-            });
+        let retryable = latest_node.is_some_and(|node| {
+            can_rerun_failed_node(run, node, workflow_mode)
+                || (current
+                    && current_node_retry_readiness(run, node, workflow_mode)
+                        == CurrentNodeRetryReadiness::Ready)
+        });
         let pause_reason = run.pause_reason.as_ref().map(enum_label);
         let runtime_display = runtime_display_vm(
             latest_status.as_deref(),
@@ -2627,6 +2630,7 @@ fn graph_attempt_vm(
     round: &RoundState,
     step: &RoundTraceStep,
     node: &NodeState,
+    workflow_mode: bool,
 ) -> Result<GraphAttemptVm> {
     let status = enum_label(&node.status);
     let outcome = node.outcome.map(|outcome| enum_label(&outcome));
@@ -2664,6 +2668,7 @@ fn graph_attempt_vm(
             &node.attempt_id,
         ),
         current,
+        retryable: can_rerun_failed_node(run, node, workflow_mode),
     })
 }
 
@@ -2821,6 +2826,7 @@ fn dynamic_node_graph_vm(
             session_mode: Some(enum_label(&node.session_mode)),
             acp_session_id,
             current,
+            retryable: false,
         }],
         artifact_count,
         attachment_count,
@@ -3157,6 +3163,7 @@ fn round_node_graph_vm(
                 &node.attempt_id,
             ),
             current: attempt_current,
+            retryable: false,
         }],
         artifact_count: artifacts,
         attachment_count: attachments,
@@ -8299,6 +8306,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState {
@@ -9367,6 +9375,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::RuntimeAbnormal),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::default(),
@@ -9480,6 +9489,26 @@ mod tests {
         let worker = &detail.graph.nodes[0];
         assert_eq!(worker.attempt_id.as_deref(), Some("attempt-002"));
         assert!(worker.retryable);
+
+        // A normal failed result in a terminal run must expose the successor
+        // run action as well; this is not RuntimeAbnormal current-node retry.
+        run.status = RunStatus::Completed;
+        run.outcome = Some(RunOutcome::Failure);
+        run.pause_reason = None;
+        run.execution.phase = RuntimeExecutionPhase::Terminal;
+        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
+        let path = app
+            .paths
+            .node_file(task_id, run_id, round_id, "worker", "attempt-002");
+        let mut failed: NodeState = read_json(&path).unwrap();
+        failed.status = RunStatus::Completed;
+        failed.outcome = Some(gold_band::domain::NodeOutcome::Failure);
+        write_json(&path, &failed).unwrap();
+        let completed = round_detail_vm(&app, task_id, run_id, round_id, None).unwrap();
+        assert!(
+            completed.graph.nodes[0].retryable,
+            "a completed failed attempt must expose rerun"
+        );
     }
 
     #[test]

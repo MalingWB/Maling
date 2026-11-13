@@ -315,9 +315,26 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
               disabled={retryPendingKeys.has(graphNodeRetryPendingKey(menu.node))}
               onClick={() => handleNodeRetry(menu.node)}
             >
-              {t('graph.retryCurrentNode')}
+              {t(menu.node.status === 'completed' ? 'graph.rerunFailedNode' : 'graph.retryCurrentNode')}
             </GraphMenuItem>
           ) : null}
+          {onNodeRetry ? menu.node.attempts?.filter((attempt) => attempt.retryable && attempt.attemptId !== menu.node.attemptId).map((attempt) => (
+            <GraphMenuItem
+              key={attempt.attemptId}
+              disabled={retryPendingKeys.has(graphNodeRetryPendingKey({ ...menu.node, attemptId: attempt.attemptId }))}
+              onClick={() => handleNodeRetry({
+                ...menu.node,
+                attemptId: attempt.attemptId,
+                status: attempt.status,
+                outcome: attempt.outcome,
+                runtimeDisplay: attempt.runtimeDisplay,
+                current: attempt.current,
+                retryable: attempt.retryable,
+              })}
+            >
+              {t('graph.rerunFailedAttempt', { attempt: attempt.attemptId })}
+            </GraphMenuItem>
+          )) : null}
         </div>
       ) : null}
     </div>
@@ -362,8 +379,13 @@ function createLayoutedGraph(graph: GraphVm, layout: WorkflowLayout | null, sele
         direction,
         currentLabel: t('graph.current'),
         runningLabel: displayStatus(t, 'running'),
-        retryPendingLabel: t('graph.retryCurrentNode'),
-        retryPending: node.retryable && Boolean(node.roundId && node.attemptId) && retryPendingKeys.has(graphNodeRetryPendingKey(node)),
+        retryPendingLabel: t(node.status === 'completed' || node.attempts?.some((attempt) => (
+          attempt.status === 'completed' && retryPendingKeys.has(graphNodeRetryPendingKey({ ...node, attemptId: attempt.attemptId }))
+        )) ? 'graph.rerunFailedNode' : 'graph.retryCurrentNode'),
+        retryPending: Boolean(node.roundId && node.attemptId) && (
+          retryPendingKeys.has(graphNodeRetryPendingKey(node))
+          || node.attempts?.some((attempt) => retryPendingKeys.has(graphNodeRetryPendingKey({ ...node, attemptId: attempt.attemptId })))
+        ) === true,
         displayStatusValue,
         displayTone,
         displayIcon,

@@ -156,6 +156,8 @@ ACP 会话传输与 Runtime 控制权转换必须正交建模。`SessionMode` �
 
 新 round 使用同一 workflow snapshot。`new_round_entry="$entry"` 表示从当前 workflow 的 `entry` 开始；也可以填写任一真实 worker 节点 id，让下一轮从该节点开始。历史 task / run 如果缺失 `new_round_entry`，运行启动、重跑冻结 snapshot、以及运行态读取 frozen snapshot 时，都会在 snapshot 校验前仅对 `$new-round` 边补为 `$entry`，让旧数据继续按当时的“从 workflow entry 重开”语义执行；规范化结果只写入本次 run 的 `workflow.snapshot.json`，不回写 `authoring/workflow.json`，作者态新保存的 workflow 仍然必须显式声明该字段。下一轮的 hidden runtime context 不会直接继承上一轮完整前序链；只有当前 round 的入口节点会额外看到入口之前的稳定前缀节点最新产物，以及触发 `$new-round` 的上一 round 最后节点原因。例如 `A -> B -> C` 且新 round 从 `B` 开始时，入口 `B` 会看到 `A` 的产物和上一轮 `C` 触发重开的原因；本轮 `B` 重新执行后，后续 `C` 只看到本轮 `B`，不继续携带上一轮 `A/C` 的附件或触发原因。触发 `$new-round` 的上一 round 最后节点会作为“进入本轮的原因”写入入口节点 hidden context 的前序流转原因，包含该节点 output artifact、预览和 attachments，但不进入 predecessor chain。若 workflow 声明了 `control.max_rounds`，该值限制 `$new-round` 可打开的新 round 数，初始 round 不计入；超过限制时当前 run / round 以 failure 结束。
 
+入口上下文属于本轮首条 trace step 及其连续的同节点 `retry` 后继，不绑定首个 attempt 的精确 ID。同 Run 当前节点重试和 successor Run 失败节点重跑都必须为入口的新会话重新构造稳定前缀产物与 `$new-round` 触发上下文；入口此前的 attempts 仍按本轮前序事实保留。作用域依据 trace sequence、`from_node_id` 和 `edge_outcome=retry` 派生，不新增持久化入口身份。执行进入后继节点，或通过普通 workflow edge 回到同名入口节点后，不再附带这组跨轮上下文；该回返节点后续的 retry 也不恢复首次入口作用域。
+
 ## 7. 人工 check 暂停
 启用 `manual_check=true` 的 worker 在 provider 会话自然结束后进入：
 

@@ -2158,6 +2158,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::PermissionRequested),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -2670,6 +2671,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(

@@ -981,6 +981,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(crate::domain::PauseReason::PermissionRequested),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -1082,6 +1083,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(crate::domain::PauseReason::WaitingForUserInput),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: crate::runtime::RuntimeExecutionState {
@@ -1229,6 +1231,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(crate::domain::PauseReason::WaitingForUserInput),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),

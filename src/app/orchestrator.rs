@@ -111,12 +111,12 @@ use super::{
     RuntimeInterventionKind, RuntimeLifecycleEvent, is_run_continuable,
 };
 
-struct PreparedRunData {
-    validated: ValidatedWorkflow,
-    resolved_profiles: super::profile_resolver::ResolvedWorkflowMetadata,
-    run: RunState,
-    round: RoundState,
-    node: NodeState,
+pub(super) struct PreparedRunData {
+    pub(super) validated: ValidatedWorkflow,
+    pub(super) resolved_profiles: super::profile_resolver::ResolvedWorkflowMetadata,
+    pub(super) run: RunState,
+    pub(super) round: RoundState,
+    pub(super) node: NodeState,
 }
 
 pub struct PreparedRun {
@@ -1060,7 +1060,7 @@ fn drive_accepted_run(app: &App, task_id: &str, prepared: AcceptedRun) {
     drive_committed_run(app, task_id, prepared.data);
 }
 
-fn drive_committed_run(app: &App, task_id: &str, data: PreparedRunData) {
+pub(super) fn drive_committed_run(app: &App, task_id: &str, data: PreparedRunData) {
     let PreparedRunData {
         validated,
         resolved_profiles,
@@ -1072,7 +1072,7 @@ fn drive_committed_run(app: &App, task_id: &str, data: PreparedRunData) {
     // 否则后台线程 panic 会跳过终止事件，导致订阅 scheduled_occurrence 的 occurrence 永久卡 running。
     let drive_result = catch_unwind(AssertUnwindSafe(|| {
         prepare_run_worktree_background(app, task_id, &mut run, &round, &node).and_then(|ready| {
-            if !ready {
+            if !ready || app.run_status(task_id, &run.id)?.is_sealed() {
                 return Ok(());
             }
             drive_from_node_with_runtime_candidate(
@@ -1313,6 +1313,7 @@ fn prepare_run_from_workflow(
         new_rounds_opened: 0,
         pause_reason: None,
         uuid: Some(run_uuid),
+        rerun: None,
         last_executed_node: None,
         worktree,
         execution: RuntimeExecutionState::new(
@@ -1489,6 +1490,15 @@ fn prepare_run_worktree_background(
     let Some(worktree) = run.worktree.clone() else {
         return Ok(true);
     };
+    if run
+        .rerun
+        .as_ref()
+        .and_then(|rerun| rerun.origin.as_ref())
+        .is_some()
+    {
+        crate::git::GitRepositoryService::default().require_worktree(&worktree.path)?;
+        return Ok(!app.run_status(task_id, &run.id)?.is_sealed());
+    }
     let preparation_started_at = Instant::now();
     tracing::info!(
         target: "gold_band::perf",
@@ -3386,6 +3396,8 @@ fn submit_manual_check_with_launch_signal(
     app.validate_workflow_agents(&validated)?;
     let resolved_profiles =
         resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
+    let admission = app.begin_run_write_admission(task_id, run_id)?;
+    validate_manual_check_submission(app, task_id, run_id, round_id, node_id, attempt_id)?;
     let mut run = app.run_status(task_id, run_id)?;
     let (mut round, mut node) = current_attempt_state(app, task_id, &run)?;
     let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
@@ -3456,6 +3468,7 @@ fn submit_manual_check_with_launch_signal(
         ),
     );
     persist_runtime_state(app, task_id, &run, &round, &node)?;
+    drop(admission);
     if let Some(runtime_candidate) = runtime_candidate {
         runtime_candidate.commit();
     }
@@ -3535,6 +3548,7 @@ pub(crate) fn validate_manual_check_submission(
     node_id: &str,
     attempt_id: &str,
 ) -> Result<()> {
+    app.ensure_run_writable(task_id, run_id)?;
     let run = app.run_status(task_id, run_id)?;
     ensure!(run.status == RunStatus::Paused, "run is not paused");
     ensure!(
@@ -3714,7 +3728,7 @@ fn retry_operation_id(locator: &RetryCurrentNodeLocator) -> String {
     format!("retry-{}", hasher.finalize().to_hex())
 }
 
-fn retry_error(
+pub(super) fn retry_error(
     code: &'static str,
     task_id: &str,
     run_id: &str,
@@ -3790,7 +3804,7 @@ fn retry_state_error(task_id: &str, run_id: &str, error: &anyhow::Error) -> anyh
     )
 }
 
-fn retry_current_locator(
+pub(super) fn retry_current_locator(
     app: &App,
     task_id: &str,
     run: &RunState,
@@ -5147,23 +5161,20 @@ fn apply_control_decision(
     decision: ControlDecision,
     expected_execution_id: Option<&str>,
 ) -> Result<Option<NextExecution>> {
-    let state_lock = expected_execution_id.map(|_| {
-        super::attempt_runtime_state_lock(
-            app,
-            task_id,
-            &run.id,
-            &round.id,
-            &node.node_id,
-            &node.attempt_id,
-        )
-    });
+    let state_lock = super::attempt_runtime_state_lock(
+        app,
+        task_id,
+        &run.id,
+        &round.id,
+        &node.node_id,
+        &node.attempt_id,
+    );
     let _state_guard = state_lock
-        .as_ref()
-        .map(|lock| {
-            lock.lock()
-                .map_err(|_| anyhow!("attempt runtime state lock poisoned"))
-        })
-        .transpose()?;
+        .lock()
+        .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+    if app.run_status(task_id, &run.id)?.is_sealed() {
+        return Ok(None);
+    }
     if let Some(expected_execution_id) = expected_execution_id {
         let durable_run = app.run_status(task_id, &run.id)?;
         let durable_node: NodeState = read_json(&app.paths.node_file(
@@ -5173,7 +5184,8 @@ fn apply_control_decision(
             &node.node_id,
             &node.attempt_id,
         ))?;
-        if durable_run.status != RunStatus::Running
+        if durable_run.is_sealed()
+            || durable_run.status != RunStatus::Running
             || durable_run.current_round.as_deref() != Some(round.id.as_str())
             || durable_run.current_node.as_deref() != Some(node.node_id.as_str())
             || durable_run.current_attempt.as_deref() != Some(node.attempt_id.as_str())
@@ -5215,7 +5227,8 @@ fn apply_control_decision(
                     let proposed_attempts = canonical_trace
                         .iter()
                         .filter(|step| {
-                            step.from_node_id.as_deref() == Some(previous_node_id.as_str())
+                            !run.is_inherited_step(round, step)
+                                && step.from_node_id.as_deref() == Some(previous_node_id.as_str())
                                 && step.node_id == node_id
                                 && step.edge_outcome.as_deref().is_some_and(is_repair_outcome)
                         })
@@ -5252,6 +5265,11 @@ fn apply_control_decision(
                 .rev()
                 .find(|step| step.node_id == node_id)
                 .map(|step| step.attempt_id.as_str());
+            let inherited_target = canonical_trace
+                .iter()
+                .rev()
+                .find(|step| step.node_id == node_id)
+                .is_some_and(|step| run.is_inherited_step(round, step));
             let continue_ref = worker_ref_for_transition(
                 app,
                 task_id,
@@ -5331,7 +5349,11 @@ fn apply_control_decision(
             persist_runtime_state(app, task_id, run, round, &next_node)?;
             Ok(Some(NextExecution {
                 node: next_node,
-                session_mode: session,
+                session_mode: if inherited_target {
+                    SessionMode::New
+                } else {
+                    session
+                },
                 continue_ref,
             }))
         }
@@ -17521,6 +17543,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(
@@ -17665,6 +17688,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: Some(run_uuid.clone()),
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -18195,6 +18219,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: crate::runtime::RuntimeExecutionState::new(
@@ -18837,6 +18862,7 @@ mod tests {
             new_rounds_opened: 1,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -18949,6 +18975,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -19330,6 +19357,590 @@ mod tests {
 
     const RETRY_ADMISSION_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+    fn completed_failed_rerun_fixture(app: &App, current_attempt: &str) {
+        write_workflow_retry_fixture(app, current_attempt, PauseReason::RuntimeAbnormal);
+        let workflow = load_run_workflow(app, "task-retry", "run-retry").unwrap();
+        write_json(&app.paths.workflow_file("task-retry"), &workflow).unwrap();
+        app.task_authoring_workflow("task-retry").unwrap();
+        let mut run = app.run_status("task-retry", "run-retry").unwrap();
+        let (mut round, mut node) = current_attempt_state(app, "task-retry", &run).unwrap();
+        run.status = RunStatus::Completed;
+        run.outcome = Some(RunOutcome::Failure);
+        run.pause_reason = None;
+        run.execution.phase = RuntimeExecutionPhase::Terminal;
+        round.status = RunStatus::Completed;
+        round.outcome = Some(RunOutcome::Failure);
+        node.status = RunStatus::Completed;
+        node.outcome = Some(NodeOutcome::Failure);
+        if current_attempt == "attempt-002" {
+            let path = app.paths.node_file(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            );
+            let mut historical: NodeState = read_json(&path).unwrap();
+            historical.status = RunStatus::Completed;
+            historical.outcome = Some(NodeOutcome::Failure);
+            write_node_state(&path, &historical).unwrap();
+        }
+        persist_runtime_state(app, "task-retry", &run, &round, &node).unwrap();
+    }
+
+    fn wait_for_rerun_settlement(app: &App, run_id: &str) -> RunState {
+        let deadline = std::time::Instant::now() + RETRY_ADMISSION_TEST_TIMEOUT;
+        loop {
+            let run = app.run_status("task-retry", run_id).unwrap();
+            if run.status != RunStatus::Running {
+                return run;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "rerun driver did not settle"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn failed_node_rerun_forks_terminal_run_with_fresh_session_and_readonly_prefix() {
+        let temp = tempdir().unwrap();
+        let (app, invocations, release, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-001");
+        let artifact = app.paths.artifact_file(
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-001",
+            "output.json",
+        );
+        write_json(&artifact, &serde_json::json!({ "failed": true })).unwrap();
+        let node_path = app.paths.node_file(
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-001",
+        );
+        let mut node: NodeState = read_json(&node_path).unwrap();
+        node.resolved_config.insert(
+            "outputArtifact".to_string(),
+            serde_json::json!("output.json"),
+        );
+        write_node_state(&node_path, &node).unwrap();
+        let reference = app.paths.worker_ref_file(
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-001",
+        );
+        write_json(&reference, &serde_json::json!({ "oldSession": true })).unwrap();
+
+        let accepted = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap();
+        let invocation = invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        let source = app.run_status("task-retry", "run-retry").unwrap();
+        assert_eq!(source.status, RunStatus::Completed);
+        assert_eq!(source.outcome, Some(RunOutcome::Failure));
+        assert!(source.is_sealed());
+        assert_ne!(accepted.run.id, source.id);
+        assert_eq!(invocation.session_mode, SessionMode::New);
+        assert!(invocation.continue_ref.is_none());
+        assert_eq!(invocation.predecessors.len(), 1);
+        assert_eq!(
+            invocation.predecessors[0]
+                .output_artifact
+                .as_ref()
+                .unwrap()
+                .name,
+            "output.json"
+        );
+        assert!(
+            !app.paths
+                .worker_ref_file(
+                    "task-retry",
+                    &accepted.run.id,
+                    "round-retry",
+                    "worker",
+                    "attempt-001"
+                )
+                .exists()
+        );
+        assert_eq!(accepted.run.new_rounds_opened, 0);
+        assert_eq!(
+            normalize_runtime_error(
+                &app.ensure_attempt_writable(
+                    "task-retry",
+                    &accepted.run.id,
+                    "round-retry",
+                    "worker",
+                    "attempt-001"
+                )
+                .unwrap_err()
+            )
+            .code_str(),
+            "workflow.retry.inherited-attempt"
+        );
+        assert_eq!(
+            normalize_runtime_error(
+                &app.ensure_run_writable("task-retry", "run-retry")
+                    .unwrap_err()
+            )
+            .code_str(),
+            "workflow.retry.source-sealed"
+        );
+        assert!(
+            app.run_continue_background("task-retry", "run-retry", None, None)
+                .is_err()
+        );
+        release.send(()).unwrap();
+        assert_eq!(
+            wait_for_rerun_settlement(&app, &accepted.run.id).outcome,
+            Some(RunOutcome::Success)
+        );
+    }
+
+    #[test]
+    fn failed_node_rerun_uses_latest_authoring_and_executes_successors_once() {
+        let temp = tempdir().unwrap();
+        let (app, invocations, release, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-002");
+        let mut latest = dispatch_plan_workflow(
+            vec![
+                dispatch_plan_worker("worker", "new-goal", "new-model", None),
+                dispatch_plan_worker("review", "review-goal", "new-model", None),
+            ],
+            vec![
+                dispatch_plan_edge("worker", "review"),
+                dispatch_plan_edge("review", "$end"),
+            ],
+        );
+        latest.entry = "worker".to_string();
+        write_json(&app.paths.workflow_file("task-retry"), &latest).unwrap();
+        app.task_authoring_workflow("task-retry").unwrap();
+        let accepted = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap();
+        let first = invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        assert_eq!(first.runtime_context.node_id, "worker");
+        assert_eq!(first.model.as_deref(), Some("new-model"));
+        let again = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap();
+        assert_eq!(again.operation_id, accepted.operation_id);
+        assert_eq!(again.run.id, accepted.run.id);
+        assert!(invocations.try_recv().is_err());
+        let round: RoundState = read_json(&app.paths.round_file(
+            "task-retry",
+            &accepted.run.id,
+            "round-retry",
+        ))
+        .unwrap();
+        assert_eq!(round.trace.len(), 2);
+        assert_eq!(round.trace[0].attempt_id, "attempt-001");
+        assert_eq!(round.trace[1].attempt_id, "attempt-002");
+        release.send(()).unwrap();
+        let second = invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        assert_eq!(second.runtime_context.node_id, "review");
+        release.send(()).unwrap();
+        assert_eq!(
+            wait_for_rerun_settlement(&app, &accepted.run.id).outcome,
+            Some(RunOutcome::Success)
+        );
+        assert!(invocations.try_recv().is_err());
+    }
+
+    #[test]
+    fn failed_node_rerun_concurrent_admission_fences_active_source_and_late_writes() {
+        let temp = tempdir().unwrap();
+        let (app, invocations, release, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-002");
+        let mut source = app.run_status("task-retry", "run-retry").unwrap();
+        let (mut source_round, mut source_node) =
+            current_attempt_state(&app, "task-retry", &source).unwrap();
+        source.status = RunStatus::Running;
+        source.outcome = None;
+        source.execution.phase = RuntimeExecutionPhase::RunningNode;
+        source_round.status = RunStatus::Running;
+        source_round.outcome = None;
+        source_node.status = RunStatus::Running;
+        source_node.outcome = None;
+        source_node.finished_at = None;
+        source_node.runtime_execution_id = Some("old-source-execution".to_string());
+        persist_runtime_state(&app, "task-retry", &source, &source_round, &source_node).unwrap();
+
+        // Both requests pass executable preflight before either can seal the
+        // source. The historical failure is independent from the running node.
+        let preflight = std::sync::Barrier::new(2);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let started_runs = Arc::new(Mutex::new(Vec::new()));
+        let captured_started = started_runs.clone();
+        let app = app.with_inline_lifecycle_subscriber(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::ConversationRunStarted { run_id, .. } = event {
+                captured_started.lock().unwrap().push(run_id);
+            }
+        }));
+        let app = app.with_provider_diagnostics_source(Arc::new(move || {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                preflight.wait();
+            }
+            Ok(retry_admission_diagnostics())
+        }));
+        let (accepted, duplicate) = thread::scope(|scope| {
+            let submit = || {
+                app.rerun_failed_node(
+                    "task-retry",
+                    "run-retry",
+                    "round-retry",
+                    "worker",
+                    "attempt-001",
+                )
+            };
+            let first = scope.spawn(submit);
+            let second = scope.spawn(submit);
+            (
+                first.join().unwrap().unwrap(),
+                second.join().unwrap().unwrap(),
+            )
+        });
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        assert_eq!(accepted.run.id, duplicate.run.id);
+        assert_eq!(accepted.operation_id, duplicate.operation_id);
+        assert_eq!(app.run_list("task-retry").unwrap().len(), 2);
+        assert_eq!(*started_runs.lock().unwrap(), vec![accepted.run.id.clone()]);
+        let sealed = app.run_status("task-retry", "run-retry").unwrap();
+        assert!(sealed.is_sealed());
+        assert_eq!(sealed.status, RunStatus::Paused);
+        assert_eq!(sealed.pause_reason, Some(PauseReason::ProcessInterrupted));
+        assert!(
+            !persist_runtime_state_if_expected_execution_current(
+                &app,
+                "task-retry",
+                &mut source,
+                &source_round,
+                &source_node,
+                Some("old-source-execution"),
+            )
+            .unwrap()
+        );
+        assert!(
+            app.run_status("task-retry", "run-retry")
+                .unwrap()
+                .is_sealed()
+        );
+        assert!(invocations.try_recv().is_err());
+        release.send(()).unwrap();
+        assert_eq!(
+            wait_for_rerun_settlement(&app, &accepted.run.id).outcome,
+            Some(RunOutcome::Success)
+        );
+    }
+
+    #[test]
+    fn failed_node_rerun_recovers_pending_snapshot_without_provider_or_new_authoring() {
+        let temp = tempdir().unwrap();
+        let (app, invocations, release, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-001");
+        crate::execution_plan::bump_authoring_revision(&app.paths, "task-retry").unwrap();
+        let accepted = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap();
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        release.send(()).unwrap();
+        wait_for_rerun_settlement(&app, &accepted.run.id);
+        let target_dir = app.paths.run_dir("task-retry", &accepted.run.id);
+        let pending: serde_json::Value = read_json(
+            &app.paths
+                .pending_node_rerun_file("task-retry", &accepted.run.id),
+        )
+        .unwrap();
+        // Recreate the on-disk crash boundary: the operation and source seal
+        // exist, while only the pending locator exists at the target. Move the
+        // completed fixture aside so it cannot supply sessions or artifacts.
+        let canonical_target = std::fs::canonicalize(&target_dir).unwrap();
+        let canonical_temp = std::fs::canonicalize(temp.path()).unwrap();
+        assert!(canonical_target.starts_with(&canonical_temp));
+        std::fs::rename(&canonical_target, temp.path().join("finished-fixture")).unwrap();
+        write_json(
+            &app.paths
+                .pending_node_rerun_file("task-retry", &accepted.run.id),
+            &pending,
+        )
+        .unwrap();
+        let mut changed = dispatch_plan_workflow(
+            vec![dispatch_plan_worker(
+                "replacement",
+                "different goal",
+                "model",
+                None,
+            )],
+            vec![dispatch_plan_edge("replacement", "$end")],
+        );
+        changed.entry = "replacement".to_string();
+        app.save_task_workflow("task-retry", changed).unwrap();
+        assert!(
+            app.recover_pending_node_rerun("task-retry", &accepted.run.id)
+                .unwrap()
+        );
+        assert!(
+            !app.recover_pending_node_rerun("task-retry", &accepted.run.id)
+                .unwrap()
+        );
+        let recovered = app.run_status("task-retry", &accepted.run.id).unwrap();
+        assert_eq!(recovered.status, RunStatus::Paused);
+        assert_eq!(
+            recovered.pause_reason,
+            Some(PauseReason::ProcessInterrupted)
+        );
+        let snapshot =
+            crate::execution_plan::load_current(&app.paths, "task-retry", &accepted.run.id)
+                .unwrap();
+        assert_eq!(snapshot.source_authoring_revision, 1);
+        assert_eq!(
+            crate::execution_plan::workflow_from_snapshot(&snapshot).entry,
+            "worker"
+        );
+        assert!(
+            invocations.try_recv().is_err(),
+            "startup recovery must not invoke a provider"
+        );
+        assert!(
+            !app.paths
+                .worker_ref_file(
+                    "task-retry",
+                    &accepted.run.id,
+                    "round-retry",
+                    "worker",
+                    "attempt-002"
+                )
+                .exists()
+        );
+        let duplicate = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap();
+        assert_eq!(duplicate.run.id, accepted.run.id);
+        assert_eq!(duplicate.run.status, RunStatus::Paused);
+        assert!(
+            invocations.try_recv().is_err(),
+            "replaying an accepted operation must not restart its driver"
+        );
+    }
+
+    #[test]
+    fn failed_node_rerun_rejects_uncommitted_failure_and_oversized_inputs_without_sealing() {
+        let temp = tempdir().unwrap();
+        let (app, _, _, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-001");
+        let source = app.run_status("task-retry", "run-retry").unwrap();
+        let (mut round, mut orphan) = current_attempt_state(&app, "task-retry", &source).unwrap();
+        orphan.attempt_id = "attempt-002".to_string();
+        write_node_state(
+            &app.paths.node_file(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-002",
+            ),
+            &orphan,
+        )
+        .unwrap();
+        round.trace.push(round_trace_step(
+            2,
+            "worker",
+            "attempt-002",
+            Some("worker".to_string()),
+            Some("retry".to_string()),
+            source.started_at,
+        ));
+        write_json(
+            &app.paths
+                .round_file("task-retry", "run-retry", "round-retry"),
+            &round,
+        )
+        .unwrap();
+        let error = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-002",
+            )
+            .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "workflow.retry.stale-locator"
+        );
+        let asset = app.paths.artifact_file(
+            "task-retry",
+            "run-retry",
+            "round-retry",
+            "worker",
+            "attempt-001",
+            "oversized.bin",
+        );
+        std::fs::create_dir_all(asset.parent().unwrap()).unwrap();
+        std::fs::File::create(asset)
+            .unwrap()
+            .set_len(256 * 1024 * 1024 + 1)
+            .unwrap();
+        let error = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "workflow.retry.prefix-too-large"
+        );
+        assert!(
+            !app.run_status("task-retry", "run-retry")
+                .unwrap()
+                .is_sealed()
+        );
+        assert_eq!(app.run_list("task-retry").unwrap().len(), 1);
+
+        // Reject metadata before parsing it, even if a round file has a
+        // syntactically invalid oversized tail. No handoff may be committed.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(
+                app.paths
+                    .round_file("task-retry", "run-retry", "round-retry"),
+            )
+            .unwrap()
+            .set_len(8 * 1024 * 1024 + 1)
+            .unwrap();
+        let error = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "workflow.retry.prefix-too-large"
+        );
+        assert!(
+            !app.run_status("task-retry", "run-retry")
+                .unwrap()
+                .is_sealed()
+        );
+        assert_eq!(app.run_list("task-retry").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn failed_node_rerun_rejects_error_blocked_and_missing_target_without_sealing() {
+        let temp = tempdir().unwrap();
+        let (app, _, _, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-001");
+        let mut source = app.run_status("task-retry", "run-retry").unwrap();
+        source.status = RunStatus::Paused;
+        source.outcome = None;
+        source.pause_reason = Some(PauseReason::ErrorBlocked);
+        // Construct a different historical source; Terminal cannot transition
+        // back to Paused during a real runtime execution.
+        source.execution.phase = RuntimeExecutionPhase::Paused;
+        write_json(&app.paths.run_file("task-retry", "run-retry"), &source).unwrap();
+        let error = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "workflow.retry.error-blocked"
+        );
+        completed_failed_rerun_fixture(&app, "attempt-001");
+        let mut latest = dispatch_plan_workflow(
+            vec![dispatch_plan_worker("replacement", "goal", "model", None)],
+            vec![dispatch_plan_edge("replacement", "$end")],
+        );
+        latest.entry = "replacement".to_string();
+        write_json(&app.paths.workflow_file("task-retry"), &latest).unwrap();
+        let error = app
+            .rerun_failed_node(
+                "task-retry",
+                "run-retry",
+                "round-retry",
+                "worker",
+                "attempt-001",
+            )
+            .unwrap_err();
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "workflow.retry.target-missing"
+        );
+        assert!(
+            !app.run_status("task-retry", "run-retry")
+                .unwrap()
+                .is_sealed()
+        );
+        assert_eq!(app.run_list("task-retry").unwrap().len(), 1);
+    }
+
     fn retry_admission_diagnostics() -> BTreeMap<String, ProviderDiagnosticSnapshot> {
         BTreeMap::from([(
             "claude-acp".to_string(),
@@ -19338,7 +19949,18 @@ mod tests {
                 available: true,
                 error: None,
                 checked_at: "2026-11-10T00:00:00Z".to_string(),
-                capabilities: None,
+                capabilities: Some(serde_json::json!({
+                    "configOptions": [{
+                        "id": "model",
+                        "category": "model",
+                        "options": [
+                            { "value": "original-model" },
+                            { "value": "new-model" },
+                            { "value": "entry-model" },
+                            { "value": "model" },
+                        ]
+                    }]
+                })),
             },
         )])
     }
@@ -19889,6 +20511,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(
@@ -20046,6 +20669,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -20116,6 +20740,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -20228,6 +20853,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: Some(run_uuid.clone()),
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -20335,6 +20961,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(
@@ -20471,6 +21098,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(
@@ -20603,6 +21231,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(
@@ -20764,6 +21393,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: None,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::new(
@@ -20891,6 +21521,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason,
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: Default::default(),
@@ -20960,6 +21591,7 @@ mod tests {
             new_rounds_opened: 0,
             pause_reason: Some(pause_reason),
             uuid: None,
+            rerun: None,
             last_executed_node: None,
             worktree: None,
             execution: RuntimeExecutionState::default(),

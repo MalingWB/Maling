@@ -6,6 +6,7 @@
 - 2026-11-09 评审修复：续接引用与 attempt 编号统一使用目标节点的已提交历史；历史会话查询补齐当前 round 上下文；会话树按 canonical trace 读取正式节点与 attempts；retry 与新 Run 复用持续更新当前节点的后台驱动。新增回归与验收证据记入详细方案第 19 节。
 - 2026-11-10 并发与计划一致性修复：固定 Workflow Continue 与 completed recovery 先在既有 attempt lock 内复核状态，再登记 recovery candidate，防止迟到请求破坏已接受 retry 的恢复索引。retry 预检记录当前 execution-plan revision，提交按 plan read lock → attempt lock 复核版本并持锁到 node → round → run 落盘；版本冲突不创建 attempt，重新提交使用新计划。迁移最初 7 项 App 用例及整库补查的 1 项 IM 投影用例的缺失 canonical trace fixture，保持生产严格校验。技术方案、红绿证据与最终验收统一见详细方案第 20 节；不新增持久字段、队列、依赖或第二套生命周期。
 - 2026-11-11 重试命令线程隔离修复：Tauri 入口改为异步，workspace 解析、预检、锁等待和 durable commit 一起复用既有 `spawn_blocking_command`；保留原 expected locator、幂等、错误与 accepted 契约。以可控准备门闩复现调用线程被占用，再验证等待期间命令让出执行权及结构化错误完整返回。实施与验收证据见详细方案第 22 节；不新增状态、队列或依赖。
+- 2026-11-13 审查修复：新 round 的入口上下文由首个精确 attempt 扩展为首节点及其连续 retry 链，同 Run 重试和 successor Run 失败节点重跑共用该作用域；普通边回返与后继节点继续隔离。Direct 命令回归 fixture 补齐 durable Run，保留生产可写性检查。设计、接口回归及性能评审见当前节点重试方案第 23 节和[失败节点重跑技术方案](生命周期整理/工作流失败节点重跑技术方案.md)。
 - 根因定性：现有 `run_retry` 已能按 canonical `current_round/current_node/current_attempt` 创建新 attempt，但缺少显式“当前节点可重试”契约、expected locator CAS、并发防护和后台 accepted 语义；会话页运行图的“从该节点重试”仍是硬编码禁用占位。修订后明确 Completed Run 生命周期不可回退，`Completed + Failure` 走 successor run / handoff；本方案只处理 `Paused + RuntimeAbnormal` 且当前 node 为 `Paused + outcome=null` 的未终结 Run。ErrorBlocked 不依赖事件日志猜测错误类别，第一阶段一律拒绝。继续复用 Run/Round/Node/Attempt 状态机、round trace、runtime candidate、既有后台驱动和错误契约，不新增持久字段、队列或平行状态机。
 - 命令设计：以 `retry_current_node(projectId, taskId, runId, expectedRoundId, expectedNodeId, expectedAttemptId)` 替换语义模糊的 `retry_run(taskId, runId)`。后端在旧 attempt 锁内重读权威状态并校验纯生命周期 readiness 与 expected locator，按旧 current locator 截断 canonical trace 后通过原子目录预留创建同 node 新 attempt（将现有 `next_attempt_id` 的读最大值逻辑收敛为 `reserve_next_attempt_dir`），按 node -> round -> run 原子替换提交；只有 run current pointer 指向新 locator 才算 durable accepted。该 pointer 只是当前位置转移与新 trace step 的 commit marker，不是同 locator 状态更新的通用 revision；已完成的更早 round 使用完整已校验 trace。返回 `RetryCurrentNodeAcceptedVm`（Run summary、完整新 locator、稳定 operationId），执行交由后台线程。相同 expected locator 重投时，如果 current 是它在 canonical trace 中的直接 retry successor，则返回同一 `operationId + locator` 和重投时的最新 Run summary，而不创建新 attempt；其他 locator 变化才返回 stale。运行中、终态 Run、ErrorBlocked、已完成节点、人工检查等待和 AI-DYNAMIC 内部节点分别映射稳定错误码；Agent/profile/model/Git 属于提交前 executable preflight，不进入 Graph VM 常数级投影。手动 retry 不改变 `control.max_attempts` 仅统计 failure 修复跳转的既有语义。
 - UI 契约：`GraphNodeVm` 新增后端派生的 `retryable` 投影；当前可重试节点右键显示“重试当前节点”，不可重试节点隐藏入口。回调经运行图资源面板、会话页到 App 的既有命令链路传递，pending 按完整 locator 去重，stale locator 只刷新并提示，不自动重试。七语言同步删除 `graph.retryFromNode` 并新增 `graph.retryCurrentNode`。
@@ -1653,7 +1654,7 @@ enum ControlDecision {
 - `start_run()`
 - `continue_run()`
 - `retry_current_node()`（仅未终结 Run 的当前失败节点，完整 locator CAS）
-- `create_successor_run()`（已完成 Run / Attempt 的重跑与 handoff）
+- `rerun_failed_node()`（已完成失败 Attempt 创建 successor Run）
 - `pause_run()`
 - `open_session()`
 
@@ -1675,6 +1676,13 @@ MVP 主流程：
 桌面端 `start_run` command 需要在第 4 步完成后立即返回初始 run summary，并把第 5 步交给后台线程执行，避免 UI 等待完整 workflow 跑完后才恢复响应。若最新 Run 尚未进入终止态，桌面端不允许继续新建 Run。
 
 run 创建编号规则统一由 runtime 负责：普通启动和会话页重跑都扫描当前 task 的 `runs/` 目录最大 `run-NNN` 后递增，并先原子创建目标 run 目录占位，再写入 `run.json`、`workflow.snapshot.json`、`round.json` 和首个 `node.json`。前端不得根据当前选中的 run 推导新 run id；并发重跑时目录占位失败的一方必须重新扫描最大编号再分配。
+
+### 2026-11-12：Workflow 失败节点重跑
+
+- 普通 Worker 的 `Completed + Failure/Invalid` attempt 支持从精确 locator 重跑；已完成 Run 不原地复活，而是创建 successor Run，继承锚点以前的 canonical trace、node 状态、产物和附件，并追加 fresh attempt，依次执行该节点及最新 Workflow 的后续节点。历史失败 attempt 与当前已完成失败节点共用该接口；`ErrorBlocked` 暂不支持。
+- successor 记录 source Run UUID、round/node/attempt、operation ID、继承水位和 authoring revision；source 首次交接后封存，保持原结果并拒绝 continue、ACP 追问、执行计划当前写入和继承 attempt 写入。相同 source UUID + locator 幂等返回同一 successor；操作记录和 runtime recovery candidate 支持提交中断后的物化恢复，恢复阶段不调用 provider。
+- 复用现有 execution-plan 锁、attempt execution fencing、后台 driver、原子 JSON 和实际 workspace/worktree。拒绝未提交 trace、目标删除、工作区丢失、资源超限和符号链接；前缀最多 4096 steps、4096 个资源项、256 MiB，round 元数据读取也有界。重跑不回滚 Git 或外部副作用，不复制旧 ACP session、worker-ref、聊天和 Raw 日志。
+- 会话运行图为最新失败节点和历史失败 attempt 提供重跑入口，确认后导航到 successor；来源 Run 只读，继承 attempt 只读，ErrorBlocked 不显示入口。接口回归覆盖终态/历史重跑、最新工作流后继执行、并发幂等、source seal、迟到写入、恢复中断、资源边界和 ErrorBlocked。
 
 ### `run kill`
 MVP 行为：

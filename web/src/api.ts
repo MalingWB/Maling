@@ -250,6 +250,10 @@ export function retryCurrentNode(request: Parameters<ReturnType<typeof getRuntim
   return getRuntimeApi().retryCurrentNode(request);
 }
 
+export function rerunFailedNode(request: Parameters<ReturnType<typeof getRuntimeApi>['rerunFailedNode']>[0]) {
+  return getRuntimeApi().rerunFailedNode(request);
+}
+
 export function getLogPage(query: Parameters<ReturnType<typeof getRuntimeApi>['getLogPage']>[0]) {
   return getRuntimeApi().getLogPage(query);
 }
