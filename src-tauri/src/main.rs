@@ -333,6 +333,7 @@ fn run() -> anyhow::Result<()> {
         .manage(browser_bookmarks::BrowserBookmarkHost::default())
         .manage(multica::shared_state())
         .manage(multica::MulticaConnectCancel::default())
+        .manage(multica::transcript::TranscriptRegistry::default())
         .manage(wallpaper_runtime);
     #[cfg(all(debug_assertions, target_os = "windows"))]
     let builder = builder.manage(webview_heap_diagnostics);

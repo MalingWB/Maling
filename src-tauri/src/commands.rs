@@ -5978,6 +5978,9 @@ pub(crate) fn acp_live_update_emitter(
                 tracing::warn!("project id unavailable; ACP intervention notification dropped");
             }
         }
+        // multica 执行记录上报：必须在 IPC 压缩前观测（压缩会剥掉 rawInput/rawOutput）。
+        // 非 multica 在飞任务 / 非上报事件类型在这里一次注册表查找即返回。
+        crate::multica::transcript::observe(&app_handle, &context, &event);
         compact_live_conversation_event(&mut event);
         emit_acp_event_update(
             &app_handle,

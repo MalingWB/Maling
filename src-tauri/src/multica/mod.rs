@@ -29,6 +29,7 @@ pub mod loop_;
 pub mod markdown_source;
 pub mod runtime_assets;
 pub mod state;
+pub mod transcript;
 pub mod upstream;
 pub mod vm;
 

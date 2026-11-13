@@ -959,6 +959,13 @@ pub async fn start_remote_conversation_run(
                         },
                     );
                 }
+                // 执行记录上报：run 已在执行，这里起开始观测（seq 从 1 开始，作用域 = 本次 task_id）。
+                crate::multica::transcript::start_run(
+                    &app_handle,
+                    &remote_task_id,
+                    &register_task_id,
+                    &register_run_id,
+                );
                 // M5-cn 可观测性：claim 快照即定版的 DPMS 回写条件落日志——「为何没回写」
                 // 无需再靠日志往返反推（内网实例：dpms_required=false 导致回写休眠）。
                 info!(
@@ -999,6 +1006,14 @@ pub async fn start_remote_conversation_run(
                     let home_app = context.app();
                     let workspace_app = home_app
                         .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
+                    // 启动失败 → 先排空已产生的执行记录，再本地收尾（避免残留 reporter 悬挂）。
+                    crate::multica::transcript::finish_run(
+                        &app_handle,
+                        &register_task_id,
+                        &register_run_id,
+                        crate::multica::transcript::DRAIN_TIMEOUT,
+                    )
+                    .await;
                     crate::multica::bridge::teardown_active_run(
                         &workspace_app,
                         shared.inner(),
@@ -1080,6 +1095,7 @@ pub async fn start_remote_conversation_run(
     let ws_path = workspace_path.clone();
     let shared_clone = shared.inner().clone();
     let ctx_clone = context.clone();
+    let transcript_app = app_handle.clone();
 
     // ⑤ 复用 create_conversation_run_vm（建工作流 + 建任务 + 写 conversation.json + 启动 run）+ 叠加簿记。
     let result = tauri::async_runtime::spawn_blocking(
@@ -1110,6 +1126,13 @@ pub async fn start_remote_conversation_run(
                 );
                 // 建成 run + 登记 active_run（claim-at-send 无 lease 需释放）。
             }
+            // 执行记录上报：run 已启动，立即开始观测（seq 从 1 开始，作用域 = 本次 task_id）。
+            crate::multica::transcript::start_run(
+                &transcript_app,
+                &remote,
+                &run.task_id,
+                &run.run_id,
+            );
             // M5-cn 可观测性：同续跑路径——claim 快照的 DPMS 回写条件落日志。
             info!(
                 task = %remote,
@@ -1194,6 +1217,14 @@ pub async fn start_remote_conversation_run(
                 let home_app = context.app();
                 let workspace_app = home_app
                     .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
+                // 启动失败 → 先排空已产生的执行记录，再本地收尾（避免残留 reporter 悬挂）。
+                crate::multica::transcript::finish_run(
+                    &app_handle,
+                    &created.run.task_id,
+                    &created.run.run_id,
+                    crate::multica::transcript::DRAIN_TIMEOUT,
+                )
+                .await;
                 crate::multica::bridge::teardown_active_run(
                     &workspace_app,
                     shared.inner(),
@@ -1236,6 +1267,7 @@ pub async fn start_remote_conversation_run(
 /// terminal，无需 fail。本命令恒为「码灵侧 running 任务的主动取消」。
 #[tauri::command]
 pub async fn cancel_remote_task(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     shared: State<'_, SharedMulticaState>,
     task_id: String,
@@ -1259,6 +1291,22 @@ pub async fn cancel_remote_task(
         .app()
         .map_err(command_error)?
         .with_repo_root(Utf8PathBuf::from(workspace_path), context.config.clone());
+
+    // 执行记录：取消是终态——先落 error 行并排空（3s 上限，取消要响应快），再上报远端 fail。
+    // 排空后 reporter 已摘除，teardown 杀 ACP 时产生的残余事件不会再上报。
+    crate::multica::transcript::report_error(
+        &app_handle,
+        &run.local_task_id,
+        &run.local_run_id,
+        "cancelled by user (manual cancel)",
+    );
+    crate::multica::transcript::finish_run(
+        &app_handle,
+        &run.local_task_id,
+        &run.local_run_id,
+        std::time::Duration::from_secs(3),
+    )
+    .await;
 
     // 通道 1：远端终态上报（best-effort）。码灵主动取消的 running 任务须 fail 化，否则永久卡 running。
     // bare agent_error 非重试——用户取消不应被 webank 自动 requeue。

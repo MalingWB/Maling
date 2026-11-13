@@ -18,6 +18,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::multica::error::MulticaError;
 use crate::multica::markdown_source::markdown_source_to_plain_text;
+use crate::multica::transcript::{TranscriptMessage, UsageRow};
 
 /// PAT 创建请求（`POST /api/tokens` body）。serde 默认序列化为 snake_case 键。
 #[derive(Debug, Serialize)]
@@ -73,6 +74,13 @@ const NETWORK_RETRY_BASE_SECS: u64 = 1;
 /// 与取消检测的及时性。给这些调用更短的 per-request 上界，使退化网络下单 tick 也能快速失败、
 /// 下一 tick（3s）重试——而非一个 tick 阻塞数分钟。
 const LIVENESS_TIMEOUT_SECS: u64 = 10;
+
+/// 执行记录（messages/usage）单次上报超时（秒）。
+///
+/// 上报由独立的 500ms flush worker 驱动、失败即丢，不需要与心跳共享短超时语义；但也不能用
+/// client 级 30s 把一批消息吊太久（worker 串行、会推迟后续批次与终态排空）。10s 足以覆盖一次
+/// 正常批量写入。
+const TRANSCRIPT_REQUEST_TIMEOUT_SECS: u64 = 10;
 
 /// 单个 issue 附件下载超时（秒），覆盖 client 级 30s 默认值（M5-bu）。
 ///
@@ -1644,6 +1652,53 @@ impl MulticaClient {
         .await
     }
 
+    // ===== 执行记录（transcript）实时上报 =====
+
+    /// `POST /api/daemon/tasks/{tid}/messages` —— 执行记录批量上报。
+    ///
+    /// **单次尝试、不重试**：协议明确批次原子（整批成功或整批丢弃），且 seq 表上无唯一约束，
+    /// 重发同 seq 会产生重复行——失败只能丢，下一批用新 seq 继续。
+    /// daemon task 维度接口只用 PAT，不带 `X-Workspace-ID`；空批次由调用方跳过。
+    pub async fn post_task_messages(
+        &self,
+        task_id: &str,
+        messages: &[TranscriptMessage],
+    ) -> Result<(), MulticaError> {
+        let path = format!("/api/daemon/tasks/{task_id}/messages");
+        let body = serde_json::json!({ "messages": messages });
+        self.json_send(
+            Method::POST,
+            &path,
+            None,
+            &body,
+            Some(Duration::from_secs(TRANSCRIPT_REQUEST_TIMEOUT_SECS)),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// `POST /api/daemon/tasks/{tid}/usage` —— token 用量上报。
+    ///
+    /// 服务端按 `(task_id, provider, model)` **整体替换**，所以 `usage` 必须是该任务截至当前的
+    /// 累计总量（可重复上报）。同样单次尝试、不重试，失败由调用方记日志后丢弃。
+    pub async fn post_task_usage(
+        &self,
+        task_id: &str,
+        usage: &[UsageRow],
+    ) -> Result<(), MulticaError> {
+        let path = format!("/api/daemon/tasks/{task_id}/usage");
+        let body = serde_json::json!({ "usage": usage });
+        self.json_send(
+            Method::POST,
+            &path,
+            None,
+            &body,
+            Some(Duration::from_secs(TRANSCRIPT_REQUEST_TIMEOUT_SECS)),
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// `POST /api/daemon/tasks/{tid}/session` —— PinTaskSession（接入方案 C8）。
     ///
     /// 写 task 行的 session_id/work_dir（断点续跑依据；执行期 ACP 建立会话后调用）。
@@ -2950,6 +3005,95 @@ mod tests {
             .build()
             .unwrap();
         client
+    }
+
+    #[tokio::test]
+    async fn post_task_messages_sends_daemon_batch_without_workspace_header() {
+        // 契约：daemon task 维度接口、PAT、无 X-Workspace-ID；body 为 {"messages":[...]}，
+        // 消息字段按 multica 五种类型序列化（type 改名、None 字段省略）。
+        let (base, handle) = mock_http_responses(vec![(200, r#"{"status":"ok"}"#)]);
+        let client = test_client(base);
+        let mut first = TranscriptMessage::body(
+            crate::multica::transcript::model::TYPE_TEXT,
+            "hello".to_string(),
+        );
+        first.seq = 1;
+        let mut second =
+            TranscriptMessage::tool_use("Bash".into(), serde_json::json!({"command": "ls"}));
+        second.seq = 2;
+        client
+            .post_task_messages("t-1", &[first, second])
+            .await
+            .expect("messages must be accepted");
+        let requests = handle.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert!(
+            request.starts_with("POST /api/daemon/tasks/t-1/messages"),
+            "{request}"
+        );
+        assert!(
+            request.contains(r#""messages":[{"seq":1,"type":"text","content":"hello"}"#),
+            "{request}"
+        );
+        assert!(
+            request.contains(r#""type":"tool_use","tool":"Bash","input":{"command":"ls"}"#),
+            "{request}"
+        );
+        assert!(
+            !request.to_ascii_lowercase().contains("x-workspace-id"),
+            "{request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_task_usage_sends_cumulative_rows() {
+        // 契约：{"usage":[...]}，七字段（含恒为 0 的 cost_usd_ticks → 服务端按费率估算）。
+        let (base, handle) = mock_http_responses(vec![(200, r#"{"status":"ok"}"#)]);
+        let client = test_client(base);
+        let rows = vec![UsageRow {
+            provider: "anthropic".into(),
+            model: "claude-sonnet-5-5".into(),
+            input_tokens: 30,
+            output_tokens: 12,
+            cache_read_tokens: 4,
+            cache_write_tokens: 2,
+            cost_usd_ticks: 0,
+        }];
+        client
+            .post_task_usage("t-1", &rows)
+            .await
+            .expect("usage must be accepted");
+        let requests = handle.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].starts_with("POST /api/daemon/tasks/t-1/usage"),
+            "{}",
+            requests[0]
+        );
+        assert!(
+            requests[0].contains(
+                r#""usage":[{"provider":"anthropic","model":"claude-sonnet-5-5","input_tokens":30,"output_tokens":12,"cache_read_tokens":4,"cache_write_tokens":2,"cost_usd_ticks":0}]"#
+            ),
+            "{}",
+            requests[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn post_task_messages_maps_404_to_task_not_found() {
+        // 404 = 任务已不可见/无权：由 reporter 据此停止继续上报（不再重试）。
+        let (base, handle) = mock_http_responses(vec![(404, r#"{"error":"not found"}"#)]);
+        let client = test_client(base);
+        let mut message =
+            TranscriptMessage::body(crate::multica::transcript::model::TYPE_TEXT, "x".into());
+        message.seq = 1;
+        let error = client
+            .post_task_messages("gone", &[message])
+            .await
+            .expect_err("404 must surface as TaskNotFound");
+        assert!(matches!(error, MulticaError::TaskNotFound), "{error:?}");
+        let _ = handle.join();
     }
 
     #[tokio::test]

@@ -613,10 +613,45 @@ fn orphan_remote_ids<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
 
 /// 异步包装：sync 作废本地 run 经 spawn_blocking 执行（不阻塞 async runtime）。
 async fn spawn_invalidate<R: Runtime>(app: &AppHandle<R>, remote: &str) {
+    // 执行记录终态：remote 已被取消/删除 → 先落 error 行（立即入缓冲），排空放后台。
+    // 本函数在 3s 心跳 tick 上被 await，不能为了最多 5s 的排空阻塞取消检测循环。
+    if let Some(run) = active_run_for(app, remote) {
+        crate::multica::transcript::report_error(
+            app,
+            &run.local_task_id,
+            &run.local_run_id,
+            "remote task cancelled or not found; local run invalidated",
+        );
+        let transcript_app = app.clone();
+        let local_task_id = run.local_task_id.clone();
+        let local_run_id = run.local_run_id.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::multica::transcript::finish_run(
+                &transcript_app,
+                &local_task_id,
+                &local_run_id,
+                crate::multica::transcript::DRAIN_TIMEOUT,
+            )
+            .await;
+        });
+    }
     let app = app.clone();
     let remote = remote.to_string();
     let _ =
         tauri::async_runtime::spawn_blocking(move || invalidate_remote_task(&app, &remote)).await;
+}
+
+/// 取在飞 run 的本地映射（取消检测的终态上报用）。
+fn active_run_for<R: Runtime>(
+    app: &AppHandle<R>,
+    remote: &str,
+) -> Option<crate::multica::state::ActiveRemoteRun> {
+    app.try_state::<SharedMulticaState>().and_then(|shared| {
+        shared
+            .lock()
+            .ok()
+            .and_then(|guard| guard.active_run(remote))
+    })
 }
 
 /// 作废 remote task 对应本地 run（取消检测 / 启动 reconcile 共用）。

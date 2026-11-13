@@ -271,6 +271,7 @@ r.Post("/runtimes/{runtimeId}/tasks/{taskId}/claim", h.ClaimSpecificTask)
 | `multica/loop_.rs` | 启动全量 register / 新添加 register / **常驻 3s 心跳（M5-cx 由 15s 提频）+ 工单完成后补发排空（M5-cx）** / recover-orphans / 取消检测 | `metrics::start_heartbeat_polling`(metrics.rs:218-242) spawn + 三层 guard 样板 |
 | `multica/bridge.rs` | remote_task ↔ 本地 task/run 衔接（**直接调 `gold-band` 库层 App API** + 订阅 lifecycle bus，不走 Tauri command 层）；**执行注入（M5-z）**：发送时由 `start_multica_conversation_run` 接收 composer 下拉选中的 `local_project_id` 写入 `ActiveRemoteRun.local_project_id` → 按 `workspace_entry_for_project(&home_state, &local_project_id)` 解析 `workspace_path` → `App::with_config(workspace_path, config).with_lifecycle_bus(shared_bus)`(app/mod.rs) → 构造 Direct WorkflowDsl → `create_task_from_requirement` + `run_start_background` | `metrics::create_metrics_subscriber`(metrics.rs:365-638)；`lifecycle_bus.subscribe_named`(observability.rs:43-49)；`view_models_conversation.rs:2579`（Direct workflow preset 范本） |
 | `multica/error.rs` | `MulticaError` 枚举 + 映射 `CommandErrorVm` | `CommandErrorVm`(commands.rs:581-634) + `command_error`(commands.rs:3529-3547) |
+| `multica/transcript/` | **执行记录实时上报（M5-cy）**：`model`（wire DTO + 全部硬上限）、`projector`（`AcpUiEvent` → multica 消息的纯投影：全量快照差量、工具 use/result 配对）、`tool_input`（形状优先归一化 + Codex `apply_patch` 解析）、`reporter`（`TranscriptRegistry` managed state、500ms 批 flush、seq 分配、终态排空、用量累计）；观测点 = `acp_live_update_emitter` 在 IPC 压缩之前 | painter 模式参考 `maybe_record_agent_commands`(commands.rs:6179)；live 事件全量快照语义见 `apply_streaming_delta`(acp/client.rs:8286)；用量日志 `read_prompt_usage_segments`(acp/usage.rs:548) |
 | `multica/handoff.rs` | **issue 完成输出传递（M5-bj）**：`extract_completion_output`（最终 assistant 回复中 info 恰为 `completion-output` 的围栏块、取最后一个、trim 空→None）+ `completion_output_from_reply`（组合 16k rune 截断，2026-09-21 服务端从 64k 收紧）+ `final_assistant_reply`（`AcpAttemptPaths` 定位 `acp.timeline.jsonl` → `load_timeline_items` → 取最后一条非占位 `textDelta`，复用 `is_semantically_empty_agent_content` 与 UI 投影同源）；全 fail-open。提示词侧篇幅契约（非 run 日志 / ≤2k / 超长走工作区文件 + 路径引用）见 `src/prompts/{zh-CN,en}/runtime/remote_task_completion_protocol.md` | `acp/events.rs AcpAttemptPaths::from_attempt_dir`(acp/events.rs:925) / `load_timeline_items` / `is_semantically_empty_agent_content`(3011) |
 
 > ⚠️ `loop` 是 Rust 关键字，模块文件用 `loop_.rs`（`mod loop_;`，下划线后缀是 Rust 规避关键字的标准做法）。
@@ -851,7 +852,8 @@ start_multica_runtime()
   │     └─ 返回 ConversationRunVm（前端按本地会话同一回调导航 conversation-run；写本地侧栏）→ 该远程任务出现在本地侧栏对应工作区
   │     NodeCompleted 后 worker_ref_show 读 continue_ref.acpSessionId → pin_task_session + 回填 multica_task_conversations[tid]
   ├─ 执行期：常驻心跳每 3s POST /heartbeat {runtime_id}（**Req D：已常驻，非仅执行期**；维持在线，否则 150s 判离线→fail；M5-cx 由 15s 提频）
-  │          本期只基础状态（start/complete/fail + 心跳），不上报 step/total 进度
+  │          执行期按 500ms 批上报 /messages（text/tool_use/tool_result/error）+ 节点/turn 边界上报 /usage（M5-cy，§12.95）
+  │          progress（step/total）不做：multica 侧仅 WS 广播、不持久化、无 Web 消费方
   │          周期 GET /tasks/{tid}/status 检测取消（cancelled/failed/404 → 中断本地 run）
   └─ run outcome（**首轮 run 终结即触发，单轮即完成**；码灵不在单 remote task 多轮，多轮走新 task 续跑同 session，见 4.4）。订阅器穷举 4 分支（见 2.5 终态表）：
        RunCompleted{Success} → POST /tasks/{tid}/complete {output, session_id=ACP session_id, work_dir=任务级 local_project_id 解析, completion_output=交付说明（M5-cd：issue 任务随 complete 同事务回传，块优先/全文兜底 + 超长 400 立即降级，§12.72）}（重试幂等）→ 清 multica_task_conversations[tid]
@@ -3222,6 +3224,27 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **验证结果**：desktop `multica::` **265 passed / 0 failed**（新增 2 例契约断言：心跳间隔 3s、排空节流 1s——与 multica 侧对齐值，漂移先红；既有 263 例含 readiness 谓词/工单路由全绿，证 heartbeat_once 为行为等价搬移）；`cargo check -p gold-band-desktop` 通过（仅既有无关 dead-code 警告）。内网感知延迟验收（网页操作 → 本地生效计时：单操作 ≤3s、连续操作近似无缝）待打包联调。
 
 **文件**：`src-tauri/src/multica/loop_.rs`、`src-tauri/src/multica/runtime_assets.rs`、`src-tauri/src/multica/mod.rs`、`src-tauri/src/multica/client.rs`（doc 同步）；文档 `接入方案.md` §2.1/§3.2.4/C1/D5/时序图/M5-cx、本条。
+
+### 12.95 改动九十三：执行记录（transcript）实时上报——messages + usage，progress 砍掉（M5-cy，2026-11-12）
+
+**背景**：multica 侧需求——远程任务执行时把模型文本、工具调用/结果、错误实时上报，使其**既有** Web UI 获得执行时间线、transcript 弹窗、工具步骤行、产物列表与 diff、WS 实时更新，**服务端与前端零改动**。multica 侧逐条核对服务端代码后给出权威契约，据此收敛设计：① 消息 `type` 无白名单（前端仅五种有专门渲染，其余 generic 兜底）→ 只用 text/thinking/tool_use/tool_result/error；② 空数组 200 no-op、响应 `{"status":"ok"}`、错误 400/500/404；③ 服务端无条数/大小限制，但**只清洗 NUL 且整批有一条失败即整批 500 丢弃** → 本端先清洗并自律上限；④ seq 严格递增、允许空洞、**重复 seq 产生重复行**（表上无唯一约束）→ 绝不重发同 seq、批次失败即丢不重试；⑤ **每次 retry/rerun 服务端都产生新 task_id → seq 作用域 = task_id，从 1 开始**，故原计划的「seq 水位持久化文件」**取消**（无跨进程场景）；⑥ daemon task 接口只用 PAT、不带 `X-Workspace-ID`；⑦ 自检接口 `GET /api/daemon/tasks/{id}/messages?since=N`；⑧ usage 七字段、`cost_usd_ticks=0` → NULL → 服务端按费率估算、按 `(task_id, provider, model)` **整体替换**（必须报累计总量、可重复报）、failed/cancelled 任务也接受 → 原计划「终态一次性上报」改为**边跑边报累计值**；⑨ progress 仅 WS 广播、不持久化、Web 无消费方 → **本期砍掉**；⑩ thinking 可选、可见范围是工作区成员、不传最简单 → **默认不上传**（保留 `REPORT_THINKING` 常量开关）。Codex `apply_patch` 按形状兼容（用户决策）。
+
+**实现**：
+
+- ① **数据/接口先定**（`transcript/model.rs`）：`TranscriptMessage { seq, type, tool?, content?, input?, output? }`（None 省略）+ `UsageRow`（七字段）+ 常量块（flush 500ms、排空 5s、output 8192、text 32768 拆条、输入字段 16k/整体 64KB、批 200 条/256KB、缓冲 512、跟踪表 2048/64）。`client.rs` 增 `post_task_messages` / `post_task_usage`（`json_send` 单次尝试、10s 超时、PAT、无 workspace 头）。
+- ② **投影**（`projector.rs`）：观测点在 `acp_live_update_emitter` **IPC 压缩前**（压缩剥掉 `rawInput/rawOutput`）。文本事件是**全量累积快照**（`apply_streaming_delta` 语义），按 stable item id 的「已见字符数」差量投影，快照变短（压缩/重建）视为新分段整段重投影；每拍 `close_segment` 让文本按 500ms 成段；工具行按 `toolCallId` 配对，`use` 只发一次（`rawInput` 首次可用；终态仍无输入发 `{}`），`result` 只在终态发一次（`rawOutput.formatted_output` → agent transcript `toolOutput` → `toolCall.content`，截 8192）。工具名优先级：`_meta.goldBandConversation.toolName` → agent transcript 关系 → 标题首词 → `tool`。子 agent 分支（`event_branch_id != root`）不上报。
+- ③ **输入归一化**（`tool_input.rs`）：**形状优先、不看工具名**——`changes[]` → `file_path+content` → `file_path+old_string+new_string` → `{edits[]}` 合成 `changes[]`（构造 unified diff）→ Codex patch 文本（只对含 `*** Begin Patch` 等标记的字符串解析，避免把普通内容误判）→ `{command}` → 原样透传；单字段/整体双上限，二次收紧后仍超则 `{"truncated":true}`。所有字符串清洗 NUL。
+- ④ **上报器**（`reporter.rs`）：`TranscriptRegistry`（两层 map，`&str` 查找零分配）作为 managed state；每 run 一个 `Reporter`（`Projector` + `next_seq` + 用量累计 + closing/stopped + oneshot）。worker `select!`(500ms tick / Notify) 取批→锁外 POST→锁内推进 seq；`TaskNotFound` → 停止上报；`closing` → 最后一批 + 用量 + oneshot 收尾。**不重试**（重复 seq 会产生重复行）。
+- ⑤ **用量**：lifecycle 回调是热路径——`NodeCompleted` / `AcpTurnFinished`（放在 `outcome != Completed` 早退之前）只做内存登记 `usage_pending.insert(attempt_dir)`；worker 经 **blocking 线程池**读取 `acp.prompt-usage.jsonl`（同步 I/O 不占 async worker 线程），按 `(attempt_dir, turn_seq)` 去重、按 `(provider, model)` 汇总，dirty 时上报累计值，终态再兜底一次。
+- ⑥ **接线**：`start_run` —— resume 分支在 `register_active_run` 后、fresh 分支在 `create_conversation_run_vm` 返回后；`finish_run`（5s）——`complete_with_issue_done` 入口（完成路径 3 处共用）、`handle_run_failed`（新增 `attempt_dir` 入参，`RunCompleted{Failure|Killed}` 传入）、`cancel_remote_task`（3s）、两处启动失败 teardown 前；`report_error` —— 失败/取消各一条；取消检测（remote 已取消/404）在 `spawn_invalidate` 里 `report_error` + **后台** `finish_run`（本函数在 3s 心跳 tick 上被 await，不能为排空阻塞）。顺序统一为「执行记录完整 → 任务终态」。
+
+**方案自评审**：过度设计——无新持久化字段/无新队列框架/无 seq 水位文件（服务端每次 retry 新 task_id 已消解跨进程问题）、progress 直接不做；抽象只到「纯投影 + 单一 worker」两层，且都可单测。性能——每任务每 500ms 至多一个 HTTP（空闲跳过），观测点是纯内存投影 + 一次注册表查找（本地会话零额外 I/O），用量文件读取由 worker 在边界后执行（每边界一次小文件读，不做轮询重读）；全部缓冲/跟踪表有界（512 / 2048 / 64），背压时丢最旧文本行并记日志；无全量扫描、无长持锁（POST 在锁外）。
+
+**内网验证后优化（2026-11-13）**：基本流程内网跑通、未见阻塞后收尾两处——① 子 agent 分支过滤提前到注册表查找**之前**（子分支高频流式事件不再抢 registry 锁）；② `acp.prompt-usage.jsonl` 读取挪入 blocking 线程池（此前在 async worker 线程上同步读文件）。自评确认**不做**：同长度快照重写检测、usage 文件增量解析（O(T²)→O(T)）、drain 预序列化传递——绝对成本分别在「几乎不发生的场景 / 全程几十 MB 级解析 / 每批 <1ms」量级，加状态换不来可感知收益（违背过度设计约束）。
+
+**验证结果**：`cargo test -p gold-band-desktop multica::transcript::` **25 passed**（投影差量/分段/缩短快照/工具配对/终态补 use/截断/溢出丢旧/错误清洗；输入归一化六种形状 + patch 解析 + move + 误判防护 + 双上限；用量去重与分 provider 汇总；worker finish 协议——closing 后必排空并回 done 信号）；`multica::client::tests::post_task*` **3 passed**（mock TCP 断言 path/body 形状、无 `X-Workspace-ID`、404 → `TaskNotFound`）；`multica::` 全量 **293 passed**；`cargo clippy -p gold-band-desktop` 对 `transcript/` 零告警；`cargo fmt` 通过。**内网验证（2026-11-13）**：基本流程跑通（消息时间线 / 终态 / 用量），未见阻塞；Codex `apply_patch` 真实样本校准仍待内网样本（本地无历史 Codex attempt）。
+
+**文件**：`src-tauri/src/multica/transcript/{mod,model,projector,tool_input,reporter}.rs`（新增）、`src-tauri/src/multica/{mod,client,bridge,commands,loop_}.rs`、`src-tauri/src/commands.rs`（live emitter 观测点）、`src-tauri/src/main.rs`（managed state）；文档 `接入方案.md` §3.2.3/§3.2.8/C3/C4/时序图、本条。
 
 ---
 

@@ -291,6 +291,7 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
 | `multica/loop.rs` | 心跳循环、**启动全量 register 已添加 workspace / 新添加 workspace 时 register**/recover-orphans/失败任务供 rerun、取消检测轮询 |
 | `multica/bridge.rs` | remote_task ↔ 本地 task/run 衔接（**直接调 `gold-band` 库层 App API** + 订阅 lifecycle bus；不走 Tauri command 层） |
 | `multica/handoff.rs` | issue 完成输出传递（M5-bj）：从 assistant 回复提取 `completion-output` 围栏块（纯函数提取 + timeline 投影），M5-cd 起随 `/complete` 同事务回传（+ 16k 预截断带尾部标记——multica 协议改造对接，开发设计 §12.72；~~此前随 issue done 流转一次 PUT 上送~~；~~块优先、最终回复全文兜底~~ M5-ce 起工作流口径改 **attempt 级倒序找块**（last-block-wins）、direct 门控/补交仍最后一条消息口径，开发设计 §12.73）；M5-bp 起提取结果兼作 direct 模式完成门控判据（有块才 complete，无块扣留——开发设计 §12.55），非 issue / workflow 路径仍 fail-open |
+| `multica/transcript/` | 执行记录实时上报（M5-cy，§3.2.8）：`model`（线上 DTO/上限）、`projector`（live 事件 → 消息纯投影：文本快照差量、工具 use/result 配对）、`tool_input`（工具输入形状归一化 + Codex patch 解析）、`reporter`（注册表、500ms 批 flush、seq 分配、终态排空、用量累计）；managed state `TranscriptRegistry` |
 | `multica/upstream.rs` | 上游交付拉取（M5-cf 读侧）：`$upstream.completion-output` 令牌的桌面侧解析器 `MulticaUpstreamResolver`（实现库层 `UpstreamOutputResolver` 回调 trait）——自身 issue detail 解析 `parent_issue_id` → 有限退避轮询（15s/×1.5/60s 上限/15 分钟预算）父 `completion_output` 非空 → 按界面语言渲染 `remote_task_upstream_pull.md`（父状态行 + 阶段性快照口径）替换令牌；单次快照语义（重新进节点才刷新）；错误结构化（NoResolver/NoParentIssue/Timeout/Network）。main.rs setup 装入 DesktopState、`app()` 组装挂载（开发设计 §12.74） |
 
 **边界**：multica **业务逻辑**（HTTP / 心跳 / claim / 重试 / 状态机）留在 src-tauri 薄壳层（依赖 reqwest、tauri state、AppHandle）；但**会话执行复用 `gold-band` 库层 App 公开 API**（`create_task_from_requirement` / `run_start_background` / `worker_ref_show` / `run_continue_background_with_config_overrides`，均公开），并把会话 VM 现有私有的 Direct/Auto workflow 构造上提到 `gold_band::dsl::presets` 公开复用（库层唯一轻微改动）。multica 不新造 runtime、不碰核心 lifecycle 契约。
@@ -485,6 +486,42 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 
 **真实约束（写入设计、不掩盖）**：会话级续跑**依赖 ACP provider 的 session 在重启后仍可 `session/load`**。若 provider 不持久化 session（或已过期清理），`strict_continue` 必失败 → 码灵自动 fallback 到整 task rerun（新会话从头跑），不会卡死或静默丢上下文。该 fallback 用 `multica.session-resume-failed` 错误码上报。
 
+#### 3.2.8 执行记录（transcript）实时上报（M5-cy）
+
+**目标**：执行远程任务期间把模型文本、工具调用/结果、运行期错误实时上报，让 multica **既有** Web UI 直接获得执行时间线、工具步骤行、产物与 diff——**multica 服务端与前端零改动**（协议核对结论见 §4.2 C3/C4）。
+
+**何时上报**
+
+- 只在 multica 远程任务执行期间。观测点 = ACP live emitter（`acp_live_update_emitter`）在 IPC 压缩**之前**——压缩会剥掉 `rawInput/rawOutput`，之后就拿不到工具输入/输出。
+- 一次 remote task 的一次执行 = 一个 reporter，键 `(local_task_id, local_run_id)`：resume 分支在 `register_active_run` 后注册，fresh 分支在 `create_conversation_run_vm` 返回后注册；终态/启动失败时摘除。
+- 子 agent 分支（`event_branch_id != root`）不上报（与 Gold Band 本地折叠展示一致）。
+
+**上报哪些**
+
+- `text`：assistant 文本。live 事件是**全量累积快照**，按「已见字符数」差量投影，每 500ms flush 成段（单条 ≤32k 字符，超出拆连续多条）。
+- `tool_use` / `tool_result`：按 `toolCallId` 配对；`use` 只发一次（`rawInput` 首次可用时；终态仍无输入则发 `{}`），`result` 只在终态发一次（输出取 `rawOutput.formatted_output` → agent transcript `toolOutput` → `toolCall.content`，≤8192 字符）。
+- 工具输入**形状优先**归一化为 multica 三种约定（不依赖工具名）：`changes[]` / `file_path+content` / `file_path+old_string+new_string`；`{edits[]}` 合成为 `changes[]`；Codex `apply_patch` 文本（`*** Begin Patch` / `*** Update File:` / `*** Add File:` / `*** Delete File:` / `*** Move to:`）解析为 `changes[]`；shell 用 `{command}`；都不命中则原样透传（单字段 ≤16k 字符、整体 ≤64KB）。
+- `error`：失败/取消终态一条（文本取 fail 上报的 error）。
+- `thinking`：**默认不上报**（`REPORT_THINKING = false`）。理由：思考可能引用内部提示词/敏感推理，而 multica 的可见范围是该需求的工作区成员（比本地操作者广）；multica 前端对完全没有 thinking 行的任务渲染完全正常。
+- 所有字符串发送前清洗 NUL 字节（服务端只清洗 NUL，且整批只要有一条清洗失败即整批 500 丢弃）。
+
+**如何上报**
+
+- 500ms 批 flush（最多 200 条 / 256KB）→ `POST /api/daemon/tasks/{id}/messages`，body `{messages:[{seq,type,tool?,content?,input?,output?}]}`（None 字段省略）。
+- `seq` 由客户端从 1 自增，顺序 = 事件顺序；**作用域 = 服务端 task_id**。每次 retry/rerun 服务端都产生新 task_id，因此不需要任何跨进程 seq 水位持久化。
+- 失败即丢、**不重试**（批次原子；服务端表上 seq 无唯一约束，重发同 seq 会产生重复行）。404（任务已删除/无权）→ 本 run 停止上报。
+- 终态前排空（waitForDrain，5s 上限；取消路径 3s）：完成 / 失败 / 取消 / 启动失败四条路径都先落 `error`（失败类）并排空，再写 multica 终态，保证「执行记录完整 → 任务终态」的观察顺序。取消检测（remote 已被取消/404）走后台排空，不阻塞 3s 心跳 tick。
+- 用量：节点成功边界与每个 turn 收尾只做一次内存登记（lifecycle 回调是热路径），由 worker 在 blocking 线程池读取该 attempt 的 `acp.prompt-usage.jsonl`（同步 I/O 不占 async worker 线程），按 `(attempt_dir, turn_seq)` 去重、按 `(provider, model)` 汇总，上报**累计总量**（服务端按 `(task_id, provider, model)` 整体替换，不是累加）；`cost_usd_ticks` 恒 0 → 服务端按费率估算。`POST /api/daemon/tasks/{id}/usage`，body `{usage:[7 字段]}`。
+- 进度（progress）：**不做**。multica 侧核对——该接口仅 WS 广播、不持久化、Web 端无消费方。
+
+**性能与有界性**
+
+- 每任务每 500ms 至多一个 HTTP（空闲批跳过），观测点是纯内存投影（类型分流 → 子分支过滤 → 注册表查找，子 agent 分支的高频流式事件不进注册表锁），无 I/O、无全量扫描；用量文件读取只在边界登记后由 worker 在 blocking 线程池执行，每个边界一次小文件读取。
+- 有界：未发缓冲 512 条（溢出丢最旧文本行，工具行优先保留）、工具/文本流跟踪表 2048/64（超限淘汰最旧）；单批 200 条 / 256KB。内存不随任务产出行数无界增长。
+- 非 multica 本地会话零开销：一次类型判断 + 注册表查找即返回。
+
+**验收**：`GET /api/daemon/tasks/{taskId}/messages?since=N` 拉增量与本地 timeline 比对——seq 连续无重复、文本段落齐全、`tool_use`/`tool_result` 成对、输入形状命中 multica 渲染；usage 累计值与本地 token 统计一致。内网已按此方法跑通基本流程（2026-11-13，未见阻塞）；Codex `apply_patch` 解析仍待真实样本校准。
+
 ---
 
 ## 4. 接口文档
@@ -582,14 +619,17 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 - `POST /api/daemon/runtimes/{runtimeId}/tasks/{taskId}/prepare-lease` ｜ PAT ｜ 请求体 `{}`
 - 说明：claim-at-click 后、用户尚未点【发送】的 compose 窗口期，常驻心跳循环每 tick（15s）对本 task 调一次，续 45s prepare lease 窗口，防 server `ReclaimStaleDispatchedTaskForRuntime` 回收（与 multica daemon `startTaskPrepareLeaseExtender` 同构）。用户点【发送】（start 消费）或放弃 compose（`cancel_multica_prepare_lease`）后该 lease 移除，续期自然停止。
 
-**C3. 上报进度**（可选，**本期不接入**）
+**C3. 上报进度**（**已评估砍掉**，M5-cy）
 - `POST /api/daemon/tasks/{taskId}/progress` ｜ PAT
 - 请求：`{ "summary": "处理中", "step": 2, "total": 5 }`
-- 说明：用户决策本期只上报基础状态（started / 心跳 / complete / fail），**不上报 step/total 进度**；接口保留备用，后续迭代再接。
+- 说明：multica 侧核对——该接口仅 WS 广播、**不持久化、Web 端无消费方**；本期不做。需要表达进度走 C4 的 text / 工具行。
 
-**C4. 上报消息**（可选，**本期不接入**）
-- `POST /api/daemon/tasks/{taskId}/messages` ｜ PAT
-- 请求：`{ "messages": [ { "seq": 1, "type": "text", "content": "..." } ] }`
+**C4. 上报消息** ✅ M5-cy（设计见 §3.2.8）
+- `POST /api/daemon/tasks/{taskId}/messages` ｜ PAT ｜ **不带** `X-Workspace-ID`
+- 请求：`{ "messages": [ { "seq": 1, "type": "text", "content": "..." } ] }`；`type ∈ {text, thinking, tool_use, tool_result, error}`；`tool_use` 带 `tool` + `input`，`tool_result` 带 `tool` + `output`。
+- 响应：`{"status":"ok"}`；空数组 200 no-op；错误 400/500/404。**seq 严格递增（允许空洞），重复 seq 会产生重复行**；批次原子，失败不重试。
+- 用量：`POST /api/daemon/tasks/{taskId}/usage` ｜ PAT ｜ `{ "usage": [ { "provider", "model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd_ticks" } ] }`——累计总量、按 `(task_id, provider, model)` 整体替换，可重复上报；`cost_usd_ticks=0` → NULL → 服务端按费率估算；failed/cancelled 任务同样接受。
+- 自检：`GET /api/daemon/tasks/{taskId}/messages?since=N` ｜ PAT ｜ 返回 `[{ task_id, seq, type, tool, content, input, output, created_at }]`。
 
 **C5. 查询状态**（可选，检测取消）
 - `GET /api/daemon/tasks/{taskId}/status` ｜ PAT ｜ 响应 `{ "status": "running" }`
@@ -700,7 +740,7 @@ App ──POST /tasks/<id>/session {session_id, work_dir}──▶ Srv   ← Pin
 
 执行中：
 App ──POST /heartbeat──▶ Srv        每3s（Req D：已常驻，连接后即持续，非仅执行期；M5-cx 由 15s 提频）
-（本期不上报 progress/messages，只维持心跳）
+（执行期按 500ms 批上报 /messages + 节点/turn 边界上报 /usage，持续心跳；progress 不做）
 
 完成：
 ✅ App ──POST /tasks/<id>/complete {output, session_id}──▶ Srv  → completed

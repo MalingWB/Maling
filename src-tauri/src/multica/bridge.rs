@@ -266,6 +266,13 @@ pub fn create_multica_subscriber(
                 else {
                     return; // 非 multica 在飞任务（本地普通 run）→ 不处理。
                 };
+                // 执行记录用量：节点边界登记该 attempt 待刷新（纯内存登记，文件读取在 worker）。
+                crate::multica::transcript::accumulate_usage(
+                    &app_handle,
+                    &run.local_task_id,
+                    &run.local_run_id,
+                    &attempt_dir,
+                );
                 // M5-cf/M5-cg：节点成功边界即时上送阶段性快照（workflow + issue run；失败/
                 // 取消节点无交付语义）。M5-cj 写序：快照在**事件回调内同步入队**（= 事件序），
                 // 由 completion_output 顺序消费者执行——旧实现 spawn 后与 /complete 并发飞
@@ -342,8 +349,15 @@ pub fn create_multica_subscriber(
                     _ => {
                         let app_handle = app_handle.clone();
                         tauri::async_runtime::spawn(async move {
-                            handle_run_failed(app_handle, remote_task_id, run, node_label, outcome)
-                                .await;
+                            handle_run_failed(
+                                app_handle,
+                                remote_task_id,
+                                run,
+                                node_label,
+                                outcome,
+                                attempt_dir,
+                            )
+                            .await;
                         });
                     }
                 }
@@ -356,6 +370,15 @@ pub fn create_multica_subscriber(
                 attempt_dir,
                 ..
             } => {
+                // 执行记录用量：每个 turn 边界（含失败/取消）都登记一次用量刷新。
+                if let Some(attempt_dir) = attempt_dir.as_deref() {
+                    crate::multica::transcript::accumulate_usage(
+                        &app_handle,
+                        &task_id,
+                        &run_id,
+                        attempt_dir,
+                    );
+                }
                 // Failed/Cancelled 无交付语义。
                 if outcome != AcpTurnOutcome::Completed {
                     return;
@@ -575,6 +598,7 @@ async fn execute_complete_run(
                 return;
             }
             complete_with_issue_done(
+                app,
                 &client,
                 remote_task_id,
                 &run,
@@ -616,6 +640,7 @@ async fn execute_complete_run(
                 );
             }
             complete_with_issue_done(
+                app,
                 &client,
                 remote_task_id,
                 &run,
@@ -647,12 +672,31 @@ async fn handle_run_failed(
     run: ActiveRemoteRun,
     node_label: String,
     outcome: RunOutcome,
+    attempt_dir: Option<String>,
 ) {
     let TerminalAction::Fail { error, reason } =
         classify_terminal(outcome, &node_label, None, None)
     else {
         return; // 不可达：订阅器只对 Failure/Killed 分支路由到此。
     };
+    // 执行记录终态：登记最后一次用量刷新 → 落 error 行 → 排空，然后才上报 fail。
+    // 这样 multica 侧先看到完整执行记录、再看到任务失败。
+    if let Some(attempt_dir) = attempt_dir.as_deref() {
+        crate::multica::transcript::accumulate_usage(
+            &app,
+            &run.local_task_id,
+            &run.local_run_id,
+            attempt_dir,
+        );
+    }
+    crate::multica::transcript::report_error(&app, &run.local_task_id, &run.local_run_id, &error);
+    crate::multica::transcript::finish_run(
+        &app,
+        &run.local_task_id,
+        &run.local_run_id,
+        crate::multica::transcript::DRAIN_TIMEOUT,
+    )
+    .await;
     let Some(context) = desktop_context(&app) else {
         return;
     };
@@ -686,6 +730,7 @@ async fn handle_run_failed(
 /// turn 边界）并由各终态路径在 finalize 前兜底调用 [`report_dpms_story_if_changed`]——故事链接
 /// 事实独立于任务终态上报，不再挂在 complete 之后。
 async fn complete_with_issue_done(
+    app: &AppHandle,
     client: &MulticaClient,
     remote_task_id: &str,
     run: &ActiveRemoteRun,
@@ -694,6 +739,15 @@ async fn complete_with_issue_done(
     session_id: Option<&str>,
     work_dir: Option<&str>,
 ) {
+    // 执行记录：先排空消息与累计用量，再上报 complete——multica 侧看到的顺序才是
+    // 「执行记录完整 → 任务完成」（协议允许终态后补报，但那会让时间线看起来像丢消息）。
+    crate::multica::transcript::finish_run(
+        app,
+        &run.local_task_id,
+        &run.local_run_id,
+        crate::multica::transcript::DRAIN_TIMEOUT,
+    )
+    .await;
     if let Err(e) = client
         .complete_task(
             remote_task_id,
@@ -966,6 +1020,7 @@ async fn handle_turn_completion_gate(
     }
     let (session_id, work_dir) = current_session(context.app(), &remote_task_id);
     complete_with_issue_done(
+        &app,
         &client,
         &remote_task_id,
         &run,
