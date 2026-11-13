@@ -537,6 +537,38 @@ fn cancellation_is_distinct_and_all_tool_results_are_published_once() {
     assert_eq!(calls.lock().unwrap().len(), 4);
 }
 
+#[test]
+fn npm_failure_is_a_limited_capability_and_does_not_block_agent_detection() {
+    let mut runner = FixtureRunner::healthy();
+    runner.failure = Some((EnvironmentTool::Npm, EnvironmentStatus::Missing));
+
+    let report = runner.report();
+
+    assert!(report.agent_detection_ready);
+    assert!(!report.package_manager_ready);
+    assert!(!report.runtime_ready);
+    assert_eq!(
+        report
+            .checks
+            .iter()
+            .find(|check| check.tool == EnvironmentTool::Npm)
+            .unwrap()
+            .status,
+        EnvironmentStatus::Missing
+    );
+}
+
+#[test]
+fn node_failure_blocks_agent_detection() {
+    let mut runner = FixtureRunner::healthy();
+    runner.failure = Some((EnvironmentTool::Node, EnvironmentStatus::Missing));
+
+    let report = runner.report();
+
+    assert!(!report.agent_detection_ready);
+    assert!(!report.runtime_ready);
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_path_refresh_and_npm_shims_preserve_chinese_and_space_paths() {

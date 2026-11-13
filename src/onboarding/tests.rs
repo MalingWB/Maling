@@ -87,6 +87,8 @@ fn ready() -> EnvironmentReport {
     EnvironmentReport {
         checks: vec![],
         runtime_ready: true,
+        agent_detection_ready: true,
+        package_manager_ready: true,
     }
 }
 
@@ -123,6 +125,8 @@ fn setup_preview_is_read_only_apply_updates_all_slots_and_is_idempotent() {
         &request,
         &EnvironmentReport {
             runtime_ready: false,
+            agent_detection_ready: false,
+            package_manager_ready: false,
             checks: vec![],
         },
     )
@@ -144,7 +148,9 @@ fn setup_runtime_gate_and_stale_preview_do_not_write() {
             &request,
             &EnvironmentReport {
                 checks: vec![],
-                runtime_ready: false
+                runtime_ready: false,
+                agent_detection_ready: false,
+                package_manager_ready: false,
             }
         )
         .unwrap_err()
@@ -175,15 +181,17 @@ fn setup_runtime_failure_preserves_report_and_does_not_write() {
     let workflows_before = std::fs::read(app.paths.workflow_templates_file()).unwrap();
     let report = EnvironmentReport {
         runtime_ready: false,
+        agent_detection_ready: false,
+        package_manager_ready: false,
         checks: vec![EnvironmentCheck {
-            tool: EnvironmentTool::Npx,
-            status: EnvironmentStatus::Timeout,
+            tool: EnvironmentTool::Node,
+            status: EnvironmentStatus::Missing,
             version: None,
-            executable_path: Some("fixture/npx.cmd".into()),
+            executable_path: None,
             node_executable_path: None,
             error: Some(EnvironmentError {
-                code: "setup.probe-timeout".into(),
-                params: serde_json::json!({"tool": "npx"}),
+                code: "setup.runtime-missing".into(),
+                params: serde_json::json!({"tool": "node"}),
             }),
         }],
     };
@@ -199,6 +207,33 @@ fn setup_runtime_failure_preserves_report_and_does_not_write() {
         workflows_before,
         std::fs::read(app.paths.workflow_templates_file()).unwrap()
     );
+}
+
+#[test]
+fn setup_npm_failure_does_not_block_apply_with_a_healthy_local_agent() {
+    use super::environment::{EnvironmentCheck, EnvironmentStatus, EnvironmentTool};
+    let (_temp, app, _, selection) = fixture();
+    let request = request(&app, selection);
+    let report = EnvironmentReport {
+        runtime_ready: false,
+        agent_detection_ready: true,
+        package_manager_ready: false,
+        checks: vec![EnvironmentCheck {
+            tool: EnvironmentTool::Npm,
+            status: EnvironmentStatus::Timeout,
+            version: None,
+            executable_path: Some("fixture/npm.cmd".into()),
+            node_executable_path: None,
+            error: None,
+        }],
+    };
+
+    apply(&app, &request, &report).unwrap();
+
+    assert!(matches!(
+        app.load_settings().unwrap().onboarding,
+        Some(OnboardingState::Completed { .. })
+    ));
 }
 
 #[test]

@@ -36,7 +36,7 @@ vi.mock('@/components/acp/AcpSingleConfigMenu', () => ({
 let host: HTMLDivElement; let root: Root; let api: SetupApi; let status: SetupStatus;
 let receive: (event: SetupEvent) => void;
 const done = vi.fn();
-const healthyEnvironment = () => ({ runtimeReady: true, checks: (['git', 'node', 'npm', 'npx'] as const).map((tool) => ({ tool, status: 'ready' as const, version: tool === 'git' ? '2.53.0' : tool === 'node' ? '22.22.3' : '10.9.8', executablePath: null })) });
+const healthyEnvironment = () => ({ runtimeReady: true, agentDetectionReady: true, packageManagerReady: true, checks: (['git', 'node', 'npm', 'npx'] as const).map((tool) => ({ tool, status: 'ready' as const, version: tool === 'git' ? '2.53.0' : tool === 'node' ? '22.22.3' : '10.9.8', executablePath: null })) });
 
 it('keeps the browser fixture aligned with the packaged npm policy', async () => {
   const fixture = await createBrowserSetupApi().status();
@@ -75,16 +75,27 @@ it('blocks business mounting until pending onboarding is completed, including de
   expect(api.start).not.toHaveBeenCalled();
 });
 
-it('shows immediate progress and forbids continuing when npm is unavailable', async () => {
+it('shows immediate progress and forbids continuing when Node.js is unavailable', async () => {
   let resolve!: (value: Awaited<ReturnType<SetupApi['environment']>>) => void;
   vi.spyOn(api, 'environment').mockReturnValue(new Promise((done) => { resolve = done; }));
   await render();
   expect(host.textContent).toContain('Checking environment');
   expect(button('Next').disabled).toBe(true);
-  await act(async () => resolve({ runtimeReady: false, checks: [{ tool: 'git', status: 'ready', version: '2.53', executablePath: null }, { tool: 'npm', status: 'missing', version: null, executablePath: null }] }));
+  await act(async () => resolve({ runtimeReady: false, agentDetectionReady: false, packageManagerReady: false, checks: [{ tool: 'git', status: 'ready', version: '2.53', executablePath: null }, { tool: 'node', status: 'missing', version: null, executablePath: null }] }));
   await click('Next');
   expect(button('Next').disabled).toBe(true);
   expect(host.textContent).not.toContain('Skip Git');
+});
+
+it('warns about npm/npx limits while allowing Agent detection', async () => {
+  vi.spyOn(api, 'environment').mockResolvedValue(limitedEnvironment());
+  await render();
+  await click('Next');
+  expect(host.textContent).toContain('npm/npx are unavailable');
+  expect(button('Next').disabled).toBe(false);
+  await click('Next');
+  expect(api.start).toHaveBeenCalledTimes(1);
+  expect(host.textContent).toContain('npm/npx are unavailable');
 });
 
 it('shows completed Git before a slow runtime check finishes', async () => {
@@ -104,11 +115,11 @@ it('does not let late preliminary progress overwrite final runtime validation', 
   let progress: ((check: EnvironmentCheck) => void) | undefined;
   vi.spyOn(api, 'environment').mockImplementation(async (_id, onChecked) => {
     progress = onChecked;
-    return { runtimeReady: false, checks: [{ tool: 'git', status: 'ready', version: '2.53.0', executablePath: null }, { tool: 'npm', status: 'incompatible', version: '11.19.1', executablePath: null }] };
+    return { runtimeReady: false, agentDetectionReady: false, packageManagerReady: false, checks: [{ tool: 'git', status: 'ready', version: '2.53.0', executablePath: null }, { tool: 'node', status: 'incompatible', version: '22.22.3', executablePath: null }] };
   });
   await render(); await click('Next');
   await act(async () => progress?.({ tool: 'npm', status: 'ready', version: '99.0.0', executablePath: null }));
-  expect(host.textContent).toContain('npm 11.19.1');
+  expect(host.textContent).toContain('Node.js 22.22.3');
   expect(host.textContent).not.toContain('npm 99.0.0');
   expect(button('Next').disabled).toBe(true);
 });
@@ -150,18 +161,32 @@ it('does not start direct defaults detection before the initial environment resu
   expect(host.textContent).toContain('Checking local Agents');
 });
 
+const limitedEnvironment = () => ({
+  runtimeReady: false,
+  agentDetectionReady: true,
+  packageManagerReady: false,
+  checks: [
+    { tool: 'git' as const, status: 'ready' as const, version: '2.53.0', executablePath: 'C:\\Git\\git.exe' },
+    { tool: 'node' as const, status: 'ready' as const, version: '22.22.3', executablePath: 'C:\\Node\\node.exe' },
+    { tool: 'npm' as const, status: 'missing' as const, version: null, executablePath: null },
+    { tool: 'npx' as const, status: 'missing' as const, version: null, executablePath: null },
+  ],
+});
+
 const blockedEnvironment = () => ({
   runtimeReady: false,
-  checks: [{ tool: 'npx' as const, status: 'timeout' as const, version: null, executablePath: 'C:\\Programs with spaces\\npx.cmd', nodeExecutablePath: null, error: { code: 'setup.probe-timeout', params: { tool: 'npx' } } }],
+  agentDetectionReady: false,
+  packageManagerReady: false,
+  checks: [{ tool: 'node' as const, status: 'timeout' as const, version: null, executablePath: 'C:\\Programs with spaces\\node.exe', nodeExecutablePath: null, error: { code: 'setup.probe-timeout', params: { tool: 'node' } } }],
 });
 
 it('shows the initial runtime failure on the direct defaults entry without scanning Agents', async () => {
   vi.spyOn(api, 'environment').mockResolvedValue(blockedEnvironment());
   await act(async () => root.render(<OnboardingPage api={api} status={status} onDone={done} onExit={() => {}} initialStep={2} />));
   expect(api.start).not.toHaveBeenCalled();
-  expect(host.textContent).toContain('npx');
+  expect(host.textContent).toContain('Node.js');
   expect(host.textContent).toContain('Timed out');
-  expect(host.textContent).toContain('C:\\Programs with spaces\\npx.cmd');
+  expect(host.textContent).toContain('C:\\Programs with spaces\\node.exe');
   expect(host.textContent).not.toContain('No Agent is ready');
   expect(button('Preview changes').disabled).toBe(true);
   const runtime = host.querySelector('[aria-label="Setup progress"]')!.children[1];
@@ -181,6 +206,8 @@ it('does not classify an interrupted Agent scan as an empty result', async () =>
 it('warns about a stable unverified Node version without blocking a compatible toolchain', async () => {
   const report = {
     runtimeReady: true,
+    agentDetectionReady: true,
+    packageManagerReady: true,
     checks: [
       { tool: 'git' as const, status: 'ready' as const, version: '2.53.0', executablePath: 'C:\\Git\\git.exe' },
       { tool: 'node' as const, status: 'unverified' as const, version: '23.11.0', executablePath: 'C:\\Node\\node.exe', error: { code: 'setup.runtime-version-unverified', params: { tool: 'node', version: '23.11.0' } } },

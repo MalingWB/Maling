@@ -3379,7 +3379,8 @@
     "defaultsDescription": "Defina o Agent, o modelo e as permissões dos fluxos de trabalho integrados, sem alterar os personalizados.",
     "configureDefaults": "Configurar padrões",
     "rerun": "Executar configuração novamente",
-    "steps": {
+    "runtimeLimited": "npm/npx não estão disponíveis. Ainda é possível detectar Agents locais; Agents que dependem de npm/npx podem ficar indisponíveis.",
+  "steps": {
       "git": "Git",
       "runtime": "Ambiente",
       "agent": "Agent"
@@ -3391,7 +3392,7 @@
     },
     "descriptions": {
       "git": "Git fornece controle de versão. Você pode instalá-lo depois.",
-      "runtime": "Node.js, npm e npx precisam funcionar corretamente e ser compatíveis entre si. Versões estáveis fora das faixas verificadas exibem um aviso, mas não bloqueiam a configuração.",
+      "runtime": "O Node.js precisa estar disponível. O npm e o npx também são verificados; se não estiverem disponíveis, a configuração ainda pode encontrar Agents locais que não dependem deles. Versões estáveis fora das faixas verificadas exibem um aviso, mas não bloqueiam a configuração.",
       "agent": "Agents disponíveis são salvos automaticamente. Escolha o modelo padrão, revise e aplique aos workflows integrados."
     },
     "status": {
@@ -3405,7 +3406,8 @@
       "cancelled": "Cancelado",
       "skipped": "Ignorado",
       "pending": "Não verificado",
-      "checking": "Verificando"
+      "checking": "Verificando",
+      "warning": "Aviso"
     },
     "errors": {
       "setup": {

@@ -140,13 +140,22 @@ pub struct EnvironmentError {
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentReport {
     pub checks: Vec<EnvironmentCheck>,
+    /// Node.js, npm and npx are all usable and mutually compatible.
     pub runtime_ready: bool,
+    /// Node.js is usable, so local Agent discovery may start even when npm/npx are limited.
+    pub agent_detection_ready: bool,
+    /// npm and npx are both usable and mutually compatible.
+    pub package_manager_ready: bool,
 }
 
 impl EnvironmentReport {
-    /// All setup entry points use this gate and preserve the same diagnostic report.
-    pub fn require_runtime(&self) -> Result<(), super::model::SetupError> {
-        if self.runtime_ready {
+    fn check(&self, tool: EnvironmentTool) -> Option<&EnvironmentCheck> {
+        self.checks.iter().find(|check| check.tool == tool)
+    }
+
+    /// Setup entry points preserve the same report while only requiring Node.js readiness.
+    pub fn require_agent_detection(&self) -> Result<(), super::model::SetupError> {
+        if self.agent_detection_ready {
             Ok(())
         } else {
             Err(super::model::SetupError {
@@ -590,11 +599,27 @@ pub fn check_environment(
             incompatible(&mut checks[index], reason, params);
         }
     }
-    EnvironmentReport {
-        runtime_ready: checks[1..]
-            .iter()
-            .all(|check| check.status.is_runtime_usable()),
+    let report = EnvironmentReport {
+        agent_detection_ready: false,
+        package_manager_ready: false,
+        runtime_ready: false,
         checks,
+    };
+    let agent_detection_ready = report
+        .check(EnvironmentTool::Node)
+        .is_some_and(|check| check.status.is_runtime_usable());
+    let package_manager_ready = [EnvironmentTool::Npm, EnvironmentTool::Npx]
+        .into_iter()
+        .all(|tool| {
+            report
+                .check(tool)
+                .is_some_and(|check| check.status.is_runtime_usable())
+        });
+    EnvironmentReport {
+        agent_detection_ready,
+        package_manager_ready,
+        runtime_ready: agent_detection_ready && package_manager_ready,
+        ..report
     }
 }
 

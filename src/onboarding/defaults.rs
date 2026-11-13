@@ -329,7 +329,7 @@ pub fn apply(
     let request_fingerprint = fingerprint(request)?;
     // The setup controller owns this invocation's completed environment report.
     // Applying defaults does not launch a second round of external probes.
-    environment.require_runtime()?;
+    environment.require_agent_detection()?;
     with_configuration(&app.paths.user_gold_band_dir(), || {
         let mut settings = app.load_settings()?;
         if already_applied(&settings, request)? {

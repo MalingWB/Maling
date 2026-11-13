@@ -3379,7 +3379,8 @@
     "defaultsDescription": "組み込みワークフローの Agent、モデル、権限をまとめて設定します。カスタムワークフローは変更しません。",
     "configureDefaults": "既定値を設定",
     "rerun": "セットアップを再実行",
-    "steps": {
+    "runtimeLimited": "npm/npx を利用できません。ローカル Agent の検出は続行できますが、npm/npx に依存する Agent は利用できない場合があります。",
+  "steps": {
       "git": "Git",
       "runtime": "実行環境",
       "agent": "Agent"
@@ -3391,7 +3392,7 @@
     },
     "descriptions": {
       "git": "Git はバージョン管理に使用します。後でインストールすることもできます。",
-      "runtime": "Node.js、npm、npx が正常に動作し、組み合わせに互換性がある必要があります。未検証の安定版は警告を表示しますが、続行を妨げません。",
+      "runtime": "Node.js は利用可能である必要があります。npm と npx も確認しますが、利用できない場合でも、それらに依存しないローカル Agent の検出は続行できます。未検証の安定版は警告を表示しますが、続行を妨げません。",
       "agent": "利用可能な Agent は自動保存されます。既定モデルを選択し、すべての組み込みワークフローへの適用を確認してください。"
     },
     "status": {
@@ -3405,7 +3406,8 @@
       "cancelled": "キャンセル済み",
       "skipped": "スキップ済み",
       "pending": "未確認",
-      "checking": "確認中"
+      "checking": "確認中",
+      "warning": "警告"
     },
     "errors": {
       "setup": {

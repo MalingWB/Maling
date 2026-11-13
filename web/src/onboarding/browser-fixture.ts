@@ -27,9 +27,20 @@ export function createBrowserSetupApi(): SetupApi {
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   let environment: { requestId: string; report?: EnvironmentReport } | null = null;
   let checks = 0;
-  const report = (failed = false): EnvironmentReport => ({ runtimeReady: !failed, checks: (['git', 'node', 'npm', 'npx'] as const).map((tool) => ({ tool, status: failed && tool === 'npm' ? 'missing' : 'ready', version: tool === 'git' ? '2.53.0' : tool === 'node' ? '24.22.0' : '11.19.1', executablePath: `C:\\Users\\示例用户\\Programs with spaces\\${tool}.exe` })) });
+  const environmentChecks = (failedTool?: 'node' | 'npm' | 'npx') => (['git', 'node', 'npm', 'npx'] as const).map((tool) => ({
+    tool,
+    status: tool === failedTool ? 'missing' as const : 'ready' as const,
+    version: tool === 'git' ? '2.53.0' : tool === 'node' ? '24.22.0' : '11.19.1',
+    executablePath: `C:\\Users\\示例用户\\Programs with spaces\\${tool}.exe`,
+  }));
+  const report = (failedTool?: 'node' | 'npm' | 'npx'): EnvironmentReport => ({
+    runtimeReady: !failedTool,
+    agentDetectionReady: failedTool !== 'node',
+    packageManagerReady: failedTool !== 'npm' && failedTool !== 'npx',
+    checks: environmentChecks(failedTool),
+  });
   const unverifiedNodeReport = (): EnvironmentReport => ({
-    runtimeReady: true,
+    ...report(),
     checks: report().checks.map((check) => check.tool === 'node' ? {
       ...check,
       status: 'unverified',
@@ -37,22 +48,24 @@ export function createBrowserSetupApi(): SetupApi {
       error: { code: 'setup.runtime-version-unverified', params: { tool: 'node', version: '23.11.0' } },
     } : check),
   });
-  const blockedReport = (): EnvironmentReport => ({ ...report(), runtimeReady: false, checks: report().checks.map((check) => check.tool === 'npx' ? { ...check, status: 'incompatible', nodeExecutablePath: 'C:\\Other Node\\node.exe', error: { code: 'setup.runtime-incompatible', params: { reason: 'node-mismatch', expectedNodePath: 'C:\\Users\\示例用户\\Programs with spaces\\node.exe', actualNodePath: 'C:\\Other Node\\node.exe' } } } : check) });
+  const blockedReport = (): EnvironmentReport => report('node');
+  const limitedReport = (): EnvironmentReport => report('npm');
   const requireEnvironment = () => {
     if (!environment?.report) throw { code: 'setup.environment-check-required', params: {} };
-    if (!environment.report.runtimeReady) throw { code: 'setup.runtime-incompatible', params: { environment: environment.report } };
+    if (!environment.report.agentDetectionReady) throw { code: 'setup.runtime-incompatible', params: { environment: environment.report } };
   };
   return {
     status: async () => status,
     environment: async (requestId) => {
       environment = { requestId };
       await Promise.resolve();
-      const failed = fixture === 'runtime-failure' && checks === 0;
       const result = fixture === 'runtime-path-mismatch' && checks === 0
-        ? blockedReport()
-        : fixture === 'unverified-node'
-          ? unverifiedNodeReport()
-          : report(failed);
+        ? limitedReport()
+        : fixture === 'runtime-failure' && checks === 0
+          ? blockedReport()
+          : fixture === 'unverified-node'
+            ? unverifiedNodeReport()
+            : report();
       if (environment?.requestId === requestId) { checks += 1; environment.report = result; }
       return result;
     },

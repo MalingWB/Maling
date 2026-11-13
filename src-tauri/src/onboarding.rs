@@ -100,7 +100,7 @@ impl SetupController {
             .filter(|current| !current.cancelled.load(Ordering::Acquire))
             .and_then(|current| current.report.as_ref())
             .ok_or_else(|| SetupError::new("setup.environment-check-required"))?;
-        report.require_runtime()?;
+        report.require_agent_detection()?;
         Ok(report.clone())
     }
 
@@ -380,15 +380,17 @@ mod tests {
     fn runtime_gate_failure_keeps_diagnostics_across_command_and_channel_serialization() {
         let report = EnvironmentReport {
             runtime_ready: false,
+            agent_detection_ready: false,
+            package_manager_ready: true,
             checks: vec![EnvironmentCheck {
-                tool: EnvironmentTool::Npm,
+                tool: EnvironmentTool::Node,
                 status: EnvironmentStatus::Timeout,
                 version: None,
-                executable_path: Some("fixture with spaces/npm.cmd".into()),
+                executable_path: Some("fixture with spaces/node.exe".into()),
                 node_executable_path: None,
                 error: Some(EnvironmentError {
                     code: "setup.probe-timeout".into(),
-                    params: serde_json::json!({"tool": "npm"}),
+                    params: serde_json::json!({"tool": "node"}),
                 }),
             }],
         };
@@ -415,6 +417,34 @@ mod tests {
     }
 
     #[test]
+    fn npm_timeout_is_a_limited_capability_and_does_not_block_agent_detection() {
+        let report = EnvironmentReport {
+            runtime_ready: false,
+            agent_detection_ready: true,
+            package_manager_ready: false,
+            checks: vec![EnvironmentCheck {
+                tool: EnvironmentTool::Npm,
+                status: EnvironmentStatus::Timeout,
+                version: None,
+                executable_path: Some("fixture/npm.cmd".into()),
+                node_executable_path: None,
+                error: None,
+            }],
+        };
+        let controller = SetupController::default();
+        controller.begin_environment("limited".into()).unwrap();
+        controller
+            .complete_environment("limited", report.clone())
+            .unwrap();
+
+        let checked = controller.checked_environment().unwrap();
+
+        assert!(!checked.runtime_ready);
+        assert!(checked.agent_detection_ready);
+        assert!(!checked.package_manager_ready);
+    }
+
+    #[test]
     fn completed_environment_is_reused_until_explicit_refresh_or_exit() {
         let controller = SetupController::default();
         assert!(
@@ -428,6 +458,8 @@ mod tests {
         assert!(controller.checked_environment().is_err());
         let report = EnvironmentReport {
             runtime_ready: true,
+            agent_detection_ready: true,
+            package_manager_ready: true,
             checks: vec![],
         };
         controller
@@ -464,6 +496,8 @@ mod tests {
                 "cancelled",
                 EnvironmentReport {
                     runtime_ready: true,
+                    agent_detection_ready: true,
+                    package_manager_ready: true,
                     checks: vec![],
                 },
             )
@@ -481,6 +515,8 @@ mod tests {
                 "passed",
                 EnvironmentReport {
                     runtime_ready: true,
+                    agent_detection_ready: true,
+                    package_manager_ready: true,
                     checks: vec![],
                 },
             )
@@ -491,6 +527,8 @@ mod tests {
                 "failed",
                 EnvironmentReport {
                     runtime_ready: false,
+                    agent_detection_ready: false,
+                    package_manager_ready: false,
                     checks: vec![],
                 },
             )

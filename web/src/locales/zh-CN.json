@@ -3374,7 +3374,8 @@
     "defaultsDescription": "统一设置内置工作流的 Agent、模型和权限，不影响自定义工作流。",
     "configureDefaults": "配置默认项",
     "rerun": "重新运行引导",
-    "steps": {
+    "runtimeLimited": "npm/npx 不可用，仍可检测本机 Agent；依赖 npm/npx 的 Agent 可能不可用。",
+  "steps": {
       "git": "Git",
       "runtime": "运行环境",
       "agent": "Agent"
@@ -3386,7 +3387,7 @@
     },
     "descriptions": {
       "git": "Git 用于版本管理。你可以稍后安装。",
-      "runtime": "Node.js、npm 和 npx 需可正常运行且组合兼容；未验证的稳定版本会提示风险，但不阻止继续。",
+      "runtime": "Node.js 需可用；npm 和 npx 会一并检查，异常时仍可继续检测不依赖它们的本机 Agent。未验证的稳定版本会提示风险，但不阻止继续。",
       "agent": "可用 Agent 会自动保存。选择默认模型后，预览并应用到全部内置工作流。"
     },
     "status": {
@@ -3400,7 +3401,8 @@
       "cancelled": "已取消",
       "skipped": "已跳过",
       "pending": "待检测",
-      "checking": "检测中"
+      "checking": "检测中",
+      "warning": "警告"
     },
     "errors": {
       "setup": {

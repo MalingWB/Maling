@@ -3379,7 +3379,8 @@
     "defaultsDescription": "統一設定內建工作流程的 Agent、模型和權限，不影響自訂工作流程。",
     "configureDefaults": "設定預設值",
     "rerun": "重新執行引導",
-    "steps": {
+    "runtimeLimited": "npm/npx 無法使用，仍可偵測本機 Agent；依賴 npm/npx 的 Agent 可能無法使用。",
+  "steps": {
       "git": "Git",
       "runtime": "執行環境",
       "agent": "Agent"
@@ -3391,7 +3392,7 @@
     },
     "descriptions": {
       "git": "Git 用於版本管理，也可以稍後安裝。",
-      "runtime": "Node.js、npm 與 npx 必須可正常執行且組合相容；未驗證的穩定版本會提示風險，但不會阻止繼續。",
+      "runtime": "Node.js 需可用；npm 與 npx 會一併檢查，異常時仍可繼續偵測不依賴它們的本機 Agent。未驗證的穩定版本會提示風險，但不會阻止繼續。",
       "agent": "可用 Agent 會自動儲存。選擇預設模型後，預覽並套用至所有內建工作流程。"
     },
     "status": {
@@ -3405,7 +3406,8 @@
       "cancelled": "已取消",
       "skipped": "已略過",
       "pending": "尚未檢測",
-      "checking": "檢測中"
+      "checking": "檢測中",
+      "warning": "警告"
     },
     "errors": {
       "setup": {

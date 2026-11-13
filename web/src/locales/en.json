@@ -3379,7 +3379,8 @@
     "defaultsDescription": "Set the Agent, model, and permissions for built-in workflows. Custom workflows stay unchanged.",
     "configureDefaults": "Configure defaults",
     "rerun": "Run setup again",
-    "steps": {
+    "runtimeLimited": "npm/npx are unavailable. Local Agents can still be detected; Agents that depend on npm/npx may be unavailable.",
+  "steps": {
       "git": "Git",
       "runtime": "Runtime",
       "agent": "Agent"
@@ -3391,7 +3392,7 @@
     },
     "descriptions": {
       "git": "Git provides version control. You can install it later.",
-      "runtime": "Node.js, npm, and npx must run correctly and be mutually compatible. Stable versions outside the verified ranges show a warning but do not block setup.",
+      "runtime": "Node.js must be available. npm and npx are checked too; if they are unavailable, setup can still find local Agents that do not depend on them. Stable versions outside verified ranges show a warning but do not block setup.",
       "agent": "Ready Agents are saved automatically. Choose your default model, then review and apply it to all built-in workflows."
     },
     "status": {
@@ -3405,7 +3406,8 @@
       "cancelled": "Cancelled",
       "skipped": "Skipped",
       "pending": "Not checked",
-      "checking": "Checking"
+      "checking": "Checking",
+      "warning": "Warning"
     },
     "errors": {
       "setup": {

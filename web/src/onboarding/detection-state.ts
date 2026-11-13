@@ -33,14 +33,14 @@ export function setupFailure(error: unknown): AppErrorVm {
 }
 export function failureEnvironment(error: AppErrorVm): EnvironmentReport | undefined {
   const report = error.params.environment;
-  if (report && typeof report === 'object' && 'runtimeReady' in report && report.runtimeReady === false && 'checks' in report && Array.isArray(report.checks)) return report as EnvironmentReport;
+  if (report && typeof report === 'object' && 'agentDetectionReady' in report && report.agentDetectionReady === false && 'checks' in report && Array.isArray(report.checks)) return report as EnvironmentReport;
 }
 
 export function setupDetectionReducer(state: SetupDetectionState, action: Action): SetupDetectionState {
   switch (action.type) {
     case 'environment-started': return { ...state, phase: 'idle', generation: '', pending: {}, nextCursor: null, environment: { ...state.environment, phase: 'checking', progress: {} } };
     case 'environment-progress': return state.environment.phase === 'checking' ? { ...state, environment: { ...state.environment, progress: { ...state.environment.progress, [action.check.tool]: action.check } } } : state;
-    case 'environment-completed': return { ...state, phase: action.report.runtimeReady ? 'idle' : 'blocked-environment', environment: { phase: 'ready', report: action.report, progress: {} } };
+    case 'environment-completed': return { ...state, phase: action.report.agentDetectionReady ? 'idle' : 'blocked-environment', environment: { phase: 'ready', report: action.report, progress: {} } };
     case 'environment-failed': return { ...state, environment: { phase: 'failed', progress: {} } };
     case 'runtime-blocked': return { ...state, phase: 'blocked-environment', generation: '', pending: {}, nextCursor: null, environment: { phase: 'ready', report: action.report, progress: {} } };
     case 'detection-started': return { ...state, phase: 'detecting', generation: '', agents: action.append ? state.agents : {}, pending: {}, nextCursor: null };

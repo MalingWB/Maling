@@ -3379,7 +3379,8 @@
     "defaultsDescription": "기본 제공 워크플로의 Agent, 모델 및 권한을 일괄 설정합니다. 사용자 지정 워크플로는 변경하지 않습니다.",
     "configureDefaults": "기본값 설정",
     "rerun": "설정 다시 실행",
-    "steps": {
+    "runtimeLimited": "npm/npx를 사용할 수 없습니다. 로컬 Agent는 계속 감지할 수 있지만 npm/npx에 의존하는 Agent는 사용할 수 없을 수 있습니다.",
+  "steps": {
       "git": "Git",
       "runtime": "실행 환경",
       "agent": "Agent"
@@ -3391,7 +3392,7 @@
     },
     "descriptions": {
       "git": "Git은 버전 관리에 사용됩니다. 나중에 설치할 수 있습니다.",
-      "runtime": "Node.js, npm, npx가 정상적으로 실행되고 서로 호환되어야 합니다. 검증 범위 밖의 안정 버전은 경고를 표시하지만 설정 진행을 차단하지 않습니다.",
+      "runtime": "Node.js를 사용할 수 있어야 합니다. npm과 npx도 확인하지만, 사용할 수 없더라도 이에 의존하지 않는 로컬 Agent 감지는 계속할 수 있습니다. 검증 범위 밖의 안정 버전은 경고를 표시하지만 설정 진행을 차단하지 않습니다.",
       "agent": "사용 가능한 Agent는 자동 저장됩니다. 기본 모델을 선택하고 모든 기본 워크플로에 적용할 변경을 확인하세요."
     },
     "status": {
@@ -3405,7 +3406,8 @@
       "cancelled": "취소됨",
       "skipped": "건너뜀",
       "pending": "검사 전",
-      "checking": "검사 중"
+      "checking": "검사 중",
+      "warning": "경고"
     },
     "errors": {
       "setup": {

@@ -17,6 +17,8 @@ export interface SetupStatus {
 }
 export interface EnvironmentReport {
   runtimeReady: boolean;
+  agentDetectionReady: boolean;
+  packageManagerReady: boolean;
   checks: Array<{ tool: 'git' | 'node' | 'npm' | 'npx'; status: 'ready' | 'missing' | 'unsupported' | 'unverified' | 'incompatible' | 'failed' | 'timeout' | 'cancelled'; version: string | null; executablePath: string | null; nodeExecutablePath?: string | null; error?: AppErrorVm | null }>;
 }
 export type EnvironmentCheck = EnvironmentReport['checks'][number];
