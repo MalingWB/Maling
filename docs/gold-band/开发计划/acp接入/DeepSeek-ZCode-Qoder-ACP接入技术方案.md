@@ -56,6 +56,7 @@ CatalogProvenance
 - `integrationOrigin` 说明 ACP 实现由供应商官方维护还是社区桥接，不通过英文 `description` 暗示。
 - `validatedVersion` 表示 Gold Band 完整执行本文真实验收的版本，不表示自动锁定用户本机版本。
 - 官方 Registry 条目的 `validatedVersion` 来自 `configs/agent-catalog-policy.json` 的显式 `validatedVersions` 映射；Registry 升级只改变候选 `version`，不得自动改写验收证据。本地补充条目在自身 provenance 中声明同一字段。
+- `validatedVersions` 必须覆盖全部正式官方条目；本地补充 ID 不得重复放入 policy。生成器复用现有 `semver` 库按 Rust 加载契约校验非空精确版本，拒绝 `latest`、范围、`v` 前缀和空白包裹；预发布与 build metadata 合法时原样保留。构建结果与 staging 发布边界均校验完整 provenance；缺失验收证据在下载和发布前失败。
 - 没有完整真实验收的版本不能写入 `validatedVersion`，也不能进入发布 Catalog。ZCode 在第二阶段准入前不生成正式 Catalog 条目。
 - UI 只消费结构化 `integrationOrigin`，通过七语言 key 展示简短来源标签或帮助说明；上游 `description` 不承担信任边界或对客本地化。
 
@@ -200,17 +201,17 @@ ZCode 第二阶段发布门槛：
 
 ### 5.2 事务化生成
 
-当前脚本依次写 snapshot、Catalog 和图标，任一步失败都可能留下半套产物。修订后采用单一发布函数：
+snapshot、Catalog 和图标由单一发布函数管理同一事务；恢复判断以整批目标为单位，不能逐文件接受旧版或新版：
 
 1. 在仓库外或系统临时目录创建本次 staging 目录，不直接写正式路径。
 2. 在 staging 中生成 snapshot、Catalog 和完整图标集合；offline 模式复制并校验已有图标，不访问网络。
 3. 对 staging 执行全部校验：schema、ID/顺序、provenance、固定版本、平台枚举、目录字段、HTTPS SVG、文件名、内容摘要和预期数量。
-4. 所有校验通过后，发布函数先写入一个有界 recovery journal，记录目标、原内容摘要、同目录备份和提交阶段；journal 自身使用临时文件原子替换。
-5. 为每个正式目标创建同目录临时文件并使用原子 rename/replace 发布；每完成一项就原子推进 journal。普通失败立即恢复已替换目标；进程崩溃后，下次生成先读取 journal 并完成回滚或继续，不在半完成状态上开始新生成。
-6. online snapshot 也属于同一次提交，不能先写 snapshot 再下载图标。全部目标及摘要确认一致后删除 journal 与备份。
+4. 所有校验通过后，为每个正式目标准备同目录临时文件与旧内容备份，再原子写入 schema 2 recovery journal。每条记录显式区分 `originalExists` / `newExists`，分别记录旧、新摘要、目标、临时文件和备份；事务阶段为 `publishing` 或 `rolling-back`。
+5. 使用原子 rename/replace 发布；旧 Catalog 管理、但新版不再使用的图标也作为删除记录参与事务。提交前普通失败必须先记录 `rolling-back`，再恢复整个旧集合，即使异常发生在最后一个替换之后也必须回滚。恢复使用备份副本加原子替换，验证完整旧集合前不消耗备份，保证恢复过程可以重复执行。
+6. 进程中断后，下次生成先校验全部 journal 记录、路径和目标状态：只有 `publishing` 且全部目标符合新存在状态与摘要时才确认整批新版；其他状态先校验所有必需备份，再整批恢复旧版。备份缺失、摘要不符或 journal 无效时停止，保留 journal、备份和临时文件，不在不可判定状态上继续生成。整批旧版或新版验证后才清理；清理中断后重复恢复继续收敛。online snapshot 属于同一次提交，不能先写 snapshot 再下载图标。
 7. 失败或取消后清理 staging；不得修改 local supplement。
 
-测试必须提供失败注入点，至少覆盖 registry fetch、npm pin 校验、图标下载、SVG 校验、Catalog 校验和正式替换失败。每一种普通失败都要断言 snapshot、Catalog 和正式图标目录与执行前逐字节一致；替换阶段失败还要验证已发布目标被回滚。另模拟在第 N 个替换后中断，再次运行时必须先消费 recovery journal，使正式产物恢复为旧全集或完成为新全集，不能保留混合版本。
+测试必须提供失败注入点，至少覆盖 registry fetch、npm pin 校验、图标下载、SVG 校验、Catalog 校验和正式替换失败。fixture 的新旧 snapshot、Catalog 与图标必须真实不同；分别在第 1、2、首个图标和末尾替换点验证普通失败整批回滚与中断恢复。覆盖首次生成原文件不存在、旧图标删除、新图标创建、无关图标保留、完整新版确认、备份损坏/缺失、无效 journal 和重复恢复；普通提交前失败后正式文件逐字节一致。
 
 ## 6. Catalog 模板
 
@@ -243,6 +244,8 @@ ZCode 第二阶段发布门槛：
 - `sessionCapabilities.resume` 与顶层 `loadSession` 决定恢复策略。
 - `configOptions` 继续承载模型、`thought_level` 与其他配置。
 - permission / elicitation、tool、thought、usage/context 继续进入通用 ACP 事件模型。
+- `AdapterInitializationData` 将 `capabilities` 与 `auth_methods` 作为同一连接初始化结果，由现有 `ConnectionInitialization` single-flight 管理。`initialize_once` 首次调用者、并发等待者与后续复用者均取得完整数据，运行实例统一从返回值设置认证方法，初始化回调不单独写入首个实例。
+- 连接身份仍为 provider/workspace 与现有配置签名；认证方法随连接 generation 更新，不持久化到账户或 Agent 实例配置。复用既有 AuthRequired 一次认证、一次 `session/new` 重试边界，已配置 env 方法可自动认证，terminal 与缺失 env 返回 `provider.auth-required`。
 
 DeepSeek 的 `reasoning_effort` 若以 `category=thought_level` 返回，复用现有档位映射；模型 value 即使是 JSON 字符串也按 ACP 原值提交，只展示 option name，不做 provider-specific 解包。
 
@@ -356,7 +359,7 @@ DeepSeek 的 `reasoning_effort` 若以 `category=thought_level` 返回，复用�
 1. 第一阶段恰好 13 项；ZCode 门槛通过后的第二阶段恰好 14 项，ID 唯一且顺序稳定。
 2. Qoder 来源为 `official-registry/official`；DeepSeek 为 `local-supplement/official`；ZCode 发布后为 `local-supplement/community-adapter`。
 3. source 冲突、缺失 provenance、无效平台枚举、重复平台、缺失图标或未验证版本均构建失败。
-4. 任一普通生成失败时，正式 snapshot、Catalog 和图标逐字节不变；替换失败恢复原文件；模拟中断后重启可通过 recovery journal 收敛到完整旧版或完整新版。
+4. 任一提交前普通生成失败时，正式 snapshot、Catalog 和图标逐字节不变；最后一个替换后普通异常也回滚。中断恢复只接受整批新版或整批旧版；备份/journal 无效不修改正式文件或清理恢复证据。
 5. Qoder 在 `windows/aarch64` 不进入 onboarding 和 Agent 管理 Catalog；直接调用 `create_agent(qoder)` 返回 `agent.unsupported-platform`。
 6. 已配置实例仍可显示、编辑和诊断，不因当前平台限制被删除。
 7. Qoder env token 输入按普通 env 持久化，UI 明确提示本机保存；日志与诊断不包含值。
@@ -364,6 +367,7 @@ DeepSeek 的 `reasoning_effort` 若以 `category=thought_level` 返回，复用�
 9. DeepSeek fixture 覆盖 thought、tool lifecycle、config、usage/context、resume-without-load 和无 command update。
 10. Qoder fixture 覆盖 list/load/history；真实验收分别覆盖本机 PATH 命令与固定 npx launcher。
 11. 所有错误返回 `{ code, params }`，前端按七语言 key 处理，不依赖英文 description 或 stderr 文本。
+12. 两个运行实例使用同 provider/workspace/config 时只 initialize 一次；第二个实例收到 AuthRequired 后仍能选择共享的 env 方法，authenticate 一次并重试成功。缺少 env 时返回完整方法 ID/缺失变量名，不发送认证或重试；并发初始化者也取得相同认证方法。
 
 ### 12.2 真实验收
 
@@ -403,3 +407,24 @@ DeepSeek 的 `reasoning_effort` 若以 `category=thought_level` 返回，复用�
 过度设计评审：本方案没有新增 Agent 运行状态机、实例身份、缓存、队列或 provider-specific client。provenance 和平台约束是构建期小型 Catalog 元数据；统一平台函数替代跨层字符串特判；生成 staging/rollback 只解决现有多文件半写风险。ZCode 采用发布门槛而不是为未知兼容性预建 fallback，复杂度与已确认风险匹配。
 
 性能评审：第一阶段 Catalog 从 11 增至 13、第二阶段最多 14，运行时查找和过滤均为小常数线性处理，不增加首屏网络请求、目录全量扫描、N+1、缓存或订阅范围。事务化生成只发生在构建/发版阶段；staging 会多保留一份有限 Catalog 与图标集合，但不进入 EXE 运行路径。Doctor 继续只对已准备候选使用现有有界并发和 deadline，ZCode 未准入时不会增加长等待进程。
+
+2026-11-13 修复复核：沿用现有 journal、连接池、single-flight 与 semver 依赖，只补齐整批恢复、完整初始化结果与 provenance 校验。新增 journal 存在标志用于区分“原文件不存在”和“新版删除文件”，回滚阶段用于表达最后一个替换后仍需回滚的决定；不新增 Agent 状态机、连接身份、账户系统或兼容层。Catalog 仍固定 14 项，恢复扫描仅处理本批目标，新增摘要读取只发生在构建维护阶段；共享连接仅增加初始化认证方法的有限复制，不增加网络请求、锁覆盖范围或前端刷新。
+
+## 16. 2026-11-13 评审问题修复验收
+
+修复前先建立接口失败证据：
+
+| 问题 | 失败测试与观察 |
+| --- | --- |
+| Catalog 部分发布未整批回滚 | `partial publication failures and crashes recover the entire previous set` 使用 `0.73.0` / `0.74.0` 的真实不同产物；第 1 个替换后失败仍保留新 snapshot，与旧集合逐字节断言不符。首次发布中断也未删除已创建目标 |
+| 共享连接丢失认证方法 | `shared_connection_preserves_auth_methods_for_later_runtimes` 验证两个实例确实共享连接且只 initialize 一次；第二个实例配置了测试 token 仍返回认证必需错误，未完成 authenticate/retry |
+| 缺失或无效验收版本仍可生成 | 删除官方 `validatedVersions` 条目后 `buildAgentCatalog` 未抛错；本地 `null`、空值、数字和 `latest` 也未被拒绝；生成入口的缺失记录测试出现 `Missing expected rejection` |
+
+本次已完成验证：
+
+- `node --test scripts/prepare-agent-catalog.test.mjs`：43 项通过，覆盖整批提交/回滚、恢复证据保留、首次发布、新旧图标、官方/本地缺失或无效版本及生成前阻断。
+- `npm run web:test -- web/tests/agent-management.test.ts web/tests/agent-icons.test.ts web/tests/acp-runtime-error.test.ts web/tests/onboarding.test.tsx`：83 项通过。
+- `npm run web:build`：通过；保留既有动态导入与大 chunk 提示。
+- `cargo test --lib acp::connection::tests -- --nocapture`：49 项通过；`cargo test --lib agent_catalog -- --nocapture`：3 项通过；`cargo test --lib platform -- --nocapture`：13 项通过。
+- `cargo test --lib acp::client::tests -- --test-threads=1`：191 项通过、6 项按设计忽略；覆盖共享连接认证方法、并发 single-flight 和 AuthRequired 重试。默认并行运行曾命中一次既有时序测试 `prompt_terminal_quiet_drain_promotes_late_system_error`，该测试单独重跑及串行全量重跑均通过。
+- `cargo fmt --all -- --check`、`git diff --check`：通过。

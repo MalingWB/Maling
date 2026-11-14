@@ -182,7 +182,9 @@ Catalog 同时提供本机 ACP 命令与 npm 适配器启动信息。优先使�
 
 ### 5.3 认证与诊断契约
 
-当前 ACP client 未实现 `authMethods` 投影与 `authenticate` 交互，本期不增加虚假的内嵌登录接口；账号认证由供应商流程处理，完成后重新检测。检测页不恢复准备指引或自定义 ACP 折叠区。后续若实现协议认证，必须依据 initialize.authMethods 区分协议方法和 terminal 方法，不能向 terminal 类型直接发送 authenticate。来源 S4。
+ACP client 读取 `initialize.authMethods`，与 `agentCapabilities` 一起保存在共享连接的初始化结果中；首次初始化、并发等待和后续复用连接的运行实例都取得同一份结果，不重复 initialize。`session/new` 返回结构化 AuthRequired 时，优先使用已有完整环境变量的 `env_var` 方法执行一次 `authenticate`，成功后只重试一次 `session/new`。没有可用协议方法时（例如仅有缺少环境变量的 `env_var` 或 `terminal` 方法）返回 `provider.auth-required`，保留方法 ID 和缺失环境变量名；不能向 terminal 方法直接发送 authenticate。来源 S4。
+
+供应商账号登录仍由其官方流程处理，完成后重新诊断；客户端不新增账号、token 存储或内嵌登录界面。检测页不恢复准备指引或自定义 ACP 折叠区。
 
 本期主路径为官方图形／浏览器准备指引，登录凭据由供应商处理。若 Agent 仅支持终端登录，属于供应商的外部准备步骤；向导不新建终端产品界面，不宣称支持尚未实现的 auth capability。
 

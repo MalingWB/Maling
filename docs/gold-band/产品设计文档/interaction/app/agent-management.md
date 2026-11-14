@@ -81,9 +81,10 @@ Agent Cards
 - system prompt 传递能力不在新建或编辑界面展示，也不接受 `ManagedAgentInput` 覆盖；Catalog 只提供默认能力元数据，内置 Agent 的实际能力仍以当前 Doctor／ACP `initialize` 观测为准，自定义 Agent 固定为不支持，编辑时保留实例已有的内部能力值
 - 新增 Agent 下拉使用 cmdk 的 active 项仅支持键盘确认，不表达业务选中态；下拉刚展开时所有可选项都不显示状态，只有鼠标悬停在具体项上时才显示 hover 背景，避免把“自定义 Agent”误看成默认选中
 - Catalog 条目必须携带结构化 `sourceKind: official-registry | local-supplement`、`integrationOrigin: official | community-adapter` 和完成真实验收的 `validatedVersion`。来源标签通过七语言 key 展示；不得只在英文 description 中标注社区风险
+- 官方条目的 `validatedVersions` 映射必须逐项完整；本地补充条目只使用自身 provenance，policy 不得重复声明。`validatedVersion` 必须为非空、精确 SemVer，缺失、无效或与本地条目版本不一致时，在下载图标和发布前终止生成
 - Catalog 对当前平台的限制使用 `{ os: windows | macos | linux, arch: x86_64 | aarch64 }`，由后端统一过滤并在创建接口再次校验。Web 不拼接 `win32-arm64` 等平台字符串；不支持时返回 `agent.unsupported-platform`。既有实例不因新限制被删除或隐藏
 - 构建与发版脚本合并官方 Registry 与受控 local supplement。第一阶段必须完整生成 13 项，第二阶段准入后完整生成 14 项；ID 冲突、缺项、无效 provenance／平台、固定版本或图标失败均终止
-- snapshot、Catalog 和图标先在 staging 中完整生成并校验，全部成功后通过有界 recovery journal 与逐文件原子替换发布；普通失败回滚后正式产物必须与执行前逐字节一致，进程中断后下次运行先恢复到完整旧版或完整新版。离线维护使用已提交 snapshot、local supplement 与图标，不访问网络
+- snapshot、Catalog 和图标先在 staging 中完整生成并校验，全部成功后通过有界 recovery journal 与逐文件原子替换发布；提交前普通失败整批回滚，正式产物必须与执行前逐字节一致。进程中断后，只有全部目标存在状态与摘要均符合新版才确认整批新版，否则整批恢复旧版，包括删除本次新建文件、恢复本次删除文件；恢复所需 journal 或备份无效时停止并保留恢复证据，不能接受新旧混合结果。离线维护使用已提交 snapshot、local supplement 与图标，不访问网络
 - Kimi Code 的主 Skills 根目录为 `.kimi-code`，兼容读取通用 `.agents`；Gold Band 在这些根目录下统一追加 `skills`
 - Pi 的官方 Skills 根目录按作用域不同：全局为 `~/.pi/agent/skills`，项目为 `<project>/.pi/skills`，两端兼容读取 `.agents/skills`；Pi 模板因此默认开启主目录拆分，全局主目录为 `.pi/agent`、项目主目录为 `.pi`
 - 第一阶段 DeepSeek 使用 `.dsh` 主目录并兼容 `.agents`；Qoder 使用 `.qoder` 主目录并兼容 `.agents`

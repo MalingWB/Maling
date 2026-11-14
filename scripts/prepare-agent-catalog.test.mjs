@@ -10,13 +10,13 @@ import {
   recoverAgentCatalogPublication,
 } from './prepare-agent-catalog.mjs';
 
-function registryFixture() {
-  return { agents: BUILTIN_AGENT_IDS.map((id) => ({
-    id, version: '0.73.0',
+function registryFixture(version = '0.73.0') {
+  return { version, agents: BUILTIN_AGENT_IDS.map((id) => ({
+    id, version,
     name: id,
     description: id,
     icon: `https://icons.example/${id}.svg`,
-    distribution: { npx: { package: `@example/${id}@0.73.0`, args: ['--acp'] } },
+    distribution: { npx: { package: `@example/${id}@${version}`, args: ['--acp'] } },
   })) };
 }
 
@@ -271,7 +271,38 @@ test('official registry versions cannot silently become validation evidence', ()
   );
 });
 
-test('local supplement entries carry provenance and typed platform exclusions', () => {
+test('every official catalog entry requires explicit validation evidence', () => {
+  for (const id of BUILTIN_AGENT_IDS) {
+    const policy = officialPolicy();
+    delete policy.validatedVersions[id];
+    assert.throws(
+      () => buildAgentCatalog(registryFixture(), 'fixed', policy),
+      /validated version/i,
+      id,
+    );
+  }
+});
+
+test('validated versions must match the Rust semantic version contract', () => {
+  for (const version of ['', null, 73, 'latest', '^0.73.0', 'v0.73.0', ' 0.73.0 ']) {
+    const policy = officialPolicy();
+    policy.validatedVersions.qoder = version;
+    assert.throws(
+      () => buildAgentCatalog(registryFixture(), 'fixed', policy),
+      /validated version/i,
+      String(version),
+    );
+  }
+  const policy = officialPolicy();
+  policy.validatedVersions.qoder = '0.73.0-rc.1+validated.2';
+  assert.equal(
+    buildAgentCatalog(registryFixture(), 'fixed', policy).agents.find((agent) => agent.id === 'qoder')
+      .provenance.validatedVersion,
+    '0.73.0-rc.1+validated.2',
+  );
+});
+
+test('local supplement entries carry provenance and typed platform exclusions', async (t) => {
   const registry = registryFixture();
   registry.agents = registry.agents.filter((agent) => agent.id !== 'pi-acp');
   const local = {
@@ -292,19 +323,39 @@ test('local supplement entries carry provenance and typed platform exclusions', 
       compatibleAgentDirs: ['.agents'],
     }],
   };
+  const policy = officialPolicy();
+  delete policy.validatedVersions['pi-acp'];
   const digest = createHash('sha256').update(JSON.stringify(local)).digest('hex');
-  const catalog = buildAgentCatalog(registry, 'fixed', officialPolicy(), local, digest);
+  const catalog = buildAgentCatalog(registry, 'fixed', policy, local, digest);
   const agent = catalog.agents.find((entry) => entry.id === 'pi-acp');
 
   assert.equal(agent.provenance.sourceKind, 'local-supplement');
   assert.equal(agent.provenance.validatedVersion, '0.2.1-rc.2');
   assert.equal(catalog.source.localSupplement.sha256, digest);
-  assert.throws(() => buildAgentCatalog(registry, 'fixed', officialPolicy(), {
+  assert.throws(() => buildAgentCatalog(registry, 'fixed', policy, {
     agents: [{ ...local.agents[0], excludedPlatforms: [{ os: 'win32', arch: 'arm64' }] }],
   }, digest), /invalid platform selector/);
   assert.throws(() => buildAgentCatalog(registryFixture(), 'fixed', officialPolicy(), {
     agents: [{ ...local.agents[0], id: 'claude-acp' }],
   }, digest), /both official Registry and local supplement/);
+
+  await t.test('rejects validation evidence in both the policy and local supplement', () => {
+    assert.throws(
+      () => buildAgentCatalog(registry, 'fixed', officialPolicy(), local, digest),
+      /local.*validated version|validated version.*local/i,
+    );
+  });
+  for (const version of [undefined, null, '', 73, 'latest', 'v0.2.1', ' 0.2.1 ']) {
+    await t.test(`rejects local validated version ${String(version)}`, () => {
+      const invalid = structuredClone(local);
+      invalid.agents[0].version = version;
+      invalid.agents[0].provenance.validatedVersion = version;
+      assert.throws(
+        () => buildAgentCatalog(registry, 'fixed', policy, invalid, digest),
+        /provenance|validated version/i,
+      );
+    });
+  }
 });
 
 test('fails rather than silently publishing an incomplete catalog', () => {
@@ -339,23 +390,30 @@ async function createGenerationRoot(policy = officialPolicy()) {
   return root;
 }
 
-function generationFetchers() {
+function generationFetchers(registry = registryFixture()) {
   return {
     fetchJson: async (url) => {
-      if (url.endsWith('/registry.json')) return registryFixture();
+      if (url.endsWith('/registry.json')) return registry;
       const version = decodeURIComponent(url.split('/').pop());
       return { version };
     },
-    fetchIcon: async (url) => `<svg xmlns="https://www.w3.org/2000/svg">${url}</svg>`,
+    fetchIcon: async (url) => `<svg xmlns="https://www.w3.org/2000/svg">${registry.version} ${url}</svg>`,
   };
 }
 
 async function officialState(root) {
   const iconDir = join(root, 'web', 'public', 'agent-icons');
-  const iconNames = (await readdir(iconDir)).filter((name) => name.endsWith('.svg')).sort();
+  const readOptional = async (path) => readFile(path, 'utf8').catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  const iconNames = (await readdir(iconDir).catch((error) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  })).filter((name) => name.endsWith('.svg')).sort();
   return {
-    snapshot: await readFile(join(root, 'resources', 'acp-registry.snapshot.json'), 'utf8'),
-    catalog: await readFile(join(root, 'resources', 'agent-catalog.json'), 'utf8'),
+    snapshot: await readOptional(join(root, 'resources', 'acp-registry.snapshot.json')),
+    catalog: await readOptional(join(root, 'resources', 'agent-catalog.json')),
     icons: await Promise.all(iconNames.map(async (name) => [
       name,
       await readFile(join(iconDir, name), 'utf8'),
@@ -363,7 +421,7 @@ async function officialState(root) {
   };
 }
 
-async function initializeGenerationRoot(policy = {}) {
+async function initializeGenerationRoot(policy = officialPolicy()) {
   const root = await createGenerationRoot(policy);
   await generateAgentCatalog({ repoRoot: root, ...generationFetchers() });
   return root;
@@ -418,60 +476,204 @@ test('ordinary catalog generation failures leave official outputs byte-for-byte 
   }
 });
 
-test('interrupted catalog publication recovers to the complete previous set', async () => {
+const PUBLICATION_JOURNAL = 'resources/.agent-catalog-publish-journal.json';
+const PUBLICATION_TARGET_COUNT = BUILTIN_AGENT_IDS.length + 3;
+
+async function initializePublicationRoot() {
   const root = await initializeGenerationRoot();
+  const catalogPath = join(root, 'resources', 'agent-catalog.json');
+  const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
+  catalog.agents.find((agent) => agent.id === 'claude-acp').iconKey = 'claude-legacy';
+  await writeFile(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+  const icons = join(root, 'web', 'public', 'agent-icons');
+  await rename(join(icons, 'claude.svg'), join(icons, 'claude-legacy.svg'));
+  await writeFile(join(icons, 'unmanaged.svg'), '<svg>unmanaged</svg>');
+  return root;
+}
+
+async function publicationEvidence(root) {
+  const journal = await readFile(join(root, PUBLICATION_JOURNAL), 'utf8');
+  const artifacts = {};
+  for (const record of JSON.parse(journal).records) {
+    for (const path of [record.temp, record.backup].filter(Boolean)) {
+      artifacts[path] = await readFile(join(root, path), 'utf8').catch((error) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+    }
+  }
+  return { journal, artifacts };
+}
+
+test('partial publication failures and crashes recover the entire previous set', async (t) => {
+  for (const crash of [false, true]) {
+    const positions = crash ? [1, 2, 3, PUBLICATION_TARGET_COUNT - 1] : [1, 2, 3, PUBLICATION_TARGET_COUNT];
+    for (const position of positions) {
+      await t.test(`${crash ? 'crash' : 'error'} after replacement ${position}`, async () => {
+        const root = await initializePublicationRoot();
+        try {
+          const before = await officialState(root);
+          let replacements = 0;
+          await assert.rejects(
+            () => generateAgentCatalog({
+              repoRoot: root,
+              ...generationFetchers(registryFixture('0.74.0')),
+              hooks: {
+                afterReplace: () => {
+                  if (++replacements === position) {
+                    throw crash ? new SimulatedPublicationCrash() : new Error('replace failed');
+                  }
+                },
+              },
+            }),
+            crash ? SimulatedPublicationCrash : /replace failed/,
+          );
+          if (crash) {
+            assert.notEqual((await officialState(root)).snapshot, before.snapshot);
+            assert.equal(await recoverAgentCatalogPublication(root), true);
+          }
+          assert.deepEqual(await officialState(root), before);
+          assert.equal(await recoverAgentCatalogPublication(root), false, 'recovery is idempotent');
+          for (const path of ['resources', 'web/public/agent-icons']) {
+            assert.equal((await readdir(join(root, path))).some((name) => name.includes('.catalog-')), false);
+          }
+        } finally {
+          await rm(root, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+});
+
+test('a fully replaced publication confirms the complete new set without requiring backups', async () => {
+  const root = await initializePublicationRoot();
   try {
     const before = await officialState(root);
-    await assert.rejects(
-      () => generateAgentCatalog({
-        repoRoot: root,
-        ...generationFetchers(),
-        fetchIcon: async (url) => `<svg xmlns="https://www.w3.org/2000/svg">changed ${url}</svg>`,
-        hooks: {
-          afterReplace: () => {
-            throw new SimulatedPublicationCrash();
-          },
+    let replacements = 0;
+    await assert.rejects(() => generateAgentCatalog({
+      repoRoot: root,
+      ...generationFetchers(registryFixture('0.74.0')),
+      hooks: {
+        afterReplace: () => {
+          if (++replacements === PUBLICATION_TARGET_COUNT) throw new SimulatedPublicationCrash();
         },
-      }),
-      SimulatedPublicationCrash,
-    );
-    assert.equal((await readdir(join(root, 'resources'))).includes('.agent-catalog-publish-journal.json'), true);
-    await recoverAgentCatalogPublication(root);
-    assert.deepEqual(await officialState(root), before);
-    assert.equal((await readdir(join(root, 'resources'))).includes('.agent-catalog-publish-journal.json'), false);
+      },
+    }), SimulatedPublicationCrash);
+    const afterCrash = await officialState(root);
+    assert.notEqual(afterCrash.snapshot, before.snapshot);
+    assert.notEqual(afterCrash.catalog, before.catalog);
+    assert.equal(JSON.parse(afterCrash.snapshot).version, '0.74.0');
+    assert.equal(afterCrash.icons.some(([name]) => name === 'claude-legacy.svg'), false);
+    for (const [name, content] of afterCrash.icons) {
+      assert.ok(name === 'unmanaged.svg' || content.includes('0.74.0'), name);
+    }
+    const journal = JSON.parse(await readFile(join(root, PUBLICATION_JOURNAL), 'utf8'));
+    for (const record of journal.records) {
+      if (record.backup) await rm(join(root, record.backup), { force: true });
+    }
+    assert.equal(await recoverAgentCatalogPublication(root), true);
+    assert.deepEqual(await officialState(root), afterCrash);
+    assert.equal(await recoverAgentCatalogPublication(root), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test('interrupted catalog publication can complete to the consistent new set', async () => {
-  const root = await initializeGenerationRoot();
+test('interrupted first publication restores absent files', async () => {
+  const root = await createGenerationRoot();
   try {
-    await assert.rejects(
-      () => generateAgentCatalog({
-        repoRoot: root,
-        ...generationFetchers(),
-        fetchIcon: async (url) => `<svg xmlns="https://www.w3.org/2000/svg">changed ${url}</svg>`,
-        hooks: {
-          afterReplace: (record) => {
-            if (record.target.endsWith('pi-acp.svg')) throw new SimulatedPublicationCrash();
-          },
+    const before = await officialState(root);
+    let replacements = 0;
+    await assert.rejects(() => generateAgentCatalog({
+      repoRoot: root,
+      ...generationFetchers(),
+      hooks: {
+        afterReplace: () => {
+          if (++replacements === 3) throw new SimulatedPublicationCrash();
         },
-      }),
-      SimulatedPublicationCrash,
-    );
-    const afterCrash = await officialState(root);
-    const resources = await readdir(join(root, 'resources'), { withFileTypes: true });
-    for (const entry of resources.filter((entry) => entry.name.includes('.catalog-backup-'))) {
-      await rm(join(root, 'resources', entry.name), { force: true });
-    }
-    const icons = await readdir(join(root, 'web', 'public', 'agent-icons'), { withFileTypes: true });
-    for (const entry of icons.filter((entry) => entry.name.includes('.catalog-backup-'))) {
-      await rm(join(root, 'web', 'public', 'agent-icons', entry.name), { force: true });
-    }
+      },
+    }), SimulatedPublicationCrash);
     await recoverAgentCatalogPublication(root);
-    assert.deepEqual(await officialState(root), afterCrash);
+    assert.deepEqual(await officialState(root), before);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('invalid recovery sources preserve the journal, backups and official files', async (t) => {
+  for (const scenario of ['corrupt-backup', 'missing-backup', 'invalid-record']) {
+    await t.test(scenario, async () => {
+      const root = await initializePublicationRoot();
+      try {
+        let replacements = 0;
+        await assert.rejects(() => generateAgentCatalog({
+          repoRoot: root,
+          ...generationFetchers(registryFixture('0.74.0')),
+          hooks: {
+            afterReplace: () => {
+              if (++replacements === 3) throw new SimulatedPublicationCrash();
+            },
+          },
+        }), SimulatedPublicationCrash);
+        const journalPath = join(root, PUBLICATION_JOURNAL);
+        const journal = JSON.parse(await readFile(journalPath, 'utf8'));
+        if (scenario === 'corrupt-backup') {
+          await writeFile(join(root, journal.records[1].backup), 'corrupt backup');
+        } else if (scenario === 'missing-backup') {
+          await rm(join(root, journal.records[1].backup));
+        } else {
+          journal.records.at(-1).operation = 'invalid';
+          await writeFile(journalPath, JSON.stringify(journal));
+        }
+        const outputs = await officialState(root);
+        const evidence = await publicationEvidence(root);
+        await assert.rejects(() => recoverAgentCatalogPublication(root), /backup|recovery/i);
+        assert.deepEqual(await officialState(root), outputs);
+        assert.deepEqual(await publicationEvidence(root), evidence);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test('missing validation evidence aborts generation before downloads or publication', async (t) => {
+  for (const scenario of ['missing-official-version', 'missing-local-version', 'invalid-local-version']) {
+    await t.test(scenario, async () => {
+      const root = await initializeGenerationRoot();
+      try {
+        const before = await officialState(root);
+        const policy = officialPolicy();
+        const registry = registryFixture('0.74.0');
+        if (scenario === 'missing-official-version') {
+          delete policy.validatedVersions.qoder;
+        } else {
+          const local = JSON.parse(await readFile(new URL('../resources/acp-registry-local.json', import.meta.url), 'utf8'));
+          for (const agent of local.agents) {
+            delete policy.validatedVersions[agent.id];
+            registry.agents = registry.agents.filter((entry) => entry.id !== agent.id);
+          }
+          if (scenario === 'missing-local-version') {
+            delete local.agents[0].provenance.validatedVersion;
+          } else {
+            local.agents[0].version = 'latest';
+            local.agents[0].provenance.validatedVersion = 'latest';
+          }
+          await writeFile(join(root, 'resources', 'acp-registry-local.json'), JSON.stringify(local));
+        }
+        await writeFile(join(root, 'configs', 'agent-catalog-policy.json'), JSON.stringify(policy));
+        let downloads = 0;
+        await assert.rejects(() => generateAgentCatalog({
+          repoRoot: root,
+          ...generationFetchers(registry),
+          fetchIcon: async () => { downloads += 1; return '<svg>unused</svg>'; },
+        }), /validated version/i);
+        assert.equal(downloads, 0);
+        assert.deepEqual(await officialState(root), before);
+        assert.equal(await recoverAgentCatalogPublication(root), false);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
   }
 });

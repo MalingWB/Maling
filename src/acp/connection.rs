@@ -951,8 +951,14 @@ fn is_same_connection_generation<T>(
 }
 
 #[derive(Debug, Clone)]
-pub struct AdapterInitializationOutcome {
+pub struct AdapterInitializationData {
     pub capabilities: Value,
+    pub auth_methods: Vec<Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdapterInitializationOutcome {
+    pub data: AdapterInitializationData,
     pub performed: bool,
 }
 
@@ -1052,7 +1058,7 @@ enum ConnectionInitializationState {
     #[default]
     Uninitialized,
     Initializing,
-    Initialized(Value),
+    Initialized(AdapterInitializationData),
     Failed,
 }
 
@@ -1078,7 +1084,7 @@ impl Drop for ConnectionInitializationAttempt<'_> {
 impl ConnectionInitialization {
     fn capabilities(&self) -> Option<Value> {
         self.state.lock().ok().and_then(|state| match &*state {
-            ConnectionInitializationState::Initialized(capabilities) => Some(capabilities.clone()),
+            ConnectionInitializationState::Initialized(data) => Some(data.capabilities.clone()),
             ConnectionInitializationState::Uninitialized
             | ConnectionInitializationState::Initializing
             | ConnectionInitializationState::Failed => None,
@@ -1087,7 +1093,7 @@ impl ConnectionInitialization {
 
     fn initialize_once(
         &self,
-        initialize: impl FnOnce() -> Result<Value>,
+        initialize: impl FnOnce() -> Result<AdapterInitializationData>,
     ) -> Result<AdapterInitializationOutcome> {
         let mut state = self
             .state
@@ -1095,9 +1101,9 @@ impl ConnectionInitialization {
             .map_err(|_| anyhow!("ACP connection initialization lock poisoned"))?;
         loop {
             match &*state {
-                ConnectionInitializationState::Initialized(capabilities) => {
+                ConnectionInitializationState::Initialized(data) => {
                     return Ok(AdapterInitializationOutcome {
-                        capabilities: capabilities.clone(),
+                        data: data.clone(),
                         performed: false,
                     });
                 }
@@ -1123,17 +1129,17 @@ impl ConnectionInitialization {
             settled: false,
         };
         match initialize() {
-            Ok(capabilities) => {
+            Ok(data) => {
                 let mut state = self
                     .state
                     .lock()
                     .map_err(|_| anyhow!("ACP connection initialization lock poisoned"))?;
-                *state = ConnectionInitializationState::Initialized(capabilities.clone());
+                *state = ConnectionInitializationState::Initialized(data.clone());
                 attempt.settled = true;
                 drop(state);
                 self.changed.notify_all();
                 Ok(AdapterInitializationOutcome {
-                    capabilities,
+                    data,
                     performed: true,
                 })
             }
@@ -1353,7 +1359,7 @@ impl AdapterConnection {
 
     pub fn initialize_once(
         &self,
-        initialize: impl FnOnce() -> Result<Value>,
+        initialize: impl FnOnce() -> Result<AdapterInitializationData>,
     ) -> Result<AdapterInitializationOutcome> {
         self.initialization.initialize_once(initialize)
     }
@@ -3166,12 +3172,12 @@ mod tests {
 
     use super::{
         AcpConnectionUnavailable, ActivePromptTracker, AdapterConnectionKey,
-        AdapterConnectionManager, AdapterConnectionState, AdapterStderrKind,
-        AttemptSessionUnregisterOutcome, ConnectionCreationGate, ConnectionInitialization,
-        EarlySessionFrames, JSONRPC_METHOD_NOT_FOUND_CODE, STDERR_FAILURE_MAX_CHARS,
-        STDERR_LINE_MAX_BYTES, SessionConfigTransaction, SessionEventPump,
-        SessionRouteTryRecvError, append_failure_stderr_text, classify_adapter_stderr,
-        connection_lifecycle_uses_info, is_expected_unrouted_notification,
+        AdapterConnectionManager, AdapterConnectionState, AdapterInitializationData,
+        AdapterStderrKind, AttemptSessionUnregisterOutcome, ConnectionCreationGate,
+        ConnectionInitialization, EarlySessionFrames, JSONRPC_METHOD_NOT_FOUND_CODE,
+        STDERR_FAILURE_MAX_CHARS, STDERR_LINE_MAX_BYTES, SessionConfigTransaction,
+        SessionEventPump, SessionRouteTryRecvError, append_failure_stderr_text,
+        classify_adapter_stderr, connection_lifecycle_uses_info, is_expected_unrouted_notification,
         is_same_connection_generation, persist_cancelled_session_snapshot, read_stderr,
         record_unrouted_warning, register_session_route_state, request_unavailability,
         route_or_buffer_session_frame, select_provider_connection_keys, session_id_from_frame,
@@ -3372,7 +3378,14 @@ mod tests {
                     .initialize_once(|| {
                         calls.fetch_add(1, Ordering::SeqCst);
                         thread::sleep(Duration::from_millis(30));
-                        Ok(json!({ "loadSession": true }))
+                        Ok(AdapterInitializationData {
+                            capabilities: json!({ "loadSession": true }),
+                            auth_methods: vec![json!({
+                                "type": "env_var",
+                                "id": "token",
+                                "vars": [{"name": "ACP_AUTH_TOKEN"}]
+                            })],
+                        })
                     })
                     .unwrap()
             }));
@@ -3391,8 +3404,44 @@ mod tests {
         assert!(
             outcomes
                 .iter()
-                .all(|outcome| outcome.capabilities == json!({ "loadSession": true }))
+                .all(|outcome| outcome.data.capabilities == json!({ "loadSession": true }))
         );
+        for outcome in outcomes {
+            assert_eq!(
+                outcome.data.auth_methods,
+                vec![json!({
+                    "type": "env_var",
+                    "id": "token",
+                    "vars": [{"name": "ACP_AUTH_TOKEN"}]
+                })]
+            );
+        }
+    }
+
+    #[test]
+    fn later_callers_receive_the_complete_cached_initialization_result() {
+        let initialization = ConnectionInitialization::default();
+        let expected_capabilities = json!({"loadSession": true});
+        let expected_methods = vec![json!({"type": "terminal", "id": "login"})];
+        let first = initialization
+            .initialize_once(|| {
+                Ok(AdapterInitializationData {
+                    capabilities: expected_capabilities.clone(),
+                    auth_methods: expected_methods.clone(),
+                })
+            })
+            .unwrap();
+        let cached = initialization
+            .initialize_once(|| panic!("an initialized connection must not initialize twice"))
+            .unwrap();
+
+        assert!(first.performed);
+        assert!(!cached.performed);
+        assert_eq!(first.data.capabilities, expected_capabilities);
+        assert_eq!(cached.data.capabilities, expected_capabilities);
+        assert_eq!(first.data.auth_methods, expected_methods);
+        assert_eq!(cached.data.auth_methods, expected_methods);
+        assert_eq!(initialization.capabilities(), Some(expected_capabilities));
     }
 
     #[test]
@@ -3518,10 +3567,16 @@ mod tests {
 
         let replacement_initialization = ConnectionInitialization::default();
         let second = replacement_initialization
-            .initialize_once(|| Ok(json!({ "resumeSession": true })))
+            .initialize_once(|| {
+                Ok(AdapterInitializationData {
+                    capabilities: json!({ "resumeSession": true }),
+                    auth_methods: Vec::new(),
+                })
+            })
             .unwrap();
         assert!(second.performed);
-        assert_eq!(second.capabilities, json!({ "resumeSession": true }));
+        assert_eq!(second.data.capabilities, json!({ "resumeSession": true }));
+        assert!(second.data.auth_methods.is_empty());
     }
 
     #[test]
@@ -3553,7 +3608,10 @@ mod tests {
                 .initialize_once(|| {
                     initialize_started_tx.send(()).unwrap();
                     release_initialize_rx.recv().unwrap();
-                    Ok(json!({ "loadSession": true }))
+                    Ok(AdapterInitializationData {
+                        capabilities: json!({ "loadSession": true }),
+                        auth_methods: Vec::new(),
+                    })
                 })
                 .unwrap();
             if !a_cancelled.load(Ordering::SeqCst) {
