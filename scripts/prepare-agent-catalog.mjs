@@ -30,7 +30,9 @@ export const BUILTIN_AGENT_IDS = [
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const operatingSystems = ['windows', 'macos', 'linux'];
 const architectures = ['x86_64', 'aarch64'];
+const sourceKinds = ['official-registry', 'local-supplement'];
 const integrationOrigins = ['official', 'community-adapter'];
+const publicationJournalSchemaVersion = 2;
 
 const overrides = {
   'claude-acp': {
@@ -124,6 +126,18 @@ export function buildAgentCatalog(
   if (extra.length > 0) {
     throw new Error(`Agent catalog contains uncurated agents: ${extra.join(', ')}.`);
   }
+  for (const id of BUILTIN_AGENT_IDS) {
+    if (localById.has(id)) {
+      if (Object.hasOwn(validatedVersions, id)) {
+        throw new Error(`Local Agent ${id} must carry its validated version in local provenance, not policy.`);
+      }
+      continue;
+    }
+    if (!Object.hasOwn(validatedVersions, id)) {
+      throw new Error(`Agent ${id} is missing an explicit validated version.`);
+    }
+    validateValidatedVersion(id, validatedVersions[id]);
+  }
 
   const agents = BUILTIN_AGENT_IDS.map((id) => {
     const local = localById.get(id);
@@ -177,6 +191,7 @@ export function buildAgentCatalog(
       excludedPlatforms: validateExcludedPlatforms(id, override.excludedPlatforms),
     };
   });
+  for (const agent of agents) validateCatalogProvenance(agent.id, agent.provenance);
 
   return {
     schemaVersion: 2,
@@ -217,9 +232,7 @@ function validatePolicy(policy) {
   }
   for (const [id, version] of Object.entries(validatedVersions)) {
     if (!BUILTIN_AGENT_IDS.includes(id)) throw new Error(`Unknown Agent validated version: ${id}`);
-    if (typeof version !== 'string' || !semver.valid(version)) {
-      throw new Error(`Agent ${id} validated version must be an exact semantic version.`);
-    }
+    validateValidatedVersion(id, version);
   }
   const launchOverrides = policy.launchOverrides === undefined ? {} : policy.launchOverrides;
   if (!launchOverrides || typeof launchOverrides !== 'object' || Array.isArray(launchOverrides)) {
@@ -248,9 +261,8 @@ function validatePolicy(policy) {
 function localCatalogAgent(id, agent) {
   if (!agent || typeof agent !== 'object') throw new Error(`Local Agent ${id} must be an object.`);
   const provenance = agent.provenance;
-  if (!provenance || provenance.sourceKind !== 'local-supplement'
-      || !integrationOrigins.includes(provenance.integrationOrigin)
-      || typeof provenance.validatedVersion === 'undefined') {
+  validateCatalogProvenance(id, provenance);
+  if (provenance.sourceKind !== 'local-supplement') {
     throw new Error(`Local Agent ${id} has invalid provenance.`);
   }
   if (agent.version !== provenance.validatedVersion) {
@@ -265,7 +277,7 @@ function localCatalogAgent(id, agent) {
     provenance: {
       sourceKind: 'local-supplement',
       integrationOrigin: provenance.integrationOrigin,
-      validatedVersion: String(provenance.validatedVersion),
+      validatedVersion: provenance.validatedVersion,
     },
     description: String(agent.description ?? ''),
     repository: agent.repository ?? null,
@@ -284,6 +296,22 @@ function localCatalogAgent(id, agent) {
     supportsExternalSessionSync: false,
     excludedPlatforms: validateExcludedPlatforms(id, agent.excludedPlatforms),
   };
+}
+
+function validateValidatedVersion(id, version) {
+  const parsed = typeof version === 'string' ? semver.parse(version) : null;
+  const canonical = parsed && `${parsed.version}${parsed.build.length ? `+${parsed.build.join('.')}` : ''}`;
+  if (!parsed || canonical !== version) {
+    throw new Error(`Agent ${id} validated version must be an exact semantic version.`);
+  }
+}
+
+function validateCatalogProvenance(id, provenance) {
+  if (!provenance || !sourceKinds.includes(provenance.sourceKind)
+      || !integrationOrigins.includes(provenance.integrationOrigin)) {
+    throw new Error(`Agent ${id} has invalid provenance.`);
+  }
+  validateValidatedVersion(id, provenance.validatedVersion);
 }
 
 function validateExcludedPlatforms(id, value = []) {
@@ -462,6 +490,7 @@ async function validateStagedCatalog(staging, catalog) {
   const iconKeys = new Set();
   for (const agent of catalog.agents) {
     if (!BUILTIN_AGENT_IDS.includes(agent.id)) throw new Error(`Uncurated Agent in catalog: ${agent.id}`);
+    validateCatalogProvenance(agent.id, agent.provenance);
     if (iconKeys.has(agent.iconKey)) throw new Error(`Duplicate Agent icon key: ${agent.iconKey}`);
     iconKeys.add(agent.iconKey);
     targets.set(`web/public/agent-icons/${agent.iconKey}.svg`, join(staging, 'icons', `${agent.iconKey}.svg`));
@@ -511,28 +540,34 @@ async function publishStagedCatalog(root, staged, hooks) {
   );
   const records = [];
   const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-  for (const relativePath of [...generated.keys(), ...staleIcons]) {
-    const target = resolve(root, relativePath);
-    await mkdir(dirname(target), { recursive: true });
-    const exists = await fileExists(target);
-    const operation = generated.has(relativePath) ? 'publish' : 'remove';
-    const backup = exists ? `${target}.catalog-backup-${token}` : null;
-    if (backup) await copyFile(target, backup);
-    const temp = operation === 'publish' ? `${target}.catalog-temp-${token}` : null;
-    if (temp) await copyFile(staged.targets.get(relativePath), temp);
-    records.push({
-      target: relativeTarget(root, target),
-      operation,
-      temp: temp && relativeTarget(root, temp),
-      backup: backup && relativeTarget(root, backup),
-      originalDigest: exists ? await fileDigest(target) : null,
-      newDigest: operation === 'publish' ? staged.digests.get(relativePath) : null,
-    });
-  }
-
+  const journal = { schemaVersion: publicationJournalSchemaVersion, phase: 'publishing', records };
   let journalReady = false;
   try {
-    await writeAtomicFile(paths.journal, `${JSON.stringify({ schemaVersion: 1, records }, null, 2)}\n`);
+    for (const relativePath of [...generated.keys(), ...staleIcons]) {
+      const target = resolve(root, relativePath);
+      await mkdir(dirname(target), { recursive: true });
+      const originalExists = await fileExists(target);
+      const newExists = generated.has(relativePath);
+      const backup = originalExists ? `${target}.catalog-backup-${token}` : null;
+      const temp = `${target}.catalog-temp-${token}`;
+      const record = {
+        target: relativeTarget(root, target),
+        operation: newExists ? 'publish' : 'remove',
+        temp: relativeTarget(root, temp),
+        backup: backup && relativeTarget(root, backup),
+        originalExists,
+        newExists,
+        originalDigest: null,
+        newDigest: newExists ? staged.digests.get(relativePath) : null,
+      };
+      records.push(record);
+      if (backup) {
+        await copyFile(target, backup);
+        record.originalDigest = await fileDigest(backup);
+      }
+      if (newExists) await copyFile(staged.targets.get(relativePath), temp);
+    }
+    await writePublicationJournal(paths.journal, journal);
     journalReady = true;
     for (const record of records) {
       await hooks.beforeReplace?.(record);
@@ -544,24 +579,28 @@ async function publishStagedCatalog(root, staged, hooks) {
       }
       await hooks.afterReplace?.(record);
     }
-    for (const record of records) {
-      if (record.backup) await rm(resolve(root, record.backup), { force: true });
-    }
-    await rm(paths.journal, { force: true });
+    await verifyPublicationState(root, records, 'new');
   } catch (error) {
     if (error instanceof SimulatedPublicationCrash) throw error;
-    if (journalReady) await recoverAgentCatalogPublication(root);
-    else await cleanupRecords(root, records);
+    if (journalReady) {
+      // An ordinary pre-commit failure must roll back even after the last replacement.
+      journal.phase = 'rolling-back';
+      await writePublicationJournal(paths.journal, journal);
+      await recoverAgentCatalogPublication(root);
+    } else {
+      await cleanupRecords(root, records);
+    }
     throw error;
-  } finally {
-    await cleanupRecords(root, records, { tempsOnly: true });
   }
+  // Cleanup is after the commit point; a crash here can confirm the full new set.
+  await cleanupRecords(root, records);
+  await rm(paths.journal, { force: true });
 }
 
-async function cleanupRecords(root, records, { tempsOnly = false } = {}) {
+async function cleanupRecords(root, records) {
   for (const record of records) {
     if (record.temp) await rm(resolve(root, record.temp), { force: true });
-    if (!tempsOnly && record.backup) await rm(resolve(root, record.backup), { force: true });
+    if (record.backup) await rm(resolve(root, record.backup), { force: true });
   }
 }
 
@@ -591,38 +630,99 @@ export async function recoverAgentCatalogPublication(root) {
   const paths = catalogPaths(root);
   if (!await fileExists(paths.journal)) return false;
   const journal = JSON.parse(await readFile(paths.journal, 'utf8'));
-  if (journal.schemaVersion !== 1 || !Array.isArray(journal.records)) {
-    throw new Error('Invalid Agent catalog recovery journal.');
-  }
-  for (const record of journal.records) {
-    if (!record.target || !['publish', 'remove'].includes(record.operation)) {
-      throw new Error('Invalid Agent catalog recovery record.');
-    }
-    const target = resolve(root, record.target);
-    const targetExists = await fileExists(target);
-    const targetDigest = targetExists ? await fileDigest(target) : null;
-    if (targetDigest === record.newDigest) continue;
-    if (targetDigest === record.originalDigest) continue;
-    if (record.backup) {
+  validatePublicationJournal(root, journal);
+  const states = await Promise.all(journal.records.map((record) => readPublicationState(root, record)));
+  const completeNewSet = states.every((state, index) => matchesPublicationState(state, journal.records[index], 'new'));
+  if (journal.phase !== 'publishing' || !completeNewSet) {
+    // Validate every required rollback source before changing any official file.
+    const restore = journal.records.filter((record, index) => !matchesPublicationState(states[index], record, 'original'));
+    for (const record of restore) {
+      if (!record.originalExists) continue;
       const backup = resolve(root, record.backup);
-      if (await fileDigest(backup) !== record.originalDigest) {
-        throw new Error(`Agent catalog backup digest mismatch: ${record.target}`);
+      if (!await fileExists(backup) || await fileDigest(backup) !== record.originalDigest) {
+        throw new Error(`Agent catalog backup digest mismatch or missing: ${record.target}`);
       }
-      if (targetExists) await rm(target, { force: true });
-      await rename(backup, target);
-    } else if (targetExists) {
-      await rm(target, { force: true });
-    } else {
-      throw new Error(`Agent catalog recovery source is missing: ${record.target}`);
     }
-    if (record.temp) await rm(resolve(root, record.temp), { force: true });
+    if (journal.phase !== 'rolling-back') {
+      journal.phase = 'rolling-back';
+      await writePublicationJournal(paths.journal, journal);
+    }
+    for (const record of restore) {
+      const target = resolve(root, record.target);
+      if (record.originalExists) {
+        // Keep the backup until the whole old set is verified, so recovery can restart.
+        const temp = resolve(root, record.temp);
+        await copyFile(resolve(root, record.backup), temp);
+        await rename(temp, target);
+      } else {
+        await rm(target, { force: true });
+      }
+    }
+    await verifyPublicationState(root, journal.records, 'original');
   }
-  for (const record of journal.records) {
-    if (record.temp) await rm(resolve(root, record.temp), { force: true });
-    if (record.backup) await rm(resolve(root, record.backup), { force: true });
-  }
+  await cleanupRecords(root, journal.records);
   await rm(paths.journal, { force: true });
   return true;
+}
+
+function validatePublicationJournal(root, journal) {
+  if (!journal || journal.schemaVersion !== publicationJournalSchemaVersion
+      || !['publishing', 'rolling-back'].includes(journal.phase)
+      || !Array.isArray(journal.records) || journal.records.length === 0) {
+    throw new Error('Invalid Agent catalog recovery journal.');
+  }
+  const seen = new Set();
+  const validPath = (path) => typeof path === 'string' && path
+    && !isAbsolute(path) && relativeTarget(root, resolve(root, path)) === path;
+  const validDigest = (digest) => typeof digest === 'string' && /^[a-f0-9]{64}$/.test(digest);
+  for (const record of journal.records) {
+    if (!record || !validPath(record.target) || seen.has(record.target)
+        || !['publish', 'remove'].includes(record.operation)
+        || typeof record.originalExists !== 'boolean'
+        || typeof record.newExists !== 'boolean'
+        || record.newExists !== (record.operation === 'publish')
+        || (record.originalExists ? !validDigest(record.originalDigest) : record.originalDigest !== null)
+        || (record.newExists ? !validDigest(record.newDigest) : record.newDigest !== null)
+        || !validPath(record.temp) || !record.temp.startsWith(`${record.target}.catalog-temp-`)
+        || (record.originalExists
+          ? !validPath(record.backup) || !record.backup.startsWith(`${record.target}.catalog-backup-`)
+          : record.backup !== null)) {
+      throw new Error('Invalid Agent catalog recovery record.');
+    }
+    const iconPrefix = 'web/public/agent-icons/';
+    if (!['resources/acp-registry.snapshot.json', 'resources/agent-catalog.json'].includes(record.target)) {
+      if (!record.target.startsWith(iconPrefix) || !record.target.endsWith('.svg')) {
+        throw new Error('Invalid Agent catalog recovery target.');
+      }
+      validateIconKey('recovery', record.target.slice(iconPrefix.length, -4));
+    }
+    seen.add(record.target);
+  }
+}
+
+async function readPublicationState(root, record) {
+  try {
+    return { exists: true, digest: await fileDigest(resolve(root, record.target)) };
+  } catch (error) {
+    if (error.code === 'ENOENT') return { exists: false, digest: null };
+    throw error;
+  }
+}
+
+function matchesPublicationState(state, record, version) {
+  return state.exists === record[`${version}Exists`] && state.digest === record[`${version}Digest`];
+}
+
+async function verifyPublicationState(root, records, version) {
+  for (const record of records) {
+    if (!matchesPublicationState(await readPublicationState(root, record), record, version)) {
+      throw new Error(`Agent catalog ${version} set digest mismatch: ${record.target}`);
+    }
+  }
+}
+
+async function writePublicationJournal(path, journal) {
+  await writeAtomicFile(path, `${JSON.stringify(journal, null, 2)}\n`);
 }
 
 async function main() {

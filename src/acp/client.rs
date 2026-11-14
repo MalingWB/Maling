@@ -366,9 +366,10 @@ use crate::acp::branches::{
 use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
     AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
-    AdapterConnectionUse, AdapterShutdownReason, AttemptSessionUnregisterOutcome, LiveAcpSession,
-    STDERR_FAILURE_DRAIN_TIMEOUT, SessionEventPump, SessionObservedFrame, SessionRouteTryRecvError,
-    SessionRouteWatermark, unsupported_client_inbound_reply,
+    AdapterConnectionUse, AdapterInitializationData, AdapterShutdownReason,
+    AttemptSessionUnregisterOutcome, LiveAcpSession, STDERR_FAILURE_DRAIN_TIMEOUT,
+    SessionEventPump, SessionObservedFrame, SessionRouteTryRecvError, SessionRouteWatermark,
+    unsupported_client_inbound_reply,
 };
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, bind_pending_elicitation_timeline_identity,
@@ -4593,15 +4594,17 @@ impl<'a> AcpRuntime<'a> {
                 timeout,
             )?;
             subagents::validate_initialize_result(&result)?;
-            self.auth_methods = result
-                .get("authMethods")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            Ok(result
-                .get("agentCapabilities")
-                .cloned()
-                .unwrap_or_else(|| json!({})))
+            Ok(AdapterInitializationData {
+                capabilities: result
+                    .get("agentCapabilities")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+                auth_methods: result
+                    .get("authMethods")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+            })
         });
         let outcome = match outcome {
             Ok(outcome) => outcome,
@@ -4627,7 +4630,8 @@ impl<'a> AcpRuntime<'a> {
                 }),
             );
         }
-        Ok(outcome.capabilities)
+        self.auth_methods = outcome.data.auth_methods;
+        Ok(outcome.data.capabilities)
     }
 
     fn load_provider_history_replay_anchors(&mut self) -> Result<()> {
@@ -18029,6 +18033,91 @@ do {
             "a failed auth decision must not retry session/new: {trace:?}"
         );
         runtime.shutdown();
+    }
+
+    #[test]
+    fn shared_connection_preserves_auth_methods_for_later_runtimes() {
+        for configured_token in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let cwd = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+            let config = auth_fixture_config(configured_token);
+            let start = |attempt: &str| {
+                let attempt_dir = cwd.join(attempt);
+                crate::acp::branches::initialize_standalone_agent_timeline_storage(&attempt_dir)
+                    .unwrap();
+                AcpRuntime::start(
+                    "auth-fixture",
+                    &config,
+                    cwd.clone(),
+                    attempt_dir,
+                    false,
+                    false,
+                    1_000_000,
+                    500_000,
+                    AcpRuntimePolicy::default(),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+            };
+            let mut first = start("first-attempt");
+            first.initialize().unwrap();
+            let mut second = start("second-attempt");
+            let shared = std::sync::Arc::ptr_eq(&first.connection, &second.connection);
+            second.initialize().unwrap();
+            let result = second.start_new_session(
+                "auth-fixture",
+                &cwd,
+                None,
+                None,
+                &std::collections::BTreeMap::new(),
+                "",
+                &[],
+            );
+            let trace = auth_fixture_trace(&cwd);
+            first.shutdown();
+            second.shutdown();
+            super::AdapterConnectionManager::shared()
+                .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
+                .unwrap();
+
+            assert!(shared, "both runtimes must use the same connection");
+            assert_eq!(trace.iter().filter(|line| *line == "initialize").count(), 1);
+            if configured_token {
+                result.expect("the later runtime must authenticate with the shared authMethods");
+                assert_eq!(
+                    trace.iter().filter(|line| *line == "authenticate").count(),
+                    1
+                );
+                assert_eq!(
+                    trace.iter().filter(|line| *line == "session/new").count(),
+                    2
+                );
+                assert_eq!(
+                    std::fs::read_to_string(cwd.join(AUTH_FIXTURE_METHODS))
+                        .unwrap()
+                        .trim(),
+                    "fixture-token"
+                );
+            } else {
+                let info = normalize_runtime_error(&result.unwrap_err());
+                assert_eq!(info.code_str(), "provider.auth-required");
+                assert_eq!(info.params["missingEnv"], json!([AUTH_FIXTURE_TOKEN_ENV]));
+                assert_eq!(
+                    info.params["methods"],
+                    json!(["fixture-token", "terminal-login"])
+                );
+                assert_eq!(
+                    trace.iter().filter(|line| *line == "authenticate").count(),
+                    0
+                );
+                assert_eq!(
+                    trace.iter().filter(|line| *line == "session/new").count(),
+                    1
+                );
+            }
+        }
     }
 
     #[test]
