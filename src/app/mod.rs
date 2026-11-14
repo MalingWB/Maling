@@ -50,10 +50,7 @@ use crate::dsl::{
     WorkflowDsl, WorkflowValidationError, validate_authoring_workflow, validate_workflow,
     validate_workflow_snapshot, workflow_contains_ai_dynamic,
 };
-use crate::dynamic::{
-    DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus, dynamic_leaf_is_active,
-    refresh_dynamic_current_leaf_ids, write_dynamic_node_state,
-};
+use crate::dynamic::{dynamic_leaf_is_active, write_dynamic_node_state};
 use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
@@ -160,7 +157,7 @@ pub(crate) fn attempt_runtime_state_lock(
 ) -> &'static Mutex<()> {
     let key = format!(
         "{}/{task_id}/{run_id}/{round_id}/{node_id}/{attempt_id}",
-        app.paths.repo_root
+        app.paths.runtime_root
     );
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
@@ -5416,7 +5413,7 @@ impl App {
             .paths
             .dynamic_graph_file(task_id, run_id, round_id, node_id, attempt_id);
         let Ok(state_lock) = dynamic_state_lock_for(
-            &self.paths.repo_root,
+            &self.paths.runtime_root,
             task_id,
             run_id,
             round_id,
@@ -5441,24 +5438,7 @@ impl App {
             })
             .collect::<Vec<_>>();
 
-        for dynamic_node in &mut graph.nodes {
-            if dynamic_node.status != DynamicNodeStatus::Completed {
-                dynamic_node.status = DynamicNodeStatus::Paused;
-                dynamic_node.outcome = None;
-                dynamic_node.pause_reason = Some(pause_reason);
-                dynamic_node.runtime_error = None;
-                let now = now_rfc3339_like();
-                dynamic_node.pause_runtime_execution(now.clone());
-                dynamic_node.finished_at = Some(now);
-            }
-        }
-
-        graph.run.status = DynamicRunStatus::Paused;
-        graph.run.phase = DynamicRunPhase::Executing;
-        graph.run.outcome = None;
-        graph.run.pause_reason = Some(pause_reason);
-        refresh_dynamic_current_leaf_ids(&mut graph);
-        graph.run.updated_at = now_rfc3339_like();
+        orchestrator::pause_dynamic_graph_runtime_state(&mut graph, pause_reason);
         let _ = write_json(&graph_path, &graph);
         let _ = write_json(
             &self
@@ -5512,6 +5492,27 @@ impl App {
     }
 
     pub fn run_pause(&self, task_id: &str, run_id: &str, reason: PauseReason) -> Result<RunState> {
+        self.run_pause_with_descendants(task_id, run_id, reason, true)
+    }
+
+    /// Commits this Run's stop fence. Bounded tree traversal owns descendant
+    /// discovery and cancellation separately, without recursive metadata reads.
+    pub(crate) fn pause_run_state(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        reason: PauseReason,
+    ) -> Result<RunState> {
+        self.run_pause_with_descendants(task_id, run_id, reason, false)
+    }
+
+    fn run_pause_with_descendants(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        reason: PauseReason,
+        interrupt_descendants: bool,
+    ) -> Result<RunState> {
         loop {
             let observed = self.run_status(task_id, run_id)?;
             if observed.status != RunStatus::Running {
@@ -5584,7 +5585,9 @@ impl App {
             }
             drop(guard);
 
-            self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
+            if interrupt_descendants {
+                self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
+            }
             self.publish_committed_attempt_pause(&run);
             self.finish_runtime_candidate_best_effort(
                 task_id,
@@ -5876,7 +5879,7 @@ impl App {
         attempt_id: &str,
     ) -> Result<bool> {
         dynamic_resume_target_is_active(
-            &self.paths.repo_root,
+            &self.paths.runtime_root,
             task_id,
             run_id,
             round_id,

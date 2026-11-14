@@ -292,7 +292,7 @@ fn notify_dynamic_resume_started(
     resume: &mut DynamicResumeOverride,
 ) -> bool {
     let key = dynamic_state_lock_key(
-        &ctx.app.paths.repo_root,
+        &ctx.app.paths.runtime_root,
         ctx.task_id,
         ctx.run_id,
         ctx.round_id,
@@ -315,7 +315,7 @@ fn notify_dynamic_resume_failed(
     info: RuntimeErrorInfo,
 ) {
     let key = dynamic_state_lock_key(
-        &ctx.app.paths.repo_root,
+        &ctx.app.paths.runtime_root,
         ctx.task_id,
         ctx.run_id,
         ctx.round_id,
@@ -392,7 +392,7 @@ fn dynamic_runtime_continue_was_cancelled(error: &anyhow::Error) -> bool {
 
 impl FixedRunContinueLease {
     fn acquire(app: &App, task_id: &str, run_id: &str) -> Result<Self> {
-        let key = format!("{}/{task_id}/{run_id}", app.paths.repo_root);
+        let key = format!("{}/{task_id}/{run_id}", app.paths.runtime_root);
         let mut starting = FIXED_RUN_CONTINUE_STARTING
             .get_or_init(|| Mutex::new(HashSet::new()))
             .lock()
@@ -1752,7 +1752,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         app.run_pause(task_id, run_id, reason)?;
     }
     let state_lock = dynamic_state_lock_for(
-        &app.paths.repo_root,
+        &app.paths.runtime_root,
         task_id,
         run_id,
         round_id,
@@ -1782,7 +1782,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         if graph.nodes[target_index].status == DynamicNodeStatus::Completed {
             if let Some(dynamic_attempt_id) = expected_dynamic_attempt_id {
                 stop_dynamic_resume_target(
-                    &app.paths.repo_root,
+                    &app.paths.runtime_root,
                     task_id,
                     run_id,
                     round_id,
@@ -1849,7 +1849,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
             if has_active_leaf {
                 if let Some(dynamic_attempt_id) = expected_dynamic_attempt_id {
                     stop_dynamic_resume_target(
-                        &app.paths.repo_root,
+                        &app.paths.runtime_root,
                         task_id,
                         run_id,
                         round_id,
@@ -1930,7 +1930,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
     let recovery_candidate_token = run.execution.recovery_candidate_token.clone();
     if let Some(dynamic_attempt_id) = expected_dynamic_attempt_id {
         stop_dynamic_resume_target(
-            &app.paths.repo_root,
+            &app.paths.runtime_root,
             task_id,
             run_id,
             round_id,
@@ -2256,7 +2256,7 @@ fn run_continue_dynamic_inner(
     ))?;
     let (dispatch, prompt_state, resume_override) = {
         let lock = dynamic_state_lock_for(
-            &app.paths.repo_root,
+            &app.paths.runtime_root,
             task_id,
             run_id,
             round_id,
@@ -2345,7 +2345,7 @@ fn run_continue_dynamic_inner(
             launch_signal: launch.take(),
         };
         let dispatch = dispatch_registered_dynamic_resume_override(
-            &app.paths.repo_root,
+            &app.paths.runtime_root,
             task_id,
             run_id,
             round_id,
@@ -2411,7 +2411,7 @@ fn run_continue_dynamic_inner(
     );
     drive_result?;
     let resume_key = dynamic_state_lock_key(
-        &app.paths.repo_root,
+        &app.paths.runtime_root,
         task_id,
         run_id,
         round_id,
@@ -2464,7 +2464,7 @@ fn rearm_dynamic_outer_runtime_for_resume(
         .lock()
         .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
     let resume_key = dynamic_state_lock_key(
-        &app.paths.repo_root,
+        &app.paths.runtime_root,
         task_id,
         run_id,
         round_id,
@@ -2685,7 +2685,7 @@ impl DynamicInnerContinueTarget {
         launch_signal: Option<mpsc::Sender<RuntimeContinueLaunch>>,
     ) -> Result<String> {
         reserve_dynamic_resume_request(
-            &app.paths.repo_root,
+            &app.paths.runtime_root,
             &self.task_id,
             &self.run_id,
             &self.round_id,
@@ -2773,7 +2773,7 @@ fn drive_accepted_dynamic_inner_continue(
         "accepted dynamic conversation runtime continue failed"
     );
     let resume_key = dynamic_state_lock_key(
-        &app.paths.repo_root,
+        &app.paths.runtime_root,
         &target.task_id,
         &target.run_id,
         &target.round_id,
@@ -3792,7 +3792,11 @@ fn retry_stale_error(task_id: &str, run_id: &str, run: &RunState) -> anyhow::Err
     )
 }
 
-fn retry_state_error(task_id: &str, run_id: &str, error: &anyhow::Error) -> anyhow::Error {
+pub(super) fn retry_state_error(
+    task_id: &str,
+    run_id: &str,
+    error: &anyhow::Error,
+) -> anyhow::Error {
     retry_error(
         "workflow.retry.workflow-invalid",
         task_id,
@@ -6715,19 +6719,19 @@ fn dynamic_proposal_file_path(ctx: &DynamicExecutionContext<'_>, proposal_id: &s
 }
 
 fn dynamic_state_lock_key(
-    repo_root: &Utf8Path,
+    runtime_root: &Utf8Path,
     task_id: &str,
     run_id: &str,
     round_id: &str,
     outer_node_id: &str,
     outer_attempt_id: &str,
 ) -> String {
-    format!("{repo_root}/{task_id}/{run_id}/{round_id}/{outer_node_id}/{outer_attempt_id}")
+    format!("{runtime_root}/{task_id}/{run_id}/{round_id}/{outer_node_id}/{outer_attempt_id}")
 }
 
 fn dynamic_state_lock(ctx: &DynamicExecutionContext<'_>) -> Result<Arc<ReentrantMutex<()>>> {
     dynamic_state_lock_for(
-        &ctx.app.paths.repo_root,
+        &ctx.app.paths.runtime_root,
         ctx.task_id,
         ctx.run_id,
         ctx.round_id,
@@ -6737,7 +6741,7 @@ fn dynamic_state_lock(ctx: &DynamicExecutionContext<'_>) -> Result<Arc<Reentrant
 }
 
 pub(crate) fn dynamic_state_lock_for(
-    repo_root: &Utf8Path,
+    runtime_root: &Utf8Path,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -6745,7 +6749,7 @@ pub(crate) fn dynamic_state_lock_for(
     outer_attempt_id: &str,
 ) -> Result<Arc<ReentrantMutex<()>>> {
     let key = dynamic_state_lock_key(
-        repo_root,
+        runtime_root,
         task_id,
         run_id,
         round_id,
@@ -6762,7 +6766,7 @@ pub(crate) fn dynamic_state_lock_for(
         .clone())
 }
 
-fn persist_dynamic_graph_for_resume_unlocked(
+pub(super) fn persist_dynamic_graph_for_resume_unlocked(
     app: &App,
     task_id: &str,
     run_id: &str,
@@ -7282,7 +7286,7 @@ fn persist_dynamic_graph_for_resume(
         validate_dynamic_node_state(node)?;
     }
     let lock = dynamic_state_lock_for(
-        &app.paths.repo_root,
+        &app.paths.runtime_root,
         task_id,
         run_id,
         round_id,
@@ -7306,7 +7310,7 @@ fn register_dynamic_resume_channel(
     tx: mpsc::Sender<DynamicResumeOverride>,
 ) -> Result<(DynamicResumeRegistration, Vec<DynamicResumeOverride>)> {
     let key = dynamic_state_lock_key(
-        &ctx.app.paths.repo_root,
+        &ctx.app.paths.runtime_root,
         ctx.task_id,
         ctx.run_id,
         ctx.round_id,
@@ -7345,7 +7349,7 @@ fn register_dynamic_resume_channel(
 
 #[cfg(test)]
 fn dispatch_dynamic_resume_override(
-    repo_root: &Utf8Path,
+    runtime_root: &Utf8Path,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -7354,7 +7358,7 @@ fn dispatch_dynamic_resume_override(
     resume: DynamicResumeOverride,
 ) -> Result<DynamicResumeDispatch> {
     dispatch_dynamic_resume_override_with_lease(
-        repo_root,
+        runtime_root,
         task_id,
         run_id,
         round_id,
@@ -7367,7 +7371,7 @@ fn dispatch_dynamic_resume_override(
 
 #[allow(clippy::too_many_arguments)]
 fn dispatch_registered_dynamic_resume_override(
-    repo_root: &Utf8Path,
+    runtime_root: &Utf8Path,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -7376,7 +7380,7 @@ fn dispatch_registered_dynamic_resume_override(
     resume: DynamicResumeOverride,
 ) -> Result<DynamicResumeDispatch> {
     dispatch_dynamic_resume_override_with_lease(
-        repo_root,
+        runtime_root,
         task_id,
         run_id,
         round_id,
@@ -7389,7 +7393,7 @@ fn dispatch_registered_dynamic_resume_override(
 
 #[allow(clippy::too_many_arguments)]
 fn reserve_dynamic_resume_request(
-    repo_root: &Utf8Path,
+    runtime_root: &Utf8Path,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -7398,7 +7402,7 @@ fn reserve_dynamic_resume_request(
     lease: DynamicResumeLease,
 ) -> Result<String> {
     let key = dynamic_state_lock_key(
-        repo_root,
+        runtime_root,
         task_id,
         run_id,
         round_id,
@@ -7437,7 +7441,7 @@ fn reserve_dynamic_resume_request(
 
 #[allow(clippy::too_many_arguments)]
 fn dispatch_dynamic_resume_override_with_lease(
-    repo_root: &Utf8Path,
+    runtime_root: &Utf8Path,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -7447,7 +7451,7 @@ fn dispatch_dynamic_resume_override_with_lease(
     require_reserved_lease: bool,
 ) -> Result<DynamicResumeDispatch> {
     let key = dynamic_state_lock_key(
-        repo_root,
+        runtime_root,
         task_id,
         run_id,
         round_id,
@@ -7456,7 +7460,7 @@ fn dispatch_dynamic_resume_override_with_lease(
     );
     if !require_reserved_lease {
         reserve_dynamic_resume_request(
-            repo_root,
+            runtime_root,
             task_id,
             run_id,
             round_id,
@@ -7534,7 +7538,7 @@ fn dynamic_resume_request_is_active(key: &str, request_id: &str) -> Result<bool>
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn dynamic_resume_target_is_active(
-    repo_root: &Utf8Path,
+    runtime_root: &Utf8Path,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -7544,7 +7548,7 @@ pub(crate) fn dynamic_resume_target_is_active(
     attempt_id: &str,
 ) -> Result<bool> {
     let key = dynamic_state_lock_key(
-        repo_root,
+        runtime_root,
         task_id,
         run_id,
         round_id,
@@ -7610,7 +7614,7 @@ fn fail_dynamic_resume_requests(
 
 #[allow(clippy::too_many_arguments)]
 fn stop_dynamic_resume_target(
-    repo_root: &Utf8Path,
+    runtime_root: &Utf8Path,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -7620,7 +7624,7 @@ fn stop_dynamic_resume_target(
     attempt_id: &str,
 ) -> Result<usize> {
     let key = dynamic_state_lock_key(
-        repo_root,
+        runtime_root,
         task_id,
         run_id,
         round_id,
@@ -7764,7 +7768,7 @@ fn execute_ai_dynamic_node(
         let mut graph = load_or_create_dynamic_graph(&ctx)?;
         if let Some(resume) = ctx.resume_override.as_ref() {
             let key = dynamic_state_lock_key(
-                &ctx.app.paths.repo_root,
+                &ctx.app.paths.runtime_root,
                 ctx.task_id,
                 ctx.run_id,
                 ctx.round_id,
@@ -7995,7 +7999,7 @@ fn apply_dynamic_resume_overrides(
     resumes: &mut Vec<DynamicResumeOverride>,
 ) -> Result<Vec<DynamicResumeOverride>> {
     let key = dynamic_state_lock_key(
-        &ctx.app.paths.repo_root,
+        &ctx.app.paths.runtime_root,
         ctx.task_id,
         ctx.run_id,
         ctx.round_id,
@@ -8812,7 +8816,7 @@ fn discard_revoked_dynamic_resume_before_launch(
     };
     let resume = &launch_resume_overrides[resume_index];
     let key = dynamic_state_lock_key(
-        &ctx.app.paths.repo_root,
+        &ctx.app.paths.runtime_root,
         ctx.task_id,
         ctx.run_id,
         ctx.round_id,
@@ -9357,7 +9361,7 @@ fn dynamic_leaf_attempt_is_still_running(
         return Ok(false);
     }
     let state_lock = dynamic_state_lock_for(
-        &ctx.app.paths.repo_root,
+        &ctx.app.paths.runtime_root,
         ctx.task_id,
         ctx.run_id,
         ctx.round_id,
@@ -9400,6 +9404,18 @@ fn mark_dynamic_graph_paused_in_memory(graph: &mut DynamicGraphState, pause_reas
     graph.run.outcome = None;
     graph.run.pause_reason = Some(pause_reason);
     graph.run.updated_at = now_rfc3339_like();
+}
+
+pub(super) fn pause_dynamic_graph_runtime_state(
+    graph: &mut DynamicGraphState,
+    pause_reason: PauseReason,
+) {
+    for node in &mut graph.nodes {
+        if node.status != DynamicNodeStatus::Completed {
+            mark_dynamic_node_paused(node, pause_reason, None);
+        }
+    }
+    mark_dynamic_graph_paused_in_memory(graph, pause_reason);
 }
 
 fn emit_dynamic_worker_completed(
@@ -9523,7 +9539,7 @@ fn execute_dynamic_node_job(
         app.paths
             .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
     let state_lock = dynamic_state_lock_for(
-        &app.paths.repo_root,
+        &app.paths.runtime_root,
         task_id,
         run_id,
         round_id,
@@ -10643,6 +10659,40 @@ fn execute_dynamic_agent_stage(
     })
 }
 
+// Called under the parent graph lock, shared with stop and leaf generations.
+fn current_dynamic_child_launch_graph(
+    ctx: &DynamicExecutionContext<'_>,
+    node: &DynamicNodeState,
+) -> Result<DynamicGraphState> {
+    let graph = load_dynamic_graph(
+        &ctx.app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ),
+        &ctx.app.paths.repo_root,
+    )?;
+    ensure!(
+        outer_attempt_is_still_current_running(ctx)?
+            && graph.run.status == DynamicRunStatus::Running
+            && graph.nodes.iter().any(|current| {
+                current.id == node.id
+                    && dynamic_attempt_id(current) == dynamic_attempt_id(node)
+                    && current.status == DynamicNodeStatus::Running
+                    && current.outcome.is_none()
+                    && current.runtime_execution_id == node.runtime_execution_id
+                    && current.child_run_id == node.child_run_id
+            }),
+        runtime_error(dynamic_runtime_continue_stopped_info(
+            &node.id,
+            &dynamic_attempt_id(node),
+        ))
+    );
+    Ok(graph)
+}
+
 fn execute_dynamic_workflow_invocation(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
@@ -10718,29 +10768,117 @@ fn execute_dynamic_workflow_invocation(
     child_app.paths.repo_root = workspace_path;
     let child_run = match node.child_run_id.as_deref() {
         Some(child_run_id) => {
-            if let Some(resume) = ctx
+            let _continue_lease =
+                FixedRunContinueLease::acquire(&child_app, ctx.task_id, child_run_id)?;
+            let child_run = child_app.run_status(ctx.task_id, child_run_id)?;
+            let (round, mut child_node) =
+                current_attempt_state(&child_app, ctx.task_id, &child_run)?;
+            let execution_id = next_runtime_execution_id();
+            let resume_metrics = {
+                let lock = dynamic_state_lock(ctx)?;
+                let _guard = lock.lock();
+                current_dynamic_child_launch_graph(ctx, &node)?;
+                commit_fixed_run_continue(
+                    &child_app,
+                    ctx.task_id,
+                    child_run_id,
+                    &round,
+                    &mut child_node,
+                    &execution_id,
+                )?
+            };
+            let (prompt_id, input) = if let Some(resume) = ctx
                 .resume_override
                 .as_ref()
                 .filter(|resume| resume.node_id == node.id && resume.attempt_id == attempt_id)
             {
-                child_app.run_continue_with_prompt_input(
-                    ctx.task_id,
-                    child_run_id,
-                    resume.prompt_id.clone(),
-                    resume.prompt_display.clone(),
-                )?
-            } else if ctx.parent_continue_input.is_some() {
-                child_app.run_continue_with_prompt_input(
-                    ctx.task_id,
-                    child_run_id,
+                (resume.prompt_id.clone(), resume.prompt_display.clone())
+            } else {
+                (
                     ctx.parent_continue_prompt_id.clone(),
                     ctx.parent_continue_input.clone(),
-                )?
-            } else {
-                child_app.run_continue(ctx.task_id, child_run_id, None, None)?
+                )
+            };
+            if let Err(error) = run_continue_with_launch_signal(
+                &child_app,
+                ctx.task_id,
+                child_run_id,
+                prompt_id,
+                input,
+                Vec::new(),
+                None,
+                None,
+                None,
+                Some(execution_id.clone()),
+                Some(resume_metrics),
+            ) {
+                let _ = child_app.pause_attempt_runtime_state_if_active_execution(
+                    ctx.task_id,
+                    child_run_id,
+                    &round.id,
+                    &child_node.node_id,
+                    &child_node.attempt_id,
+                    &execution_id,
+                    normalize_runtime_error(&error).pause_reason_after_retry_boundary(),
+                );
+                return Err(error);
             }
+            child_app.run_status(ctx.task_id, child_run_id)?
         }
-        None => child_app.run_start(ctx.task_id, Some(child_workflow_path.as_path()))?,
+        None => {
+            // Preflight may do I/O. Keep it outside the parent graph lock.
+            let prepared =
+                child_app.prepare_run(ctx.task_id, Some(child_workflow_path.as_path()))?;
+            let child_run_id = prepared.run().id.clone();
+            let accepted = {
+                let lock = dynamic_state_lock(ctx)?;
+                let guard = lock.lock();
+                let mut current = current_dynamic_child_launch_graph(ctx, &node)?;
+                let node_index = current
+                    .nodes
+                    .iter()
+                    .position(|current| current.id == node.id)
+                    .ok_or_else(|| anyhow!("dynamic node `{}` not found", node.id))?;
+                current.nodes[node_index].child_run_id = Some(child_run_id.clone());
+                validate_dynamic_node_state(&current.nodes[node_index])?;
+                let projection = current.nodes[node_index].clone();
+                write_json(
+                    &ctx.app.paths.dynamic_graph_file(
+                        ctx.task_id,
+                        ctx.run_id,
+                        ctx.round_id,
+                        ctx.outer_node_id,
+                        ctx.outer_attempt_id,
+                    ),
+                    &current,
+                )?;
+                // Nothing fallible may separate the durable link from accept:
+                // PreparedRun::drop would otherwise delete the linked child.
+                let accepted = prepared.accept();
+                let projection_result = write_dynamic_node_state(
+                    &ctx.app.paths.dynamic_node_file(
+                        ctx.task_id,
+                        ctx.run_id,
+                        ctx.round_id,
+                        ctx.outer_node_id,
+                        ctx.outer_attempt_id,
+                        &node.id,
+                    ),
+                    &projection,
+                );
+                drop(guard);
+                if let Err(error) = projection_result {
+                    let _ = child_app.run_pause(
+                        ctx.task_id,
+                        &child_run_id,
+                        PauseReason::RuntimeAbnormal,
+                    );
+                    return Err(error);
+                }
+                accepted
+            };
+            run_prepared_run_foreground(&child_app, ctx.task_id, accepted)?
+        }
     };
     node.child_run_id = Some(child_run.id.clone());
     match child_run.status {
@@ -19404,6 +19542,538 @@ mod tests {
     }
 
     #[test]
+    fn single_node_retry_rejects_non_workflow_modes_without_publishing_execution() {
+        for mode in ["direct", "auto"] {
+            let temp = tempdir().unwrap();
+            let (app, invocations, _release, _) = retry_admission_test_app(
+                Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap(),
+            );
+            write_workflow_retry_fixture(&app, "attempt-001", PauseReason::RuntimeAbnormal);
+            let conversation_path = app
+                .paths
+                .task_dir("task-retry")
+                .join("authoring/conversation.json");
+            let set_mode = || {
+                let mut metadata: super::super::ConversationMetadata =
+                    read_json(&conversation_path).unwrap();
+                metadata.run_mode = mode.to_string();
+                write_json(&conversation_path, &metadata).unwrap();
+            };
+            set_mode();
+            let error = app
+                .retry_current_node(
+                    "task-retry",
+                    "run-retry",
+                    "round-retry",
+                    "worker",
+                    "attempt-001",
+                )
+                .unwrap_err();
+            assert_eq!(
+                normalize_runtime_error(&error).code_str(),
+                "workflow.retry.node-not-retryable",
+                "{mode}: {error:#}"
+            );
+            assert_eq!(
+                app.run_status("task-retry", "run-retry")
+                    .unwrap()
+                    .current_attempt
+                    .as_deref(),
+                Some("attempt-001")
+            );
+
+            completed_failed_rerun_fixture(&app, "attempt-001");
+            set_mode();
+            let error = app
+                .rerun_failed_node(
+                    "task-retry",
+                    "run-retry",
+                    "round-retry",
+                    "worker",
+                    "attempt-001",
+                )
+                .unwrap_err();
+            assert_eq!(
+                normalize_runtime_error(&error).code_str(),
+                "workflow.retry.node-not-retryable",
+                "{mode}: {error:#}"
+            );
+            assert!(
+                !app.run_status("task-retry", "run-retry")
+                    .unwrap()
+                    .is_sealed()
+            );
+            assert!(invocations.try_recv().is_err());
+            assert_eq!(
+                std::fs::read_dir(app.paths.runs_dir("task-retry"))
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.path().join("run.json").is_file())
+                    .count(),
+                1,
+                "{mode} must not publish a successor Run"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_node_rerun_waits_for_child_acp_and_resumes_the_same_handoff() {
+        use crate::acp::client::{PromptActivity, register_test_prompt_activity};
+
+        let temp = tempdir().unwrap();
+        let (app, invocations, release, _) =
+            retry_admission_test_app(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        completed_failed_rerun_fixture(&app, "attempt-001");
+        let mut source = app.run_status("task-retry", "run-retry").unwrap();
+        let (mut round, failed) = current_attempt_state(&app, "task-retry", &source).unwrap();
+        source.status = RunStatus::Paused;
+        source.outcome = None;
+        source.pause_reason = Some(PauseReason::ProcessInterrupted);
+        source.current_node = Some("ai-dynamic".to_string());
+        source.execution.phase = RuntimeExecutionPhase::Paused;
+        round.status = RunStatus::Paused;
+        round.outcome = None;
+        round.trace.push(round_trace_step(
+            2,
+            "ai-dynamic",
+            "attempt-001",
+            None,
+            None,
+            now_rfc3339_like(),
+        ));
+        let mut outer = failed.clone();
+        outer.node_id = "ai-dynamic".to_string();
+        outer.node_type = crate::domain::NodeType::AiDynamic;
+        outer.status = RunStatus::Paused;
+        outer.outcome = None;
+        outer.runtime_execution_id = None;
+        persist_runtime_state(&app, "task-retry", &source, &round, &outer).unwrap();
+
+        let mut child = source.clone();
+        child.id = "run-child".to_string();
+        child.current_node = Some("worker".to_string());
+        child.status = RunStatus::Running;
+        child.pause_reason = None;
+        child.execution.phase = RuntimeExecutionPhase::RunningNode;
+        let mut child_round = round.clone();
+        child_round.run_id = child.id.clone();
+        child_round.status = RunStatus::Running;
+        child_round.trace.truncate(1);
+        let mut child_node = failed;
+        child_node.run_id = child.id.clone();
+        child_node.status = RunStatus::Running;
+        child_node.outcome = None;
+        child_node.runtime_execution_id = Some("execution-child".to_string());
+        persist_runtime_state(&app, "task-retry", &child, &child_round, &child_node).unwrap();
+        let mut leaf = test_worktree_node("child-flow");
+        leaf.kind = DynamicNodeKind::WorkflowInvocation;
+        leaf.child_run_id = Some(child.id.clone());
+        leaf.status = DynamicNodeStatus::Paused;
+        leaf.pause_reason = Some(PauseReason::ProcessInterrupted);
+        let mut graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![leaf]);
+        graph.run.parent_run_id = source.id.clone();
+        graph.run.parent_round_id = round.id.clone();
+        graph.run.status = DynamicRunStatus::Paused;
+        graph.run.pause_reason = Some(PauseReason::ProcessInterrupted);
+        write_json(
+            &app.paths.dynamic_graph_file(
+                "task-retry",
+                &source.id,
+                &round.id,
+                "ai-dynamic",
+                "attempt-001",
+            ),
+            &graph,
+        )
+        .unwrap();
+        let child_attempt =
+            app.paths
+                .attempt_dir("task-retry", &child.id, &round.id, "worker", "attempt-001");
+        let activity =
+            register_test_prompt_activity(child_attempt.clone(), PromptActivity::Running);
+
+        let blocked =
+            app.rerun_failed_node("task-retry", &source.id, &round.id, "worker", "attempt-001");
+        // Clean up an incorrectly admitted successor before reporting the baseline failure.
+        if let Ok(accepted) = &blocked {
+            release.send(()).unwrap();
+            wait_for_rerun_settlement(&app, &accepted.run.id);
+        }
+        let cancellation = crate::acp::client::prompt_activity(&child_attempt);
+        activity.mark_stopped();
+        assert_eq!(
+            normalize_runtime_error(&blocked.unwrap_err()).code_str(),
+            "workflow.retry.source-busy"
+        );
+        assert_eq!(cancellation, Some(PromptActivity::CancelRequested));
+        assert!(
+            invocations.try_recv().is_err(),
+            "a busy descendant must block successor provider admission"
+        );
+        let sealed = app.run_status("task-retry", &source.id).unwrap();
+        let target_id = &sealed
+            .rerun
+            .as_ref()
+            .unwrap()
+            .sealed_by
+            .as_ref()
+            .unwrap()
+            .successor_run_id;
+        assert!(!app.paths.run_file("task-retry", target_id).exists());
+        assert_eq!(
+            app.run_status("task-retry", &child.id).unwrap().status,
+            RunStatus::Paused
+        );
+
+        let accepted = app
+            .rerun_failed_node("task-retry", &source.id, &round.id, "worker", "attempt-001")
+            .unwrap();
+        assert_eq!(&accepted.run.id, target_id);
+        invocations
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        release.send(()).unwrap();
+        wait_for_rerun_settlement(&app, &accepted.run.id);
+    }
+
+    #[test]
+    fn runtime_control_locks_follow_storage_identity_across_execution_workspaces() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        let mut child_app = app.clone_for_background();
+        child_app.paths.repo_root = app.paths.repo_root.join("execution-worktree");
+        let dynamic = test_dynamic();
+        let parent_lock = dynamic_state_lock(&test_context(&app, &dynamic)).unwrap();
+        let child_lock = dynamic_state_lock(&test_context(&child_app, &dynamic)).unwrap();
+        let attempt_lock = |app: &App| {
+            super::super::attempt_runtime_state_lock(
+                app,
+                "task-006",
+                "run-001",
+                "round-001",
+                "ai-dynamic",
+                "attempt-001",
+            )
+        };
+        let same_attempt_lock = std::ptr::eq(attempt_lock(&app), attempt_lock(&child_app));
+        let _lease = FixedRunContinueLease::acquire(&app, "task-006", "run-001").unwrap();
+        let duplicate_lease = FixedRunContinueLease::acquire(&child_app, "task-006", "run-001");
+        assert!(
+            Arc::ptr_eq(&parent_lock, &child_lock),
+            "one persisted dynamic graph must share its control lock across execution workspaces"
+        );
+        assert!(
+            same_attempt_lock,
+            "one persisted attempt must share its state lock"
+        );
+        assert_eq!(
+            normalize_runtime_error(
+                &duplicate_lease
+                    .err()
+                    .expect("duplicate continue must be rejected")
+            )
+            .code_str(),
+            "runtime.continue-already-active"
+        );
+        let (sender, receiver) = mpsc::channel();
+        let (_registration, _) =
+            register_dynamic_resume_channel(&test_context(&app, &dynamic), sender).unwrap();
+        let resume = test_dynamic_resume_override(
+            "resume-across-worktrees",
+            "execution-across-worktrees",
+            "child-flow",
+            None,
+        );
+        assert_eq!(
+            dispatch_dynamic_resume_override(
+                &child_app.paths.runtime_root,
+                "task-006",
+                "run-001",
+                "round-001",
+                "ai-dynamic",
+                "attempt-001",
+                resume,
+            )
+            .unwrap(),
+            DynamicResumeDispatch::Sent
+        );
+        assert_eq!(
+            receiver
+                .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+                .unwrap()
+                .request_id,
+            "resume-across-worktrees"
+        );
+        assert!(
+            child_app
+                .dynamic_resume_target_is_active(
+                    "task-006",
+                    "run-001",
+                    "round-001",
+                    "ai-dynamic",
+                    "attempt-001",
+                    "child-flow",
+                    "attempt-001",
+                )
+                .unwrap()
+        );
+    }
+
+    fn dynamic_workflow_child_fixture(
+        app: &App,
+    ) -> (DynamicGraphState, DynamicNodeState, Utf8PathBuf) {
+        let mut task: TaskState = read_json(&app.paths.task_file("task-retry")).unwrap();
+        task.id = "task-006".to_string();
+        write_json(&app.paths.task_file(&task.id), &task).unwrap();
+        write_test_outer_run(&app);
+        let mut child_workflow = dispatch_plan_workflow(
+            vec![dispatch_plan_worker(
+                "child",
+                "child-goal",
+                "original-model",
+                None,
+            )],
+            vec![dispatch_plan_edge("child", "$end")],
+        );
+        child_workflow.entry = "child".to_string();
+        let mut leaf = test_worktree_node("child-flow");
+        leaf.kind = DynamicNodeKind::WorkflowInvocation;
+        leaf.status = DynamicNodeStatus::Running;
+        leaf.workflow_id = Some("child-workflow".to_string());
+        leaf.workflow_snapshot_id = Some("child-snapshot".to_string());
+        leaf.begin_runtime_execution("execution-child-flow", now_rfc3339_like());
+        let mut graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![leaf.clone()]);
+        graph
+            .run
+            .allowed_workflow_snapshots
+            .push(AllowedWorkflowSnapshot {
+                workflow_id: "child-workflow".to_string(),
+                snapshot_id: "child-snapshot".to_string(),
+                name: "child-workflow".to_string(),
+                contains_ai_dynamic: false,
+                workflow: child_workflow,
+            });
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        write_json(&graph_path, &graph).unwrap();
+        (graph, leaf, graph_path)
+    }
+
+    #[test]
+    fn dynamic_workflow_invocation_publishes_child_before_provider_and_parent_stop() {
+        let (temp, repo_root) = init_repo();
+        let child_workspace =
+            Utf8PathBuf::from_path_buf(temp.path().join("child-worktree")).unwrap();
+        GitWorkspaceManager::default()
+            .create_worktree(
+                &repo_root,
+                &child_workspace,
+                "gold-band/test-child-stop",
+                "HEAD",
+            )
+            .unwrap();
+        let (app, invocations, release, _) = retry_admission_test_app(repo_root);
+        let (mut graph, leaf, graph_path) = dynamic_workflow_child_fixture(&app);
+        graph.workspaces[0].path = child_workspace.clone();
+        write_json(&graph_path, &graph).unwrap();
+        let background_app = app.clone_for_background();
+        let worker = thread::spawn(move || {
+            let dynamic = test_dynamic();
+            execute_dynamic_workflow_invocation(
+                &test_context(&background_app, &dynamic),
+                &graph,
+                leaf,
+            )
+        });
+        let invocation = match invocations.recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT) {
+            Ok(invocation) => invocation,
+            Err(error) => {
+                let _ = release.send(());
+                let result = worker.join().unwrap().map(|result| result.node);
+                panic!("child provider was not reached: {error}; worker result: {result:?}");
+            }
+        };
+        let visible: DynamicGraphState = read_json(&graph_path).unwrap();
+        let published_child = visible.nodes[0].child_run_id.clone();
+        app.run_pause("task-006", "run-001", PauseReason::ProcessInterrupted)
+            .unwrap();
+        let stopped_child = app
+            .run_status("task-006", &invocation.runtime_context.run_id)
+            .unwrap();
+        release.send(()).unwrap();
+        let _ = worker.join().unwrap();
+        assert_eq!(
+            published_child.as_deref(),
+            Some(invocation.runtime_context.run_id.as_str()),
+            "child ownership must be durable before provider launch"
+        );
+        assert_eq!(invocation.adapter_workspace_dir, child_workspace);
+        assert_eq!(stopped_child.status, RunStatus::Paused);
+        assert_eq!(
+            app.run_status("task-006", &invocation.runtime_context.run_id)
+                .unwrap()
+                .status,
+            RunStatus::Paused,
+            "late provider completion cannot revive the child"
+        );
+    }
+
+    #[test]
+    fn dynamic_workflow_invocation_cannot_launch_after_parent_stops_during_preflight() {
+        for existing_child in [false, true] {
+            let (_temp, repo_root) = init_repo();
+            let (app, invocations, release, _) = retry_admission_test_app(repo_root);
+            let (mut graph, mut leaf, graph_path) = dynamic_workflow_child_fixture(&app);
+            if existing_child {
+                let workflow_path = app.paths.task_dir("task-006").join("child.snapshot.json");
+                write_json(
+                    &workflow_path,
+                    &graph.run.allowed_workflow_snapshots[0].workflow,
+                )
+                .unwrap();
+                let child = app
+                    .prepare_run("task-006", Some(&workflow_path))
+                    .unwrap()
+                    .accept();
+                let child_run_id = child.run().id.clone();
+                app.run_pause("task-006", &child_run_id, PauseReason::ProcessInterrupted)
+                    .unwrap();
+                write_json(
+                    &app.paths.worker_ref_file(
+                        "task-006",
+                        &child_run_id,
+                        "round-001",
+                        "child",
+                        "attempt-001",
+                    ),
+                    &WorkerRefState {
+                        version: VERSION.to_string(),
+                        provider: "claude-acp".to_string(),
+                        mode: SessionMode::New,
+                        supports_open_session: false,
+                        supports_continue_session: true,
+                        continue_ref: Some(serde_json::json!({ "sessionId": "child-session" })),
+                        open_command: None,
+                    },
+                )
+                .unwrap();
+                leaf.child_run_id = Some(child_run_id);
+                graph.nodes[0] = leaf.clone();
+                write_json(&graph_path, &graph).unwrap();
+            }
+            let (preflight_started, preflight) = mpsc::channel();
+            let (resume_preflight, preflight_release) = mpsc::channel();
+            let preflight_release = Mutex::new(Some(preflight_release));
+            let background_app =
+                app.clone_for_background()
+                    .with_provider_diagnostics_source(Arc::new(move || {
+                        let pending = preflight_release.lock().unwrap().take();
+                        if let Some(pending) = pending {
+                            preflight_started.send(()).unwrap();
+                            pending.recv().unwrap();
+                        }
+                        Ok(retry_admission_diagnostics())
+                    }));
+            let worker = thread::spawn(move || {
+                let dynamic = test_dynamic();
+                execute_dynamic_workflow_invocation(
+                    &test_context(&background_app, &dynamic),
+                    &graph,
+                    leaf,
+                )
+            });
+            preflight
+                .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+                .unwrap();
+            app.run_pause("task-006", "run-001", PauseReason::ProcessInterrupted)
+                .unwrap();
+            // Permit an incorrectly admitted baseline provider to finish so
+            // a failed assertion cannot leave a test worker blocked.
+            release.send(()).unwrap();
+            resume_preflight.send(()).unwrap();
+            let _ = worker.join().unwrap();
+            assert!(
+                invocations.try_recv().is_err(),
+                "stopped parent admitted a child; existing={existing_child}"
+            );
+            let graph: DynamicGraphState = read_json(&graph_path).unwrap();
+            if let Some(child_id) = graph.nodes[0].child_run_id.as_deref() {
+                assert_eq!(
+                    app.run_status("task-006", child_id).unwrap().status,
+                    RunStatus::Paused
+                );
+            } else {
+                let published = std::fs::read_dir(app.paths.runs_dir("task-006"))
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.path().join("run.json").is_file())
+                    .count();
+                assert_eq!(published, 1, "unaccepted child must be removed");
+            }
+        }
+    }
+
+    #[test]
+    fn dynamic_workflow_invocation_preserves_linked_child_when_projection_write_fails() {
+        let (_temp, repo_root) = init_repo();
+        let (app, invocations, _release, _) = retry_admission_test_app(repo_root);
+        let (graph, leaf, graph_path) = dynamic_workflow_child_fixture(&app);
+        let node_path = app.paths.dynamic_node_file(
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            &leaf.id,
+        );
+        let (preflight_started, preflight) = mpsc::channel();
+        let (resume_preflight, preflight_release) = mpsc::channel();
+        let preflight_release = Mutex::new(Some(preflight_release));
+        let background_app = app
+            .clone_for_background()
+            .with_provider_diagnostics_source(Arc::new(move || {
+                let pending = preflight_release.lock().unwrap().take();
+                if let Some(pending) = pending {
+                    preflight_started.send(()).unwrap();
+                    pending.recv().unwrap();
+                }
+                Ok(retry_admission_diagnostics())
+            }));
+        let worker = thread::spawn(move || {
+            let dynamic = test_dynamic();
+            execute_dynamic_workflow_invocation(
+                &test_context(&background_app, &dynamic),
+                &graph,
+                leaf,
+            )
+        });
+        preflight
+            .recv_timeout(RETRY_ADMISSION_TEST_TIMEOUT)
+            .unwrap();
+        std::fs::remove_file(&node_path).unwrap();
+        std::fs::create_dir(&node_path).unwrap();
+        resume_preflight.send(()).unwrap();
+        assert!(worker.join().unwrap().is_err());
+        assert!(invocations.try_recv().is_err());
+        let graph: DynamicGraphState = read_json(&graph_path).unwrap();
+        let child_run_id = graph.nodes[0]
+            .child_run_id
+            .as_deref()
+            .expect("child link committed");
+        assert_eq!(
+            app.run_status("task-006", child_run_id).unwrap().status,
+            RunStatus::Paused,
+            "a projection failure must preserve the linked child and settle its lifecycle"
+        );
+    }
+
+    #[test]
     fn failed_node_rerun_forks_terminal_run_with_fresh_session_and_readonly_prefix() {
         let temp = tempdir().unwrap();
         let (app, invocations, release, _) =
@@ -26618,7 +27288,7 @@ mod tests {
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let key = dynamic_state_lock_key(
-            &ctx.app.paths.repo_root,
+            &ctx.app.paths.runtime_root,
             ctx.task_id,
             ctx.run_id,
             ctx.round_id,
@@ -26667,7 +27337,7 @@ mod tests {
         };
 
         let first_dispatch = dispatch_dynamic_resume_override(
-            &ctx.app.paths.repo_root,
+            &ctx.app.paths.runtime_root,
             ctx.task_id,
             ctx.run_id,
             ctx.round_id,
@@ -26677,7 +27347,7 @@ mod tests {
         )
         .unwrap();
         let second_dispatch = dispatch_dynamic_resume_override(
-            &ctx.app.paths.repo_root,
+            &ctx.app.paths.runtime_root,
             ctx.task_id,
             ctx.run_id,
             ctx.round_id,
@@ -26703,7 +27373,7 @@ mod tests {
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let key = dynamic_state_lock_key(
-            &ctx.app.paths.repo_root,
+            &ctx.app.paths.runtime_root,
             ctx.task_id,
             ctx.run_id,
             ctx.round_id,
@@ -26720,7 +27390,7 @@ mod tests {
         );
         assert_eq!(
             dispatch_dynamic_resume_override(
-                &ctx.app.paths.repo_root,
+                &ctx.app.paths.runtime_root,
                 ctx.task_id,
                 ctx.run_id,
                 ctx.round_id,
@@ -26733,7 +27403,7 @@ mod tests {
         );
         assert!(
             dynamic_resume_target_is_active(
-                &ctx.app.paths.repo_root,
+                &ctx.app.paths.runtime_root,
                 ctx.task_id,
                 ctx.run_id,
                 ctx.round_id,
@@ -26747,7 +27417,7 @@ mod tests {
 
         assert_eq!(
             stop_dynamic_resume_target(
-                &ctx.app.paths.repo_root,
+                &ctx.app.paths.runtime_root,
                 ctx.task_id,
                 ctx.run_id,
                 ctx.round_id,
@@ -26780,7 +27450,7 @@ mod tests {
         );
         assert_eq!(
             dispatch_dynamic_resume_override(
-                &ctx.app.paths.repo_root,
+                &ctx.app.paths.runtime_root,
                 ctx.task_id,
                 ctx.run_id,
                 ctx.round_id,
@@ -26801,7 +27471,7 @@ mod tests {
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let key = dynamic_state_lock_key(
-            &ctx.app.paths.repo_root,
+            &ctx.app.paths.runtime_root,
             ctx.task_id,
             ctx.run_id,
             ctx.round_id,
@@ -26818,7 +27488,7 @@ mod tests {
         );
         assert_eq!(
             dispatch_dynamic_resume_override(
-                &ctx.app.paths.repo_root,
+                &ctx.app.paths.runtime_root,
                 ctx.task_id,
                 ctx.run_id,
                 ctx.round_id,
@@ -26855,7 +27525,7 @@ mod tests {
         );
         assert_eq!(
             dispatch_dynamic_resume_override(
-                &ctx.app.paths.repo_root,
+                &ctx.app.paths.runtime_root,
                 ctx.task_id,
                 ctx.run_id,
                 ctx.round_id,
@@ -26896,7 +27566,7 @@ mod tests {
             None,
         );
         let key = reserve_dynamic_resume_request(
-            &app.paths.repo_root,
+            &app.paths.runtime_root,
             "task-006",
             "run-001",
             "round-001",
@@ -26981,7 +27651,7 @@ mod tests {
             None,
         );
         let key = reserve_dynamic_resume_request(
-            &app.paths.repo_root,
+            &app.paths.runtime_root,
             "task-006",
             "run-001",
             "round-001",
@@ -27045,7 +27715,7 @@ mod tests {
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let key = dynamic_state_lock_key(
-            &ctx.app.paths.repo_root,
+            &ctx.app.paths.runtime_root,
             ctx.task_id,
             ctx.run_id,
             ctx.round_id,
@@ -27068,7 +27738,7 @@ mod tests {
         );
         assert_eq!(
             dispatch_dynamic_resume_override(
-                &ctx.app.paths.repo_root,
+                &ctx.app.paths.runtime_root,
                 ctx.task_id,
                 ctx.run_id,
                 ctx.round_id,
@@ -27087,7 +27757,7 @@ mod tests {
             None,
         );
         let duplicate_error = dispatch_dynamic_resume_override(
-            &ctx.app.paths.repo_root,
+            &ctx.app.paths.runtime_root,
             ctx.task_id,
             ctx.run_id,
             ctx.round_id,
@@ -27114,7 +27784,7 @@ mod tests {
         );
         assert_eq!(
             dispatch_dynamic_resume_override(
-                &ctx.app.paths.repo_root,
+                &ctx.app.paths.runtime_root,
                 ctx.task_id,
                 ctx.run_id,
                 ctx.round_id,
@@ -27169,7 +27839,7 @@ mod tests {
         );
         assert_eq!(
             dispatch_dynamic_resume_override(
-                &first_app.paths.repo_root,
+                &first_app.paths.runtime_root,
                 first_ctx.task_id,
                 first_ctx.run_id,
                 first_ctx.round_id,
@@ -27192,7 +27862,7 @@ mod tests {
             Err(mpsc::TryRecvError::Empty)
         ));
         let first_key = dynamic_state_lock_key(
-            &first_app.paths.repo_root,
+            &first_app.paths.runtime_root,
             first_ctx.task_id,
             first_ctx.run_id,
             first_ctx.round_id,
@@ -27836,7 +28506,7 @@ mod tests {
             Some(launch_signal),
         );
         reserve_dynamic_resume_request(
-            &ctx.app.paths.repo_root,
+            &ctx.app.paths.runtime_root,
             ctx.task_id,
             ctx.run_id,
             ctx.round_id,
@@ -27905,7 +28575,7 @@ mod tests {
             Some(launch_signal),
         );
         let key = reserve_dynamic_resume_request(
-            &ctx.app.paths.repo_root,
+            &ctx.app.paths.runtime_root,
             ctx.task_id,
             ctx.run_id,
             ctx.round_id,
@@ -28470,7 +29140,7 @@ mod tests {
             launch_signal: Some(launch_signal),
         };
         reserve_dynamic_resume_request(
-            &ctx.app.paths.repo_root,
+            &ctx.app.paths.runtime_root,
             ctx.task_id,
             ctx.run_id,
             ctx.round_id,
@@ -28531,7 +29201,7 @@ mod tests {
             Some(launch_signal),
         );
         let key = reserve_dynamic_resume_request(
-            &ctx.app.paths.repo_root,
+            &ctx.app.paths.runtime_root,
             ctx.task_id,
             ctx.run_id,
             ctx.round_id,

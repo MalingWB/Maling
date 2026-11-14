@@ -1198,6 +1198,26 @@ pub fn prompt_activity_under(root: &Utf8Path) -> Option<PromptActivity> {
         })
 }
 
+/// Reads live activity under an explicit set of execution roots without
+/// loading persisted sessions. CancelRequested stays live until Stopped.
+pub fn active_prompt_attempts_under_roots(
+    roots: &std::collections::HashSet<Utf8PathBuf>,
+) -> Result<Vec<Utf8PathBuf>> {
+    let controls = PROVIDER_CONTROLS
+        .lock()
+        .map_err(|_| anyhow!("provider control registry poisoned"))?;
+    Ok(controls
+        .iter()
+        .filter(|(key, control)| {
+            control.state() != ProviderControlState::Stopped
+                && Utf8Path::new(key)
+                    .ancestors()
+                    .any(|path| roots.contains(path))
+        })
+        .map(|(key, _)| Utf8PathBuf::from(key.as_str()))
+        .collect())
+}
+
 /// Delivers the cancellation control signal without inspecting conversation
 /// history. Callers that need timeline bookkeeping must invoke
 /// [`settle_attempt_prompt_interactions`] after this returns.
@@ -1288,6 +1308,47 @@ fn unregister_provider_control(attempt_dir: &Utf8Path, control: &Arc<ProviderCon
         {
             controls.remove(&key);
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct TestPromptActivityRegistration {
+    attempt_dir: Utf8PathBuf,
+    control: Arc<ProviderControl>,
+}
+
+#[cfg(test)]
+impl TestPromptActivityRegistration {
+    pub(crate) fn mark_stopped(&self) {
+        self.control.mark_stopped();
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestPromptActivityRegistration {
+    fn drop(&mut self) {
+        unregister_provider_control(&self.attempt_dir, &self.control);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn register_test_prompt_activity(
+    attempt_dir: Utf8PathBuf,
+    activity: PromptActivity,
+) -> TestPromptActivityRegistration {
+    let control = register_provider_control(&attempt_dir);
+    match activity {
+        PromptActivity::Starting => {}
+        PromptActivity::Accepted => control.mark_accepted(),
+        PromptActivity::Running => control.mark_running(),
+        PromptActivity::CancelRequested => {
+            control.mark_running();
+            control.request_prompt_cancel();
+        }
+    }
+    TestPromptActivityRegistration {
+        attempt_dir,
+        control,
     }
 }
 

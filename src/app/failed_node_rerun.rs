@@ -1,6 +1,7 @@
 //! Failed attempt -> successor Run. The source seal is the handoff commit;
 //! target run.json is published only after its bounded input snapshot is ready.
 use std::{
+    collections::HashSet,
     fs,
     io::Read,
     thread,
@@ -13,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ids::{generate_uuid, now_rfc3339_like, reserve_next_run_dir};
 use super::orchestrator::{
-    PreparedRunData, drive_committed_run, retry_current_locator, retry_error,
+    PreparedRunData, drive_committed_run, retry_current_locator, retry_error, retry_state_error,
 };
 use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profiles};
 use super::state_factory::create_node_state;
@@ -37,6 +38,8 @@ const MAX_PREFIX_FILES: usize = 4096;
 const MAX_PREFIX_BYTES: u64 = 256 * 1024 * 1024;
 const QUIESCE_TIMEOUT: Duration = Duration::from_secs(10);
 const QUIESCE_POLL: Duration = Duration::from_millis(25);
+const MAX_QUIESCE_RUNS: usize = 256;
+const MAX_QUIESCE_METADATA_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -333,19 +336,176 @@ fn origin(operation: &RerunOperation) -> Result<&RunRerunOrigin> {
         })
 }
 
+// A stopped parent cannot publish a new child after its graph lock has
+// converged. Follow the durable child IDs instead of the task's Run history.
+fn stopped_execution_roots(
+    app: &App,
+    task_id: &str,
+    source_run_id: &str,
+) -> Result<HashSet<Utf8PathBuf>> {
+    let mut pending = vec![source_run_id.to_string()];
+    let mut discovered = HashSet::from([source_run_id.to_string()]);
+    let mut roots = HashSet::new();
+    let mut metadata_bytes = 0_u64;
+    while let Some(run_id) = pending.pop() {
+        validate_locator(task_id, source_run_id, &[&run_id])?;
+        let run_path = app.paths.run_file(task_id, &run_id);
+        check_quiesce_metadata(
+            &run_path,
+            &app.paths.runtime_root,
+            &mut metadata_bytes,
+            task_id,
+            source_run_id,
+        )?;
+        let observed = app
+            .run_status(task_id, &run_id)
+            .map_err(|_| failure("workflow.retry.stale-locator", task_id, source_run_id))?;
+        ensure!(
+            observed.id == run_id && observed.task_id == task_id,
+            failure("workflow.retry.stale-locator", task_id, source_run_id)
+        );
+        let run = app
+            .pause_run_state(task_id, &run_id, PauseReason::ProcessInterrupted)
+            .map_err(|error| retry_state_error(task_id, source_run_id, &error))?;
+        roots.insert(app.paths.run_dir(task_id, &run_id));
+        let Some(locator) = run.current_execution_locator() else {
+            continue;
+        };
+        validate_locator(
+            task_id,
+            source_run_id,
+            &[&locator.round_id, &locator.node_id, &locator.attempt_id],
+        )?;
+        let state_lock = super::orchestrator::dynamic_state_lock_for(
+            &app.paths.runtime_root,
+            task_id,
+            &run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+        )
+        .map_err(|error| retry_state_error(task_id, source_run_id, &error))?;
+        let _guard = state_lock.lock();
+        let graph_path = app.paths.dynamic_graph_file(
+            task_id,
+            &run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+        );
+        match fs::symlink_metadata(&graph_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            result => {
+                result
+                    .map_err(|_| failure("workflow.retry.stale-locator", task_id, source_run_id))?;
+            }
+        }
+        check_quiesce_metadata(
+            &graph_path,
+            &app.paths.runtime_root,
+            &mut metadata_bytes,
+            task_id,
+            source_run_id,
+        )?;
+        let mut graph = crate::dynamic_store::load_dynamic_graph(&graph_path, &app.paths.repo_root)
+            .map_err(|_| failure("workflow.retry.stale-locator", task_id, source_run_id))?;
+        ensure!(
+            graph.run.parent_run_id == run_id
+                && graph.run.parent_round_id == locator.round_id
+                && graph.run.parent_node_id == locator.node_id
+                && graph.run.parent_attempt_id == locator.attempt_id,
+            failure("workflow.retry.stale-locator", task_id, source_run_id)
+        );
+        for child_run_id in graph
+            .nodes
+            .iter()
+            .filter_map(|node| node.child_run_id.as_ref())
+        {
+            validate_locator(task_id, source_run_id, &[child_run_id])?;
+            ensure!(
+                discovered.insert(child_run_id.clone()),
+                failure("workflow.retry.stale-locator", task_id, source_run_id)
+            );
+            ensure!(
+                discovered.len() <= MAX_QUIESCE_RUNS,
+                failure("workflow.retry.prefix-too-large", task_id, source_run_id)
+            );
+            pending.push(child_run_id.clone());
+        }
+        if graph.run.status != crate::dynamic::DynamicRunStatus::Completed {
+            super::orchestrator::pause_dynamic_graph_runtime_state(
+                &mut graph,
+                PauseReason::ProcessInterrupted,
+            );
+            super::orchestrator::persist_dynamic_graph_for_resume_unlocked(
+                app,
+                task_id,
+                &run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                &graph,
+            )
+            .map_err(|error| retry_state_error(task_id, source_run_id, &error))?;
+        }
+    }
+    Ok(roots)
+}
+
+fn check_quiesce_metadata(
+    path: &camino::Utf8Path,
+    root: &camino::Utf8Path,
+    total_bytes: &mut u64,
+    task_id: &str,
+    source_run_id: &str,
+) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| failure("workflow.retry.stale-locator", task_id, source_run_id))?;
+    ensure!(
+        !metadata.file_type().is_symlink(),
+        failure("workflow.retry.invalid-locator", task_id, source_run_id)
+    );
+    ensure!(
+        metadata.is_file(),
+        failure("workflow.retry.stale-locator", task_id, source_run_id)
+    );
+    let canonical_root = fs::canonicalize(root)
+        .map_err(|_| failure("workflow.retry.stale-locator", task_id, source_run_id))?;
+    let canonical_path = fs::canonicalize(path)
+        .map_err(|_| failure("workflow.retry.stale-locator", task_id, source_run_id))?;
+    ensure!(
+        canonical_path.starts_with(&canonical_root),
+        failure("workflow.retry.invalid-locator", task_id, source_run_id)
+    );
+    *total_bytes = total_bytes.saturating_add(metadata.len());
+    ensure!(
+        *total_bytes <= MAX_QUIESCE_METADATA_BYTES,
+        failure("workflow.retry.prefix-too-large", task_id, source_run_id)
+    );
+    Ok(())
+}
+
 fn quiesce(app: &App, task_id: &str, source_run_id: &str) -> Result<()> {
-    app.cancel_active_acp_attempts_for_run_best_effort(task_id, source_run_id);
+    let roots = stopped_execution_roots(app, task_id, source_run_id)?;
     let deadline = Instant::now() + QUIESCE_TIMEOUT;
-    while crate::acp::client::prompt_activity_under(&app.paths.run_dir(task_id, source_run_id))
-        .is_some()
-    {
+    loop {
+        let active = crate::acp::client::active_prompt_attempts_under_roots(&roots)
+            .map_err(|_| failure("workflow.retry.source-busy", task_id, source_run_id))?;
+        if active.is_empty() {
+            return Ok(());
+        }
+        for attempt_dir in active {
+            // Live cancellation is independent of timeline settlement. The
+            // provider registry, not the cancel acknowledgement, decides when
+            // it is safe to hand the workspace to the successor.
+            let _ = crate::acp::client::dispatch_attempt_prompt_cancel(&attempt_dir);
+        }
         ensure!(
             Instant::now() < deadline,
             failure("workflow.retry.source-busy", task_id, source_run_id)
         );
         thread::sleep(QUIESCE_POLL);
     }
-    Ok(())
 }
 
 fn materialize(app: &App, task_id: &str, operation: &RerunOperation) -> Result<PreparedRunData> {
@@ -557,7 +717,8 @@ fn finish_operation(
         staged.initial_run.execution.recovery_candidate_token = Some(candidate.token().to_string());
         write_json(&operation_path, &staged)?;
     }
-    app.run_pause(task_id, run_id, PauseReason::ProcessInterrupted)?;
+    app.pause_run_state(task_id, run_id, PauseReason::ProcessInterrupted)
+        .map_err(|error| retry_state_error(task_id, run_id, &error))?;
     // Stop and seal share the canonical current attempt lock. Late
     // continue/provider commits re-read the same source lifecycle.
     let stopped = app.run_status(task_id, run_id)?;
@@ -868,5 +1029,534 @@ impl App {
             drop(_authoring);
             finish_operation(self, task_id, run_id, operation)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acp::client::{PromptActivity, register_test_prompt_activity};
+    use crate::domain::SessionMode;
+    use crate::dsl::DynamicControlDsl;
+    use crate::dynamic::{
+        DynamicGraphState, DynamicNodeKind, DynamicNodeState, DynamicNodeStatus, DynamicRunPhase,
+        DynamicRunState,
+    };
+    use crate::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION;
+    use crate::runtime::{CURRENT_ACP_STORAGE_SCHEMA_VERSION, NodeState, RoundState};
+    use crate::storage::GoldBandPaths;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use tempfile::tempdir;
+
+    fn child_round() -> RoundState {
+        RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: "run-child".to_string(),
+            index: 1,
+            status: RunStatus::Running,
+            outcome: None,
+            trigger: crate::domain::RoundTrigger::Initial,
+            started_at: "2026-11-13T00:00:00Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        }
+    }
+
+    fn child_node() -> NodeState {
+        NodeState {
+            version: VERSION.to_string(),
+            acp_storage_schema_version: CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+            node_id: "child".to_string(),
+            node_type: NodeType::Worker,
+            run_id: "run-child".to_string(),
+            round_id: "round-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-11-13T00:00:00Z".to_string(),
+            finished_at: None,
+            manual_check_pending: false,
+            runtime_execution_id: Some("execution-child".to_string()),
+            resolved_config: Default::default(),
+            uuid: None,
+        }
+    }
+
+    fn source_graph(repo_root: Utf8PathBuf) -> DynamicGraphState {
+        DynamicGraphState {
+            version: CURRENT_DYNAMIC_GRAPH_VERSION.to_string(),
+            run: DynamicRunState {
+                version: VERSION.to_string(),
+                id: "dynamic-run-001".to_string(),
+                parent_run_id: "run-source".to_string(),
+                parent_round_id: "round-001".to_string(),
+                parent_node_id: "dynamic".to_string(),
+                parent_attempt_id: "attempt-001".to_string(),
+                status: crate::dynamic::DynamicRunStatus::Running,
+                phase: DynamicRunPhase::Executing,
+                outcome: None,
+                pause_reason: None,
+                started_at: "2026-11-13T00:00:00Z".to_string(),
+                updated_at: "2026-11-13T00:00:00Z".to_string(),
+                control: DynamicControlDsl::default(),
+                allowed_workflow_snapshots: Vec::new(),
+                current_node_ids: vec!["child-flow".to_string()],
+            },
+            nodes: vec![DynamicNodeState {
+                version: VERSION.to_string(),
+                acp_storage_schema_version: CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                id: "child-flow".to_string(),
+                dynamic_run_id: "dynamic-run-001".to_string(),
+                kind: DynamicNodeKind::WorkflowInvocation,
+                title: "child-flow".to_string(),
+                task: "child-flow".to_string(),
+                status: DynamicNodeStatus::Running,
+                outcome: None,
+                pause_reason: None,
+                runtime_error: None,
+                runtime_execution_id: Some("execution-dynamic".to_string()),
+                runtime_execution_phase: Some(RuntimeExecutionPhase::RunningNode),
+                runtime_lifecycle_revision: 1,
+                runtime_lifecycle_updated_at: Some("2026-11-13T00:00:00Z".to_string()),
+                group_id: None,
+                chain_id: "child-flow".to_string(),
+                depth: 1,
+                depends_on: Vec::new(),
+                workspace_id: "workspace-main".to_string(),
+                provider: None,
+                profile: None,
+                permission_mode: None,
+                auto_accept: false,
+                model: None,
+                session_mode: SessionMode::New,
+                continue_from_node_id: None,
+                workflow_id: Some("child-workflow".to_string()),
+                workflow_snapshot_id: Some("snapshot-child".to_string()),
+                child_run_id: Some("run-child".to_string()),
+                started_at: Some("2026-11-13T00:00:00Z".to_string()),
+                finished_at: None,
+                uuid: None,
+            }],
+            groups: Vec::new(),
+            workspaces: vec![crate::dynamic::WorkspaceState {
+                version: VERSION.to_string(),
+                id: "workspace-main".to_string(),
+                dynamic_run_id: "dynamic-run-001".to_string(),
+                kind: crate::dynamic::WorkspaceKind::Main,
+                ownership: crate::dynamic::WorkspaceOwnership::User,
+                repo_root: repo_root.clone(),
+                path: repo_root,
+                branch: None,
+                parent_workspace_id: None,
+                created_by_group_id: None,
+                fork_commit: "test-head".to_string(),
+                checkpoint_commit: None,
+                status: crate::dynamic::WorkspaceStatus::Active,
+                created_at: "2026-11-13T00:00:00Z".to_string(),
+                updated_at: "2026-11-13T00:00:00Z".to_string(),
+            }],
+            proposals: Vec::new(),
+        }
+    }
+
+    fn tree_run(id: &str, node_id: &str, status: RunStatus) -> RunState {
+        RunState {
+            version: VERSION.to_string(),
+            id: id.to_string(),
+            task_id: "task-tree".to_string(),
+            task_uuid: None,
+            status,
+            outcome: None,
+            started_at: "2026-11-13T00:00:00Z".to_string(),
+            updated_at: "2026-11-13T00:00:00Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some(node_id.to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: (status == RunStatus::Paused).then_some(PauseReason::ProcessInterrupted),
+            uuid: None,
+            rerun: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: RuntimeExecutionState {
+                phase: if status == RunStatus::Paused {
+                    RuntimeExecutionPhase::Paused
+                } else {
+                    RuntimeExecutionPhase::RunningNode
+                },
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn quiesce_cancels_and_waits_for_sibling_child_run() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        let paths = GoldBandPaths::new(app.paths.repo_root.clone());
+        let task_id = "task-tree";
+        let source_run_id = "run-source";
+        write_json(
+            &paths.run_file(task_id, source_run_id),
+            &tree_run(source_run_id, "dynamic", RunStatus::Paused),
+        )
+        .unwrap();
+        write_json(
+            &paths.run_file(task_id, "run-child"),
+            &tree_run("run-child", "child", RunStatus::Running),
+        )
+        .unwrap();
+        let child_attempt =
+            paths.attempt_dir(task_id, "run-child", "round-001", "child", "attempt-001");
+        write_json(
+            &paths.round_file(task_id, "run-child", "round-001"),
+            &child_round(),
+        )
+        .unwrap();
+        write_node_state(
+            &paths.node_file(task_id, "run-child", "round-001", "child", "attempt-001"),
+            &child_node(),
+        )
+        .unwrap();
+        write_json(
+            &paths.dynamic_graph_file(
+                task_id,
+                source_run_id,
+                "round-001",
+                "dynamic",
+                "attempt-001",
+            ),
+            &source_graph(app.paths.repo_root.clone()),
+        )
+        .unwrap();
+
+        let mut child_graph = source_graph(app.paths.repo_root.clone());
+        child_graph.run.parent_run_id = "run-child".to_string();
+        child_graph.run.parent_node_id = "child".to_string();
+        child_graph.nodes[0].child_run_id = Some("run-grandchild".to_string());
+        write_json(
+            &paths.dynamic_graph_file(task_id, "run-child", "round-001", "child", "attempt-001"),
+            &child_graph,
+        )
+        .unwrap();
+        let mut nested_node = child_node();
+        nested_node.node_type = NodeType::AiDynamic;
+        write_node_state(
+            &paths.node_file(task_id, "run-child", "round-001", "child", "attempt-001"),
+            &nested_node,
+        )
+        .unwrap();
+        write_json(
+            &paths.run_file(task_id, "run-grandchild"),
+            &tree_run("run-grandchild", "child", RunStatus::Running),
+        )
+        .unwrap();
+        let mut grandchild_round = child_round();
+        grandchild_round.run_id = "run-grandchild".to_string();
+        write_json(
+            &paths.round_file(task_id, "run-grandchild", "round-001"),
+            &grandchild_round,
+        )
+        .unwrap();
+        let mut grandchild_node = child_node();
+        grandchild_node.run_id = "run-grandchild".to_string();
+        write_node_state(
+            &paths.node_file(
+                task_id,
+                "run-grandchild",
+                "round-001",
+                "child",
+                "attempt-001",
+            ),
+            &grandchild_node,
+        )
+        .unwrap();
+        let grandchild_attempt = paths.attempt_dir(
+            task_id,
+            "run-grandchild",
+            "round-001",
+            "child",
+            "attempt-001",
+        );
+        let grandchild_activity =
+            register_test_prompt_activity(grandchild_attempt.clone(), PromptActivity::Starting);
+
+        let registration =
+            register_test_prompt_activity(child_attempt.clone(), PromptActivity::Running);
+        let unrelated_attempt = paths.attempt_dir(
+            task_id,
+            "run-unrelated",
+            "round-001",
+            "other",
+            "attempt-001",
+        );
+        let _unrelated =
+            register_test_prompt_activity(unrelated_attempt.clone(), PromptActivity::Running);
+        let (done, completion) = mpsc::channel();
+        let background_app = app.clone_for_background();
+        let worker = std::thread::spawn(move || {
+            let result = quiesce(&background_app, task_id, source_run_id);
+            done.send(()).unwrap();
+            result
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let cancelled = loop {
+            if [&child_attempt, &grandchild_attempt].iter().all(|attempt| {
+                crate::acp::client::prompt_activity(attempt)
+                    == Some(PromptActivity::CancelRequested)
+            }) {
+                break true;
+            }
+            if Instant::now() >= deadline || completion.try_recv().is_ok() {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        let returned_while_cancelling = completion.recv_timeout(Duration::from_millis(100)).is_ok();
+        registration.mark_stopped();
+        let returned_with_active_grandchild =
+            completion.recv_timeout(Duration::from_millis(100)).is_ok();
+        grandchild_activity.mark_stopped();
+        worker.join().unwrap().unwrap();
+        assert!(
+            cancelled,
+            "quiesce must cancel the active sibling child run before returning"
+        );
+        assert!(
+            !returned_while_cancelling,
+            "cancel requested is not provider stopped"
+        );
+        assert!(
+            !returned_with_active_grandchild,
+            "every descendant must stop before handoff"
+        );
+        assert_eq!(
+            app.run_status(task_id, "run-grandchild").unwrap().status,
+            RunStatus::Paused
+        );
+        assert_eq!(
+            crate::acp::client::prompt_activity(&unrelated_attempt),
+            Some(PromptActivity::Running)
+        );
+    }
+
+    #[test]
+    fn quiesce_preserves_completed_execution_tree_history() {
+        let temp = tempdir().unwrap();
+        let app = App::with_config(
+            Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap(),
+            crate::config::RuntimeConfig::default(),
+        );
+        for (run_id, node_id) in [("run-source", "dynamic"), ("run-child", "child")] {
+            let mut run = tree_run(run_id, node_id, RunStatus::Completed);
+            run.outcome = Some(crate::domain::RunOutcome::Success);
+            run.execution.phase = RuntimeExecutionPhase::Terminal;
+            write_json(&app.paths.run_file("task-tree", run_id), &run).unwrap();
+        }
+        let mut graph = source_graph(app.paths.repo_root.clone());
+        graph.run.status = crate::dynamic::DynamicRunStatus::Completed;
+        graph.run.outcome = Some(crate::domain::RunOutcome::Success);
+        graph.run.current_node_ids.clear();
+        graph.nodes[0].status = DynamicNodeStatus::Completed;
+        graph.nodes[0].outcome = Some(crate::domain::NodeOutcome::Success);
+        graph.nodes[0].runtime_execution_id = None;
+        graph.nodes[0].runtime_execution_phase = Some(RuntimeExecutionPhase::Terminal);
+        graph.nodes[0].finished_at = Some("2026-11-13T00:00:01Z".to_string());
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-tree",
+            "run-source",
+            "round-001",
+            "dynamic",
+            "attempt-001",
+        );
+        write_json(&graph_path, &graph).unwrap();
+        let history = fs::read(&graph_path).unwrap();
+        let child_attempt = app.paths.attempt_dir(
+            "task-tree",
+            "run-child",
+            "round-001",
+            "child",
+            "attempt-001",
+        );
+        let activity =
+            register_test_prompt_activity(child_attempt.clone(), PromptActivity::Running);
+        let background = app.clone_for_background();
+        let worker = thread::spawn(move || quiesce(&background, "task-tree", "run-source"));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let cancelled = loop {
+            if crate::acp::client::prompt_activity(&child_attempt)
+                == Some(PromptActivity::CancelRequested)
+            {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        activity.mark_stopped();
+        worker.join().unwrap().unwrap();
+        assert!(
+            cancelled,
+            "completed graph must still expose child activity"
+        );
+        assert_eq!(
+            fs::read(&graph_path).unwrap(),
+            history,
+            "handoff must preserve the completed graph and its outcome"
+        );
+        for run_id in ["run-source", "run-child"] {
+            let run = app.run_status("task-tree", run_id).unwrap();
+            assert_eq!(run.status, RunStatus::Completed);
+            assert_eq!(run.outcome, Some(crate::domain::RunOutcome::Success));
+        }
+    }
+
+    #[test]
+    fn quiesce_rejects_invalid_and_oversized_execution_trees() {
+        for (case, expected) in [
+            ("cycle", "workflow.retry.stale-locator"),
+            ("missing-child", "workflow.retry.stale-locator"),
+            ("foreign-parent", "workflow.retry.stale-locator"),
+            ("invalid-path", "workflow.retry.invalid-locator"),
+            ("run-limit", "workflow.retry.prefix-too-large"),
+            ("metadata-limit", "workflow.retry.prefix-too-large"),
+            ("pause-state-invalid", "workflow.retry.workflow-invalid"),
+            ("graph-write-failed", "workflow.retry.workflow-invalid"),
+        ] {
+            let temp = tempdir().unwrap();
+            let app = App::with_config(
+                Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap(),
+                crate::config::RuntimeConfig::default(),
+            );
+            write_json(
+                &app.paths.run_file("task-tree", "run-source"),
+                &tree_run(
+                    "run-source",
+                    "dynamic",
+                    if case == "pause-state-invalid" {
+                        RunStatus::Running
+                    } else {
+                        RunStatus::Paused
+                    },
+                ),
+            )
+            .unwrap();
+            let mut graph = source_graph(app.paths.repo_root.clone());
+            match case {
+                "cycle" => graph.nodes[0].child_run_id = Some("run-source".to_string()),
+                "foreign-parent" => graph.run.parent_run_id = "run-other".to_string(),
+                "invalid-path" => graph.nodes[0].child_run_id = Some("../run-other".to_string()),
+                "graph-write-failed" => {
+                    graph.nodes[0].child_run_id = None;
+                    fs::create_dir_all(app.paths.dynamic_run_file(
+                        "task-tree",
+                        "run-source",
+                        "round-001",
+                        "dynamic",
+                        "attempt-001",
+                    ))
+                    .unwrap();
+                }
+                "run-limit" => {
+                    let template = graph.nodes[0].clone();
+                    graph.nodes = (0..MAX_QUIESCE_RUNS)
+                        .map(|index| {
+                            let mut node = template.clone();
+                            node.id = format!("child-{index}");
+                            node.child_run_id = Some(format!("run-child-{index}"));
+                            node
+                        })
+                        .collect();
+                    graph.run.current_node_ids =
+                        graph.nodes.iter().map(|node| node.id.clone()).collect();
+                }
+                _ => {}
+            }
+            let graph_path = app.paths.dynamic_graph_file(
+                "task-tree",
+                "run-source",
+                "round-001",
+                "dynamic",
+                "attempt-001",
+            );
+            write_json(&graph_path, &graph).unwrap();
+            if case == "metadata-limit" {
+                fs::File::options()
+                    .write(true)
+                    .open(&graph_path)
+                    .unwrap()
+                    .set_len(MAX_QUIESCE_METADATA_BYTES + 1)
+                    .unwrap();
+            }
+            let error = quiesce(&app, "task-tree", "run-source").unwrap_err();
+            assert_eq!(
+                crate::runtime_error::normalize_runtime_error(&error).code_str(),
+                expected,
+                "{case}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn quiesce_rejects_a_child_run_link_outside_runtime_storage() {
+        let temp = tempdir().unwrap();
+        let app = App::with_config(
+            Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap(),
+            crate::config::RuntimeConfig::default(),
+        );
+        write_json(
+            &app.paths.run_file("task-tree", "run-source"),
+            &tree_run("run-source", "dynamic", RunStatus::Paused),
+        )
+        .unwrap();
+        let graph = source_graph(app.paths.repo_root.clone());
+        write_json(
+            &app.paths.dynamic_graph_file(
+                "task-tree",
+                "run-source",
+                "round-001",
+                "dynamic",
+                "attempt-001",
+            ),
+            &graph,
+        )
+        .unwrap();
+        let outside = Utf8PathBuf::from_path_buf(temp.path().join("outside-run")).unwrap();
+        write_json(
+            &outside.join("run.json"),
+            &tree_run("run-child", "child", RunStatus::Paused),
+        )
+        .unwrap();
+        let link = app.paths.run_dir("task-tree", "run-child");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        {
+            let output = crate::process::background_command("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(&link)
+                .arg(&outside)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "failed to create test junction: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let result = quiesce(&app, "task-tree", "run-source");
+        #[cfg(windows)]
+        fs::remove_dir(&link).unwrap();
+        #[cfg(unix)]
+        fs::remove_file(&link).unwrap();
+        assert_eq!(
+            crate::runtime_error::normalize_runtime_error(&result.unwrap_err()).code_str(),
+            "workflow.retry.invalid-locator"
+        );
     }
 }
