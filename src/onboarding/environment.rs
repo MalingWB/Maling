@@ -116,6 +116,13 @@ impl EnvironmentStatus {
     fn is_runtime_usable(self) -> bool {
         matches!(self, Self::Ready | Self::Unverified)
     }
+
+    fn is_launched(self) -> bool {
+        matches!(
+            self,
+            Self::Ready | Self::Unverified | Self::Unsupported | Self::Incompatible
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +133,8 @@ pub struct EnvironmentCheck {
     pub version: Option<String>,
     pub executable_path: Option<PathBuf>,
     pub node_executable_path: Option<PathBuf>,
+    #[serde(default)]
+    pub node_version: Option<String>,
     pub error: Option<EnvironmentError>,
 }
 
@@ -140,29 +149,33 @@ pub struct EnvironmentError {
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentReport {
     pub checks: Vec<EnvironmentCheck>,
-    /// Node.js, npm and npx are all usable and mutually compatible.
-    pub runtime_ready: bool,
-    /// Node.js is usable, so local Agent discovery may start even when npm/npx are limited.
-    pub agent_detection_ready: bool,
-    /// npm and npx are both usable and mutually compatible.
-    pub package_manager_ready: bool,
+    pub npx_launchable: bool,
 }
 
 impl EnvironmentReport {
-    fn check(&self, tool: EnvironmentTool) -> Option<&EnvironmentCheck> {
-        self.checks.iter().find(|check| check.tool == tool)
+    pub fn from_checks(checks: Vec<EnvironmentCheck>) -> Self {
+        let npx_launchable = checks
+            .iter()
+            .any(|check| check.tool == EnvironmentTool::Npx && check.status.is_launched());
+        Self {
+            checks,
+            npx_launchable,
+        }
     }
 
-    /// Setup entry points preserve the same report while only requiring Node.js readiness.
-    pub fn require_agent_detection(&self) -> Result<(), super::model::SetupError> {
-        if self.agent_detection_ready {
-            Ok(())
-        } else {
-            Err(super::model::SetupError {
-                code: "setup.runtime-incompatible",
-                params: serde_json::json!({ "environment": self }),
-            })
-        }
+    #[cfg(test)]
+    fn runtime_ready(&self) -> bool {
+        [
+            EnvironmentTool::Node,
+            EnvironmentTool::Npm,
+            EnvironmentTool::Npx,
+        ]
+        .into_iter()
+        .all(|tool| {
+            self.checks
+                .iter()
+                .any(|check| check.tool == tool && check.status.is_runtime_usable())
+        })
     }
 }
 
@@ -455,6 +468,7 @@ pub fn check_environment(
                     version: None,
                     executable_path: runner.resolve(tool),
                     node_executable_path: None,
+                    node_version: None,
                     error: None,
                 };
                 let mut observation = None;
@@ -503,6 +517,8 @@ pub fn check_environment(
                                     });
                                 check.node_executable_path =
                                     observation.as_ref().map(|o| o.node_path.clone());
+                                check.node_version =
+                                    observation.as_ref().map(|o| o.node_version.clone());
                                 if let Some(version) = version {
                                     check.version = Some(version.to_string());
                                     let (ranges, verified_majors) = if tool == EnvironmentTool::Node
@@ -599,28 +615,7 @@ pub fn check_environment(
             incompatible(&mut checks[index], reason, params);
         }
     }
-    let report = EnvironmentReport {
-        agent_detection_ready: false,
-        package_manager_ready: false,
-        runtime_ready: false,
-        checks,
-    };
-    let agent_detection_ready = report
-        .check(EnvironmentTool::Node)
-        .is_some_and(|check| check.status.is_runtime_usable());
-    let package_manager_ready = [EnvironmentTool::Npm, EnvironmentTool::Npx]
-        .into_iter()
-        .all(|tool| {
-            report
-                .check(tool)
-                .is_some_and(|check| check.status.is_runtime_usable())
-        });
-    EnvironmentReport {
-        agent_detection_ready,
-        package_manager_ready,
-        runtime_ready: agent_detection_ready && package_manager_ready,
-        ..report
-    }
+    EnvironmentReport::from_checks(checks)
 }
 
 #[cfg(test)]

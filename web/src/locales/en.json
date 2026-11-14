@@ -947,7 +947,7 @@
       "compaction-summary-query-failed": "Could not load the compaction summary. Try again.",
       "adapter-exited": "The Agent process exited during {{method}}. Check the command, arguments, environment variables, network, and authentication.",
       "adapter-exited-with-code": "The Agent process exited during {{method}} (exit code {{exitCode}}). Check the command, arguments, environment variables, network, and authentication.",
-      "adapter-start-failed": "The Agent could not be started: {{osError}}",
+      "adapter-start-failed": "Could not start {{command}}: {{osError}}",
       "doctor-timeout": "Agent environment check timed out during {{method}}."
     },
     "app": {
@@ -3352,7 +3352,7 @@
     "installGuide": "Official installation guide",
     "discovering": "Checking local Agents…",
     "discovered": "{{count}} available Agents detected",
-    "noAgents": "No available Agent was detected. Make sure the Agent command is available in the current system PATH and signed in, then check again. If multiple Node.js versions are installed, make sure the Agent is installed for the active version.",
+    "noAgents": "No installed Agent was detected. Install any Agent, then check again.",
     "defaultAgent": "Default Agent",
     "chooseAgent": "Choose an available Agent",
     "defaultModel": "Default model",
@@ -3379,20 +3379,29 @@
     "defaultsDescription": "Set the Agent, model, and permissions for built-in workflows. Custom workflows stay unchanged.",
     "configureDefaults": "Configure defaults",
     "rerun": "Run setup again",
-    "runtimeLimited": "npm/npx are unavailable. Local Agents can still be detected; Agents that depend on npm/npx may be unavailable.",
-  "steps": {
+    "npxUnavailable": "Agents launched through npx are unavailable for now. Other Agents can still be detected.",
+    "allUnavailable": "The detected Agents are unavailable. See the reasons below.",
+    "actualNode": "Node.js in use {{version}}: {{path}}",
+    "unavailable": {
+      "title": "Unavailable Agents: {{count}}",
+      "runtimeRequired": "Requires npm/npx",
+      "doctorFailed": "Diagnosis failed: {{reason}}",
+      "nodeVersionHint": "Node.js {{version}} is outside the verified range. Install {{recommended}} instead.",
+      "runtimeHint": "The runtime has issues that may prevent this Agent from starting."
+    },
+    "steps": {
       "git": "Git",
       "runtime": "Runtime",
       "agent": "Agent"
     },
     "titles": {
       "git": "Prepare Git",
-      "runtime": "Check the Node.js runtime",
+      "runtime": "Check the runtime",
       "agent": "Connect an Agent and choose your default model"
     },
     "descriptions": {
       "git": "Git provides version control. You can install it later.",
-      "runtime": "Node.js must be available. npm and npx are checked too; if they are unavailable, setup can still find local Agents that do not depend on them. Stable versions outside verified ranges show a warning but do not block setup.",
+      "runtime": "Some Agents launch through npx and need Node.js, npm, and npx. Other Agents are not affected.",
       "agent": "Ready Agents are saved automatically. Choose your default model, then review and apply it to all built-in workflows."
     },
     "status": {
@@ -3414,7 +3423,6 @@
         "agent-preparation-required": "Follow the provider’s installation or sign-in guide, then check again.",
         "probe-failed": "The check failed. Check again to retry.",
         "probe-cancelled": "The check was cancelled. Check again to continue.",
-        "runtime-incompatible": "Node.js, npm or npx does not meet the requirements. Check the runtime environment.",
         "environment-check-required": "Complete the runtime environment check first.",
         "configuration-conflict": "This configuration changed elsewhere. Check Agents again and review the latest changes.",
         "preview-stale": "The selected model or built-in workflows changed. Preview the changes again.",

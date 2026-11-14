@@ -148,14 +148,14 @@ Agent Cards
 ## 6. 诊断能力
 每个 agent card 提供：
 - 手动“环境诊断”按钮
-- 诊断状态图标；只有 `diagnostic.available=true` 且诊断保存的配置 fingerprint 与当前 Agent 配置一致时显示“正常”。曾成功但 fingerprint 缺失或不一致时显示“需重新诊断”，不得显示为正常，也不得参与可用 Agent、工作流或默认模型选择；配置指纹未变化的健康快照继续直接复用。
+- 诊断状态图标；只有 `diagnostic.available=true` 且诊断保存的配置 fingerprint 与当前 Agent 配置一致时显示“正常”。曾成功但 fingerprint 缺失或不一致时显示“需重新诊断”，不得显示为正常，也不得参与可用 Agent、工作流或默认模型选择；配置指纹未变化的健康快照继续直接复用。诊断 fingerprint 只覆盖影响启动的字段（command、args、env、executablePath），display name、icon、Skills 目录与外部会话同步开关的修改不会让诊断过期；配置冲突校验仍使用完整配置指纹。
 - Agent 管理页不承载 Node.js/npm/npx 的全局运行环境报告或重测；这些交互属于首次启动引导。Agent Doctor 因 npx/npm 失败时只在当前卡片展示结构化原因，用户可通过设置页“重新运行引导”进入全局环境检测。
 - 最近检测时间（展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`）
 - 错误原因（如果有）
 - doctor 失败时在诊断状态旁显示问号帮助入口；该入口使用 shadcn/ui `Popover`，点击或键盘激活后展示 raw 原因与 ACP Registry 配置帮助，不使用自定义大面板。raw 原因优先取 ACP JSON-RPC `error.message`、已分类故障 stderr（`params.reason`，限 2000 字符）和启动失败 `osError`；没有这些原始原因时才回退到本地化错误句。配置帮助仅包含参考 ACP Registry 配置命令、参数、环境变量、网络和认证状态，其中 ACP Registry 为外链 `https://agentclientprotocol.com/get-started/registry`，使用产品链接样式，点击后通过统一 `openWebTarget` 在内置浏览器打开，不走系统浏览器，也不在卡片内展开具体下载步骤
 - Agent 管理页复用当前工作空间的 draft 右侧工作区投影（与快速对话、创建定时任务相同），因此诊断帮助可以打开内置浏览器；未打开工作区时右栏保持收起
 - 诊断运行中按钮展示圆形加载动效
-- 诊断完成后根据结果显示数秒横幅：正常为成功横幅；异常横幅只展示固定主句「环境诊断未通过：{{reason}}」。`reason` 取 ACP `message`、故障 stderr 或启动失败 `osError` 的首行短摘要；多行 npm 日志只取首行，完整原文仍在异常旁问号 Popover 中。没有原始原因时横幅为「环境诊断未通过。」。横幅不得直接展示内部 `Display` 英文串，例如 `ACP adapter transport interrupted`
+- 诊断完成后根据结果显示数秒横幅：正常为成功横幅；异常横幅只展示固定主句「环境诊断未通过：{{reason}}」。`reason` 取 ACP `message`、故障 stderr 的首行短摘要；启动失败（`acp.adapter-start-failed`）使用带命令名的本地化句「无法启动 {{command}}：{{osError}}」，问号 Popover 仍展示原始 `osError`；多行 npm 日志只取首行，完整原文仍在异常旁问号 Popover 中。没有原始原因时横幅为「环境诊断未通过。」。横幅不得直接展示内部 `Display` 英文串，例如 `ACP adapter transport interrupted`
 - 横幅在浅色模式下必须保证文案可读性，成功态文案与图标应复用主题语义成功色 token，不允许在页面里硬编码浅绿色并导致低对比度问题
 
 后台能力：

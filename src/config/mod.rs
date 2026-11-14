@@ -611,6 +611,15 @@ impl AgentSkillDirectoryPolicy {
 }
 
 impl ManagedAgentConfig {
+    pub fn diagnostic_fingerprint(&self) -> anyhow::Result<String> {
+        crate::onboarding::model::fingerprint(&serde_json::json!({
+            "command": self.adapter.command,
+            "args": self.adapter.args,
+            "env": self.adapter.env,
+            "executablePath": self.executable_path,
+        }))
+    }
+
     pub fn new(
         adapter: AcpAdapterConfig,
         primary_agent_dir: impl Into<String>,
@@ -3807,7 +3816,11 @@ mod tests {
             } else {
                 assert!(policy.project.write_dir_names.is_empty());
             }
-            expected_project_reads.extend(entry.compatible_agent_dirs.iter().cloned());
+            for directory in &entry.compatible_agent_dirs {
+                if !expected_project_reads.contains(directory) {
+                    expected_project_reads.push(directory.clone());
+                }
+            }
             assert_eq!(policy.project.read_dir_names, expected_project_reads);
         }
     }

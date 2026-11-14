@@ -1529,10 +1529,7 @@ pub(crate) fn managed_agent_vm(
                     .config_fingerprint
                     .as_deref()
                     .is_some_and(|expected| {
-                        gold_band::onboarding::model::fingerprint(config)
-                            .ok()
-                            .as_deref()
-                            == Some(expected)
+                        config.diagnostic_fingerprint().ok().as_deref() == Some(expected)
                     });
             let available = diagnostic.available && fingerprint_matches;
             ManagedAgentDiagnosticVm {

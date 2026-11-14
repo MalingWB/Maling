@@ -947,7 +947,7 @@
       "compaction-summary-query-failed": "圧縮の要約を読み込めませんでした。もう一度お試しください。",
       "adapter-exited": "Agent プロセスは {{method}} 中に終了しました。コマンド、引数、環境変数、ネットワーク、認証を確認してください。",
       "adapter-exited-with-code": "Agent プロセスは {{method}} 中に終了しました (終了コード {{exitCode}})。コマンド、引数、環境変数、ネットワーク、認証を確認してください。",
-      "adapter-start-failed": "Agentを開始できませんでした: {{osError}}",
+      "adapter-start-failed": "{{command}} を起動できませんでした: {{osError}}",
       "doctor-timeout": "Agent環境のチェックが {{method}} 中にタイムアウトしました。"
     },
     "app": {
@@ -3352,7 +3352,7 @@
     "installGuide": "公式インストールガイド",
     "discovering": "ローカル Agent を確認中…",
     "discovered": "利用可能な Agent を {{count}} 件検出しました",
-    "noAgents": "利用可能な Agent が見つかりません。Agent コマンドが現在のシステム PATH で利用でき、ログイン済みであることを確認してから再検出してください。複数の Node.js をインストールしている場合は、現在有効なバージョンに Agent がインストールされていることを確認してください。",
+    "noAgents": "インストール済みの Agent が見つかりません。いずれかの Agent をインストールしてから再検出してください。",
     "defaultAgent": "既定の Agent",
     "chooseAgent": "利用可能な Agent を選択",
     "defaultModel": "既定のモデル",
@@ -3379,20 +3379,29 @@
     "defaultsDescription": "組み込みワークフローの Agent、モデル、権限をまとめて設定します。カスタムワークフローは変更しません。",
     "configureDefaults": "既定値を設定",
     "rerun": "セットアップを再実行",
-    "runtimeLimited": "npm/npx を利用できません。ローカル Agent の検出は続行できますが、npm/npx に依存する Agent は利用できない場合があります。",
-  "steps": {
+    "npxUnavailable": "npx で起動する Agent は現在利用できません。他の Agent の検出は続行できます。",
+    "allUnavailable": "検出された Agent は現在利用できません。下の理由を確認してください。",
+    "actualNode": "実際に使用している Node.js {{version}}: {{path}}",
+    "unavailable": {
+      "title": "利用できない Agent: {{count}} 件",
+      "runtimeRequired": "npm/npx が必要です",
+      "doctorFailed": "診断に失敗しました: {{reason}}",
+      "nodeVersionHint": "Node.js {{version}} は検証済みの範囲外です。{{recommended}} のインストールをおすすめします。",
+      "runtimeHint": "実行環境に問題があるため、この Agent を起動できない可能性があります。"
+    },
+    "steps": {
       "git": "Git",
       "runtime": "実行環境",
       "agent": "Agent"
     },
     "titles": {
       "git": "Git の準備",
-      "runtime": "Node.js 実行環境の確認",
+      "runtime": "実行環境の確認",
       "agent": "Agent を接続して既定モデルを選択"
     },
     "descriptions": {
       "git": "Git はバージョン管理に使用します。後でインストールすることもできます。",
-      "runtime": "Node.js は利用可能である必要があります。npm と npx も確認しますが、利用できない場合でも、それらに依存しないローカル Agent の検出は続行できます。未検証の安定版は警告を表示しますが、続行を妨げません。",
+      "runtime": "一部の Agent は npx で起動するため、Node.js、npm、npx が必要です。他の Agent には影響しません。",
       "agent": "利用可能な Agent は自動保存されます。既定モデルを選択し、すべての組み込みワークフローへの適用を確認してください。"
     },
     "status": {
@@ -3414,7 +3423,6 @@
         "agent-preparation-required": "プロバイダーのガイドに従ってインストールまたはログインし、再確認してください。",
         "probe-failed": "確認に失敗しました。再確認してください。",
         "probe-cancelled": "確認をキャンセルしました。続行するには再確認してください。",
-        "runtime-incompatible": "Node.js、npm、npx のいずれかが要件を満たしていません。実行環境を確認してください。",
         "environment-check-required": "先に実行環境の確認を完了してください。",
         "configuration-conflict": "設定が別の場所で変更されました。Agent を再確認し、最新の変更をプレビューしてください。",
         "preview-stale": "選択したモデルまたは組み込み Workflow が変更されました。再度プレビューしてください。",

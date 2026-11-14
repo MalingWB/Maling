@@ -947,7 +947,7 @@
       "compaction-summary-query-failed": "No se pudo cargar el resumen de compactación. Inténtalo de nuevo.",
       "adapter-exited": "El proceso del Agent finalizó durante {{method}}. Compruebe el comando, los argumentos, las variables de entorno, la red y la autenticación.",
       "adapter-exited-with-code": "El proceso del Agent finalizó durante {{method}} (código de salida {{exitCode}}). Compruebe el comando, los argumentos, las variables de entorno, la red y la autenticación.",
-      "adapter-start-failed": "No se pudo iniciar el Agent: {{osError}}",
+      "adapter-start-failed": "No se pudo iniciar {{command}}: {{osError}}",
       "doctor-timeout": "La comprobación del entorno del Agent agotó el tiempo de espera durante {{method}}."
     },
     "app": {
@@ -3352,7 +3352,7 @@
     "installGuide": "Guía oficial de instalación",
     "discovering": "Comprobando Agents locales…",
     "discovered": "{{count}} Agents disponibles detectados",
-    "noAgents": "No se detectó ningún Agent disponible. Comprueba que el comando del Agent esté disponible en el PATH actual del sistema y que hayas iniciado sesión; después, vuelve a detectar. Si tienes varias versiones de Node.js instaladas, comprueba que el Agent esté instalado en la versión activa.",
+    "noAgents": "No se detectó ningún Agent instalado. Instala cualquier Agent y vuelve a detectar.",
     "defaultAgent": "Agent predeterminado",
     "chooseAgent": "Elige un Agent disponible",
     "defaultModel": "Modelo predeterminado",
@@ -3379,20 +3379,29 @@
     "defaultsDescription": "Configura el Agent, el modelo y los permisos de los flujos de trabajo integrados sin modificar los personalizados.",
     "configureDefaults": "Configurar valores predeterminados",
     "rerun": "Repetir configuración",
-    "runtimeLimited": "npm/npx no están disponibles. Aún se pueden detectar Agents locales; los Agents que dependen de npm/npx pueden no estar disponibles.",
-  "steps": {
+    "npxUnavailable": "Los Agents que se inician con npx no están disponibles por ahora. Los demás Agents se pueden seguir detectando.",
+    "allUnavailable": "Los Agents detectados no están disponibles. Consulta los motivos a continuación.",
+    "actualNode": "Node.js en uso {{version}}: {{path}}",
+    "unavailable": {
+      "title": "Agents no disponibles: {{count}}",
+      "runtimeRequired": "Requiere npm/npx",
+      "doctorFailed": "El diagnóstico falló: {{reason}}",
+      "nodeVersionHint": "Node.js {{version}} está fuera del rango verificado. Se recomienda instalar {{recommended}}.",
+      "runtimeHint": "El entorno tiene problemas que pueden impedir que este Agent se inicie."
+    },
+    "steps": {
       "git": "Git",
       "runtime": "Entorno",
       "agent": "Agent"
     },
     "titles": {
       "git": "Preparar Git",
-      "runtime": "Comprobar el entorno Node.js",
+      "runtime": "Comprobar el entorno",
       "agent": "Conecta un Agent y elige el modelo predeterminado"
     },
     "descriptions": {
       "git": "Git proporciona control de versiones. Puedes instalarlo más tarde.",
-      "runtime": "Node.js debe estar disponible. También se comprueban npm y npx; si no están disponibles, la configuración aún puede encontrar Agents locales que no dependan de ellos. Las versiones estables fuera de los rangos verificados muestran una advertencia, pero no bloquean la configuración.",
+      "runtime": "Algunos Agents se inician con npx y necesitan Node.js, npm y npx. Los demás Agents no se ven afectados.",
       "agent": "Los Agents disponibles se guardan automáticamente. Elige el modelo predeterminado, revisa y aplícalo a los workflows integrados."
     },
     "status": {
@@ -3414,7 +3423,6 @@
         "agent-preparation-required": "Sigue la guía del proveedor para instalar o iniciar sesión y comprueba de nuevo.",
         "probe-failed": "La comprobación falló. Vuelve a comprobar.",
         "probe-cancelled": "Se canceló la comprobación. Vuelve a comprobar para continuar.",
-        "runtime-incompatible": "Node.js, npm o npx no cumple los requisitos. Comprueba el entorno de ejecución.",
         "environment-check-required": "Completa primero la comprobación del entorno de ejecución.",
         "configuration-conflict": "La configuración cambió en otro lugar. Comprueba los Agents y revisa los cambios actuales.",
         "preview-stale": "El modelo seleccionado o los Workflows integrados cambiaron. Vuelve a previsualizar los cambios.",

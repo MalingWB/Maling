@@ -140,7 +140,7 @@ fn javascript_launchers_receive_a_cold_start_budget_separate_from_native_tools()
 
     let report = runner.report();
 
-    assert!(report.runtime_ready, "{:#?}", report.checks);
+    assert!(report.runtime_ready(), "{:#?}", report.checks);
     let policy = environment_policy();
     assert!(
         policy.probe_timeouts.package_manager_command_ms > policy.probe_timeouts.native_command_ms
@@ -173,7 +173,7 @@ fn javascript_launchers_receive_a_cold_start_budget_separate_from_native_tools()
 fn complete_local_toolchain_is_ready_without_repository_or_network() {
     let runner = FixtureRunner::healthy();
     let report = runner.report();
-    assert!(report.runtime_ready);
+    assert!(report.runtime_ready());
     assert!(
         report
             .checks
@@ -188,7 +188,7 @@ fn git_missing_does_not_bypass_or_block_the_mandatory_runtime_gate() {
     let mut runner = FixtureRunner::healthy();
     runner.results[0].1 = None;
     let report = runner.report();
-    assert!(report.runtime_ready);
+    assert!(report.runtime_ready());
     assert_eq!(report.checks[0].status, EnvironmentStatus::Missing);
     for tool in [
         EnvironmentTool::Node,
@@ -202,7 +202,7 @@ fn git_missing_does_not_bypass_or_block_the_mandatory_runtime_gate() {
             .find(|(t, _)| *t == tool)
             .unwrap()
             .1 = None;
-        assert!(!runner.report().runtime_ready);
+        assert!(!runner.report().runtime_ready());
     }
 }
 
@@ -256,7 +256,7 @@ fn each_failed_tool_keeps_its_reason_without_masking_other_successes() {
         let mut runner = FixtureRunner::healthy();
         runner.failure = Some((EnvironmentTool::Npx, status));
         let report = runner.report();
-        assert!(!report.runtime_ready);
+        assert!(!report.runtime_ready());
         assert_eq!(report.checks[3].status, status);
         assert!(
             report.checks[..3]
@@ -373,7 +373,7 @@ fn stable_unverified_node_can_continue_when_the_actual_npm_toolchain_is_compatib
             .status,
         EnvironmentStatus::Unverified
     );
-    assert!(report.runtime_ready, "{:#?}", report.checks);
+    assert!(report.runtime_ready(), "{:#?}", report.checks);
 }
 
 #[test]
@@ -407,7 +407,7 @@ fn node_launcher_shim_may_resolve_to_a_different_actual_runtime_path() {
         node.node_executable_path.as_deref(),
         Some(Path::new(r"D:\dev\node-v25.5.0-win-x64\node.exe"))
     );
-    assert!(report.runtime_ready, "{:#?}", report.checks);
+    assert!(report.runtime_ready(), "{:#?}", report.checks);
 }
 
 #[test]
@@ -436,7 +436,7 @@ fn stable_unverified_npm_and_npx_can_continue_when_the_package_identity_matches(
             "{tool:?}"
         );
     }
-    assert!(report.runtime_ready, "{:#?}", report.checks);
+    assert!(report.runtime_ready(), "{:#?}", report.checks);
 }
 
 #[test]
@@ -465,7 +465,7 @@ fn independently_valid_versions_do_not_hide_different_node_installations() {
     let mut runner = FixtureRunner::healthy();
     runner.output(EnvironmentTool::Npm).observations[0].node_path = "second-node".into();
     let report = runner.report();
-    assert!(!report.runtime_ready);
+    assert!(!report.runtime_ready());
     assert_eq!(report.checks[2].status, EnvironmentStatus::Incompatible);
     let error = report.checks[2].error.as_ref().unwrap();
     assert_eq!(error.params["reason"], "node-mismatch");
@@ -486,7 +486,7 @@ fn actual_npm_engines_npx_package_identity_and_observation_are_required() {
             _ => output.observations[0].node_version = "22.20.0".into(),
         }
         let report = runner.report();
-        assert!(!report.runtime_ready, "scenario {scenario}");
+        assert!(!report.runtime_ready(), "scenario {scenario}");
         assert_eq!(report.checks[3].status, EnvironmentStatus::Incompatible);
         assert_eq!(
             report.checks[3].error.as_ref().unwrap().params["reason"],
@@ -527,7 +527,7 @@ fn cancellation_is_distinct_and_all_tool_results_are_published_once() {
         &AtomicBool::new(true),
         |check| calls.lock().unwrap().push(check.tool),
     );
-    assert!(!report.runtime_ready);
+    assert!(!report.runtime_ready());
     assert!(
         report
             .checks
@@ -538,35 +538,60 @@ fn cancellation_is_distinct_and_all_tool_results_are_published_once() {
 }
 
 #[test]
-fn npm_failure_is_a_limited_capability_and_does_not_block_agent_detection() {
-    let mut runner = FixtureRunner::healthy();
-    runner.failure = Some((EnvironmentTool::Npm, EnvironmentStatus::Missing));
+fn npx_launchability_only_requires_npx_to_start() {
+    let healthy = FixtureRunner::healthy().report();
+    assert!(healthy.npx_launchable);
 
-    let report = runner.report();
+    let mut npm_missing = FixtureRunner::healthy();
+    npm_missing.failure = Some((EnvironmentTool::Npm, EnvironmentStatus::Missing));
+    let report = npm_missing.report();
+    assert!(report.npx_launchable);
+    assert!(!report.runtime_ready());
 
-    assert!(report.agent_detection_ready);
-    assert!(!report.package_manager_ready);
-    assert!(!report.runtime_ready);
-    assert_eq!(
-        report
-            .checks
-            .iter()
-            .find(|check| check.tool == EnvironmentTool::Npm)
-            .unwrap()
-            .status,
-        EnvironmentStatus::Missing
-    );
+    let mut node_missing = FixtureRunner::healthy();
+    node_missing.failure = Some((EnvironmentTool::Node, EnvironmentStatus::Missing));
+    let report = node_missing.report();
+    assert!(report.npx_launchable, "{:#?}", report.checks);
+    assert!(!report.runtime_ready());
+
+    let mut old_npx = FixtureRunner::healthy();
+    old_npx.output(EnvironmentTool::Npx).stdout = "9.0.0".into();
+    let report = old_npx.report();
+    let npx = report
+        .checks
+        .iter()
+        .find(|check| check.tool == EnvironmentTool::Npx)
+        .unwrap();
+    assert_eq!(npx.status, EnvironmentStatus::Unsupported);
+    assert!(report.npx_launchable);
+
+    for status in [
+        EnvironmentStatus::Missing,
+        EnvironmentStatus::Failed,
+        EnvironmentStatus::Timeout,
+    ] {
+        let mut runner = FixtureRunner::healthy();
+        runner.failure = Some((EnvironmentTool::Npx, status));
+        assert!(!runner.report().npx_launchable, "{status:?}");
+    }
 }
 
 #[test]
-fn node_failure_blocks_agent_detection() {
+fn npm_and_npx_report_the_node_version_their_process_actually_used() {
     let mut runner = FixtureRunner::healthy();
-    runner.failure = Some((EnvironmentTool::Node, EnvironmentStatus::Missing));
+    let observation = &mut runner.output(EnvironmentTool::Npx).observations[0];
+    observation.node_version = "22.10.0".into();
 
     let report = runner.report();
+    let npx = report
+        .checks
+        .iter()
+        .find(|check| check.tool == EnvironmentTool::Npx)
+        .unwrap();
 
-    assert!(!report.agent_detection_ready);
-    assert!(!report.runtime_ready);
+    assert_eq!(npx.node_version.as_deref(), Some("22.10.0"));
+    assert_eq!(npx.status, EnvironmentStatus::Incompatible);
+    assert!(report.npx_launchable);
 }
 
 #[cfg(windows)]

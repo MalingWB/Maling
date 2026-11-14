@@ -947,7 +947,7 @@
       "compaction-summary-query-failed": "압축 요약을 불러오지 못했습니다. 다시 시도하세요.",
       "adapter-exited": "Agent 프로세스가 {{method}} 중에 종료되었습니다. 명령, 인수, 환경 변수, 네트워크 및 인증을 확인해 주세요.",
       "adapter-exited-with-code": "Agent 프로세스가 {{method}} 중에 종료되었습니다(종료 코드 {{exitCode}}). 명령, 인수, 환경 변수, 네트워크 및 인증을 확인해 주세요.",
-      "adapter-start-failed": "Agent를 시작할 수 없습니다: {{osError}}",
+      "adapter-start-failed": "{{command}}을(를) 시작할 수 없습니다: {{osError}}",
       "doctor-timeout": "Agent 환경 진단이 {{method}} 중에 시간 초과되었습니다."
     },
     "app": {
@@ -3352,7 +3352,7 @@
     "installGuide": "공식 설치 안내",
     "discovering": "로컬 Agent 확인 중…",
     "discovered": "사용 가능한 Agent {{count}}개 감지됨",
-    "noAgents": "사용 가능한 Agent를 찾지 못했습니다. Agent 명령이 현재 시스템 PATH에서 사용 가능하고 로그인되어 있는지 확인한 후 다시 감지하세요. 여러 Node.js 버전이 설치되어 있다면 Agent가 현재 사용 중인 버전에 설치되어 있는지 확인하세요.",
+    "noAgents": "설치된 Agent를 찾지 못했습니다. Agent를 하나 설치한 후 다시 감지하세요.",
     "defaultAgent": "기본 Agent",
     "chooseAgent": "사용 가능한 Agent 선택",
     "defaultModel": "기본 모델",
@@ -3379,20 +3379,29 @@
     "defaultsDescription": "기본 제공 워크플로의 Agent, 모델 및 권한을 일괄 설정합니다. 사용자 지정 워크플로는 변경하지 않습니다.",
     "configureDefaults": "기본값 설정",
     "rerun": "설정 다시 실행",
-    "runtimeLimited": "npm/npx를 사용할 수 없습니다. 로컬 Agent는 계속 감지할 수 있지만 npm/npx에 의존하는 Agent는 사용할 수 없을 수 있습니다.",
-  "steps": {
+    "npxUnavailable": "npx로 시작하는 Agent는 지금 사용할 수 없습니다. 다른 Agent는 계속 감지할 수 있습니다.",
+    "allUnavailable": "감지된 Agent를 지금 사용할 수 없습니다. 아래 원인을 확인하세요.",
+    "actualNode": "실제 사용 중인 Node.js {{version}}: {{path}}",
+    "unavailable": {
+      "title": "사용할 수 없는 Agent {{count}}개",
+      "runtimeRequired": "npm/npx 필요",
+      "doctorFailed": "진단 실패: {{reason}}",
+      "nodeVersionHint": "Node.js {{version}}은(는) 검증된 범위를 벗어났습니다. {{recommended}} 설치를 권장합니다.",
+      "runtimeHint": "실행 환경에 문제가 있어 이 Agent가 시작되지 않을 수 있습니다."
+    },
+    "steps": {
       "git": "Git",
       "runtime": "실행 환경",
       "agent": "Agent"
     },
     "titles": {
       "git": "Git 준비",
-      "runtime": "Node.js 실행 환경 확인",
+      "runtime": "실행 환경 확인",
       "agent": "Agent 연결 및 기본 모델 선택"
     },
     "descriptions": {
       "git": "Git은 버전 관리에 사용됩니다. 나중에 설치할 수 있습니다.",
-      "runtime": "Node.js를 사용할 수 있어야 합니다. npm과 npx도 확인하지만, 사용할 수 없더라도 이에 의존하지 않는 로컬 Agent 감지는 계속할 수 있습니다. 검증 범위 밖의 안정 버전은 경고를 표시하지만 설정 진행을 차단하지 않습니다.",
+      "runtime": "일부 Agent는 npx로 시작되며 Node.js, npm, npx가 필요합니다. 다른 Agent에는 영향이 없습니다.",
       "agent": "사용 가능한 Agent는 자동 저장됩니다. 기본 모델을 선택하고 모든 기본 워크플로에 적용할 변경을 확인하세요."
     },
     "status": {
@@ -3414,7 +3423,6 @@
         "agent-preparation-required": "공급자 안내에 따라 설치하거나 로그인한 후 다시 확인하세요.",
         "probe-failed": "검사에 실패했습니다. 다시 검사하세요.",
         "probe-cancelled": "확인이 취소되었습니다. 계속하려면 다시 확인하세요.",
-        "runtime-incompatible": "Node.js, npm 또는 npx가 요구 사항을 충족하지 않습니다. 실행 환경을 확인하세요.",
         "environment-check-required": "먼저 실행 환경 확인을 완료하세요.",
         "configuration-conflict": "다른 곳에서 설정이 변경되었습니다. Agent를 다시 확인하고 최신 변경 사항을 미리 보세요.",
         "preview-stale": "선택한 모델 또는 기본 Workflow가 변경되었습니다. 다시 미리 보세요.",

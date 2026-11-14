@@ -947,7 +947,7 @@
       "compaction-summary-query-failed": "Não foi possível carregar o resumo da compactação. Tente novamente.",
       "adapter-exited": "O processo Agent encerrou durante {{method}}. Verifique comando, argumentos, variáveis de ambiente, rede e autenticação.",
       "adapter-exited-with-code": "O processo Agent encerrou durante {{method}} (código de saída {{exitCode}}). Verifique comando, argumentos, variáveis de ambiente, rede e autenticação.",
-      "adapter-start-failed": "O Agent não pôde ser iniciado: {{osError}}",
+      "adapter-start-failed": "Não foi possível iniciar {{command}}: {{osError}}",
       "doctor-timeout": "A verificação de ambiente do Agent expirou durante {{method}}."
     },
     "app": {
@@ -3352,7 +3352,7 @@
     "installGuide": "Guia oficial de instalação",
     "discovering": "Verificando Agents locais…",
     "discovered": "{{count}} Agents disponíveis detectados",
-    "noAgents": "Nenhum Agent disponível foi detectado. Confirme se o comando do Agent está disponível no PATH atual do sistema e se a sessão está autenticada; depois, verifique novamente. Se houver várias versões do Node.js instaladas, confirme se o Agent está instalado na versão ativa.",
+    "noAgents": "Nenhum Agent instalado foi detectado. Instale qualquer Agent e verifique novamente.",
     "defaultAgent": "Agent padrão",
     "chooseAgent": "Escolha um Agent disponível",
     "defaultModel": "Modelo padrão",
@@ -3379,20 +3379,29 @@
     "defaultsDescription": "Defina o Agent, o modelo e as permissões dos fluxos de trabalho integrados, sem alterar os personalizados.",
     "configureDefaults": "Configurar padrões",
     "rerun": "Executar configuração novamente",
-    "runtimeLimited": "npm/npx não estão disponíveis. Ainda é possível detectar Agents locais; Agents que dependem de npm/npx podem ficar indisponíveis.",
-  "steps": {
+    "npxUnavailable": "Os Agents iniciados pelo npx estão indisponíveis no momento. Os demais Agents ainda podem ser detectados.",
+    "allUnavailable": "Os Agents detectados estão indisponíveis. Veja os motivos abaixo.",
+    "actualNode": "Node.js em uso {{version}}: {{path}}",
+    "unavailable": {
+      "title": "Agents indisponíveis: {{count}}",
+      "runtimeRequired": "Requer npm/npx",
+      "doctorFailed": "O diagnóstico falhou: {{reason}}",
+      "nodeVersionHint": "O Node.js {{version}} está fora da faixa verificada. Recomendamos instalar o {{recommended}}.",
+      "runtimeHint": "O ambiente tem problemas que podem impedir este Agent de iniciar."
+    },
+    "steps": {
       "git": "Git",
       "runtime": "Ambiente",
       "agent": "Agent"
     },
     "titles": {
       "git": "Preparar Git",
-      "runtime": "Verificar o ambiente Node.js",
+      "runtime": "Verificar o ambiente",
       "agent": "Conecte um Agent e escolha o modelo padrão"
     },
     "descriptions": {
       "git": "Git fornece controle de versão. Você pode instalá-lo depois.",
-      "runtime": "O Node.js precisa estar disponível. O npm e o npx também são verificados; se não estiverem disponíveis, a configuração ainda pode encontrar Agents locais que não dependem deles. Versões estáveis fora das faixas verificadas exibem um aviso, mas não bloqueiam a configuração.",
+      "runtime": "Alguns Agents são iniciados pelo npx e precisam de Node.js, npm e npx. Os demais Agents não são afetados.",
       "agent": "Agents disponíveis são salvos automaticamente. Escolha o modelo padrão, revise e aplique aos workflows integrados."
     },
     "status": {
@@ -3414,7 +3423,6 @@
         "agent-preparation-required": "Siga o guia do provedor para instalar ou entrar e verifique novamente.",
         "probe-failed": "A verificação falhou. Verifique novamente.",
         "probe-cancelled": "A verificação foi cancelada. Verifique novamente para continuar.",
-        "runtime-incompatible": "Node.js, npm ou npx não atende aos requisitos. Verifique o ambiente de execução.",
         "environment-check-required": "Conclua primeiro a verificação do ambiente de execução.",
         "configuration-conflict": "A configuração mudou em outro lugar. Verifique os Agents novamente e revise as alterações atuais.",
         "preview-stale": "O modelo selecionado ou os Workflows integrados mudaram. Visualize as alterações novamente.",

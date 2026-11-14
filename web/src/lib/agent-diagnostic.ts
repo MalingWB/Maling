@@ -75,7 +75,8 @@ export function agentDiagnosticBannerReason(
   diagnostic?: ManagedAgentDiagnosticVm | null,
   fallback?: string,
 ): string | null {
-  const source = stringParam(fallback) || agentDiagnosticRawReason(diagnostic) || (diagnostic ? agentDiagnosticMessage(t, diagnostic) : '');
+  const commandStartFailed = agentDiagnosticError(diagnostic)?.code === 'acp.adapter-start-failed';
+  const source = stringParam(fallback) || (commandStartFailed ? agentDiagnosticMessage(t, diagnostic) : agentDiagnosticRawReason(diagnostic)) || (diagnostic ? agentDiagnosticMessage(t, diagnostic) : '');
   const line = source.split(/\r?\n/, 1)[0]?.trim() ?? '';
   if (!line) return null;
   if (line.length <= AGENT_DIAGNOSTIC_BANNER_REASON_MAX_CHARS) return line;

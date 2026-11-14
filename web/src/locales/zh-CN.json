@@ -947,7 +947,7 @@
       "compaction-summary-query-failed": "无法加载压缩摘要，请重试。",
       "adapter-exited": "Agent 进程在 {{method}} 阶段退出。请检查命令、参数、环境变量、网络和认证状态。",
       "adapter-exited-with-code": "Agent 进程在 {{method}} 阶段退出（退出码 {{exitCode}}）。请检查命令、参数、环境变量、网络和认证状态。",
-      "adapter-start-failed": "无法启动 Agent：{{osError}}",
+      "adapter-start-failed": "无法启动 {{command}}：{{osError}}",
       "doctor-timeout": "Agent 环境诊断在 {{method}} 阶段超时。"
     },
     "app": {
@@ -3347,7 +3347,7 @@
     "installGuide": "官方安装指引",
     "discovering": "正在检测本地 Agent…",
     "discovered": "检测到 {{count}} 个可用 Agent",
-    "noAgents": "尚未检测到可用 Agent。请确认 Agent 命令在当前系统 PATH 中可用，并完成登录后重新检测；安装多个 Node.js 时，请确认 Agent 安装在当前生效的版本下。",
+    "noAgents": "未检测到已安装的 Agent。安装任一 Agent 后重新检测。",
     "defaultAgent": "默认 Agent",
     "chooseAgent": "选择可用 Agent",
     "defaultModel": "默认模型",
@@ -3374,20 +3374,29 @@
     "defaultsDescription": "统一设置内置工作流的 Agent、模型和权限，不影响自定义工作流。",
     "configureDefaults": "配置默认项",
     "rerun": "重新运行引导",
-    "runtimeLimited": "npm/npx 不可用，仍可检测本机 Agent；依赖 npm/npx 的 Agent 可能不可用。",
-  "steps": {
+    "npxUnavailable": "通过 npx 启动的 Agent 暂时无法使用，其他 Agent 可继续检测。",
+    "allUnavailable": "检测到的 Agent 暂不可用，请查看下方原因。",
+    "actualNode": "实际使用的 Node.js {{version}}：{{path}}",
+    "unavailable": {
+      "title": "{{count}} 个 Agent 暂不可用",
+      "runtimeRequired": "需要 npm/npx",
+      "doctorFailed": "诊断未通过：{{reason}}",
+      "nodeVersionHint": "当前 Node.js {{version}} 不在已验证范围，建议安装 {{recommended}}。",
+      "runtimeHint": "运行环境存在异常，可能导致此 Agent 无法启动。"
+    },
+    "steps": {
       "git": "Git",
       "runtime": "运行环境",
       "agent": "Agent"
     },
     "titles": {
       "git": "准备 Git",
-      "runtime": "检查 Node.js 运行环境",
+      "runtime": "检查运行环境",
       "agent": "连接 Agent，设置默认模型"
     },
     "descriptions": {
       "git": "Git 用于版本管理。你可以稍后安装。",
-      "runtime": "Node.js 需可用；npm 和 npx 会一并检查，异常时仍可继续检测不依赖它们的本机 Agent。未验证的稳定版本会提示风险，但不阻止继续。",
+      "runtime": "部分 Agent 通过 npx 启动，需要 Node.js、npm 和 npx。其他 Agent 不受影响。",
       "agent": "可用 Agent 会自动保存。选择默认模型后，预览并应用到全部内置工作流。"
     },
     "status": {
@@ -3409,7 +3418,6 @@
         "agent-preparation-required": "请按照供应商指引完成安装或登录，然后重新检测。",
         "probe-failed": "检测失败，请重新检测。",
         "probe-cancelled": "检测已取消，请重新检测以继续。",
-        "runtime-incompatible": "Node.js、npm 或 npx 不满足要求，请检查运行环境。",
         "environment-check-required": "请先完成运行环境检测。",
         "configuration-conflict": "配置已在其他位置更改，请重新检测 Agent 并预览最新修改。",
         "preview-stale": "所选模型或内置工作流已更改，请重新预览。",
