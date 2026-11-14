@@ -78,6 +78,18 @@
 - 类型：string
 - 枚举：`running | paused | completed`
 
+`completed` 是 Run 的不可逆终态。无论 outcome 为 `success | failure | killed`，同一 Run 都不得再回退为 `running | paused`；终态后的重跑必须创建 successor/new run，不能原地清空 outcome。
+
+### 失败节点重跑与历史继承
+
+Workflow 的普通 Worker 在 `Completed + Failure/Invalid` 后，可从精确的历史 attempt 创建 successor Run。来源 Run 为 `ErrorBlocked` 时拒绝。当前 `Paused + RuntimeAbnormal` 节点继续使用原 Run 的新 attempt。
+
+可选 `rerun` 元数据包含 `origin` 和 `sealedBy`（Rust 字段名为 `sealed_by`）：前者记录 source Run UUID、完整锚点、操作 ID、继承的 round index/trace sequence 与 authoring revision；后者记录首次交接操作和 successor 身份。它们不增加生命周期状态。已封存 Run 保留原结果，拒绝继续执行、当前计划写入和 ACP 追问，仍可读取及从其他历史失败 attempt 分叉。
+
+successor 使用任务最新可执行定义，保留到锚点为止的必要 node/产物/附件快照；目标追加新 attempt、新会话。继承 trace 水位以前的节点是历史输入，不消耗新执行的控制预算、不产生执行事件。聊天、Raw、worker-ref 和旧下游不复制。继承节点的产物按照其持久化 resolved config 解释。目标 run.json 最后发布；发布前操作由持久化重跑记录与现有 runtime recovery candidate 恢复。
+
+重跑沿用来源实际工作区，不回滚文件、Git 提交或外部副作用。前缀数量和资源大小有上限；超限、工作区丢失、目标删除或定义无效均明确拒绝，不静默截断或退回主工作区。详见开发计划中的《工作流失败节点重跑技术方案》。
+
 ### `outcome`
 - 类型：string | null
 - 枚举：`success | failure | killed | null`
@@ -118,6 +130,10 @@
 - 字段必须存在
 - run 创建后但首个 attempt 尚未真正启动前，可为 `null`
 - run 完成后建议保留最后一次已定位的 attempt id，便于 inspect 与恢复分析
+
+`currentRound/currentNode/currentAttempt` 三元组是跨 `node.json -> round.json -> run.json` 当前位置转移和新 trace step 的 durable commit marker，不是同 locator 内部状态更新的通用事务 revision。`round.trace`、attempt 目录和事件日志都不能反向覆盖该三元组。读取当前 round 的 trace 时，Graph、执行上下文、恢复和历史投影只能消费截至该 locator 的 canonical 前缀。目标 round 的 `index` 严格小于当前 round 时，必须为 `completed` 并消费完整已校验 trace，否则是损坏状态；`index` 更大的 round 是未提交/孤立状态并忽略；相同 `index` 却不是 current round 则是 identity 冲突。若当前 round 的 trace 不包含唯一匹配的 current locator，活动 Run 必须判定为状态损坏并拒绝继续写入，不能猜测 trace 尾部。
+
+会话树中每个节点及其 attempts 同样以该 commit marker 限定的 trace 为成员事实源，目录存在不代表已提交。后台 driver 推进后，异常收敛使用它当前持有的完整 locator 和 execution owner，不能把初始节点快照当作整个 Run 生命周期内固定不变的 owner；迟到失败继续由现有 execution identity 校验拦截，不增加持久字段。
 
 ### `acceptanceLoopsUsed`
 - 类型：number
