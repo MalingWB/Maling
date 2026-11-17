@@ -2806,16 +2806,16 @@ mod tests {
             plain_theme
         );
 
-        let pinned = serde_json::json!({ "source": "theme", "assetId": "mobius-band-light" });
+        let pinned = serde_json::json!({ "source": "theme", "assetId": "vista-inkwash-light" });
         assert_eq!(
             serde_json::from_value::<WallpaperImagePreference>(pinned.clone()).unwrap(),
             WallpaperImagePreference::Theme {
-                asset_id: Some("mobius-band-light".to_string()),
+                asset_id: Some("vista-inkwash-light".to_string()),
             }
         );
         assert_eq!(
             serde_json::to_value(WallpaperImagePreference::Theme {
-                asset_id: Some("mobius-band-light".to_string()),
+                asset_id: Some("vista-inkwash-light".to_string()),
             })
             .unwrap(),
             pinned
@@ -2867,7 +2867,7 @@ mod tests {
             .wallpaper
             .for_color_scheme_mut(ResolvedColorScheme::Light)
             .image = WallpaperImagePreference::Theme {
-            asset_id: Some("mobius-band-light".to_string()),
+            asset_id: Some("vista-inkwash-light".to_string()),
         };
         preference
             .wallpaper
@@ -2899,7 +2899,7 @@ mod tests {
             .wallpaper
             .for_color_scheme_mut(ResolvedColorScheme::Light)
             .image = WallpaperImagePreference::Theme {
-            asset_id: Some("mobius-band-light".to_string()),
+            asset_id: Some("vista-inkwash-light".to_string()),
         };
         preference
             .wallpaper
