@@ -144,6 +144,15 @@ impl ImInboundError {
             },
             Self::Intervention(error) => match error.code {
                 InterventionErrorCode::InterventionExpired => ImErrorCode::ActionExpired,
+                InterventionErrorCode::InterventionBusy => ImErrorCode::ActionBusy,
+                _ if error.retryable => ImErrorCode::ActionRetryableFailure,
+                InterventionErrorCode::InterventionRevisionConflict
+                | InterventionErrorCode::InterventionOwnerMismatch
+                | InterventionErrorCode::InterventionRuntimeStateMismatch
+                | InterventionErrorCode::InterventionRequestNotFound
+                | InterventionErrorCode::InterventionAlreadyHandled => {
+                    ImErrorCode::ActionStateChanged
+                }
                 InterventionErrorCode::InterventionStorageUnavailable => {
                     ImErrorCode::ActionProcessingFailed
                 }
@@ -254,16 +263,25 @@ impl ImInboundActionService {
             .repository
             .inbound_result(envelope.channel, &envelope.platform_event_id)?
         {
-            let replay = match existing.outcome {
-                ImInboundOutcome::Accepted => {
-                    let ImDeliveryPayload::Intervention { ref reference, .. } = delivery.payload
-                    else {
-                        return Err(ImInboundError::InformationNotActionable);
-                    };
-                    let action = submitted_intervention_action(envelope, reference)?;
-                    Some(ImResolutionOutcome::from(&action))
+            let replay = match &existing.result_payload {
+                Some(super::model::ImRuntimeResumeActionResult::Committed { result }) => {
+                    Some(ImResolutionOutcome::RuntimeResume {
+                        result: result.clone(),
+                    })
                 }
-                _ => None,
+                Some(super::model::ImRuntimeResumeActionResult::NotCommitted { .. }) => None,
+                None => match existing.outcome {
+                    ImInboundOutcome::Accepted => {
+                        let ImDeliveryPayload::Intervention { ref reference, .. } =
+                            delivery.payload
+                        else {
+                            return Err(ImInboundError::InformationNotActionable);
+                        };
+                        let action = submitted_intervention_action(envelope, reference)?;
+                        Some(ImResolutionOutcome::from(&action))
+                    }
+                    _ => None,
+                },
             };
             return Ok(ImInboundHandling {
                 result: existing,
@@ -287,6 +305,7 @@ impl ImInboundActionService {
             )?
         {
             let result = ImInboundActionResult {
+                result_payload: existing.result_payload.clone(),
                 action_id: envelope.action_id.clone(),
                 channel: envelope.channel,
                 canonical_event_id: Some(delivery.canonical_event_id.clone()),
@@ -322,7 +341,8 @@ impl ImInboundActionService {
             return Err(ImInboundError::Expired);
         }
         let action = submitted_intervention_action(envelope, reference)?;
-        let resolution = ImResolutionOutcome::from(&action);
+        let mut resolution = ImResolutionOutcome::from(&action);
+        let is_resume = matches!(&action, InterventionAction::RuntimeResume { .. });
         let command = InterventionCommand {
             locator: reference.locator.clone(),
             request: reference.request.clone(),
@@ -333,20 +353,59 @@ impl ImInboundActionService {
         let command_result = match execute(command) {
             Ok(result) => result,
             Err(error)
-                if matches!(
-                    error.code,
-                    InterventionErrorCode::InterventionAlreadyHandled
-                        | InterventionErrorCode::InterventionRevisionConflict
-                ) =>
+                if !is_resume
+                    && matches!(
+                        error.code,
+                        InterventionErrorCode::InterventionAlreadyHandled
+                            | InterventionErrorCode::InterventionRevisionConflict
+                    ) =>
             {
                 InterventionCommandResult {
+                    runtime_resume: None,
                     status: InterventionCommandStatus::AlreadyApplied,
                     canonical_state: error.code.as_str().to_owned(),
                 }
             }
+            Err(error) if is_resume => {
+                let code = ImInboundError::from(error.clone()).code();
+                let result = ImInboundActionResult {
+                    action_id: envelope.action_id.clone(),
+                    channel: envelope.channel,
+                    canonical_event_id: Some(delivery.canonical_event_id.clone()),
+                    actor_id_hash: blake3::hash(envelope.actor_id.as_bytes())
+                        .to_hex()
+                        .to_string(),
+                    platform_event_id: envelope.platform_event_id.clone(),
+                    outcome: ImInboundOutcome::Rejected(code),
+                    result_revision: None,
+                    result_payload: Some(super::model::ImRuntimeResumeActionResult::NotCommitted {
+                        error,
+                    }),
+                    received_at_ms: now_ms,
+                    completed_at_ms: now_ms,
+                };
+                self.repository.record_inbound_result(&result)?;
+                return Ok(ImInboundHandling {
+                    result,
+                    resolution: None,
+                });
+            }
             Err(error) => return Err(error.into()),
         };
+        let result_payload = if is_resume {
+            let result = command_result
+                .runtime_resume
+                .clone()
+                .ok_or(ImInboundError::ActionNotAllowed)?;
+            resolution = ImResolutionOutcome::RuntimeResume {
+                result: result.clone(),
+            };
+            Some(super::model::ImRuntimeResumeActionResult::Committed { result })
+        } else {
+            None
+        };
         let result = ImInboundActionResult {
+            result_payload,
             action_id: envelope.action_id.clone(),
             channel: envelope.channel,
             canonical_event_id: Some(delivery.canonical_event_id.clone()),
@@ -358,7 +417,10 @@ impl ImInboundActionService {
                 InterventionCommandStatus::Accepted => ImInboundOutcome::Accepted,
                 InterventionCommandStatus::AlreadyApplied => ImInboundOutcome::AlreadyApplied,
             },
-            result_revision: None,
+            result_revision: command_result
+                .runtime_resume
+                .as_ref()
+                .and_then(|result| i64::try_from(result.revision).ok()),
             received_at_ms: now_ms,
             completed_at_ms: now_ms,
         };
@@ -738,6 +800,246 @@ mod tests {
         }
     }
 
+    fn resume_fixture() -> Fixture {
+        use crate::app::runtime_resume::*;
+        let mut fixture = fixture();
+        fixture.envelope.action_token = None;
+        fixture.envelope.action = ImSubmittedAction::PublishedAction { index: 0 };
+        fixture.delivery.notification_kind = ImNotificationKind::WorkflowResume;
+        let ImDeliveryPayload::Intervention { reference, .. } = &mut fixture.delivery.payload
+        else {
+            unreachable!()
+        };
+        reference.request = InterventionRequestIdentity::RuntimeResume {
+            source_identity: RuntimeResumeSourceIdentity {
+                task_uuid: "task-uuid".into(),
+                run_uuid: "run-uuid".into(),
+            },
+            resume_kind: RuntimeResumeKind::ContinueCurrentAttempt,
+            boundary: RuntimeResumeBoundary::RunExecution { revision: 17 },
+        };
+        reference.allowed_actions = vec![
+            crate::app::intervention::InterventionAllowedAction::RuntimeResume {
+                resume_kind: RuntimeResumeKind::ContinueCurrentAttempt,
+            },
+        ];
+        fixture.delivery.refresh_id();
+        fixture.envelope.delivery_id = fixture.delivery.delivery_id.clone();
+        fixture.repository.enqueue(&fixture.delivery, 100).unwrap();
+        fixture
+    }
+
+    #[test]
+    fn runtime_resume_audit_replays_typed_result_and_preserves_source_identity() {
+        use crate::app::runtime_resume::*;
+        let fixture = resume_fixture();
+        let result = RuntimeResumeResult {
+            kind: RuntimeResumeKind::ContinueCurrentAttempt,
+            revision: 18,
+            outcome: RuntimeResumeOutcome::Started,
+            error: None,
+        };
+        let expected = result.clone();
+        let first = fixture.service.handle(&fixture.envelope, 100, |command| {
+            let wire = serde_json::to_value(&command).unwrap();
+            let decoded: InterventionCommand = serde_json::from_value(wire).unwrap();
+            assert!(matches!(decoded.request, InterventionRequestIdentity::RuntimeResume { source_identity, boundary: RuntimeResumeBoundary::RunExecution { revision: 17 }, .. } if source_identity.task_uuid == "task-uuid" && source_identity.run_uuid == "run-uuid"));
+            Ok(InterventionCommandResult { status: InterventionCommandStatus::Accepted, canonical_state: "runtime:18".into(), runtime_resume: Some(result) })
+        }).unwrap();
+        let replay = fixture
+            .service
+            .handle(&fixture.envelope, 101, |_| {
+                panic!("audit replay must not execute")
+            })
+            .unwrap();
+        assert_eq!(first, replay);
+        assert_eq!(first.result.result_revision, Some(18));
+        assert_eq!(
+            first.resolution,
+            Some(ImResolutionOutcome::RuntimeResume { result: expected })
+        );
+        let mut next = fixture.envelope.clone();
+        next.platform_event_id = "callback-2".into();
+        next.action_id = deterministic_action_id(next.channel, &next.platform_event_id);
+        assert_eq!(
+            fixture
+                .service
+                .handle(&next, 102, |_| panic!(
+                    "accepted source must not execute twice"
+                ))
+                .unwrap()
+                .result
+                .outcome,
+            ImInboundOutcome::AlreadyApplied
+        );
+    }
+
+    #[test]
+    fn runtime_resume_busy_replays_failure_but_a_new_callback_can_retry() {
+        use crate::app::runtime_resume::*;
+        let fixture = resume_fixture();
+        let first = fixture
+            .service
+            .handle(&fixture.envelope, 100, |_| Err(InterventionError::busy()))
+            .unwrap();
+        assert!(matches!(
+            first.result.outcome,
+            ImInboundOutcome::Rejected(ImErrorCode::ActionBusy)
+        ));
+        assert!(first.resolution.is_none());
+        assert_eq!(
+            first,
+            fixture
+                .service
+                .handle(&fixture.envelope, 101, |_| panic!(
+                    "same callback must replay its failure"
+                ))
+                .unwrap()
+        );
+        let mut next = fixture.envelope.clone();
+        next.platform_event_id = "retry-callback".into();
+        next.action_id = deterministic_action_id(next.channel, &next.platform_event_id);
+        let retried = fixture
+            .service
+            .handle(&next, 102, |_| {
+                Ok(InterventionCommandResult {
+                    status: InterventionCommandStatus::Accepted,
+                    canonical_state: "runtime:18".into(),
+                    runtime_resume: Some(RuntimeResumeResult {
+                        kind: RuntimeResumeKind::ContinueCurrentAttempt,
+                        revision: 18,
+                        outcome: RuntimeResumeOutcome::Started,
+                        error: None,
+                    }),
+                })
+            })
+            .unwrap();
+        assert_eq!(retried.result.outcome, ImInboundOutcome::Accepted);
+    }
+
+    #[test]
+    fn runtime_resume_stale_boundary_is_recorded_as_state_changed_and_replayed() {
+        let fixture = resume_fixture();
+        let result = fixture
+            .service
+            .handle(&fixture.envelope, 100, |_| {
+                Err(InterventionError::new(
+                    InterventionErrorCode::InterventionRevisionConflict,
+                ))
+            })
+            .expect("stale resume result must have a durable rejected audit");
+        let ImInboundOutcome::Rejected(code) = result.result.outcome else {
+            panic!("stale operation must be rejected")
+        };
+        assert_eq!(code.as_str(), "IM_ACTION_STATE_CHANGED");
+        assert!(result.resolution.is_none());
+        let replay = fixture
+            .service
+            .handle(&fixture.envelope, 101, |_| {
+                panic!("stale callback replay must not execute runtime")
+            })
+            .unwrap();
+        assert_eq!(replay, result);
+        assert!(
+            fixture
+                .repository
+                .successful_inbound_result_for_canonical_event(
+                    fixture.envelope.channel,
+                    &fixture.delivery.canonical_event_id
+                )
+                .unwrap()
+                .is_none()
+        );
+        let mut next_delivery = fixture.delivery.clone();
+        next_delivery.canonical_event_id = "resume-next-boundary".into();
+        if let ImDeliveryPayload::Intervention { reference, .. } = &mut next_delivery.payload {
+            if let crate::app::intervention::InterventionRequestIdentity::RuntimeResume {
+                boundary,
+                ..
+            } = &mut reference.request
+            {
+                *boundary = crate::app::runtime_resume::RuntimeResumeBoundary::RunExecution {
+                    revision: 18,
+                };
+            }
+        }
+        next_delivery.refresh_id();
+        fixture.repository.enqueue(&next_delivery, 102).unwrap();
+        let mut next = fixture.envelope.clone();
+        next.platform_event_id = "callback-next-boundary".into();
+        next.action_id = deterministic_action_id(next.channel, &next.platform_event_id);
+        next.delivery_id = next_delivery.delivery_id.clone();
+        let result = fixture
+            .service
+            .handle(&next, 102, |_| {
+                Ok(InterventionCommandResult {
+                    status: InterventionCommandStatus::Accepted,
+                    canonical_state: "runtime:19".into(),
+                    runtime_resume: Some(crate::app::runtime_resume::RuntimeResumeResult {
+                        kind: crate::app::runtime_resume::RuntimeResumeKind::ContinueCurrentAttempt,
+                        revision: 19,
+                        outcome: crate::app::runtime_resume::RuntimeResumeOutcome::Started,
+                        error: None,
+                    }),
+                })
+            })
+            .unwrap();
+        assert_eq!(
+            result.result.outcome,
+            ImInboundOutcome::Accepted,
+            "a stale callback must not consume a new boundary"
+        );
+    }
+
+    #[test]
+    fn runtime_resume_stale_errors_have_a_distinct_state_changed_code() {
+        for code in [
+            InterventionErrorCode::InterventionRevisionConflict,
+            InterventionErrorCode::InterventionOwnerMismatch,
+            InterventionErrorCode::InterventionRuntimeStateMismatch,
+            InterventionErrorCode::InterventionRequestNotFound,
+            InterventionErrorCode::InterventionAlreadyHandled,
+        ] {
+            let error = ImInboundError::Intervention(InterventionError::new(code));
+            assert_eq!(error.code().as_str(), "IM_ACTION_STATE_CHANGED", "{code:?}");
+        }
+        for (code, expected) in [
+            (
+                InterventionErrorCode::InterventionExpired,
+                ImErrorCode::ActionExpired,
+            ),
+            (
+                InterventionErrorCode::InterventionLocatorInvalid,
+                ImErrorCode::ActionInvalid,
+            ),
+            (
+                InterventionErrorCode::InterventionActionInvalid,
+                ImErrorCode::ActionInvalid,
+            ),
+            (
+                InterventionErrorCode::InterventionStorageUnavailable,
+                ImErrorCode::ActionProcessingFailed,
+            ),
+        ] {
+            assert_eq!(
+                ImInboundError::Intervention(InterventionError::new(code)).code(),
+                expected
+            );
+        }
+        assert_eq!(
+            ImInboundError::Intervention(InterventionError::busy()).code(),
+            ImErrorCode::ActionBusy
+        );
+        assert_eq!(
+            ImInboundError::Intervention(InterventionError {
+                retryable: true,
+                ..InterventionError::new(InterventionErrorCode::InterventionStorageUnavailable)
+            })
+            .code(),
+            ImErrorCode::ActionRetryableFailure
+        );
+    }
+
     #[test]
     fn duplicate_platform_callback_and_action_id_execute_runtime_once() {
         let fixture = fixture();
@@ -963,6 +1265,7 @@ mod tests {
                 };
                 seen_content = content.clone();
                 Ok(InterventionCommandResult {
+                    runtime_resume: None,
                     status: InterventionCommandStatus::Accepted,
                     canonical_state: "accepted".into(),
                 })
@@ -1067,6 +1370,7 @@ mod tests {
                 );
                 executions.fetch_add(1, Ordering::SeqCst);
                 Ok(InterventionCommandResult {
+                    runtime_resume: None,
                     status: InterventionCommandStatus::Accepted,
                     canonical_state: "declined".into(),
                 })

@@ -24,6 +24,9 @@ use gold_band::app::intervention::{
     InterventionAction, InterventionCommand, InterventionCommandResult, InterventionCommandService,
     InterventionError, InterventionLocator, InterventionRequestIdentity,
 };
+use gold_band::app::runtime_resume::{
+    RuntimeResumeInput, RuntimeResumeKind, RuntimeResumeOffer, RuntimeResumeOutcome,
+};
 use gold_band::app::{
     AcpPromptLifecycleEvent, AcpTurnBatchProgress, AcpTurnOutcome, App, AutoTemplate,
     AutoTemplateStore, CreateTaskInput, DirectTurnLifecycleEvent, DirectTurnLifecycleTransition,
@@ -35,8 +38,7 @@ use gold_band::domain::{
     NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode, TurnControlMode,
 };
 use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValidationError};
-use gold_band::dynamic::{DynamicNodeStatus, DynamicRunStatus};
-use gold_band::dynamic_store::load_dynamic_graph;
+use gold_band::dynamic::DynamicNodeStatus;
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
 use gold_band::scheduler::db::ScheduledTaskDatabase;
 use gold_band::skill::SkillCommandError;
@@ -393,142 +395,6 @@ fn runtime_continue_started_lifecycle_for_locator(
     locator: &AttemptLocator,
 ) -> Option<ConversationAttemptLifecycleVm> {
     lifecycle_for_locator(app, locator)
-}
-
-fn current_attempt_manual_check_pending(
-    app: &App,
-    locator: &AttemptLocator,
-    run: &RunState,
-) -> CommandResult<bool> {
-    if !locator.matches_run_current(run) || locator.outer_node_id().is_some() {
-        return Ok(false);
-    }
-    let node_path = app.paths.node_file(
-        &locator.task_id,
-        &locator.run_id,
-        &locator.round_id,
-        &locator.node_id,
-        &locator.attempt_id,
-    );
-    read_json::<NodeState>(&node_path)
-        .map(|node| node.manual_check_pending)
-        .map_err(command_error)
-}
-
-fn acp_attempt_was_cancelled(attempt_dir: &Utf8PathBuf) -> bool {
-    [
-        attempt_dir.join("acp.snapshot.json"),
-        attempt_dir.join("acp.session.json"),
-    ]
-    .iter()
-    .any(|path| {
-        read_json::<serde_json::Value>(path)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("stopReason")
-                    .or_else(|| value.get("stop_reason"))
-                    .and_then(|reason| reason.as_str().map(str::to_string))
-                    .or_else(|| {
-                        value
-                            .get("status")
-                            .and_then(|status| status.as_str().map(str::to_string))
-                    })
-            })
-            .is_some_and(|value| value.eq_ignore_ascii_case("cancelled"))
-    })
-}
-
-fn dynamic_leaf_runtime_continue_required(
-    app: &App,
-    locator: &AttemptLocator,
-    run: &RunState,
-) -> CommandResult<bool> {
-    if run.status == RunStatus::Paused
-        && !run
-            .pause_reason
-            .is_some_and(PauseReason::allows_explicit_runtime_continue)
-    {
-        return Ok(false);
-    }
-    let (Some(outer_node_id), Some(outer_attempt_id)) =
-        (locator.outer_node_id(), locator.outer_attempt_id())
-    else {
-        return Ok(false);
-    };
-    let dynamic_graph_path = app.paths.dynamic_graph_file(
-        &locator.task_id,
-        &locator.run_id,
-        &locator.round_id,
-        outer_node_id,
-        outer_attempt_id,
-    );
-    let dynamic_graph =
-        load_dynamic_graph(&dynamic_graph_path, &app.paths.repo_root).map_err(command_error)?;
-    if dynamic_graph.run.status == DynamicRunStatus::Paused
-        && !dynamic_graph
-            .run
-            .pause_reason
-            .is_some_and(PauseReason::allows_explicit_runtime_continue)
-    {
-        return Ok(false);
-    }
-    let dynamic_node = dynamic_graph
-        .nodes
-        .iter()
-        .find(|node| node.id == locator.node_id)
-        .ok_or_else(|| {
-            command_error(anyhow::anyhow!(
-                "dynamic node `{}` not found",
-                locator.node_id
-            ))
-        })?;
-    if dynamic_node.status == DynamicNodeStatus::Paused && dynamic_node.outcome.is_none() {
-        return Ok(dynamic_node
-            .pause_reason
-            .is_some_and(PauseReason::allows_explicit_runtime_continue));
-    }
-    let stale_resumable_parent = (run.status == RunStatus::Paused
-        && run
-            .pause_reason
-            .is_some_and(PauseReason::allows_explicit_runtime_continue))
-        || (dynamic_graph.run.status == DynamicRunStatus::Paused
-            && dynamic_graph
-                .run
-                .pause_reason
-                .is_some_and(PauseReason::allows_explicit_runtime_continue));
-    let stale_resumable_leaf = stale_resumable_parent
-        && matches!(
-            dynamic_node.status,
-            DynamicNodeStatus::Ready | DynamicNodeStatus::Running
-        )
-        && dynamic_node.outcome.is_none()
-        && acp_attempt_was_cancelled(&locator.attempt_dir(app));
-    Ok(stale_resumable_leaf)
-}
-
-fn runtime_continue_required(
-    app: &App,
-    locator: &AttemptLocator,
-    run: &RunState,
-    manual_check_pending: bool,
-) -> CommandResult<bool> {
-    if !conversation_is_orchestrated(app, &locator.task_id) || manual_check_pending {
-        return Ok(false);
-    }
-    if locator.matches_run_current(run) && locator.outer_node_id().is_some() {
-        return dynamic_leaf_runtime_continue_required(app, locator, run);
-    }
-    if run.status == RunStatus::Paused
-        && gold_band::app::is_run_continuable(run)
-        && run
-            .pause_reason
-            .is_some_and(PauseReason::allows_explicit_runtime_continue)
-        && locator.matches_run_current(run)
-    {
-        return Ok(true);
-    }
-    Ok(false)
 }
 
 fn attempt_is_runtime_controlled(app: &App, locator: &AttemptLocator) -> CommandResult<bool> {
@@ -1699,6 +1565,60 @@ async fn execute_elicitation_intervention_boundary(
     result
 }
 
+async fn execute_desktop_runtime_resume(
+    state: &DesktopState,
+    app: App,
+    offer: RuntimeResumeOffer,
+    input: RuntimeResumeInput,
+) -> CommandResult<RunState> {
+    let event_id = offer.canonical_event_id();
+    let locator = offer.locator.clone();
+    let runtime = state.im_runtime();
+    let _guard = match &runtime {
+        Some(runtime) => Some(runtime.guard_intervention_source(&event_id).await),
+        None => None,
+    };
+    let result = spawn_blocking_command(move || {
+        app.execute_runtime_resume(offer, input).map_err(|error| {
+            CommandErrorVm::new(
+                if error.code
+                    == gold_band::app::intervention::InterventionErrorCode::InterventionBusy
+                {
+                    "runtime.continue-already-active"
+                } else if error.retryable {
+                    "runtime.continue-launch-failed"
+                } else {
+                    "runtime.continue-not-available"
+                },
+                serde_json::json!({"reason":error.code.as_str(), "details":error.details}),
+            )
+        })
+    })
+    .await?;
+    project_desktop_intervention_resolution(
+        state,
+        Some(DesktopInterventionProjection {
+            source_event_id: event_id,
+            notification_kind: gold_band::im::ImNotificationKind::WorkflowResume,
+            locator,
+            outcome: gold_band::im::ImResolutionOutcome::RuntimeResume {
+                result: result.0.clone(),
+            },
+        }),
+    )
+    .await;
+    let (result, run) = result;
+    match result.outcome {
+        RuntimeResumeOutcome::LaunchFailed => Err(CommandErrorVm::new(
+            "runtime.continue-launch-failed",
+            serde_json::json!({ "runtimeResume": result }),
+        )),
+        RuntimeResumeOutcome::Started
+        | RuntimeResumeOutcome::Recovered
+        | RuntimeResumeOutcome::Completed => Ok(run),
+    }
+}
+
 pub(crate) async fn execute_intervention_command(
     app_handle: AppHandle,
     state: &DesktopState,
@@ -1707,6 +1627,21 @@ pub(crate) async fn execute_intervention_command(
     command: InterventionCommand,
 ) -> Result<InterventionCommandResult, InterventionError> {
     match command.action {
+        InterventionAction::RuntimeResume { .. } => {
+            let app = app.clone_for_background();
+            tauri::async_runtime::spawn_blocking(move || {
+                let result = gold_band::app::intervention::InterventionCommandService::new(&app)
+                    .execute(command)?;
+                Ok(result)
+            })
+            .await
+            .map_err(|_| {
+                InterventionError::from_command_error(
+                    "runtime.continue-task-failed",
+                    serde_json::json!({}),
+                )
+            })?
+        }
         InterventionAction::PermissionOption { .. } => {
             execute_permission_intervention(app_handle, state, &app, project_id, command)
                 .await
@@ -2379,6 +2314,21 @@ fn desktop_intervention_source_event_id_at(
 ) -> Option<String> {
     let locator = &command.locator;
     let request_suffix = match &command.request {
+        InterventionRequestIdentity::RuntimeResume {
+            source_identity,
+            resume_kind,
+            boundary,
+        } => {
+            return Some(
+                RuntimeResumeOffer {
+                    locator: locator.clone(),
+                    source_identity: source_identity.clone(),
+                    kind: *resume_kind,
+                    boundary: *boundary,
+                }
+                .canonical_event_id(),
+            );
+        }
         InterventionRequestIdentity::ManualCheck => {
             return Some(gold_band::app::make_dedup_key(
                 &locator.project_id,
@@ -2446,6 +2396,7 @@ async fn project_desktop_intervention_resolution(
     let source_event_id = projection.source_event_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         runtime.project_intervention_resolution(&InterventionResolution {
+            callback_replaced: false,
             source_event_id: &projection.source_event_id,
             notification_kind: projection.notification_kind,
             locator: &projection.locator,
@@ -2506,6 +2457,9 @@ fn desktop_intervention_projection_at(
     command: &InterventionCommand,
 ) -> Option<DesktopInterventionProjection> {
     let notification_kind = match &command.request {
+        InterventionRequestIdentity::RuntimeResume { .. } => {
+            gold_band::im::ImNotificationKind::WorkflowResume
+        }
         InterventionRequestIdentity::Permission { .. } => {
             gold_band::im::ImNotificationKind::Permission
         }
@@ -2541,6 +2495,7 @@ fn recovered_permission_result(
         .and_then(|raw| raw.get("optionId"))
         .and_then(serde_json::Value::as_str)?;
     Some(InterventionCommandResult {
+        runtime_resume: None,
         status: gold_band::app::intervention::InterventionCommandStatus::AlreadyApplied,
         canonical_state: format!("permission:{resolved_option}"),
     })
@@ -2570,6 +2525,7 @@ fn recovered_elicitation_result(
         return None;
     }
     Some(InterventionCommandResult {
+        runtime_resume: None,
         status: gold_band::app::intervention::InterventionCommandStatus::AlreadyApplied,
         canonical_state: format!("elicitation:{elicitation_id}"),
     })
@@ -4812,6 +4768,7 @@ pub async fn continue_run(
     project_id: Option<String>,
     task_id: String,
     run_id: String,
+    resume_offer: RuntimeResumeOffer,
 ) -> CommandResult<RunSummaryVm> {
     let _ = state.record_heartbeat_activity();
     let app = resolve_runtime_command_app_with_emitters(
@@ -4820,20 +4777,20 @@ pub async fn continue_run(
         project_id.as_deref(),
     )
     .await?;
-    app.record_metrics_resume_cause(
-        &task_id,
-        &run_id,
-        gold_band::app::observability::ResumeCause::ManualContinue,
-    );
-    let result = app.run_continue_background(&task_id, &run_id, None, None);
-    if result.is_err() {
-        app.clear_metrics_resume_cause(
-            &task_id,
-            &run_id,
-            gold_band::app::observability::ResumeCause::ManualContinue,
-        );
+    if resume_offer.locator.task_id != task_id || resume_offer.locator.run_id != run_id {
+        return Err(CommandErrorVm::new(
+            "runtime.continue-not-available",
+            serde_json::json!({}),
+        ));
     }
-    result.map(run_summary_vm).map_err(command_error)
+    execute_desktop_runtime_resume(
+        state.inner(),
+        app.clone_for_background(),
+        resume_offer,
+        RuntimeResumeInput::default(),
+    )
+    .await
+    .map(run_summary_vm)
 }
 
 #[tauri::command]
@@ -4851,6 +4808,7 @@ pub async fn continue_conversation_runtime(
     input: Option<ConversationPromptInput>,
     prompt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
+    resume_offer: RuntimeResumeOffer,
 ) -> CommandResult<ConversationPromptSubmitVm> {
     let log_project_id = project_id.clone();
     let log_task_id = task_id.clone();
@@ -4874,6 +4832,7 @@ pub async fn continue_conversation_runtime(
         input,
         prompt_id,
         attachment_paths,
+        resume_offer,
     )
     .await;
     match &result {
@@ -4920,6 +4879,7 @@ async fn continue_conversation_runtime_inner(
     input: Option<ConversationPromptInput>,
     prompt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
+    resume_offer: RuntimeResumeOffer,
 ) -> CommandResult<ConversationPromptSubmitVm> {
     let app = resolve_runtime_command_app_with_emitters(
         &app_handle,
@@ -4947,64 +4907,38 @@ async fn continue_conversation_runtime_inner(
         )
         .await?;
     }
+    if resume_offer.kind != RuntimeResumeKind::ContinueCurrentAttempt
+        || resume_offer.locator.task_id != locator.task_id
+        || resume_offer.locator.run_id != locator.run_id
+        || resume_offer.locator.round_id != locator.round_id
+        || resume_offer.locator.node_id != locator.node_id
+        || resume_offer.locator.attempt_id != locator.attempt_id
+        || resume_offer.locator.outer_node_id.as_deref() != locator.outer_node_id()
+        || resume_offer.locator.outer_attempt_id.as_deref() != locator.outer_attempt_id()
+    {
+        return Err(CommandErrorVm::new(
+            "runtime.continue-not-available",
+            serde_json::json!({}),
+        ));
+    }
+    let attempt_dir = locator.attempt_dir(&app);
+    let input = RuntimeResumeInput {
+        prompt_id,
+        input,
+        attachment_paths: attachment_paths.unwrap_or_default(),
+        model_override: current_acp_session_model_override(&attempt_dir),
+        permission_mode_override: current_acp_session_permission_mode_override(&attempt_dir),
+    };
+    let run = execute_desktop_runtime_resume(
+        state.inner(),
+        app.clone_for_background(),
+        resume_offer,
+        input,
+    )
+    .await?;
+    let run = run_summary_vm(run);
     let app = app.clone_for_background();
     spawn_blocking_command(move || {
-        let run = app
-            .run_status(&locator.task_id, &locator.run_id)
-            .map_err(command_error)?;
-        let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
-        if !runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
-            return Err(CommandErrorVm::new(
-                "runtime.continue-not-available",
-                serde_json::json!({
-                    "taskId": locator.task_id,
-                    "runId": locator.run_id,
-                    "roundId": locator.round_id,
-                    "nodeId": locator.node_id,
-                    "attemptId": locator.attempt_id,
-                }),
-            ));
-        }
-        if client::prompt_activity(&locator.attempt_dir(&app)).is_some() {
-            return Err(CommandErrorVm::new(
-                "runtime.continue-already-active",
-                serde_json::json!({}),
-            ));
-        }
-        let attempt_dir = locator.attempt_dir(&app);
-        let model_override = current_acp_session_model_override(&attempt_dir);
-        let permission_mode_override = current_acp_session_permission_mode_override(&attempt_dir);
-        let attachment_paths = attachment_paths.unwrap_or_default();
-        let run = if let (Some(outer_node_id), Some(outer_attempt_id)) =
-            (locator.outer_node_id(), locator.outer_attempt_id())
-        {
-            app.run_continue_dynamic_inner_background(
-                &locator.task_id,
-                &locator.run_id,
-                &locator.round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &locator.node_id,
-                &locator.attempt_id,
-                prompt_id,
-                input,
-                attachment_paths,
-                model_override,
-                permission_mode_override,
-            )
-        } else {
-            app.run_continue_background_with_config_overrides(
-                &locator.task_id,
-                &locator.run_id,
-                prompt_id,
-                input,
-                attachment_paths,
-                model_override,
-                permission_mode_override,
-            )
-        }
-        .map(run_summary_vm)
-        .map_err(command_error)?;
         Ok(ConversationPromptSubmitVm {
             kind: "runtime-continue-started".to_string(),
             turn_id: None,
@@ -5030,7 +4964,7 @@ pub async fn recover_conversation_runtime(
     round_id: String,
     node_id: String,
     attempt_id: String,
-    expected_revision: u64,
+    resume_offer: RuntimeResumeOffer,
 ) -> CommandResult<ConversationPromptSubmitVm> {
     let app = resolve_runtime_command_app_with_emitters(
         &app_handle,
@@ -5039,19 +4973,30 @@ pub async fn recover_conversation_runtime(
     )
     .await?;
     let locator = AttemptLocator::new(task_id, run_id, round_id, node_id, attempt_id, None, None);
+    if resume_offer.kind != RuntimeResumeKind::RecoverCompletedAttempt
+        || resume_offer.locator.task_id != locator.task_id
+        || resume_offer.locator.run_id != locator.run_id
+        || resume_offer.locator.round_id != locator.round_id
+        || resume_offer.locator.node_id != locator.node_id
+        || resume_offer.locator.attempt_id != locator.attempt_id
+        || resume_offer.locator.outer_node_id.is_some()
+        || resume_offer.locator.outer_attempt_id.is_some()
+    {
+        return Err(CommandErrorVm::new(
+            "runtime.continue-not-available",
+            serde_json::json!({}),
+        ));
+    }
+    let run = execute_desktop_runtime_resume(
+        state.inner(),
+        app.clone_for_background(),
+        resume_offer,
+        RuntimeResumeInput::default(),
+    )
+    .await?;
+    let run = run_summary_vm(run);
     let app = app.clone_for_background();
     spawn_blocking_command(move || {
-        let run = app
-            .run_recover_completed_background(
-                &locator.task_id,
-                &locator.run_id,
-                &locator.round_id,
-                &locator.node_id,
-                &locator.attempt_id,
-                expected_revision,
-            )
-            .map(run_summary_vm)
-            .map_err(command_error)?;
         Ok(ConversationPromptSubmitVm {
             kind: "runtime-recovery-started".to_string(),
             turn_id: None,
@@ -12822,7 +12767,6 @@ mod tests {
     use gold_band::app::{WorkflowTemplate, WorkflowTemplateStore};
     use gold_band::config::{ConversationWorkspaceEntry, ResolvedColorScheme, RuntimeConfig};
     use gold_band::dsl::{NodeDsl, WorkerNode, WorkflowDsl};
-    use gold_band::dynamic::DynamicGraphState;
     use gold_band::runtime::RoundState;
     use gold_band::runtime::TaskState;
     use gold_band::scheduler::{OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition};
@@ -12831,6 +12775,148 @@ mod tests {
         TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindings,
     };
     use std::collections::BTreeMap;
+
+    #[tokio::test]
+    async fn desktop_runtime_resume_returns_committed_launch_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let app = App::new(repo_root.clone());
+        let locator = InterventionLocator {
+            project_id: app.paths.project_id.clone(),
+            task_id: "task-001".into(),
+            run_id: "run-001".into(),
+            round_id: "round-001".into(),
+            node_id: "worker".into(),
+            attempt_id: "attempt-001".into(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        };
+        write_json(
+            &app.paths.task_file(&locator.task_id),
+            &TaskState {
+                version: gold_band::domain::VERSION.into(),
+                id: locator.task_id.clone(),
+                title: None,
+                description: None,
+                uuid: Some("task-instance-a".into()),
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .task_dir(&locator.task_id)
+                .join("authoring/conversation.json"),
+            &serde_json::json!({"runMode":"workflow"}),
+        )
+        .unwrap();
+        let run = RunState {
+            version: gold_band::domain::VERSION.into(),
+            id: locator.run_id.clone(),
+            task_id: locator.task_id.clone(),
+            task_uuid: Some("task-instance-a".into()),
+            uuid: Some("run-instance-a".into()),
+            status: RunStatus::Paused,
+            outcome: None,
+            pause_reason: Some(PauseReason::ProcessInterrupted),
+            started_at: "2026-11-17T00:00:00Z".into(),
+            updated_at: "2026-11-17T00:00:01Z".into(),
+            workflow_snapshot: "workflow.snapshot.json".into(),
+            current_round: Some(locator.round_id.clone()),
+            current_node: Some(locator.node_id.clone()),
+            current_attempt: Some(locator.attempt_id.clone()),
+            new_rounds_opened: 0,
+            rerun: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: gold_band::runtime::RuntimeExecutionState::new(
+                gold_band::runtime::RuntimeExecutionPhase::Paused,
+                Some(gold_band::runtime::RuntimeAttemptLocator {
+                    round_id: locator.round_id.clone(),
+                    node_id: locator.node_id.clone(),
+                    attempt_id: locator.attempt_id.clone(),
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                }),
+                "2026-11-17T00:00:01Z".to_string(),
+            ),
+        };
+        write_json(&app.paths.run_file(&locator.task_id, &locator.run_id), &run).unwrap();
+        write_json(
+            &app.paths
+                .round_file(&locator.task_id, &locator.run_id, &locator.round_id),
+            &serde_json::json!({
+                "version":gold_band::domain::VERSION,"id":locator.round_id,"run_id":locator.run_id,
+                "index":1,"status":"paused","outcome":null,"trigger":"initial",
+                "started_at":run.started_at,"trace":[{"sequence":1,"node_id":locator.node_id,
+                "attempt_id":locator.attempt_id,"from_node_id":null,"edge_outcome":null,
+                "entered_at":run.started_at}]
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.node_file(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+            ),
+            &NodeState {
+                version: gold_band::domain::VERSION.into(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: locator.node_id.clone(),
+                node_type: gold_band::domain::NodeType::Worker,
+                run_id: locator.run_id.clone(),
+                round_id: locator.round_id.clone(),
+                attempt_id: locator.attempt_id.clone(),
+                status: RunStatus::Paused,
+                outcome: None,
+                started_at: run.started_at.clone(),
+                finished_at: Some(run.updated_at.clone()),
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: Default::default(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .workflow_snapshot_file(&locator.task_id, &locator.run_id),
+            &serde_json::json!({"version":gold_band::domain::VERSION,"id":"resume-test",
+                "entry":"worker","nodes":[{"id":"worker","type":"worker",
+                "provider":"claude-acp","prompt_envelope":"raw-agent"}],
+                "edges":[{"from":"worker","to":"$end","on":"success"}]}),
+        )
+        .unwrap();
+        let state = DesktopState::new(crate::state::DesktopContext {
+            repo_root,
+            config: RuntimeConfig::default(),
+            recent_workspaces: Vec::new(),
+            needs_workspace: false,
+        });
+        let offer = app.inspect_runtime_resume(locator.clone()).unwrap().offer;
+        // Missing worker_ref fails restore after admission, without launching a provider.
+        let error = execute_desktop_runtime_resume(
+            &state,
+            app.clone_for_background(),
+            offer.clone(),
+            RuntimeResumeInput::default(),
+        )
+        .await
+        .expect_err("a committed launch failure must not be reported as started");
+        assert_eq!(error.code, "runtime.continue-launch-failed", "{error:?}");
+        assert_eq!(error.params["runtimeResume"]["outcome"], "launchFailed");
+        assert_eq!(
+            app.run_status(&locator.task_id, &locator.run_id)
+                .unwrap()
+                .status,
+            RunStatus::Paused
+        );
+        let next = app.inspect_runtime_resume(locator).unwrap().offer;
+        assert_eq!(next.source_identity, offer.source_identity);
+        assert_ne!(next.boundary, offer.boundary);
+    }
 
     #[test]
     fn terminal_result_event_carries_task_activity_for_sidebar_ordering() {
@@ -16601,61 +16687,6 @@ mod tests {
     }
 
     #[test]
-    fn fixed_runtime_continue_rejects_structured_intervention_states() {
-        let root = std::env::temp_dir().join(format!(
-            "gold-band-runtime-continue-eligibility-test-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
-        let locator = AttemptLocator::new(
-            "task-001".to_string(),
-            "run-001".to_string(),
-            "round-001".to_string(),
-            "node-001".to_string(),
-            "attempt-001".to_string(),
-            None,
-            None,
-        );
-        let mut run = RunState {
-            version: gold_band::domain::VERSION.to_string(),
-            id: "run-001".to_string(),
-            task_id: "task-001".to_string(),
-            task_uuid: None,
-            status: RunStatus::Paused,
-            outcome: None,
-            started_at: "2026-08-10T00:00:00Z".to_string(),
-            updated_at: "2026-08-10T00:00:01Z".to_string(),
-            workflow_snapshot: "workflow.snapshot.json".to_string(),
-            current_round: Some("round-001".to_string()),
-            current_node: Some("node-001".to_string()),
-            current_attempt: Some("attempt-001".to_string()),
-            new_rounds_opened: 0,
-            pause_reason: Some(PauseReason::ProcessInterrupted),
-            uuid: None,
-            rerun: None,
-            last_executed_node: None,
-            worktree: None,
-            execution: Default::default(),
-        };
-
-        assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
-        run.pause_reason = Some(PauseReason::RuntimeAbnormal);
-        assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
-        assert!(!runtime_continue_required(&app, &locator, &run, true).unwrap());
-
-        for reason in [
-            PauseReason::WaitingForUserInput,
-            PauseReason::PermissionRequested,
-            PauseReason::ErrorBlocked,
-        ] {
-            run.pause_reason = Some(reason);
-            assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
-        }
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn stopped_workflow_allows_conversation_without_consuming_runtime_continue() {
         let root = std::env::temp_dir().join(format!(
             "gold-band-stopped-workflow-conversation-test-{}",
@@ -16764,7 +16795,6 @@ mod tests {
         };
 
         write_json(&app.paths.run_file(&locator.task_id, &locator.run_id), &run).unwrap();
-        assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
         assert!(!attempt_is_runtime_controlled(&app, &locator).unwrap());
         assert!(ensure_conversation_prompt_available(&app, &locator).is_ok());
 
@@ -16989,7 +17019,6 @@ mod tests {
 
         write_json(&app.paths.run_file(&run.task_id, &run.id), &run).unwrap();
 
-        assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
         assert!(!attempt_is_runtime_controlled(&app, &locator).unwrap());
         assert!(ensure_conversation_prompt_available(&app, &locator).is_ok());
         assert!(!gold_band::config::ConversationRunMode::Direct.is_orchestrated());
@@ -16997,391 +17026,6 @@ mod tests {
         assert!(gold_band::config::ConversationRunMode::Workflow.is_orchestrated());
 
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn paused_stale_cancelled_dynamic_leaf_requires_runtime_continue() {
-        let temp = std::env::temp_dir().join(format!(
-            "gold-band-stale-dynamic-leaf-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&temp);
-        let repo_root = Utf8PathBuf::from_path_buf(temp.join("repo")).unwrap();
-        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
-        let app = App::new(repo_root);
-        let task_id = "task-001";
-        let run_id = "run-001";
-        let round_id = "round-001";
-        let outer_node_id = "ai-dynamic";
-        let outer_attempt_id = "attempt-001";
-        let dynamic_node_id = "bootstrap";
-        let dynamic_attempt_id = "attempt-001";
-        let run = RunState {
-            version: gold_band::domain::VERSION.to_string(),
-            id: run_id.to_string(),
-            task_id: task_id.to_string(),
-            task_uuid: None,
-            status: RunStatus::Paused,
-            outcome: None,
-            started_at: "2026-06-16T00:00:00Z".to_string(),
-            updated_at: "2026-06-16T00:00:01Z".to_string(),
-            workflow_snapshot: "workflow.snapshot.json".to_string(),
-            current_round: Some(round_id.to_string()),
-            current_node: Some(outer_node_id.to_string()),
-            current_attempt: Some(outer_attempt_id.to_string()),
-            new_rounds_opened: 0,
-            pause_reason: Some(PauseReason::ProcessInterrupted),
-            uuid: None,
-            rerun: None,
-            last_executed_node: None,
-            worktree: None,
-            execution: Default::default(),
-        };
-        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
-        let dynamic_node = serde_json::json!({
-            "version": gold_band::domain::VERSION,
-            "id": dynamic_node_id,
-            "dynamicRunId": "dynamic-run-001",
-            "kind": "worker",
-            "title": "Bootstrap",
-            "task": "Bootstrap",
-            "status": "running",
-            "outcome": null,
-            "groupId": null,
-            "chainId": dynamic_node_id,
-            "depth": 0,
-            "dependsOn": [],
-            "workspaceId": "workspace-main",
-            "provider": "claude-acp",
-            "profile": null,
-            "permissionMode": null,
-            "model": null,
-            "sessionMode": "new",
-            "continueFromNodeId": null,
-            "workflowId": null,
-            "workflowSnapshotId": null,
-            "childRunId": null,
-            "startedAt": "2026-06-16T00:00:00Z",
-            "finishedAt": null
-        });
-        let dynamic_run = serde_json::json!({
-            "version": gold_band::domain::VERSION,
-            "id": "dynamic-run-001",
-            "parentRunId": run_id,
-            "parentRoundId": round_id,
-            "parentNodeId": outer_node_id,
-            "parentAttemptId": outer_attempt_id,
-            "status": "paused",
-            "outcome": null,
-            "pauseReason": "process-interrupted",
-            "startedAt": "2026-06-16T00:00:00Z",
-            "updatedAt": "2026-06-16T00:00:01Z",
-            "control": {},
-            "allowedWorkflowSnapshots": [],
-            "currentNodeIds": [dynamic_node_id]
-        });
-        write_json(
-            &app.paths.dynamic_graph_file(
-                task_id,
-                run_id,
-                round_id,
-                outer_node_id,
-                outer_attempt_id,
-            ),
-            &serde_json::json!({
-                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
-                "run": dynamic_run,
-                "nodes": [dynamic_node.clone()],
-                "groups": [],
-                "workspaces": [{
-                    "version": gold_band::domain::VERSION,
-                    "id": "workspace-main",
-                    "dynamicRunId": "dynamic-run-001",
-                    "kind": "main",
-                    "ownership": "user",
-                    "repoRoot": app.paths.repo_root,
-                    "path": app.paths.repo_root,
-                    "branch": null,
-                    "parentWorkspaceId": null,
-                    "createdByGroupId": null,
-                    "forkCommit": "test-head",
-                    "checkpointCommit": null,
-                    "status": "active",
-                    "createdAt": "2026-06-16T00:00:00Z",
-                    "updatedAt": "2026-06-16T00:00:00Z"
-                }],
-                "proposals": []
-            }),
-        )
-        .unwrap();
-        write_json(
-            &app.paths.dynamic_node_file(
-                task_id,
-                run_id,
-                round_id,
-                outer_node_id,
-                outer_attempt_id,
-                dynamic_node_id,
-            ),
-            &dynamic_node,
-        )
-        .unwrap();
-        write_json(
-            &app.paths
-                .dynamic_node_attempt_dir(
-                    task_id,
-                    run_id,
-                    round_id,
-                    outer_node_id,
-                    outer_attempt_id,
-                    dynamic_node_id,
-                    dynamic_attempt_id,
-                )
-                .join("acp.session.json"),
-            &serde_json::json!({
-                "status": "cancelled",
-                "stopReason": "cancelled",
-                "sessionId": "session-bootstrap"
-            }),
-        )
-        .unwrap();
-        let locator = AttemptLocator::new(
-            task_id.to_string(),
-            run_id.to_string(),
-            round_id.to_string(),
-            dynamic_node_id.to_string(),
-            dynamic_attempt_id.to_string(),
-            Some(outer_node_id.to_string()),
-            Some(outer_attempt_id.to_string()),
-        );
-
-        assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
-        let mut waiting_run = run.clone();
-        waiting_run.pause_reason = Some(PauseReason::WaitingForUserInput);
-        assert!(!runtime_continue_required(&app, &locator, &waiting_run, false).unwrap());
-        let graph_path = app.paths.dynamic_graph_file(
-            task_id,
-            run_id,
-            round_id,
-            outer_node_id,
-            outer_attempt_id,
-        );
-        let mut blocked_graph: DynamicGraphState = read_json(&graph_path).unwrap();
-        blocked_graph.run.pause_reason = Some(PauseReason::ErrorBlocked);
-        write_json(&graph_path, &blocked_graph).unwrap();
-        assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
-        let dynamic_run = serde_json::json!({
-            "version": gold_band::domain::VERSION,
-            "id": "dynamic-run-001",
-            "parentRunId": run_id,
-            "parentRoundId": round_id,
-            "parentNodeId": outer_node_id,
-            "parentAttemptId": outer_attempt_id,
-            "status": "running",
-            "outcome": null,
-            "pauseReason": null,
-            "startedAt": "2026-06-16T00:00:00Z",
-            "updatedAt": "2026-06-16T00:00:01Z",
-            "control": {},
-            "allowedWorkflowSnapshots": [],
-            "currentNodeIds": [dynamic_node_id]
-        });
-        write_json(
-            &app.paths.dynamic_graph_file(
-                task_id,
-                run_id,
-                round_id,
-                outer_node_id,
-                outer_attempt_id,
-            ),
-            &serde_json::json!({
-                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
-                "run": dynamic_run,
-                "nodes": [dynamic_node],
-                "groups": [],
-                "workspaces": [{
-                    "version": gold_band::domain::VERSION,
-                    "id": "workspace-main",
-                    "dynamicRunId": "dynamic-run-001",
-                    "kind": "main",
-                    "ownership": "user",
-                    "repoRoot": app.paths.repo_root,
-                    "path": app.paths.repo_root,
-                    "branch": null,
-                    "parentWorkspaceId": null,
-                    "createdByGroupId": null,
-                    "forkCommit": "test-head",
-                    "checkpointCommit": null,
-                    "status": "active",
-                    "createdAt": "2026-06-16T00:00:00Z",
-                    "updatedAt": "2026-06-16T00:00:00Z"
-                }],
-                "proposals": []
-            }),
-        )
-        .unwrap();
-        assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn running_stale_cancelled_dynamic_leaf_does_not_require_runtime_continue() {
-        let temp = std::env::temp_dir().join(format!(
-            "gold-band-running-stale-dynamic-leaf-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&temp);
-        let repo_root = Utf8PathBuf::from_path_buf(temp.join("repo")).unwrap();
-        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
-        let app = App::new(repo_root);
-        let task_id = "task-001";
-        let run_id = "run-001";
-        let round_id = "round-001";
-        let outer_node_id = "ai-dynamic";
-        let outer_attempt_id = "attempt-001";
-        let dynamic_node_id = "bootstrap";
-        let dynamic_attempt_id = "attempt-001";
-        let run = RunState {
-            version: gold_band::domain::VERSION.to_string(),
-            id: run_id.to_string(),
-            task_id: task_id.to_string(),
-            task_uuid: None,
-            status: RunStatus::Running,
-            outcome: None,
-            started_at: "2026-06-16T00:00:00Z".to_string(),
-            updated_at: "2026-06-16T00:00:01Z".to_string(),
-            workflow_snapshot: "workflow.snapshot.json".to_string(),
-            current_round: Some(round_id.to_string()),
-            current_node: Some(outer_node_id.to_string()),
-            current_attempt: Some(outer_attempt_id.to_string()),
-            new_rounds_opened: 0,
-            pause_reason: None,
-            uuid: None,
-            rerun: None,
-            last_executed_node: None,
-            worktree: None,
-            execution: Default::default(),
-        };
-        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
-        let dynamic_node = serde_json::json!({
-            "version": gold_band::domain::VERSION,
-            "id": dynamic_node_id,
-            "dynamicRunId": "dynamic-run-001",
-            "kind": "worker",
-            "title": "Bootstrap",
-            "task": "Bootstrap",
-            "status": "running",
-            "outcome": null,
-            "groupId": null,
-            "chainId": dynamic_node_id,
-            "depth": 0,
-            "dependsOn": [],
-            "workspaceId": "workspace-main",
-            "provider": "claude-acp",
-            "profile": null,
-            "permissionMode": null,
-            "model": null,
-            "sessionMode": "new",
-            "continueFromNodeId": null,
-            "workflowId": null,
-            "workflowSnapshotId": null,
-            "childRunId": null,
-            "startedAt": "2026-06-16T00:00:00Z",
-            "finishedAt": null
-        });
-        let dynamic_run = serde_json::json!({
-            "version": gold_band::domain::VERSION,
-            "id": "dynamic-run-001",
-            "parentRunId": run_id,
-            "parentRoundId": round_id,
-            "parentNodeId": outer_node_id,
-            "parentAttemptId": outer_attempt_id,
-            "status": "running",
-            "outcome": null,
-            "pauseReason": null,
-            "startedAt": "2026-06-16T00:00:00Z",
-            "updatedAt": "2026-06-16T00:00:01Z",
-            "control": {},
-            "allowedWorkflowSnapshots": [],
-            "currentNodeIds": [dynamic_node_id]
-        });
-        write_json(
-            &app.paths.dynamic_graph_file(
-                task_id,
-                run_id,
-                round_id,
-                outer_node_id,
-                outer_attempt_id,
-            ),
-            &serde_json::json!({
-                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
-                "run": dynamic_run,
-                "nodes": [dynamic_node.clone()],
-                "groups": [],
-                "workspaces": [{
-                    "version": gold_band::domain::VERSION,
-                    "id": "workspace-main",
-                    "dynamicRunId": "dynamic-run-001",
-                    "kind": "main",
-                    "ownership": "user",
-                    "repoRoot": app.paths.repo_root,
-                    "path": app.paths.repo_root,
-                    "branch": null,
-                    "parentWorkspaceId": null,
-                    "createdByGroupId": null,
-                    "forkCommit": "test-head",
-                    "checkpointCommit": null,
-                    "status": "active",
-                    "createdAt": "2026-06-16T00:00:00Z",
-                    "updatedAt": "2026-06-16T00:00:00Z"
-                }],
-                "proposals": []
-            }),
-        )
-        .unwrap();
-        write_json(
-            &app.paths.dynamic_node_file(
-                task_id,
-                run_id,
-                round_id,
-                outer_node_id,
-                outer_attempt_id,
-                dynamic_node_id,
-            ),
-            &dynamic_node,
-        )
-        .unwrap();
-        write_json(
-            &app.paths
-                .dynamic_node_attempt_dir(
-                    task_id,
-                    run_id,
-                    round_id,
-                    outer_node_id,
-                    outer_attempt_id,
-                    dynamic_node_id,
-                    dynamic_attempt_id,
-                )
-                .join("acp.session.json"),
-            &serde_json::json!({
-                "status": "cancelled",
-                "stopReason": "cancelled",
-                "sessionId": "session-bootstrap"
-            }),
-        )
-        .unwrap();
-        let locator = AttemptLocator::new(
-            task_id.to_string(),
-            run_id.to_string(),
-            round_id.to_string(),
-            dynamic_node_id.to_string(),
-            dynamic_attempt_id.to_string(),
-            Some(outer_node_id.to_string()),
-            Some(outer_attempt_id.to_string()),
-        );
-
-        assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
-        let _ = std::fs::remove_dir_all(temp);
     }
 
     #[test]
@@ -17590,6 +17234,7 @@ mod tests {
             };
             let accepted = status == InterventionCommandStatus::Accepted;
             let result = InterventionCommandResult {
+                runtime_resume: None,
                 status,
                 canonical_state: "resolved".into(),
             };

@@ -520,6 +520,8 @@ function deriveMergedLifecycleProjection(
     return {
       ...lifecycle,
       displayStatus: 'interrupted',
+      continueKind: runtimeSource.continueKind,
+      runtimeResume: runtimeSource.runtimeResume,
       runtimeDisplay: { ...runtimeSource.runtimeDisplay, code: 'runtime-abnormal', tone: 'danger', icon: 'error', terminal: false, blockingError: false },
       composer: { ...lifecycle.composer, mode: 'normal', submitTarget: 'acp-prompt', statusKey: null, canStop: false, lockInput: false },
     };
@@ -602,6 +604,7 @@ function deriveMergedLifecycleProjection(
     displayStatus,
     runtimeDisplay,
     continueKind: runtimeSource.continueKind,
+    runtimeResume: runtimeSource.runtimeResume,
     composer,
   };
 }

@@ -38,13 +38,15 @@ describe('marketing brand and download contract', () => {
     expect(JSON.stringify(events)).toContain('Gold Band');
   });
 
-  it('derives inline download package URLs from the branch version and WB origin', () => {
-    expect(packageJson.version).toBe('0.21.0');
+  it.each([
+    { version: '3.7.2', packagePrefix: 'MALING_3.7.2' },
+    { version: '3.7.2-beta.1', packagePrefix: 'MALING_3.7.2-beta.1' },
+  ])('derives inline download package URLs from version $version and WB origin', ({ version, packagePrefix }) => {
     expect(GITHUB).toBe('https://github.com/MalingWB/Maling');
     const baseUrl = 'https://example.invalid/api/file/download/';
-    expect(inlineDownloadUrl('windows', packageJson.version, baseUrl)).toBe(`${baseUrl}MALING_0.21.0_x64-setup.exe`);
-    expect(inlineDownloadUrl('mac', packageJson.version, baseUrl)).toBe(`${baseUrl}MALING_0.21.0_aarch64.dmg`);
-    expect(inlineDownloadUrl('linux', packageJson.version, baseUrl)).toBe(`${baseUrl}MALING_0.21.0_amd64.AppImage`);
+    expect(inlineDownloadUrl('windows', version, baseUrl)).toBe(`${baseUrl}${packagePrefix}_x64-setup.exe`);
+    expect(inlineDownloadUrl('mac', version, baseUrl)).toBe(`${baseUrl}${packagePrefix}_aarch64.dmg`);
+    expect(inlineDownloadUrl('linux', version, baseUrl)).toBe(`${baseUrl}${packagePrefix}_amd64.AppImage`);
   });
 
   it('keeps the concrete WB download origin out of source and delivery docs', () => {

@@ -2329,6 +2329,7 @@ export interface ImNotificationPreferencesVm {
   permission: boolean;
   elicitation: boolean;
   manualCheck: boolean;
+  workflowResume: boolean;
   runSuccess: boolean;
   runFailure: boolean;
   acpTurnFinished: boolean;
@@ -3120,7 +3121,20 @@ export interface ConversationPromptQueueVm {
   storageError: boolean;
 }
 
+export interface RuntimeResumeOfferVm {
+  locator: { projectId: string; taskId: string; runId: string; roundId: string; nodeId: string; attemptId: string; outerNodeId?: string | null; outerAttemptId?: string | null };
+  sourceIdentity: { taskUuid: string; runUuid: string };
+  kind: 'continueCurrentAttempt' | 'recoverCompletedAttempt';
+  boundary: { kind: 'runExecution' | 'dynamicLeaf'; revision: number };
+}
+export interface RuntimeResumeInspectionVm {
+  offer: RuntimeResumeOfferVm;
+  readiness: { kind: 'ready' } | { kind: 'busy'; reason: 'starting' | 'promptActive' };
+  pauseReason?: string | null;
+}
+
 export interface ConversationAttemptLifecycleVm {
+  runtimeResume?: RuntimeResumeInspectionVm | null;
   executionError?: AcpExecutionErrorVm | null;
   runtime: ConversationRuntimeFacetVm;
   control: ConversationControlFacetVm;

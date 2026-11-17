@@ -13,7 +13,8 @@ import type {
   ReactNode,
   Ref,
 } from 'react';
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
+import type { RuntimeResumeInspectionVm } from '@/types';
 import { getRuntimeApi } from '@/api/client';
 import { useComposerHistory } from '@/hooks/useComposerHistory';
 import type { ComposerHistoryLocator } from '@/lib/composer-history';
@@ -88,6 +89,7 @@ export interface AcpConversationComposerProps {
   sendButtonBusy: boolean;
   showRuntimeContinue: boolean;
   runtimeContinueKind: 'continue-current-attempt' | 'recover-completed-attempt' | null;
+  runtimeContinueReadiness?: RuntimeResumeInspectionVm['readiness'];
   runtimeContinueSubmitting: boolean;
   onRuntimeContinue: (historyText?: string) => void | Promise<void>;
   configBar: ReactNode;
@@ -180,6 +182,7 @@ function AcpConversationComposerContent({
   sendButtonBusy,
   showRuntimeContinue,
   runtimeContinueKind,
+  runtimeContinueReadiness,
   runtimeContinueSubmitting,
   onRuntimeContinue,
   configBar,
@@ -190,6 +193,10 @@ function AcpConversationComposerContent({
   supersededSession,
 }: AcpConversationComposerProps) {
   const { t } = useTranslation();
+  const runtimeContinueBusyReasonId = useId();
+  const runtimeContinueBusyMessage = showRuntimeContinue && runtimeContinueReadiness?.kind === 'busy'
+    ? t(runtimeContinueReadiness.reason === 'starting' ? 'acp.runtimeResumeBusyStarting' : 'acp.runtimeResumeBusyPromptActive')
+    : null;
   const historyScope = JSON.stringify(historyLocator ?? null);
   const historySource = useMemo(() => {
     const locator = JSON.parse(historyScope) as ComposerHistoryLocator | null;
@@ -329,6 +336,11 @@ function AcpConversationComposerContent({
             />
           )}
           {history.error ? <div role="alert" className="px-2.5 text-xs text-destructive">{t('acp.composerHistoryError')}</div> : null}
+          {runtimeContinueBusyMessage ? (
+            <div id={runtimeContinueBusyReasonId} role="status" className="px-2.5 pb-1 text-xs text-muted-foreground">
+              {runtimeContinueBusyMessage}
+            </div>
+          ) : null}
           <div className={ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName} data-acp-composer-command-bar="true">
             <div className={ACP_SESSION_COMPOSER_LAYOUT.leadingActionsClassName}>
               <input
@@ -373,14 +385,15 @@ function AcpConversationComposerContent({
                 </PromptInputAction>
               ) : null}
               {showRuntimeContinue ? (
-                <PromptInputAction tooltip={runtimeContinueHint}>
+                <PromptInputAction tooltip={runtimeContinueBusyMessage ?? runtimeContinueHint}>
                   <Button
                     type="button"
                     className={ACP_SESSION_COMPOSER_LAYOUT.actionButtonClassName}
                     size="sm"
                     variant="secondary"
-                    disabled={runtimeContinueSubmitting}
+                    disabled={runtimeContinueSubmitting || runtimeContinueReadiness?.kind === 'busy'}
                     aria-label={runtimeContinueHint}
+                    aria-describedby={runtimeContinueBusyMessage ? runtimeContinueBusyReasonId : undefined}
                     onClick={() => { void onRuntimeContinue(continueAndSend ? history.commitHistory() ?? undefined : undefined); }}
                     data-acp-continue-workflow="true"
                   >

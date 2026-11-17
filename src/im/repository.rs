@@ -10,7 +10,7 @@ use super::{
     ImResolutionDispatch, MAX_IM_PRESENTATION_BYTES, resolution_event_id,
 };
 
-const IM_SCHEMA_VERSION: i64 = 6;
+const IM_SCHEMA_VERSION: i64 = 7;
 /// Schema version that introduced payload v2; older intervention payloads and
 /// `desktop-resolved` records cannot be decoded and are removed on upgrade.
 const IM_PAYLOAD_V2_SCHEMA_VERSION: i64 = 4;
@@ -652,6 +652,18 @@ impl ImRepository {
         })
     }
 
+    pub fn expire_stale_source(
+        &self,
+        delivery_id: &str,
+        expected_attempt_count: u32,
+        now_ms: i64,
+    ) -> Result<(), ImRepositoryError> {
+        self.with_connection(|connection| {
+            connection.execute("UPDATE im_outbox SET state = 'expired', next_attempt_at_ms = NULL, last_error_code = 'IM_ACTION_EXPIRED', updated_at_ms = ?3 WHERE delivery_id = ?1 AND state = 'sending' AND attempt_count = ?2", params![delivery_id, expected_attempt_count, now_ms])?;
+            Ok(())
+        })
+    }
+
     pub fn mark_failed(
         &self,
         delivery_id: &str,
@@ -784,8 +796,8 @@ impl ImRepository {
                 "INSERT OR IGNORE INTO im_inbound_actions (
                     action_id, channel_kind, canonical_event_id, actor_id_hash,
                     platform_event_id, result_code, result_revision,
-                    received_at_ms, completed_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    received_at_ms, completed_at_ms, result_payload_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     result.action_id,
                     result.channel.as_str(),
@@ -796,6 +808,12 @@ impl ImRepository {
                     result.result_revision,
                     result.received_at_ms,
                     result.completed_at_ms,
+                    result
+                        .result_payload
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .map_err(|_| ImRepositoryError::InvalidStoredData)?,
                 ],
             )?;
             Ok(changed > 0)
@@ -811,7 +829,7 @@ impl ImRepository {
             connection
                 .query_row(
                     "SELECT action_id, canonical_event_id, actor_id_hash, result_code,
-                            result_revision, received_at_ms, completed_at_ms
+                            result_revision, received_at_ms, completed_at_ms, result_payload_json
                      FROM im_inbound_actions
                      WHERE channel_kind = ?1 AND platform_event_id = ?2",
                     params![channel.as_str(), platform_event_id],
@@ -825,6 +843,7 @@ impl ImRepository {
                                 platform_event_id: platform_event_id.to_string(),
                                 outcome: ImInboundOutcome::Accepted,
                                 result_revision: row.get(4)?,
+                                result_payload: decode_result_payload(row.get(7)?)?,
                                 received_at_ms: row.get(5)?,
                                 completed_at_ms: row.get(6)?,
                             },
@@ -847,7 +866,7 @@ impl ImRepository {
             connection
                 .query_row(
                     "SELECT action_id, canonical_event_id, actor_id_hash, platform_event_id,
-                            result_code, result_revision, received_at_ms, completed_at_ms
+                            result_code, result_revision, received_at_ms, completed_at_ms, result_payload_json
                      FROM im_inbound_actions INDEXED BY idx_im_inbound_actions_canonical_event
                      WHERE channel_kind = ?1
                        AND canonical_event_id = ?2
@@ -870,6 +889,7 @@ impl ImRepository {
                                 platform_event_id: row.get(3)?,
                                 outcome: ImInboundOutcome::Accepted,
                                 result_revision: row.get(5)?,
+                                result_payload: decode_result_payload(row.get(8)?)?,
                                 received_at_ms: row.get(6)?,
                                 completed_at_ms: row.get(7)?,
                             },
@@ -1186,6 +1206,21 @@ fn open_connection(path: &Utf8Path) -> Result<Connection, ImRepositoryError> {
     Ok(connection)
 }
 
+fn decode_result_payload(
+    raw: Option<String>,
+) -> rusqlite::Result<Option<super::model::ImRuntimeResumeActionResult>> {
+    raw.map(|raw| {
+        serde_json::from_str(&raw).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })
+    })
+    .transpose()
+}
+
 fn ensure_schema(connection: &mut Connection) -> Result<(), ImRepositoryError> {
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS core_schema (
@@ -1282,6 +1317,17 @@ fn ensure_schema(connection: &mut Connection) -> Result<(), ImRepositoryError> {
             CHECK (phase IN ('prepared', 'settings_removed', 'projection_drained', 'outbox_removed'))
          );",
     )?;
+    let has_result_payload = {
+        let mut columns = transaction.prepare("PRAGMA table_info(im_inbound_actions)")?;
+        let names = columns
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        names.iter().any(|name| name == "result_payload_json")
+    };
+    if !has_result_payload {
+        transaction
+            .execute_batch("ALTER TABLE im_inbound_actions ADD COLUMN result_payload_json TEXT;")?;
+    }
     if version.is_some_and(|found| found < IM_PAYLOAD_V2_SCHEMA_VERSION) {
         transaction.execute_batch(
             "DELETE FROM im_outbox WHERE payload_kind = 'intervention';
@@ -2047,6 +2093,119 @@ mod tests {
     }
 
     #[test]
+    fn runtime_resume_schema_v6_upgrade_and_typed_results_survive_reopen() {
+        use crate::app::runtime_resume::*;
+        use crate::im::ImRuntimeResumeActionResult;
+        let (temp, repository) = repository(10);
+        let path = repository.path().to_owned();
+        repository
+            .enqueue(
+                &information_delivery(ImChannelKind::WeCom, "user-1", "existing"),
+                100,
+            )
+            .unwrap();
+        drop(repository);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "ALTER TABLE im_inbound_actions DROP COLUMN result_payload_json;
+            UPDATE core_schema SET version = 6 WHERE component = 'im_remote_intervention';",
+            )
+            .unwrap();
+        drop(connection);
+        let repository = ImRepository::new(path.clone());
+        let result = ImInboundActionResult {
+            action_id: "resume-action".into(),
+            channel: ImChannelKind::WeCom,
+            canonical_event_id: Some("resume-source".into()),
+            actor_id_hash: "hash".into(),
+            platform_event_id: "resume-callback".into(),
+            outcome: ImInboundOutcome::Accepted,
+            result_revision: Some(42),
+            result_payload: Some(ImRuntimeResumeActionResult::Committed {
+                result: RuntimeResumeResult {
+                    kind: RuntimeResumeKind::RecoverCompletedAttempt,
+                    revision: 42,
+                    outcome: RuntimeResumeOutcome::Completed,
+                    error: None,
+                },
+            }),
+            received_at_ms: 100,
+            completed_at_ms: 101,
+        };
+        repository.record_inbound_result(&result).unwrap();
+        let mut feedback = information_delivery(ImChannelKind::WeCom, "user-1", "resume-feedback");
+        feedback.notification_kind = ImNotificationKind::WorkflowResume;
+        let ImDeliveryPayload::Information {
+            mut notification, ..
+        } = feedback.payload
+        else {
+            unreachable!()
+        };
+        notification.notification_kind = ImNotificationKind::WorkflowResume;
+        feedback.payload = ImDeliveryPayload::ActionFeedback {
+            version: crate::im::IM_PAYLOAD_VERSION,
+            source_delivery_id: "resume-source-delivery".into(),
+            action_id: "retry-action".into(),
+            notification,
+            error: crate::app::intervention::InterventionError::busy(),
+        };
+        feedback.refresh_id();
+        repository.enqueue(&feedback, 102).unwrap();
+        drop(repository);
+        let reopened =
+            ImRepository::new(Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap());
+        assert_eq!(
+            reopened
+                .inbound_result(ImChannelKind::WeCom, "resume-callback")
+                .unwrap(),
+            Some(result)
+        );
+        assert_eq!(
+            reopened
+                .delivery(&feedback.delivery_id)
+                .unwrap()
+                .unwrap()
+                .payload,
+            feedback.payload
+        );
+        assert_eq!(stored_schema_version(&path), IM_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn runtime_resume_schema_upgrade_failure_rolls_back_the_added_column() {
+        let (_temp, repository) = repository(10);
+        let path = repository.path().to_owned();
+        repository
+            .enqueue(
+                &information_delivery(ImChannelKind::WeCom, "user-1", "existing"),
+                100,
+            )
+            .unwrap();
+        drop(repository);
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("ALTER TABLE im_inbound_actions DROP COLUMN result_payload_json;
+            UPDATE core_schema SET version = 6 WHERE component = 'im_remote_intervention';
+            CREATE TRIGGER reject_resume_migration BEFORE UPDATE ON core_schema BEGIN SELECT RAISE(ABORT, 'test migration failure'); END;").unwrap();
+        let reopened = ImRepository::new(path.clone());
+        assert!(reopened.delivery("missing").is_err());
+        assert_eq!(stored_schema_version(&path), 6);
+        let names = connection
+            .prepare("PRAGMA table_info(im_inbound_actions)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(!names.iter().any(|name| name == "result_payload_json"));
+        connection
+            .execute_batch("DROP TRIGGER reject_resume_migration")
+            .unwrap();
+        assert!(reopened.delivery("missing").unwrap().is_none());
+        assert_eq!(stored_schema_version(&path), IM_SCHEMA_VERSION);
+    }
+
+    #[test]
     fn sent_binding_inbound_idempotency_and_retention_are_durable() {
         let (temp, repository) = repository(10);
         let delivery = information_delivery(ImChannelKind::WeCom, "user-1", "event-1");
@@ -2075,6 +2234,7 @@ mod tests {
             ImDeliveryState::Sent
         );
         let result = ImInboundActionResult {
+            result_payload: None,
             action_id: "action-1".into(),
             channel: ImChannelKind::WeCom,
             canonical_event_id: Some("event-1".into()),
@@ -2238,6 +2398,7 @@ mod tests {
         repository.enqueue(&information, 130).unwrap();
         repository
             .record_inbound_result(&ImInboundActionResult {
+                result_payload: None,
                 action_id: "action-1".into(),
                 channel: ImChannelKind::WeCom,
                 canonical_event_id: Some("event-1".into()),
@@ -2440,6 +2601,7 @@ mod tests {
             .unwrap();
         repository
             .record_inbound_result(&ImInboundActionResult {
+                result_payload: None,
                 action_id: "v4-action".into(),
                 channel: source.channel,
                 canonical_event_id: Some(source.canonical_event_id.clone()),

@@ -38,6 +38,7 @@ const notifications = {
   permission: true,
   elicitation: true,
   manualCheck: true,
+  workflowResume: true,
   runSuccess: false,
   runFailure: true,
   acpTurnFinished: false,
@@ -378,11 +379,11 @@ describe('IM settings production interaction', () => {
     const groups = [...fieldset.querySelectorAll<HTMLElement>(':scope > div > div')];
     expect(groups).toHaveLength(2);
     expect(fieldset.querySelector(':scope > div')?.className).toContain('space-y-3');
-    for (const group of groups) {
+    for (const [index, group] of groups.entries()) {
       const options = group.lastElementChild as HTMLElement;
       expect(options.className).toContain('flex');
       expect(options.className).toContain('flex-wrap');
-      expect(options.querySelectorAll('[role="checkbox"]')).toHaveLength(3);
+      expect(options.querySelectorAll('[role="checkbox"]')).toHaveLength(index === 0 ? 4 : 3);
     }
   });
 
@@ -451,7 +452,7 @@ describe('IM settings production interaction', () => {
   it('keeps a dirty notification draft across connection snapshots and can discard it', async () => {
     await renderSettings();
     const checkboxes = host.querySelectorAll<HTMLButtonElement>('[role="checkbox"]');
-    expect(checkboxes).toHaveLength(6);
+    expect(checkboxes).toHaveLength(7);
 
     await act(async () => checkboxes[0].click());
     expect(checkboxes[0].getAttribute('data-state')).toBe('unchecked');

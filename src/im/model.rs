@@ -64,16 +64,18 @@ pub enum ImNotificationKind {
     Permission,
     Elicitation,
     ManualCheck,
+    WorkflowResume,
     RunSuccess,
     RunFailure,
     AcpTurnFinished,
 }
 
 impl ImNotificationKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Permission,
         Self::Elicitation,
         Self::ManualCheck,
+        Self::WorkflowResume,
         Self::RunSuccess,
         Self::RunFailure,
         Self::AcpTurnFinished,
@@ -84,6 +86,7 @@ impl ImNotificationKind {
             Self::Permission => "permission",
             Self::Elicitation => "elicitation",
             Self::ManualCheck => "manual_check",
+            Self::WorkflowResume => "workflow_resume",
             Self::RunSuccess => "run_success",
             Self::RunFailure => "run_failure",
             Self::AcpTurnFinished => "acp_turn_finished",
@@ -97,7 +100,7 @@ impl ImNotificationKind {
     pub const fn is_intervention(self) -> bool {
         matches!(
             self,
-            Self::Permission | Self::Elicitation | Self::ManualCheck
+            Self::Permission | Self::Elicitation | Self::ManualCheck | Self::WorkflowResume
         )
     }
 }
@@ -247,6 +250,9 @@ pub enum ImResolutionDispatch {
     rename_all_fields = "camelCase"
 )]
 pub enum ImResolutionOutcome {
+    RuntimeResume {
+        result: crate::app::runtime_resume::RuntimeResumeResult,
+    },
     PermissionOption {
         option_id: String,
     },
@@ -268,6 +274,7 @@ pub enum ImResolutionOutcome {
 impl From<&InterventionAction> for ImResolutionOutcome {
     fn from(action: &InterventionAction) -> Self {
         match action {
+            InterventionAction::RuntimeResume { .. } => Self::ResultUnavailable,
             InterventionAction::PermissionOption { option_id } => Self::PermissionOption {
                 option_id: option_id.clone(),
             },
@@ -305,6 +312,7 @@ impl ImResolutionOutcome {
 impl std::fmt::Debug for ImResolutionOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::RuntimeResume { result } => f.debug_tuple("RuntimeResume").field(result).finish(),
             Self::ElicitationSubmitted { .. } => {
                 f.write_str("ElicitationSubmitted { content: [REDACTED] }")
             }
@@ -326,6 +334,13 @@ impl std::fmt::Debug for ImResolutionOutcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum ImDeliveryPayload {
+    ActionFeedback {
+        version: u16,
+        source_delivery_id: String,
+        action_id: String,
+        notification: InformationalNotification,
+        error: crate::app::intervention::InterventionError,
+    },
     Intervention {
         version: u16,
         reference: InterventionRef,
@@ -345,12 +360,30 @@ impl ImDeliveryPayload {
     pub const fn payload_kind(&self) -> &'static str {
         match self {
             Self::Intervention { .. } => "intervention",
-            Self::Information { .. } | Self::InterventionResolution { .. } => "information",
+            Self::Information { .. }
+            | Self::InterventionResolution { .. }
+            | Self::ActionFeedback { .. } => "information",
         }
     }
 
     pub fn validate_for(&self, notification_kind: ImNotificationKind) -> bool {
         match self {
+            Self::ActionFeedback {
+                version,
+                source_delivery_id,
+                action_id,
+                notification,
+                error,
+            } => {
+                *version == IM_PAYLOAD_VERSION
+                    && notification_kind == ImNotificationKind::WorkflowResume
+                    && notification.notification_kind == notification_kind
+                    && !source_delivery_id.is_empty()
+                    && !action_id.is_empty()
+                    && (error.retryable
+                        || super::inbound::ImInboundError::Intervention(error.clone()).code()
+                            == super::ImErrorCode::ActionStateChanged)
+            }
             Self::Intervention { version, .. } => {
                 *version == IM_PAYLOAD_VERSION && notification_kind.is_intervention()
             }
@@ -569,12 +602,24 @@ pub struct ImInboundActionResult {
     pub platform_event_id: String,
     pub outcome: ImInboundOutcome,
     pub result_revision: Option<i64>,
+    pub result_payload: Option<ImRuntimeResumeActionResult>,
     pub received_at_ms: i64,
     pub completed_at_ms: i64,
 }
 
-/// Inbound processing outcome. Only accepted and replayed outcomes are
-/// persisted; rejections are returned to the connector without a record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ImRuntimeResumeActionResult {
+    Committed {
+        result: crate::app::runtime_resume::RuntimeResumeResult,
+    },
+    NotCommitted {
+        error: crate::app::intervention::InterventionError,
+    },
+}
+
+/// Accepted actions and RuntimeResume's typed NotCommitted results are
+/// audited for stable replay; other rejections remain callback-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImInboundOutcome {
     Accepted,
@@ -609,6 +654,7 @@ pub struct ImNotificationPreferences {
     pub permission: bool,
     pub elicitation: bool,
     pub manual_check: bool,
+    pub workflow_resume: bool,
     pub run_success: bool,
     pub run_failure: bool,
     pub acp_turn_finished: bool,
@@ -620,6 +666,7 @@ impl Default for ImNotificationPreferences {
             permission: true,
             elicitation: true,
             manual_check: true,
+            workflow_resume: true,
             run_success: false,
             run_failure: true,
             acp_turn_finished: false,
@@ -633,6 +680,7 @@ impl ImNotificationPreferences {
             ImNotificationKind::Permission => self.permission,
             ImNotificationKind::Elicitation => self.elicitation,
             ImNotificationKind::ManualCheck => self.manual_check,
+            ImNotificationKind::WorkflowResume => self.workflow_resume,
             ImNotificationKind::RunSuccess => self.run_success,
             ImNotificationKind::RunFailure => self.run_failure,
             ImNotificationKind::AcpTurnFinished => self.acp_turn_finished,
@@ -690,6 +738,7 @@ mod tests {
                 ImNotificationKind::Permission,
                 ImNotificationKind::Elicitation,
                 ImNotificationKind::ManualCheck,
+                ImNotificationKind::WorkflowResume,
                 ImNotificationKind::RunFailure,
             ]
         );

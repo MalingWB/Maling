@@ -2263,6 +2263,7 @@ version = "0.21.1"
 dependencies = [
  "anyhow",
  "arboard",
+ "async-trait",
  "base64 0.22.1",
  "blake3",
  "camino",

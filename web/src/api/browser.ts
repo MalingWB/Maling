@@ -113,6 +113,7 @@ const defaultImNotifications = (): ImNotificationPreferencesVm => ({
   permission: true,
   elicitation: true,
   manualCheck: true,
+  workflowResume: true,
   runSuccess: false,
   runFailure: true,
   acpTurnFinished: false,
@@ -2318,13 +2319,13 @@ export const browserApi: RuntimeApi = {
   startRun(taskId: string) {
     return Promise.resolve({ ...mockRunDetail.run, taskId });
   },
-  continueRun(_projectId, taskId, runId) {
+  continueRun(_projectId, taskId, runId, _resumeOffer) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
   },
-  continueConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId, _input, _promptId, _attachmentPaths) {
+  continueConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _resumeOffer, _outerNodeId, _outerAttemptId, _input, _promptId, _attachmentPaths) {
     return Promise.resolve({ kind: 'runtime-continue-started', session: null, run: null, lifecycle: null });
   },
-  recoverConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _expectedRevision) {
+  recoverConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _resumeOffer) {
     return Promise.reject(new Error('Browser preview does not execute workflow recovery.'));
   },
   pauseRun(taskId: string, runId: string, _projectId?: string | null) {

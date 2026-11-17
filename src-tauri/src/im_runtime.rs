@@ -205,6 +205,7 @@ impl From<InterventionResolutionNotification> for SettledResult {
 
 /// Resolution to broadcast after a channel's command was `Accepted`.
 struct AcceptedInboundAction {
+    callback_replaced: Option<gold_band::im::ImActionResponseReceipt>,
     source_event_id: String,
     source_delivery_id: String,
     outcome: ImResolutionOutcome,
@@ -225,7 +226,60 @@ impl InboundTiming {
     }
 }
 
+#[derive(Default, Clone)]
+struct SourceProjectionLocks(Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>);
+struct SourceProjectionGuard {
+    registry: SourceProjectionLocks,
+    key: String,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+impl SourceProjectionLocks {
+    fn entry(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.0
+            .lock()
+            .expect("IM source projection registry poisoned")
+            .entry(key.to_string())
+            .or_default()
+            .clone()
+    }
+    async fn acquire(&self, key: &str) -> SourceProjectionGuard {
+        let guard = self.entry(key).lock_owned().await;
+        SourceProjectionGuard {
+            registry: self.clone(),
+            key: key.into(),
+            guard: Some(guard),
+        }
+    }
+    fn try_acquire(&self, key: &str) -> Option<SourceProjectionGuard> {
+        self.entry(key)
+            .try_lock_owned()
+            .ok()
+            .map(|guard| SourceProjectionGuard {
+                registry: self.clone(),
+                key: key.into(),
+                guard: Some(guard),
+            })
+    }
+}
+impl Drop for SourceProjectionGuard {
+    fn drop(&mut self) {
+        self.guard.take();
+        let mut entries = self
+            .registry
+            .0
+            .lock()
+            .expect("IM source projection registry poisoned");
+        if entries
+            .get(&self.key)
+            .is_some_and(|lock| Arc::strong_count(lock) == 1)
+        {
+            entries.remove(&self.key);
+        }
+    }
+}
+
 pub struct DesktopImRuntime {
+    source_projection_locks: SourceProjectionLocks,
     repository: Arc<ImRepository>,
     credential_store: OsImCredentialStore,
     inbound_service: Arc<ImInboundActionService>,
@@ -254,6 +308,10 @@ pub struct DesktopImRuntime {
 }
 
 impl DesktopImRuntime {
+    pub(crate) async fn guard_intervention_source(&self, key: &str) -> impl Send + use<> {
+        self.source_projection_locks.acquire(key).await
+    }
+
     pub fn new(core_db_path: camino::Utf8PathBuf) -> Result<Arc<Self>> {
         let credential_store = OsImCredentialStore;
         let signing_key = credential_store
@@ -302,6 +360,7 @@ impl DesktopImRuntime {
         }
         let (settlement_signal, settlement_receiver) = mpsc::channel(1);
         Ok(Arc::new(Self {
+            source_projection_locks: SourceProjectionLocks::default(),
             repository,
             credential_store,
             inbound_service,
@@ -407,7 +466,16 @@ impl DesktopImRuntime {
             let Some(connector) = self.connectors.get(&channel).cloned() else {
                 continue;
             };
-            let worker = ImDeliveryWorker::new(channel, Arc::clone(&self.repository), connector);
+            let validation_handle = app_handle.clone();
+            let worker = ImDeliveryWorker::new(channel, Arc::clone(&self.repository), connector).with_source_validator(Arc::new(move |reference| {
+                let state = validation_handle.state::<DesktopState>();
+                let app = resolve_command_app_with_emitters(&validation_handle, state.inner(), Some(&reference.locator.project_id)).map_err(|_| gold_band::im::ImIntegrationError::retryable(ImErrorCode::WorkspaceUnavailable, None))?;
+                match gold_band::app::intervention::InterventionCommandService::new(&app).inspect(reference.locator.clone(), reference.request.clone()) {
+                    Ok(current) => Ok(current.expected_state == reference.expected_state),
+                    Err(error) if error.code == gold_band::app::intervention::InterventionErrorCode::InterventionStorageUnavailable => Err(gold_band::im::ImIntegrationError::retryable(ImErrorCode::StorageUnavailable, None)),
+                    Err(_) => Ok(false),
+                }
+            }));
             let cancellation = self.cancellation.child_token();
             let task = tauri::async_runtime::spawn(worker.run(receiver, cancellation));
             self.worker_tasks
@@ -489,19 +557,29 @@ impl DesktopImRuntime {
             let now_ms = chrono::Utc::now().timestamp_millis();
             let sources = runtime.repository.open_intervention_sources(now_ms)?;
             if sources.is_empty() {
-                return Ok(0);
+                return Ok::<usize, ImRepositoryError>(0);
             }
             let state = handle.state::<DesktopState>();
             let mut apps = HashMap::new();
-            project_runtime_cancellations(
-                &runtime.repository,
-                &runtime.worker_senders,
-                &targets,
-                &sources,
-                None,
-                now_ms,
-                |reference| published_request_settlement(state.inner(), &mut apps, reference),
-            )
+            let mut projected = 0;
+            for source in &sources {
+                let Some(_guard) = runtime
+                    .source_projection_locks
+                    .try_acquire(&source.canonical_event_id)
+                else {
+                    continue;
+                };
+                projected += project_runtime_cancellations(
+                    &runtime.repository,
+                    &runtime.worker_senders,
+                    &targets,
+                    std::slice::from_ref(source),
+                    None,
+                    now_ms,
+                    |reference| published_request_settlement(state.inner(), &mut apps, reference),
+                )?;
+            }
+            Ok(projected)
         })
         .await;
         match result {
@@ -1248,17 +1326,82 @@ impl DesktopImRuntime {
                     if let Some(connector) = self.connectors.get(&channel).cloned() {
                         let process_runtime = Arc::clone(&self);
                         let project_runtime = Arc::clone(&self);
+                        let feedback_runtime = Arc::clone(&self);
                         let handle = app_handle.clone();
-                        tauri::async_runtime::spawn(run_inbound_action(
-                            connector,
-                            channel,
-                            generation,
-                            response_context,
-                            move || process_runtime.process_inbound(&handle, envelope),
-                            move |accepted| {
-                                project_runtime.project_channel_resolution(channel, accepted)
-                            },
-                        ));
+                        let guard_runtime = Arc::clone(&self);
+                        let source_delivery_id = envelope.delivery_id.clone();
+                        let action_id = envelope.action_id.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let repository = Arc::clone(&guard_runtime.repository);
+                            let source_key = tauri::async_runtime::spawn_blocking(move || {
+                                repository
+                                    .delivery(&source_delivery_id)
+                                    .ok()
+                                    .flatten()
+                                    .map(|source| source.canonical_event_id)
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+                            let _guard = match source_key {
+                                Some(key) => {
+                                    Some(guard_runtime.source_projection_locks.acquire(&key).await)
+                                }
+                                None => None,
+                            };
+                            run_inbound_action(
+                                connector,
+                                channel,
+                                generation,
+                                response_context,
+                                move || process_runtime.process_inbound(&handle, envelope),
+                                move |mut accepted| {
+                                    if !callback_receipt_matches(
+                                        accepted.callback_replaced.as_ref(),
+                                        &accepted.source_delivery_id,
+                                        &action_id,
+                                        generation,
+                                    ) {
+                                        accepted.callback_replaced = None;
+                                    }
+                                    project_runtime.project_channel_resolution(channel, accepted)
+                                },
+                                move |source, action_id, error| {
+                                    if feedback_runtime
+                                        .connection_manager
+                                        .snapshot(channel)
+                                        .is_none_or(|snapshot| snapshot.generation != generation)
+                                    {
+                                        return;
+                                    }
+                                    let authorized = feedback_runtime
+                                        .targets
+                                        .read()
+                                        .expect("IM target lock poisoned")
+                                        .iter()
+                                        .any(|target| {
+                                            target.channel == source.channel
+                                                && eligible_resolution_target(
+                                                    target,
+                                                    source.notification_kind,
+                                                )
+                                                && target.destination.as_ref()
+                                                    == Some(&source.destination)
+                                        });
+                                    if authorized {
+                                        if let Err(failure) = feedback_runtime
+                                            .project_action_feedback(&source, &action_id, &error)
+                                        {
+                                            warn!(
+                                                error_code = failure.code(),
+                                                "IM action feedback projection failed"
+                                            );
+                                        }
+                                    }
+                                },
+                            )
+                            .await;
+                        });
                     }
                 }
                 ImConnectorEvent::Connected {
@@ -1631,6 +1774,70 @@ impl DesktopImRuntime {
         );
     }
 
+    fn project_action_feedback(
+        &self,
+        source: &ImDelivery,
+        action_id: &str,
+        error: &gold_band::app::intervention::InterventionError,
+    ) -> std::result::Result<(), ImRepositoryError> {
+        let ImDeliveryPayload::Intervention { reference, .. } = &source.payload else {
+            return Ok(());
+        };
+        let event_id = format!("{}:feedback:{action_id}", source.canonical_event_id);
+        let feedback = ImDelivery {
+            delivery_id: ImDelivery::deterministic_id(
+                source.channel,
+                &source.destination.destination_id,
+                source.notification_kind,
+                &event_id,
+            ),
+            channel: source.channel,
+            destination: source.destination.clone(),
+            notification_kind: source.notification_kind,
+            canonical_event_id: event_id.clone(),
+            expires_at_ms: source.expires_at_ms,
+            display_ref: source.display_ref,
+            payload: ImDeliveryPayload::ActionFeedback {
+                version: gold_band::im::IM_PAYLOAD_VERSION,
+                source_delivery_id: source.delivery_id.clone(),
+                action_id: action_id.into(),
+                error: error.clone(),
+                notification: gold_band::im::InformationalNotification {
+                    canonical_event_id: event_id,
+                    notification_kind: source.notification_kind,
+                    missed_count: None,
+                    locator: gold_band::im::ImNavigationLocator {
+                        project_id: reference.locator.project_id.clone(),
+                        task_id: Some(reference.locator.task_id.clone()),
+                        run_id: Some(reference.locator.run_id.clone()),
+                        round_id: Some(reference.locator.round_id.clone()),
+                        node_id: Some(reference.locator.node_id.clone()),
+                        attempt_id: Some(reference.locator.attempt_id.clone()),
+                        outer_node_id: reference.locator.outer_node_id.clone(),
+                        outer_attempt_id: reference.locator.outer_attempt_id.clone(),
+                        scheduled_occurrence_id: None,
+                    },
+                    outcome: error.code.as_str().into(),
+                    summary_key: match gold_band::im::ImInboundError::Intervention(error.clone())
+                        .code()
+                    {
+                        ImErrorCode::ActionBusy => "im.workflowResume.busy",
+                        ImErrorCode::ActionStateChanged => "im.workflowResume.stateChanged",
+                        _ => "im.workflowResume.retryableFailure",
+                    }
+                    .into(),
+                    parameters: Default::default(),
+                },
+            },
+        };
+        self.repository
+            .enqueue(&feedback, chrono::Utc::now().timestamp_millis())?;
+        if let Some(sender) = self.worker_senders.get(&source.channel) {
+            let _ = sender.try_send(ImWorkerSignal::DeliveryAvailable);
+        }
+        Ok(())
+    }
+
     fn project_channel_resolution(&self, channel: ImChannelKind, accepted: AcceptedInboundAction) {
         let Some(source) = self
             .repository
@@ -1654,6 +1861,7 @@ impl DesktopImRuntime {
             locator: &reference.locator,
             resolved_by: ImResolvedBy::Channel(channel),
             source_delivery_id: Some(&accepted.source_delivery_id),
+            callback_replaced: matches!(&accepted.callback_replaced, Some(gold_band::im::ImActionResponseReceipt::FinalCardUpdated { source_delivery_id, .. }) if source_delivery_id == &accepted.source_delivery_id),
             outcome: accepted.outcome,
         });
         if let Err(error) = result {
@@ -1825,6 +2033,7 @@ pub struct InterventionResolution<'a> {
     pub locator: &'a InterventionLocator,
     pub resolved_by: ImResolvedBy,
     pub source_delivery_id: Option<&'a str>,
+    pub callback_replaced: bool,
     pub outcome: ImResolutionOutcome,
 }
 
@@ -1857,7 +2066,8 @@ fn project_intervention_resolution(
                 && source.notification_kind == resolution.notification_kind
         });
         let replaced_in_callback = source.is_some_and(|source| {
-            resolution.source_delivery_id == Some(source.delivery_id.as_str())
+            resolution.callback_replaced
+                && resolution.source_delivery_id == Some(source.delivery_id.as_str())
                 && target.capabilities.message_update == ImMessageUpdateMode::CallbackOnly
         });
         let (dispatch, display_ref) = match source {
@@ -1918,18 +2128,52 @@ fn project_runtime_cancellations(
         if settle(reference) != Some(InterventionSettlement::Cancelled) {
             continue;
         }
+        let known = if source.notification_kind == ImNotificationKind::WorkflowResume {
+            gold_band::im::ImChannelKind::ALL
+                .into_iter()
+                .filter_map(|channel| {
+                    repository
+                        .successful_inbound_result_for_canonical_event(
+                            channel,
+                            &source.canonical_event_id,
+                        )
+                        .ok()
+                        .flatten()
+                })
+                .find_map(|result| match result.result_payload {
+                    Some(gold_band::im::ImRuntimeResumeActionResult::Committed {
+                        result: resume,
+                    }) => Some((
+                        ImResolvedBy::Channel(result.channel),
+                        ImResolutionOutcome::RuntimeResume { result: resume },
+                    )),
+                    _ => None,
+                })
+        } else {
+            None
+        };
         let result = project_intervention_resolution(
             repository,
             worker_senders,
             targets,
             &InterventionResolution {
+                callback_replaced: false,
                 source_event_id: &source.canonical_event_id,
                 notification_kind: source.notification_kind,
                 locator: &reference.locator,
-                resolved_by: ImResolvedBy::Runtime,
+                resolved_by: known
+                    .as_ref()
+                    .map(|known| known.0)
+                    .unwrap_or(ImResolvedBy::Runtime),
                 source_delivery_id: clicked_delivery_id
                     .filter(|clicked| *clicked == source.delivery_id),
-                outcome: ImResolutionOutcome::Cancelled,
+                outcome: known.map(|known| known.1).unwrap_or(
+                    if source.notification_kind == ImNotificationKind::WorkflowResume {
+                        ImResolutionOutcome::ResultUnavailable
+                    } else {
+                        ImResolutionOutcome::Cancelled
+                    },
+                ),
             },
             now_ms,
         )?;
@@ -2020,6 +2264,15 @@ fn eligible_resolution_target(
         && target.notifications.enabled(notification_kind)
 }
 
+fn callback_receipt_matches(
+    receipt: Option<&gold_band::im::ImActionResponseReceipt>,
+    source: &str,
+    action: &str,
+    generation: u64,
+) -> bool {
+    matches!(receipt, Some(gold_band::im::ImActionResponseReceipt::FinalCardUpdated { source_delivery_id, action_id, generation: actual }) if source_delivery_id == source && action_id == action && *actual == generation)
+}
+
 /// Runs one inbound action in its own task (§8): domain processing on the
 /// blocking pool, the card response, then the resolution broadcast when the
 /// command was `Accepted`. The dispatch loop never awaits it.
@@ -2030,25 +2283,100 @@ async fn run_inbound_action(
     response_context: ImActionResponseContext,
     process: impl FnOnce() -> ProcessedInboundAction + Send + 'static,
     project_resolution: impl FnOnce(AcceptedInboundAction) + Send + 'static,
+    project_feedback: impl FnOnce(ImDelivery, String, gold_band::app::intervention::InterventionError)
+    + Send
+    + 'static,
 ) {
-    let processed = tauri::async_runtime::spawn_blocking(process).await;
-    let (response, accepted) = inbound_action_response(channel, generation, processed);
-    if let Err(error) = connector
-        .respond_to_action(response_context, response)
-        .await
-    {
-        warn!(
-            channel = channel.as_str(),
-            generation,
-            error_code = error.code.as_str(),
-            retryable = error.retryable,
-            platform_code = ?error.platform_code,
-            "IM action card response failed"
-        );
+    let started_at = Instant::now();
+    let deadline = connector.action_response_deadline(&response_context);
+    tracing::debug!(
+        channel = channel.as_str(),
+        generation,
+        phase = "callback",
+        remaining_budget_ms = deadline.map(|deadline| deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .as_millis() as u64),
+        "IM action callback processing started"
+    );
+    let mut task = Box::pin(tauri::async_runtime::spawn_blocking(process));
+    let mut response_used = false;
+    let processed = if let Some(deadline) = deadline {
+        let feedback_at = deadline
+            .checked_sub(std::time::Duration::from_millis(300))
+            .unwrap_or(deadline);
+        tokio::select! {
+            processed = &mut task => processed,
+            _ = tokio::time::sleep_until(feedback_at) => {
+                response_used = true;
+                let _ = connector.respond_to_action(response_context.clone(), ImActionResponse { state: ImActionResponseState::Processing, resolved_by: None, outcome: None, delivery: None }).await;
+                task.await
+            }
+        }
+    } else {
+        task.await
+    };
+    let mut feedback = processed.as_ref().ok().and_then(|processed| {
+        let handling = processed.handling.as_ref().ok()?;
+        let Some(gold_band::im::ImRuntimeResumeActionResult::NotCommitted { error }) =
+            &handling.result.result_payload
+        else {
+            return None;
+        };
+        let code = gold_band::im::ImInboundError::Intervention(error.clone()).code();
+        if !error.retryable && code != ImErrorCode::ActionStateChanged {
+            return None;
+        }
+        Some((
+            processed.delivery.clone()?,
+            handling.result.action_id.clone(),
+            error.clone(),
+        ))
+    });
+    let (response, mut accepted) = inbound_action_response(channel, generation, processed);
+    if !response_used {
+        match connector
+            .respond_to_action(response_context, response)
+            .await
+        {
+            Ok(receipt) => {
+                tracing::debug!(channel = channel.as_str(), generation, phase = "callback", elapsed_ms = started_at.elapsed().as_millis() as u64, receipt = ?receipt, "IM action callback response completed");
+                if let Some(accepted) = accepted.as_mut() {
+                    accepted.callback_replaced = Some(receipt);
+                } else if matches!(
+                    receipt,
+                    gold_band::im::ImActionResponseReceipt::FeedbackOnly {
+                        kind: gold_band::im::ImActionFeedbackKind::RetryableFailure
+                    }
+                ) {
+                    feedback = None;
+                }
+            }
+            Err(error) => warn!(
+                channel = channel.as_str(),
+                generation,
+                error_code = error.code.as_str(),
+                retryable = error.retryable,
+                "IM action card response failed"
+            ),
+        }
     }
     if let Some(accepted) = accepted {
         let _ = tauri::async_runtime::spawn_blocking(move || project_resolution(accepted)).await;
     }
+    if let Some((source, action_id, error)) = feedback {
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            project_feedback(source, action_id, error)
+        })
+        .await;
+    }
+    tracing::debug!(
+        channel = channel.as_str(),
+        generation,
+        phase = "resolution",
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        interim_response = response_used,
+        "IM action processing completed"
+    );
 }
 
 fn stored_intervention_resolution(
@@ -2106,6 +2434,7 @@ fn inbound_action_response<E: std::fmt::Display>(
     match (handling.result.outcome, handling.resolution, delivery) {
         (ImInboundOutcome::Accepted, Some(outcome), Some(delivery)) => {
             let accepted = AcceptedInboundAction {
+                callback_replaced: None,
                 source_event_id: delivery.canonical_event_id.clone(),
                 source_delivery_id: delivery.delivery_id.clone(),
                 outcome: outcome.clone(),
@@ -3047,6 +3376,25 @@ fn handle_projection_completion(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn source_projection_guard_serializes_only_the_same_source_and_releases_entries() {
+        let locks = SourceProjectionLocks::default();
+        let first = locks.acquire("source-a").await;
+        assert!(locks.try_acquire("source-a").is_none());
+        let other = locks
+            .try_acquire("source-b")
+            .expect("different sources remain independent");
+        drop(other);
+        assert!(!locks.0.lock().unwrap().contains_key("source-b"));
+        let queued_locks = locks.clone();
+        let queued = tokio::spawn(async move { queued_locks.acquire("source-a").await });
+        tokio::task::yield_now().await;
+        assert!(!queued.is_finished());
+        drop(first);
+        drop(queued.await.unwrap());
+        assert!(locks.0.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn runtime_activation_requires_durable_im_work() {
         assert!(!im_settings_require_runtime(
@@ -3912,6 +4260,7 @@ mod tests {
                 .display_ref;
             let targets = [wecom_target(&source.destination)];
             let resolution = InterventionResolution {
+                callback_replaced: false,
                 source_event_id: &source_event_id,
                 notification_kind: kind,
                 locator: &locator,
@@ -3974,6 +4323,7 @@ mod tests {
             &worker_senders,
             &[wecom_target(&source.destination)],
             &InterventionResolution {
+                callback_replaced: false,
                 source_event_id: &source.canonical_event_id,
                 notification_kind: source.notification_kind,
                 locator: &locator,
@@ -4036,6 +4386,7 @@ mod tests {
             &worker_senders,
             &[wecom_target(&source.destination)],
             &InterventionResolution {
+                callback_replaced: true,
                 source_event_id: &source.canonical_event_id,
                 notification_kind: source.notification_kind,
                 locator: &locator,
@@ -4175,10 +4526,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(projected, 1, "the cancellation is kept as a tombstone");
+        assert_eq!(projected, 1, "the cancellation is persisted for delivery");
         assert!(
-            receiver.try_recv().is_err(),
-            "the callback replaces the clicked card itself"
+            receiver.try_recv().is_ok(),
+            "a click alone does not confirm the card was replaced"
         );
         assert!(
             repository
@@ -4226,6 +4577,7 @@ mod tests {
                 option_id: "allow".into(),
             };
             let resolution = InterventionResolution {
+                callback_replaced: winner == ImResolvedBy::Channel(ImChannelKind::WeCom),
                 source_event_id: &sources[0].canonical_event_id,
                 notification_kind: sources[0].notification_kind,
                 locator: &locator,
@@ -4256,6 +4608,7 @@ mod tests {
 
     fn inbound_result(outcome: ImInboundOutcome) -> gold_band::im::ImInboundActionResult {
         gold_band::im::ImInboundActionResult {
+            result_payload: None,
             action_id: "action-1".into(),
             channel: ImChannelKind::WeCom,
             canonical_event_id: Some("event-1".into()),
@@ -4302,6 +4655,7 @@ mod tests {
             &HashMap::new(),
             &[target],
             &InterventionResolution {
+                callback_replaced: false,
                 source_event_id: &source.canonical_event_id,
                 notification_kind: source.notification_kind,
                 locator: &locator,
@@ -4401,6 +4755,210 @@ mod tests {
         assert!(accepted.is_none());
     }
 
+    #[test]
+    fn runtime_resume_callback_receipt_requires_source_action_and_generation() {
+        use gold_band::im::{ImActionFeedbackKind, ImActionResponseReceipt};
+        for (source, action, generation, confirmed) in [
+            ("source", "action", 4, true),
+            ("other", "action", 4, false),
+            ("source", "other", 4, false),
+            ("source", "action", 3, false),
+        ] {
+            let receipt = ImActionResponseReceipt::FinalCardUpdated {
+                source_delivery_id: source.into(),
+                action_id: action.into(),
+                generation,
+            };
+            assert_eq!(
+                callback_receipt_matches(Some(&receipt), "source", "action", 4),
+                confirmed
+            );
+        }
+        assert!(!callback_receipt_matches(None, "source", "action", 4));
+        assert!(!callback_receipt_matches(
+            Some(&ImActionResponseReceipt::FeedbackOnly {
+                kind: ImActionFeedbackKind::Processing
+            }),
+            "source",
+            "action",
+            4
+        ));
+    }
+
+    #[test]
+    fn runtime_resume_stale_feedback_keeps_state_changed_semantics_after_callback_deadline() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = DesktopImRuntime::with_signing_key(
+            camino::Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+            vec![7; 32],
+        )
+        .unwrap();
+        let mut source = vote_delivery();
+        source.notification_kind = ImNotificationKind::WorkflowResume;
+        source.expires_at_ms = i64::MAX;
+        let error = gold_band::app::intervention::InterventionError {
+            code: gold_band::app::intervention::InterventionErrorCode::InterventionRevisionConflict,
+            retryable: false,
+            details: Default::default(),
+        };
+        runtime
+            .project_action_feedback(&source, "stale-action", &error)
+            .unwrap();
+        let event_id = format!("{}:feedback:stale-action", source.canonical_event_id);
+        let id = ImDelivery::deterministic_id(
+            source.channel,
+            &source.destination.destination_id,
+            source.notification_kind,
+            &event_id,
+        );
+        let feedback = runtime.repository.delivery(&id).unwrap().unwrap();
+        let ImDeliveryPayload::ActionFeedback {
+            notification,
+            error: stored_error,
+            ..
+        } = feedback.payload
+        else {
+            panic!("late failure must be a read-only feedback delivery")
+        };
+        assert_eq!(stored_error, error);
+        assert_eq!(notification.summary_key, "im.workflowResume.stateChanged");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn runtime_resume_slow_callback_responds_once_and_keeps_the_domain_task() {
+        struct DeadlineConnector {
+            responses: Mutex<Vec<ImActionResponseState>>,
+            replied: tokio::sync::Notify,
+            deadline: bool,
+            receipt: gold_band::im::ImActionResponseReceipt,
+        }
+        #[async_trait::async_trait]
+        impl ImConnector for DeadlineConnector {
+            fn kind(&self) -> ImChannelKind {
+                ImChannelKind::WeCom
+            }
+            fn capabilities(&self) -> gold_band::im::ImChannelCapabilities {
+                Default::default()
+            }
+            fn advance_generation(&self, _: u64) {}
+            async fn connect(
+                &self,
+                _: gold_band::im::ResolvedImChannelConfig,
+                _: u64,
+                _: mpsc::Sender<ImConnectorEvent>,
+                _: CancellationToken,
+            ) -> Result<(), gold_band::im::ImIntegrationError> {
+                unreachable!()
+            }
+            async fn send(
+                &self,
+                _: ImDelivery,
+                _: Option<&ImDelivery>,
+            ) -> Result<gold_band::im::ImDeliveryReceipt, gold_band::im::ImIntegrationError>
+            {
+                unreachable!()
+            }
+            async fn update_message(
+                &self,
+                _: &gold_band::im::ImDeliveryBinding,
+                _: &ImDeliveryPayload,
+                _: Option<&ImDelivery>,
+            ) -> Result<(), gold_band::im::ImIntegrationError> {
+                unreachable!()
+            }
+            fn action_response_deadline(
+                &self,
+                _: &ImActionResponseContext,
+            ) -> Option<tokio::time::Instant> {
+                self.deadline.then(tokio::time::Instant::now)
+            }
+            async fn respond_to_action(
+                &self,
+                _: ImActionResponseContext,
+                response: ImActionResponse,
+            ) -> Result<gold_band::im::ImActionResponseReceipt, gold_band::im::ImIntegrationError>
+            {
+                self.responses.lock().unwrap().push(response.state);
+                self.replied.notify_one();
+                Ok(self.receipt.clone())
+            }
+        }
+        let connector = Arc::new(DeadlineConnector {
+            responses: Mutex::new(Vec::new()),
+            replied: Default::default(),
+            deadline: true,
+            receipt: gold_band::im::ImActionResponseReceipt::FeedbackOnly {
+                kind: gold_band::im::ImActionFeedbackKind::Processing,
+            },
+        });
+        let (release, released) = std::sync::mpsc::channel();
+        let (projected, projection) = std::sync::mpsc::channel();
+        let task = tokio::spawn(run_inbound_action(
+            connector.clone(),
+            ImChannelKind::WeCom,
+            1,
+            ImActionResponseContext::new(()),
+            move || {
+                released.recv().unwrap();
+                processed(
+                    ImInboundOutcome::Accepted,
+                    Some(ImResolutionOutcome::ElicitationDeclined),
+                )
+                .unwrap()
+            },
+            move |accepted| {
+                assert!(accepted.callback_replaced.is_none());
+                projected.send(()).unwrap();
+            },
+            |_, _, _| panic!("accepted action cannot produce retryable feedback"),
+        ));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            connector.replied.notified(),
+        )
+        .await
+        .unwrap();
+        assert!(projection.try_recv().is_err());
+        assert!(!task.is_finished());
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        projection.try_recv().unwrap();
+        assert_eq!(
+            *connector.responses.lock().unwrap(),
+            vec![ImActionResponseState::Processing]
+        );
+        for confirmed in [false, true] {
+            let connector = Arc::new(DeadlineConnector {
+                responses: Mutex::new(Vec::new()),
+                replied: Default::default(),
+                deadline: false,
+                receipt: if confirmed {
+                    gold_band::im::ImActionResponseReceipt::FeedbackOnly {
+                        kind: gold_band::im::ImActionFeedbackKind::RetryableFailure,
+                    }
+                } else {
+                    gold_band::im::ImActionResponseReceipt::Unconfirmed {
+                        reason: gold_band::im::ImActionUnconfirmedReason::Unknown,
+                    }
+                },
+            });
+            let feedback = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed = feedback.clone();
+            run_inbound_action(connector, ImChannelKind::WeCom, 1, ImActionResponseContext::new(()), || {
+                let mut processed = processed(ImInboundOutcome::Rejected(ImErrorCode::ActionBusy), None).unwrap();
+                processed.handling.as_mut().unwrap().result.result_payload = Some(gold_band::im::ImRuntimeResumeActionResult::NotCommitted { error: gold_band::app::intervention::InterventionError { code: gold_band::app::intervention::InterventionErrorCode::InterventionBusy, retryable: true, details: Default::default() } });
+                processed
+            }, |_| panic!("retryable rejection must not settle the request"), move |_, _, _| { observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }).await;
+            assert_eq!(
+                feedback.load(std::sync::atomic::Ordering::SeqCst),
+                usize::from(!confirmed)
+            );
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_slow_inbound_action_does_not_block_other_actions() {
         let connector: Arc<dyn ImConnector> = Arc::new(WeComConnector::new(
@@ -4422,6 +4980,7 @@ mod tests {
                 .unwrap()
             },
             move |_| slow_projected.send(()).unwrap(),
+            |_, _, _| {},
         ));
         let (fast_projected, fast_projection) = std::sync::mpsc::channel::<()>();
         let fast = tauri::async_runtime::spawn(run_inbound_action(
@@ -4437,6 +4996,7 @@ mod tests {
                 .unwrap()
             },
             move |_| fast_projected.send(()).unwrap(),
+            |_, _, _| {},
         ));
 
         tokio::time::timeout(std::time::Duration::from_secs(5), fast)

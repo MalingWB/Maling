@@ -21,6 +21,8 @@
 
 2026-11-14 起运行环境不再是引导门槛：Node.js、npm、npx 的版本与组合检查只用于展示和修复建议，Agent 能否使用以 Doctor 结果为准。只有通过 npx 启动的候选依赖完整工具链；npx 无法启动（缺失、启动失败、超时）时这类候选直接跳过并返回 `runtime-required`，不启动进程。本机 ACP 命令与本机 CLI 不做版本前置判断，照常诊断。最终提交仍要求至少一个配置匹配且 Doctor 健康的 Agent。
 
+2026-11-17 全目标回归同步清理 `examples/onboarding_environment.rs` 的旧消费入口：示例只输出当前 `EnvironmentReport` 结构化诊断，不再访问已删除的 `runtimeReady` 或据此设置全局退出门槛；不改变上述按 Agent 启动方式判断依赖的产品契约。
+
 ## 2. 接入范围与环境版本策略
 
 ### 2.1 复用既有 Agent 接入
