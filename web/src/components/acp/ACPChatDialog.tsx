@@ -5921,6 +5921,13 @@ export function ACPChatDialog(
   // away from the top is indistinguishable from the jump landing, and in both
   // cases continuing to poll would fight the user.
   const handleTurnRailJump = (seq: number) => {
+    // A jump while the viewport is following the live head would be undone by
+    // the chat container's follow recovery (it re-pins to the bottom on the
+    // next frame), and the older-page pagination trigger requires manual
+    // viewport intent. Release the follow lock and mark the intent first —
+    // the same transition a user wheel-up performs.
+    chatContainerContextRef.current?.stopScroll();
+    viewportManualIntentRef.current = true;
     const findAnchor = () => timelineRef.current.find(
       (item): item is (typeof timelineRef.current)[number] & { seq: number } =>
         'seq' in item && typeof item.seq === 'number' && item.seq >= seq,
