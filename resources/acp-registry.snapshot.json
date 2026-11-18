@@ -241,7 +241,7 @@
     {
       "id": "claude-acp",
       "name": "Claude Agent",
-      "version": "0.107.0",
+      "version": "0.107.2",
       "description": "ACP wrapper for Anthropic's Claude",
       "repository": "https://github.com/agentclientprotocol/claude-agent-acp",
       "authors": [
@@ -254,48 +254,48 @@
       "distribution": {
         "binary": {
           "darwin-aarch64": {
-            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.0/claude-agent-acp-darwin-arm64.zip",
+            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.2/claude-agent-acp-darwin-arm64.zip",
             "cmd": "./claude-agent-acp",
-            "sha256": "ba106984d2d89b4e260ac0648e354c924a1a1545392929b1e27700615d7ba9b3"
+            "sha256": "9d9a4c924b76d77b94794d0d4724420ab0a840af0ff8112b5b885c771c78c888"
           },
           "darwin-x86_64": {
-            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.0/claude-agent-acp-darwin-x64.zip",
+            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.2/claude-agent-acp-darwin-x64.zip",
             "cmd": "./claude-agent-acp",
-            "sha256": "79d46ef951ad359776022c2cf3f85bb17cf16c1aedee68e8236370a6b15f1367"
+            "sha256": "252e5d9fde55fa1b0db349ea4066ae268d8ca124bb2d9ef399b59e48f5bf5ae4"
           },
           "linux-aarch64": {
-            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.0/claude-agent-acp-linux-arm64.tar.gz",
+            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.2/claude-agent-acp-linux-arm64.tar.gz",
             "cmd": "./claude-agent-acp",
-            "sha256": "b63b7e5164a0585bdc4837943238170f156daed0d3a9effb093f7d93da206d7d"
+            "sha256": "851570c0df0281aef72e59135d1938921a0eb12155034927ea9101e2d3636924"
           },
           "linux-x86_64": {
-            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.0/claude-agent-acp-linux-x64.tar.gz",
+            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.2/claude-agent-acp-linux-x64.tar.gz",
             "cmd": "./claude-agent-acp",
-            "sha256": "768f0c910587b8c2a8c3a96aedd5a8876128277f6d633bbcd52092b229e056a9"
+            "sha256": "e337c9eaed8147f5824d4824cb66b3843ab57e4681aa198ad0b98836a7a6385e"
           },
           "linux-aarch64-musl": {
-            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.0/claude-agent-acp-linux-arm64-musl.tar.gz",
+            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.2/claude-agent-acp-linux-arm64-musl.tar.gz",
             "cmd": "./claude-agent-acp",
-            "sha256": "151d2b9eb467d32493614249f2574dd9f164064ad956cc777ae44bcb675d652f"
+            "sha256": "f21ebfbebd86e6b3359cceaa003c98b006eec7dbda1ccfe59d414d14180fbc83"
           },
           "linux-x86_64-musl": {
-            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.0/claude-agent-acp-linux-x64-musl.tar.gz",
+            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.2/claude-agent-acp-linux-x64-musl.tar.gz",
             "cmd": "./claude-agent-acp",
-            "sha256": "b0a15ea0e40205ad63279b46a4b10ec8acd9f3e653f202cf0c3804e98a7649bb"
+            "sha256": "cdf9e85536e1832bfae0763c415420119b9a1a585b3d4c05bf64ac3cd272ff56"
           },
           "windows-aarch64": {
-            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.0/claude-agent-acp-windows-arm64.zip",
+            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.2/claude-agent-acp-windows-arm64.zip",
             "cmd": "./claude-agent-acp.exe",
-            "sha256": "92be1f854b13d4ceb133dbec69bf3fbcdb86d9807a583d45cbd6cddf29f76307"
+            "sha256": "87d5185f14aa52ee51d75baf705241003ae6db7dd2a3e7cee81f3ca9e5b33530"
           },
           "windows-x86_64": {
-            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.0/claude-agent-acp-windows-x64.zip",
+            "archive": "https://github.com/agentclientprotocol/claude-agent-acp/releases/download/v0.107.2/claude-agent-acp-windows-x64.zip",
             "cmd": "./claude-agent-acp.exe",
-            "sha256": "bb406522d6341b3b9aa1b9bfcaa996ddf8cd53b91512f92b111a8414a049775f"
+            "sha256": "78fb051249c8484270341f99ce8744008f776b0627b46f7cbfe37cba95a532f3"
           }
         },
         "npx": {
-          "package": "@agentclientprotocol/claude-agent-acp@0.107.0"
+          "package": "@agentclientprotocol/claude-agent-acp@0.107.2"
         }
       },
       "icon": "https://cdn.agentclientprotocol.com/registry/v1/latest/claude-acp.svg"
@@ -346,7 +346,7 @@
     {
       "id": "codex-acp",
       "name": "Codex",
-      "version": "2.6.0",
+      "version": "2.7.0",
       "description": "ACP adapter for OpenAI's coding assistant",
       "repository": "https://github.com/agentclientprotocol/codex-acp",
       "authors": [
@@ -358,7 +358,7 @@
       "license_url": "https://github.com/agentclientprotocol/codex-acp/blob/main/LICENSE",
       "distribution": {
         "npx": {
-          "package": "@agentclientprotocol/codex-acp@2.6.0"
+          "package": "@agentclientprotocol/codex-acp@2.7.0"
         }
       },
       "icon": "https://cdn.agentclientprotocol.com/registry/v1/latest/codex-acp.svg"
@@ -662,7 +662,7 @@
     {
       "id": "dimcode",
       "name": "DimCode",
-      "version": "0.5.28",
+      "version": "0.5.29",
       "description": "A coding agent that puts leading models at your command.",
       "website": "https://dimagent.cn/",
       "authors": [
@@ -672,7 +672,7 @@
       "license_url": "https://dimagent.cn/terms",
       "distribution": {
         "npx": {
-          "package": "dimcode@0.5.28",
+          "package": "dimcode@0.5.29",
           "args": [
             "acp"
           ]
@@ -819,7 +819,7 @@
     {
       "id": "goose",
       "name": "goose",
-      "version": "1.59.1",
+      "version": "1.59.2",
       "description": "A local, extensible, open source AI agent that automates engineering tasks",
       "repository": "https://github.com/block/goose",
       "website": "https://block.github.io/goose/",
@@ -831,60 +831,60 @@
       "distribution": {
         "binary": {
           "darwin-aarch64": {
-            "archive": "https://github.com/block/goose/releases/download/v1.59.1/goose-aarch64-apple-darwin.tar.bz2",
+            "archive": "https://github.com/block/goose/releases/download/v1.59.2/goose-aarch64-apple-darwin.tar.bz2",
             "cmd": "./goose",
             "args": [
               "acp"
             ],
-            "sha256": "a71ccecdae36437d5529d3d52d8240e41568db375e7e5799b1ef4bd7540edc21"
+            "sha256": "a4eac98999639741ee5a4cc7a3043952a4a22fc2004b7340e34ec927df0e8257"
           },
           "darwin-x86_64": {
-            "archive": "https://github.com/block/goose/releases/download/v1.59.1/goose-x86_64-apple-darwin.tar.bz2",
+            "archive": "https://github.com/block/goose/releases/download/v1.59.2/goose-x86_64-apple-darwin.tar.bz2",
             "cmd": "./goose",
             "args": [
               "acp"
             ],
-            "sha256": "71d120fab8c65637b99d98a3567cd1d9bc3ac1219e070c0803d28955a81e5aa2"
+            "sha256": "527310a89b5a505da1ad94fb10c02d0051037724b982320388fcd2f204508091"
           },
           "linux-aarch64": {
-            "archive": "https://github.com/block/goose/releases/download/v1.59.1/goose-aarch64-unknown-linux-gnu.tar.bz2",
+            "archive": "https://github.com/block/goose/releases/download/v1.59.2/goose-aarch64-unknown-linux-gnu.tar.bz2",
             "cmd": "./goose",
             "args": [
               "acp"
             ],
-            "sha256": "5381580baf3ef599a374d02ef627526a4b9ce2a29f2d0f0a591688f2e891d8c1"
+            "sha256": "394674d5c123b7ec299ce38718906528caff56b948fcd40bb20f6ecdc71d8c4c"
           },
           "linux-x86_64": {
-            "archive": "https://github.com/block/goose/releases/download/v1.59.1/goose-x86_64-unknown-linux-gnu.tar.bz2",
+            "archive": "https://github.com/block/goose/releases/download/v1.59.2/goose-x86_64-unknown-linux-gnu.tar.bz2",
             "cmd": "./goose",
             "args": [
               "acp"
             ],
-            "sha256": "f7391321c00035ff6eb48d2250db0cc4a5c3e34102d6f44734f38d9a226eb65b"
+            "sha256": "36efe207ae4f8de3030ed8fdcfe3b7c5d13f23d6cb73d6fde747543f022ce218"
           },
           "linux-aarch64-musl": {
-            "archive": "https://github.com/block/goose/releases/download/v1.59.1/goose-aarch64-unknown-linux-musl.tar.bz2",
+            "archive": "https://github.com/block/goose/releases/download/v1.59.2/goose-aarch64-unknown-linux-musl.tar.bz2",
             "cmd": "./goose",
             "args": [
               "acp"
             ],
-            "sha256": "5c67e2717ac77180b0a593cdb3af4b26ac0b5c29cfe8f988ebdadaaf539400b8"
+            "sha256": "669aa04325e6121289fe5a4fc155f085cdb10cffdd830e4eb2c59ce733e6798b"
           },
           "linux-x86_64-musl": {
-            "archive": "https://github.com/block/goose/releases/download/v1.59.1/goose-x86_64-unknown-linux-musl.tar.bz2",
+            "archive": "https://github.com/block/goose/releases/download/v1.59.2/goose-x86_64-unknown-linux-musl.tar.bz2",
             "cmd": "./goose",
             "args": [
               "acp"
             ],
-            "sha256": "a68f2b950d0da737b5b74bf3ab0a41b26a5b0d22f8a988ff979b4285b0e9fd17"
+            "sha256": "bb941041379f7f6f7b423cd5373d194d3acb15c4fdb2c25e9d7298a0492ca771"
           },
           "windows-x86_64": {
-            "archive": "https://github.com/block/goose/releases/download/v1.59.1/goose-x86_64-pc-windows-msvc.zip",
+            "archive": "https://github.com/block/goose/releases/download/v1.59.2/goose-x86_64-pc-windows-msvc.zip",
             "cmd": "./goose-package\\goose.exe",
             "args": [
               "acp"
             ],
-            "sha256": "3c26b77088f2c3f035f06f1a2bb066664c4e8a98394b42a50a8505702f216452"
+            "sha256": "aef6462832e8cbdcb465b45605afafe8459052effd9b9cbf74817d3d22f46a2f"
           }
         }
       },
@@ -893,7 +893,7 @@
     {
       "id": "grok-build",
       "name": "Grok Build",
-      "version": "1.0.87",
+      "version": "1.0.88",
       "description": "xAI's coding agent and CLI",
       "website": "https://x.ai/cli",
       "authors": [
@@ -903,7 +903,7 @@
       "license_url": "https://x.ai/legal/terms-of-service",
       "distribution": {
         "npx": {
-          "package": "@xai-official/grok@1.0.87",
+          "package": "@xai-official/grok@1.0.88",
           "args": [
             "agent",
             "stdio"
@@ -1118,7 +1118,7 @@
     {
       "id": "kimchi",
       "name": "Kimchi",
-      "version": "1.34.3",
+      "version": "1.35.0",
       "description": "Coding agent powered by multi-model orchestration",
       "repository": "https://github.com/getkimchi/kimchi",
       "website": "https://kimchi.dev",
@@ -1130,8 +1130,8 @@
       "distribution": {
         "binary": {
           "darwin-aarch64": {
-            "archive": "https://github.com/getkimchi/kimchi/releases/download/v1.34.3/kimchi_darwin_arm64.tar.gz",
-            "sha256": "a99331f580f5c694e221c166a550f237bd42af37469bd0602af6910df38a026a",
+            "archive": "https://github.com/getkimchi/kimchi/releases/download/v1.35.0/kimchi_darwin_arm64.tar.gz",
+            "sha256": "ea3fd6b84a9284cba1422c5d5e2adee2653f2e6e7281fb3f1c0a15049248b764",
             "cmd": "./bin/kimchi",
             "args": [
               "--mode",
@@ -1139,8 +1139,8 @@
             ]
           },
           "darwin-x86_64": {
-            "archive": "https://github.com/getkimchi/kimchi/releases/download/v1.34.3/kimchi_darwin_amd64.tar.gz",
-            "sha256": "0cd5e76350e6f611fc9382e16c520cee8097136067020ff9e6f82e312904fe11",
+            "archive": "https://github.com/getkimchi/kimchi/releases/download/v1.35.0/kimchi_darwin_amd64.tar.gz",
+            "sha256": "1534c089673a7029c072665bc515e5545301f4349ccc9d6e1b6f8d82250a2f45",
             "cmd": "./bin/kimchi",
             "args": [
               "--mode",
@@ -1148,8 +1148,8 @@
             ]
           },
           "linux-aarch64": {
-            "archive": "https://github.com/getkimchi/kimchi/releases/download/v1.34.3/kimchi_linux_arm64.tar.gz",
-            "sha256": "81c3370f33a8706c8e58fafc9905b0eef351f5bf9ada5d87ae698147c25ac89b",
+            "archive": "https://github.com/getkimchi/kimchi/releases/download/v1.35.0/kimchi_linux_arm64.tar.gz",
+            "sha256": "58f4344b16f653ef1bcaf3c34b3c58fc36400772e15a786a6728158585c92405",
             "cmd": "./bin/kimchi",
             "args": [
               "--mode",
@@ -1157,8 +1157,8 @@
             ]
           },
           "linux-x86_64": {
-            "archive": "https://github.com/getkimchi/kimchi/releases/download/v1.34.3/kimchi_linux_amd64.tar.gz",
-            "sha256": "685865d02c523966fd198074310e70d89adaab0b3058367a07885115e9bee2df",
+            "archive": "https://github.com/getkimchi/kimchi/releases/download/v1.35.0/kimchi_linux_amd64.tar.gz",
+            "sha256": "7e24fc44a9725047eef91e247f79c3ce2dc91390844b852e1e0d18fa8a66166a",
             "cmd": "./bin/kimchi",
             "args": [
               "--mode",
@@ -1166,8 +1166,8 @@
             ]
           },
           "windows-x86_64": {
-            "archive": "https://github.com/getkimchi/kimchi/releases/download/v1.34.3/kimchi_windows_amd64.zip",
-            "sha256": "ad71b2dee5ad236ba0c1af6d135c83dbe4e01f968b1d92c263568d853c87f28c",
+            "archive": "https://github.com/getkimchi/kimchi/releases/download/v1.35.0/kimchi_windows_amd64.zip",
+            "sha256": "9fd3d4aadfc957662d2507034282ef27e3803968b56848626423c0aba5e83a41",
             "cmd": "./bin/kimchi.exe",
             "args": [
               "--mode",
@@ -1771,7 +1771,7 @@
     {
       "id": "qoder",
       "name": "Qoder CLI",
-      "version": "1.1.89",
+      "version": "1.1.90",
       "description": "AI coding assistant with agentic capabilities",
       "website": "https://qoder.com",
       "authors": [
@@ -1782,7 +1782,7 @@
       "icon": "https://cdn.agentclientprotocol.com/registry/v1/latest/qoder.svg",
       "distribution": {
         "npx": {
-          "package": "@qoder-ai/qodercli@1.1.89",
+          "package": "@qoder-ai/qodercli@1.1.90",
           "args": [
             "--acp"
           ]
