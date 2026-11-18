@@ -24,6 +24,8 @@ use crate::forge::spec::{
 /// 后，用返回的 `profile_id` 替换占位。
 #[derive(Debug, Clone)]
 pub struct CompiledWorkflow {
+    /// 模板显示名（单工作流 = Spec 顶层名；拆分 = 各工作流名）。
+    pub name: String,
     pub workflow: WorkflowDsl,
     /// 需要新创建的 profile：node_id → (显示名, goal 正文)。
     pub pending_profiles: Vec<(String, String, String)>,
@@ -162,6 +164,7 @@ fn compile_one(workflow: &ForgeWorkflow, control: WorkflowControl) -> Result<Com
     };
 
     Ok(CompiledWorkflow {
+        name: workflow.name.clone(),
         workflow: dsl,
         pending_profiles,
     })
@@ -239,7 +242,16 @@ pub fn compile(spec: &ForgeSpec) -> Result<Vec<CompiledWorkflow>, ForgeError> {
             max_attempts: Some(3),
             max_rounds: Some(2),
         };
+        let name = if spec.workflows.len() == 1 {
+            spec.name.clone().unwrap_or_else(|| workflow.name.clone())
+        } else {
+            workflow.name.clone()
+        };
         let compiled = compile_one(workflow, control)?;
+        let compiled = CompiledWorkflow {
+            name,
+            ..compiled
+        };
         // 产物 100% 过 DSL 校验
         crate::dsl::validate_authoring_workflow(compiled.workflow.clone()).map_err(|error| {
             ForgeError::CompileFailed {

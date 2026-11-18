@@ -10,7 +10,7 @@
 //! 标记与 task 级 Spec 存档（`<task_dir>/forge/spec.json`），不新增
 //! canonical 数据结构（方案自评审结论）。
 
-use crate::app::{App, CreateTaskInput, TaskSummary};
+use crate::app::{App, CreateTaskInput, TaskSummary, WorkflowModelBindings};
 use crate::forge::spec::ForgeSpec;
 use crate::runtime::TaskOrigin;
 use anyhow::{Context, Result, bail};
@@ -172,6 +172,28 @@ impl App {
         Ok(spec)
     }
 
+    /// 编译并保存（方案 §4 `forge_compile` 的落库形态）。
+    ///
+    /// Spec → WorkflowDsl 若干条；custom role 的 pending profile 注册为
+    /// User scope 后回填节点引用；产物以 `source=Forged` 存为模板。
+    /// 返回新建模板 id 列表（多工作流拆分时多个）。
+    pub fn forge_compile_and_save(&self, spec: &ForgeSpec) -> Result<Vec<String>> {
+        let compiled_list = crate::forge::compiler::compile(spec)
+            .map_err(|error| anyhow::anyhow!("{}", error.to_string()))?;
+        let mut created_template_ids = Vec::new();
+        for mut compiled in compiled_list {
+            backfill_pending_profiles(&self.paths, &mut compiled, &spec.intent)?;
+            let (_store, created_id) = self.save_workflow_template_with_source(
+                compiled.name.clone(),
+                compiled.workflow.clone(),
+                WorkflowModelBindings::default(),
+                crate::app::TemplateSource::Forged,
+            )?;
+            created_template_ids.push(created_id);
+        }
+        Ok(created_template_ids)
+    }
+
     fn load_workflow_template_store_forge(
         &self,
     ) -> Result<crate::app::WorkflowTemplateStore> {
@@ -195,7 +217,8 @@ pub struct CreateForgeTaskInput {
 }
 
 /// 铸造历史条目（方案 D3）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ForgeSessionEntry {
     pub task_id: String,
     pub title: Option<String>,
@@ -207,7 +230,8 @@ pub struct ForgeSessionEntry {
 }
 
 /// Spec 存档摘要（列表投影，不加载全量 Spec）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ForgeSpecSummary {
     pub name: String,
     pub intent: String,
@@ -226,6 +250,48 @@ fn forge_conversation_workflow(agent_type: &str) -> crate::dsl::WorkflowDsl {
         false,
         Default::default(),
     )
+}
+
+/// custom role 的 pending profile 注册为 User scope 并回填节点引用。
+///
+/// 编译器为 custom stage 置占位 profile（`<node_id>-profile`，无法通过
+/// 保存链路的 profile 解析）；此处创建真实 profile 后整体替换。
+fn backfill_pending_profiles(
+    paths: &crate::storage::GoldBandPaths,
+    compiled: &mut crate::forge::compiler::CompiledWorkflow,
+    intent: &str,
+) -> Result<()> {
+    for (node_id, profile_name, goal_body) in compiled.pending_profiles.clone() {
+        let placeholder = format!("{node_id}-profile");
+        let summary: String = goal_body
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or(intent)
+            .trim()
+            .chars()
+            .take(80)
+            .collect();
+        let entry = crate::app::profiles::create_profile(
+            paths,
+            crate::app::profiles::ProfileInput {
+                name: profile_name.clone(),
+                summary,
+                content: goal_body.clone(),
+                dynamic_template: false,
+            },
+        )
+        .with_context(|| format!("failed to create forged profile `{profile_name}`"))?;
+        for node in &mut compiled.workflow.nodes {
+            if node.id() == node_id {
+                if let crate::dsl::NodeDsl::Worker(worker) = node {
+                    if worker.profile.as_deref() == Some(placeholder.as_str()) {
+                        worker.profile = Some(entry.id.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 试运行截断：仅保留 entry 节点，success 边直连 `$end`。
@@ -427,5 +493,57 @@ mod tests {
         assert!(app.forge_trial("no-such-template", "x").is_err());
         let store = app.workflow_templates().unwrap();
         assert!(app.forge_trial(&store.templates[0].id, "  ").is_err());
+    }
+
+    #[test]
+    fn forge_compile_and_save_creates_forged_template_with_builtin_profiles() {
+        let (app, _temp, _guard) = forge_test_app();
+        let ids = app.forge_compile_and_save(&sample_spec()).unwrap();
+        assert_eq!(ids.len(), 1);
+        let store = app.workflow_templates().unwrap();
+        let template = store
+            .templates
+            .iter()
+            .find(|t| t.id == ids[0])
+            .expect("forged template saved");
+        assert_eq!(template.source, Some(crate::app::TemplateSource::Forged));
+        // 节点引用内置 profile 完整 id（可通过保存链路的 profile 解析）。
+        let worker_profile = match (&template.workflow.nodes[0], ()) {
+            (crate::dsl::NodeDsl::Worker(worker), ()) => worker.profile.clone(),
+            _ => None,
+        };
+        assert_eq!(worker_profile.as_deref(), Some("pf-builtin-dev"));
+    }
+
+    #[test]
+    fn forge_compile_and_save_backfills_custom_profile() {
+        let (app, _temp, _guard) = forge_test_app();
+        let mut spec = sample_spec();
+        spec.workflows[0].stages[0].role = StageRole::Custom {
+            profile_name: "接口联调".to_string(),
+        };
+        let ids = app.forge_compile_and_save(&spec).unwrap();
+        let store = app.workflow_templates().unwrap();
+        let template = store
+            .templates
+            .iter()
+            .find(|t| t.id == ids[0])
+            .expect("forged template saved");
+        let crate::dsl::NodeDsl::Worker(worker) = &template.workflow.nodes[0] else {
+            panic!("expected worker node");
+        };
+        // 占位被回填为真实 User scope profile id，且可解析。
+        let profile = worker.profile.as_deref().expect("profile backfilled");
+        assert_ne!(profile, "s1-profile");
+        assert!(profile.starts_with("pf-"));
+        assert!(
+            crate::app::profiles::find_profile_by_id(
+                &app.paths,
+                profile,
+                crate::config::DesktopLanguage::ZhCn,
+            )
+            .unwrap()
+            .is_some()
+        );
     }
 }

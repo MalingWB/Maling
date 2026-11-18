@@ -4017,9 +4017,28 @@ impl App {
     pub fn save_workflow_template_with_bindings(
         &self,
         name: String,
+        workflow: WorkflowDsl,
+        model_bindings: WorkflowModelBindings,
+    ) -> Result<WorkflowTemplateStore> {
+        self.save_workflow_template_with_source(
+            name,
+            workflow,
+            model_bindings,
+            TemplateSource::Manual,
+        )
+        .map(|(store, _created_id)| store)
+    }
+
+    /// 按指定来源落模板（手动/导入/铸造共用一条保存链路，仅来源标记不同）。
+    /// 返回保存后的 store 与新建模板 id（保存链路会重生成 workflow id，
+    /// 调用方不得以原 workflow id 回查）。
+    fn save_workflow_template_with_source(
+        &self,
+        name: String,
         mut workflow: WorkflowDsl,
         mut model_bindings: WorkflowModelBindings,
-    ) -> Result<WorkflowTemplateStore> {
+        source: TemplateSource,
+    ) -> Result<(WorkflowTemplateStore, String)> {
         let name = name.trim();
         if name.is_empty() {
             bail!("workflow template name cannot be empty");
@@ -4054,16 +4073,16 @@ impl App {
             id: id.clone(),
             name: name.to_string(),
             is_built_in: false,
-            source: Some(TemplateSource::Manual),
+            source: Some(source),
             optional_entry_stage: None,
             workflow: validated.raw,
             model_bindings,
             created_at: now.clone(),
             updated_at: now,
         });
-        store.last_used_template_id = Some(id);
+        store.last_used_template_id = Some(id.clone());
         self.save_workflow_template_store(&mut store)?;
-        Ok(store)
+        Ok((store, id))
     }
 
     pub fn update_workflow_template(

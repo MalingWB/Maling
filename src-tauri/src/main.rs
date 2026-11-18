@@ -13,6 +13,7 @@ mod channel;
 mod commands;
 mod commands_conversation;
 mod commands_file_references;
+mod commands_forge;
 mod conversation_attention;
 mod conversation_workspace;
 mod desktop_lifecycle;
@@ -548,6 +549,14 @@ fn run() -> anyhow::Result<()> {
             remote_image_trust::trust_remote_image_hosts,
             remote_image_trust::revoke_remote_image_host,
             get_task_list,
+            commands_forge::forge_create_session,
+            commands_forge::forge_get_spec,
+            commands_forge::forge_save_spec,
+            commands_forge::forge_compile,
+            commands_forge::forge_from_workflow,
+            commands_forge::forge_start_trial,
+            commands_forge::forge_list_sessions,
+            commands_forge::forge_cleanup_sessions,
             get_profiles,
             get_profile,
             create_profile,

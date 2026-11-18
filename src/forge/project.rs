@@ -370,6 +370,7 @@ mod tests {
         let written = write_back(
             &base,
             &CompiledWorkflow {
+                name: "样本".to_string(),
                 workflow: revised,
                 pending_profiles: vec![],
             },
