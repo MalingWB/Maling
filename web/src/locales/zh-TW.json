@@ -3563,7 +3563,13 @@
         "accept": "驗收"
       },
       "outputKindLabel": "產物形態",
-      "onFailureLabel": "失敗策略"
+      "onFailureLabel": "失敗策略",
+      "compile": "編譯為範本",
+      "compileHint": "Spec 收斂後編譯為帶產物契約的工作流範本",
+      "compileBlocked": "仍有待釐清項,收斂後可編譯",
+      "startTrial": "試執行首節點",
+      "startTrialHint": "以範本建立真實任務,跑通首個節點即停",
+      "compiledCount": "已建立 {{count}} 個工作流範本"
     },
     "history": {
       "title": "鑄造歷史",

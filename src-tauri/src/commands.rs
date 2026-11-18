@@ -1783,6 +1783,22 @@ fn prompt_turn_lifecycle_callback(
             },
         );
         if result.is_ok() && terminal {
+            // 工作流铸造回路(方案 §3.1 增量生长):Forge 会话每轮完成后
+            // 提取助手消息中的 Spec 增量并合并落存档;预览 Tab 由随后的
+            // 会话更新事件驱动刷新。普通会话/无围栏轮零副作用。
+            if let Err(error) = app.forge_extract_turn_delta(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+            ) {
+                warn!(
+                    %error,
+                    task_id = %locator.task_id,
+                    "forge spec delta extraction failed"
+                );
+            }
             emit_acp_session_update(
                 &app_handle,
                 &app,

@@ -194,6 +194,71 @@ impl App {
         Ok(created_template_ids)
     }
 
+    /// 铸造对话轮完成后的 Spec 增量提取（回路心脏，方案 §3.1 增量生长）。
+    ///
+    /// 读取该 attempt 时间线,把最后一个用户 prompt 之后的 `textDelta`
+    /// 拼接为最后一条助手消息,提取其中最后一个 ```json 围栏作为
+    /// SpecDelta,合并进存档(无存档时以单空工作流骨架起步)。普通
+    /// 对话轮(无围栏)返回 Ok(None),不产生副作用。
+    pub fn forge_extract_turn_delta(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<Option<ForgeSpec>> {
+        let task = self.task_show(task_id)?;
+        if task.origin != Some(TaskOrigin::Forge) {
+            return Ok(None);
+        }
+        let attempt_dir = self
+            .paths
+            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
+        let timeline_path = attempt_dir.join("acp.timeline.jsonl");
+        if !timeline_path.exists() {
+            return Ok(None);
+        }
+        let items = crate::acp::events::load_timeline_items(&timeline_path)?;
+        // 最后一个用户 prompt 之后的所有 textDelta = 最后一条助手消息。
+        let last_prompt_seq = items
+            .iter()
+            .filter(|item| {
+                item.kind == "userTextDelta"
+                    && item
+                        .raw
+                        .as_ref()
+                        .and_then(|raw| raw.get("source"))
+                        .and_then(|value| value.as_str())
+                        == Some("goldBandPrompt")
+            })
+            .map(|item| item.seq)
+            .max();
+        let Some(last_prompt_seq) = last_prompt_seq else {
+            return Ok(None);
+        };
+        let mut assistant_text = String::new();
+        for item in items.iter().filter(|item| item.seq > last_prompt_seq) {
+            if item.kind == "textDelta" {
+                if let Some(chunk) = item.content.as_deref() {
+                    assistant_text.push_str(chunk);
+                }
+            }
+        }
+        let Some(delta_json) = extract_last_fenced_json(&assistant_text) else {
+            return Ok(None);
+        };
+        let delta = crate::forge::interview::SpecDelta::parse(&delta_json)
+            .map_err(|error| anyhow::anyhow!("{}", error.to_string()))?;
+        let base = crate::forge::archive::load_spec_archive(&self.paths.task_dir(task_id))?
+            .unwrap_or_else(initial_forge_spec_baseline);
+        let merged = crate::forge::interview::merge_delta(&base, &delta)
+            .map_err(|error| anyhow::anyhow!("{}", error.to_string()))?;
+        crate::forge::archive::save_spec_archive(&self.paths.task_dir(task_id), &merged)
+            .map_err(|error| anyhow::anyhow!("{}", error.to_string()))?;
+        Ok(Some(merged))
+    }
+
     /// 源会话材料（入口 A）：标题 + 需求 + 用户消息，按 G5 预算截断。
     ///
     /// 可见摘要供 composer 预填（用户可编辑），完整材料作为首条
@@ -286,6 +351,48 @@ impl App {
     ) -> Result<crate::app::WorkflowTemplateStore> {
         // 复用现有模板加载入口（含内置模板物化与迁移）。
         self.workflow_templates()
+    }
+}
+
+/// 提取文本中最后一个 ```json 围栏的内容(首行 ```json 起,围栏闭合止)。
+fn extract_last_fenced_json(text: &str) -> Option<String> {
+    let mut fenced: Option<String> = None;
+    let mut in_fence = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if !in_fence {
+            if trimmed.starts_with("```json") {
+                in_fence = true;
+                fenced = Some(String::new());
+            }
+        } else if trimmed.starts_with("```") {
+            in_fence = false;
+        } else if let Some(buffer) = fenced.as_mut() {
+            buffer.push_str(line);
+            buffer.push('\n');
+        }
+    }
+    // 未闭合的围栏(流中断)丢弃,不做半截解析。
+    if in_fence {
+        return None;
+    }
+    fenced
+        .filter(|buffer| !buffer.trim().is_empty())
+}
+
+/// 增量合并的初始基线：单空工作流承载第一轮增量(merge 要求 workflows
+/// 非空;骨架字段由后续增量逐轮覆盖)。
+fn initial_forge_spec_baseline() -> ForgeSpec {
+    ForgeSpec {
+        spec_version: crate::forge::SPEC_VERSION.to_string(),
+        name: None,
+        intent: String::new(),
+        source_skills: vec![],
+        workflows: vec![crate::forge::spec::ForgeWorkflow {
+            name: "未命名工作流".to_string(),
+            stages: vec![],
+        }],
+        open_questions: vec![],
     }
 }
 
@@ -614,6 +721,156 @@ mod tests {
         assert!(app.forge_trial("no-such-template", "x").is_err());
         let store = app.workflow_templates().unwrap();
         assert!(app.forge_trial(&store.templates[0].id, "  ").is_err());
+    }
+
+    #[test]
+    fn forge_extract_turn_delta_merges_fenced_spec_into_archive() {
+        let (app, _temp, _guard) = forge_test_app();
+        let summary = app
+            .create_forge_task(CreateForgeTaskInput {
+                title: Some("铸造会话".to_string()),
+                requirement_content: "源会话摘要".to_string(),
+                agent_type: "claude-acp".to_string(),
+                workflow: None,
+                initial_spec: None,
+            })
+            .unwrap();
+        let task_id = summary.task.id.clone();
+
+        // 写入伪造 attempt 时间线:用户 prompt + 助手增量(含围栏 JSON 增量)。
+        let attempt_dir = app
+            .paths
+            .attempt_dir(&task_id, "run-1", "round-1", "node-1", "attempt-1");
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        let events = vec![
+            acp_ui_event(1, "userTextDelta", Some("继续"), Some(serde_json::json!({ "source": "goldBandPrompt" }))),
+            acp_ui_event(2, "textDelta", Some("本轮结论:\n```json\n"), None),
+            acp_ui_event(3, "textDelta", Some("{\"intent\":\"实现登录\",\"stages\":[{\"role\":\"dev\",\"goal\":\"<输入>需求\\n<产出>代码\\n<边界>不做部署\\n<验收>测试通过\",\"outputKind\":\"none\",\"onFailure\":\"retry\",\"manualCheck\":false}]}"), None),
+            acp_ui_event(4, "textDelta", Some("\n```\n以上是增量。"), None),
+        ];
+        let mut jsonl = String::new();
+        for event in events {
+            jsonl.push_str(
+                &serde_json::to_string(&crate::acp::events::AcpTimelineItem { item: event })
+                    .unwrap(),
+            );
+            jsonl.push('\n');
+        }
+        std::fs::write(attempt_dir.join("acp.timeline.jsonl").as_std_path(), jsonl).unwrap();
+
+        let merged = app
+            .forge_extract_turn_delta(&task_id, "run-1", "round-1", "node-1", "attempt-1")
+            .unwrap()
+            .expect("delta merged");
+        assert_eq!(merged.intent, "实现登录");
+        assert_eq!(merged.workflows[0].stages.len(), 1);
+        // 存档可恢复,内容一致。
+        let archived = app.forge_spec(&task_id).unwrap().unwrap();
+        assert_eq!(archived.intent, merged.intent);
+        assert_eq!(archived.workflows[0].stages.len(), 1);
+    }
+
+    #[test]
+    fn forge_extract_turn_delta_ignores_plain_turns_and_normal_tasks() {
+        let (app, _temp, _guard) = forge_test_app();
+        // 普通任务:即便有带围栏的时间线也不处理。
+        let normal = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("普通".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "需求".to_string(),
+                workflow: forge_conversation_workflow("claude-acp"),
+                workflow_template_id: None,
+                origin: None,
+            })
+            .unwrap();
+        let attempt_dir = app
+            .paths
+            .attempt_dir(&normal.task.id, "run-1", "round-1", "node-1", "attempt-1");
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        std::fs::write(
+            attempt_dir.join("acp.timeline.jsonl").as_std_path(),
+            format!(
+                "{}\n",
+                serde_json::to_string(&crate::acp::events::AcpTimelineItem {
+                    item: acp_ui_event(1, "textDelta", Some("```json\n{}\\n```"), None),
+                })
+                .unwrap()
+            ),
+        )
+        .unwrap();
+        assert!(
+            app.forge_extract_turn_delta(&normal.task.id, "run-1", "round-1", "node-1", "attempt-1")
+                .unwrap()
+                .is_none()
+        );
+
+        // Forge 会话的普通轮(无围栏):零副作用。
+        let forge = app
+            .create_forge_task(CreateForgeTaskInput {
+                title: None,
+                requirement_content: "摘要".to_string(),
+                agent_type: "claude-acp".to_string(),
+                workflow: None,
+                initial_spec: None,
+            })
+            .unwrap();
+        let attempt_dir = app
+            .paths
+            .attempt_dir(&forge.task.id, "run-1", "round-1", "node-1", "attempt-1");
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        std::fs::write(
+            attempt_dir.join("acp.timeline.jsonl").as_std_path(),
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&crate::acp::events::AcpTimelineItem {
+                    item: acp_ui_event(
+                        1,
+                        "userTextDelta",
+                        Some("问"),
+                        Some(serde_json::json!({ "source": "goldBandPrompt" })),
+                    ),
+                })
+                .unwrap(),
+                serde_json::to_string(&crate::acp::events::AcpTimelineItem {
+                    item: acp_ui_event(2, "textDelta", Some("普通回答,无增量"), None),
+                })
+                .unwrap()
+            ),
+        )
+        .unwrap();
+        assert!(
+            app.forge_extract_turn_delta(&forge.task.id, "run-1", "round-1", "node-1", "attempt-1")
+                .unwrap()
+                .is_none()
+        );
+        assert!(app.forge_spec(&forge.task.id).unwrap().is_none());
+    }
+
+    fn acp_ui_event(
+        seq: u64,
+        kind: &str,
+        content: Option<&str>,
+        raw: Option<serde_json::Value>,
+    ) -> crate::acp::events::AcpUiEvent {
+        crate::acp::events::AcpUiEvent {
+            id: format!("{kind}-{seq}"),
+            seq,
+            timestamp: format!("2026-11-12T00:00:{seq:02}Z"),
+            kind: kind.to_string(),
+            session_id: Some("session-1".to_string()),
+            content: content.map(str::to_string),
+            title: None,
+            tool_call_id: None,
+            status: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: None,
+            ended_at: None,
+            timing: None,
+            raw,
+        }
     }
 
     #[test]

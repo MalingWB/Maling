@@ -81,6 +81,8 @@ interface ConversationRunWorkspaceResourcePanelProps {
   agentRegistry: AgentRegistryVm | null;
   workflowTemplates?: WorkflowTemplateStore | null;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
+  /// 铸造试运行任务创建后,由持有方启动并导航(方案 §5.6)。
+  onForgeTrialSessionStarted?: (projectId: string, taskId: string) => void;
   /** Fires after an execution-plan save fully committed so the owner can refresh the run projection. */
   onExecutionPlanSaved?: (saved: ExecutionPlanSaveResultVm) => void | Promise<void>;
   onNodeOpenSession?: (node: GraphNodeVm) => void;
@@ -95,6 +97,7 @@ export function conversationRunWorkspacePropsAreEqual(
   if (prev.resource.kind === 'workflow-edit' && next.resource.kind === 'workflow-edit' && prev.resource.mode !== next.resource.mode) return false;
   if (prev.agentRegistry !== next.agentRegistry) return false;
   if (prev.workflowTemplates !== next.workflowTemplates) return false;
+  if (prev.onForgeTrialSessionStarted !== next.onForgeTrialSessionStarted) return false;
   if (prev.onExecutionPlanSaved !== next.onExecutionPlanSaved) return false;
   if (prev.onNodeOpenSession !== next.onNodeOpenSession) return false;
   if (prev.onNodeRetry !== next.onNodeRetry) return false;
@@ -114,6 +117,7 @@ function ConversationRunWorkspaceResourcePanelComponent({
   agentRegistry,
   workflowTemplates = null,
   onWorkflowTemplatesChange,
+  onForgeTrialSessionStarted,
   onExecutionPlanSaved,
   onNodeOpenSession,
   onNodeRetry,
@@ -152,7 +156,13 @@ function ConversationRunWorkspaceResourcePanelComponent({
     return <CompactionSummaryWorkspacePanel key={resource.key} resource={resource} />;
   }
   if (resource.kind === 'forge-preview') {
-    return <ForgePreviewPanel resource={resource} />;
+    return (
+      <ForgePreviewPanel
+        resource={resource}
+        onWorkflowTemplatesChange={onWorkflowTemplatesChange}
+        onTrialSessionStarted={onForgeTrialSessionStarted}
+      />
+    );
   }
   return <RawFramesWorkspacePanel resource={resource} />;
 }

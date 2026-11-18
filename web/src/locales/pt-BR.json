@@ -3563,7 +3563,13 @@
         "accept": "Aceitação"
       },
       "outputKindLabel": "Saída",
-      "onFailureLabel": "Em falha"
+      "onFailureLabel": "Em falha",
+      "compile": "Compilar para template",
+      "compileHint": "Compila o Spec convergido em um template de workflow com contratos de artefato",
+      "compileBlocked": "Ainda há perguntas abertas; compile após a convergência",
+      "startTrial": "Testar primeiro estágio",
+      "startTrialHint": "Cria uma tarefa real a partir do template e para após o primeiro estágio",
+      "compiledCount": "{{count}} templates de workflow criados"
     },
     "history": {
       "title": "Histórico de forja",

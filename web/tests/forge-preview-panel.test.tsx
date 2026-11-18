@@ -5,8 +5,15 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const forgeGetSpecMock = vi.fn();
+const forgeCompileMock = vi.fn();
+const forgeStartTrialMock = vi.fn();
+const onTemplatesChangeMock = vi.fn();
+const onTrialStartedMock = vi.fn();
 vi.mock('../src/api', () => ({
   forgeGetSpec: (...args: unknown[]) => forgeGetSpecMock(...args),
+  forgeCompile: (...args: unknown[]) => forgeCompileMock(...args),
+  forgeStartTrial: (...args: unknown[]) => forgeStartTrialMock(...args),
+  subscribeAcpSessionUpdates: () => Promise.resolve(() => {}),
 }));
 
 import { ForgePreviewPanel } from '@/components/workspace/ForgePreviewPanel';
@@ -107,5 +114,42 @@ describe('ForgePreviewPanel', () => {
     forgeGetSpecMock.mockRejectedValue(new Error('io'));
     await act(async () => root.render(<ForgePreviewPanel resource={resource} />));
     expect(host.textContent).toContain('尚未产出铸造草稿');
+  });
+
+  it('blocks compile while open questions remain, then compiles and offers the trial entry', async () => {
+    forgeGetSpecMock.mockResolvedValue(sampleSpec);
+    const templates = { version: '0.1', lastUsedTemplateId: 'wf-1', lastCreatedWorkflow: null, templates: [] };
+    forgeCompileMock.mockResolvedValue({ createdTemplateIds: ['wf-1'], templates });
+    forgeStartTrialMock.mockResolvedValue({ projectId: 'project-a', taskId: 'task-trial', title: '试运行' });
+    const props = {
+      onWorkflowTemplatesChange: onTemplatesChangeMock,
+      onTrialSessionStarted: onTrialStartedMock,
+    };
+    await act(async () => root.render(<ForgePreviewPanel resource={resource} {...props} />));
+
+    // 未收敛(openQuestions 非空):编译禁用,试运行不出现。
+    let compileButton = [...host.querySelectorAll('button')].find((b) => b.textContent?.includes('编译为模板'));
+    expect(compileButton).toBeTruthy();
+    expect(compileButton!.disabled).toBe(true);
+    expect(host.textContent).not.toContain('试运行首节点');
+
+    // 收敛后:卸载重挂载(新会话轮/重开 Tab 的等价形态),编译可用,调用
+    // forgeCompile 并刷新模板库;试运行入口出现。
+    const converged = { ...sampleSpec, openQuestions: [] };
+    forgeGetSpecMock.mockResolvedValue(converged);
+    await act(async () => root.render(null));
+    await act(async () => root.render(<ForgePreviewPanel resource={resource} {...props} />));
+    compileButton = [...host.querySelectorAll('button')].find((b) => b.textContent?.includes('编译为模板'));
+    expect(compileButton!.disabled).toBe(false);
+    await act(async () => compileButton?.click());
+    expect(forgeCompileMock).toHaveBeenCalledWith(converged);
+    expect(onTemplatesChangeMock).toHaveBeenCalledWith(templates);
+    expect(host.textContent).toContain('已创建 1 个工作流模板');
+
+    const trialButton = [...host.querySelectorAll('button')].find((b) => b.textContent?.includes('试运行首节点'));
+    expect(trialButton).toBeTruthy();
+    await act(async () => trialButton?.click());
+    expect(forgeStartTrialMock).toHaveBeenCalledWith('project-a', 'wf-1', converged.intent);
+    expect(onTrialStartedMock).toHaveBeenCalledWith('project-a', 'task-trial');
   });
 });

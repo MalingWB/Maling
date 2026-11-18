@@ -3563,7 +3563,13 @@
         "accept": "Aceptación"
       },
       "outputKindLabel": "Salida",
-      "onFailureLabel": "Ante fallo"
+      "onFailureLabel": "Ante fallo",
+      "compile": "Compilar a plantilla",
+      "compileHint": "Compila el Spec convergido en una plantilla de workflow con contratos de artefacto",
+      "compileBlocked": "Quedan preguntas abiertas; compila tras la convergencia",
+      "startTrial": "Probar primera etapa",
+      "startTrialHint": "Crea una tarea real desde la plantilla y se detiene tras la primera etapa",
+      "compiledCount": "{{count}} plantillas de workflow creadas"
     },
     "history": {
       "title": "Historial de forja",

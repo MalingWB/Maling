@@ -87,6 +87,8 @@ interface ConversationRunPageProps {
   onEditWorkflow: () => void;
   /// 铸造为工作流（入口 A）：携带本会话上下文预填 composer。
   onForgeWorkflow?: () => void;
+  /// 铸造试运行任务创建后启动并导航到该会话（方案 §5.6）。
+  onForgeTrialSessionStarted?: (projectId: string, taskId: string) => void;
   workflowTemplates?: WorkflowTemplateStore | null;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
   onExecutionPlanSaved?: (saved: ExecutionPlanSaveResultVm) => void | Promise<void>;
@@ -111,6 +113,7 @@ export function ConversationRunPage({
   onRerun,
   onEditWorkflow,
   onForgeWorkflow,
+  onForgeTrialSessionStarted,
   workflowTemplates = null,
   onWorkflowTemplatesChange,
   onExecutionPlanSaved,
@@ -303,6 +306,7 @@ export function ConversationRunPage({
   const onExecutionPlanSavedRef = useRef(onExecutionPlanSaved);
   const workflowTemplatesRef = useRef(workflowTemplates);
   const onWorkflowTemplatesChangeRef = useRef(onWorkflowTemplatesChange);
+  const onForgeTrialSessionStartedRef = useRef(onForgeTrialSessionStarted);
   const handleWorkflowNodeOpenSessionRef = useRef(handleWorkflowNodeOpenSession);
   const onNodeRetryRef = useRef(onNodeRetry);
   const previousWorkflowGraphRef = useRef(run.workflowGraph);
@@ -311,6 +315,7 @@ export function ConversationRunPage({
   onExecutionPlanSavedRef.current = onExecutionPlanSaved;
   workflowTemplatesRef.current = workflowTemplates;
   onWorkflowTemplatesChangeRef.current = onWorkflowTemplatesChange;
+  onForgeTrialSessionStartedRef.current = onForgeTrialSessionStarted;
   handleWorkflowNodeOpenSessionRef.current = handleWorkflowNodeOpenSession;
   onNodeRetryRef.current = onNodeRetry;
   useEffect(() => {
@@ -340,6 +345,10 @@ export function ConversationRunPage({
     await onNodeRetryRef.current?.(node);
   }, []);
 
+  const onForgeTrialSessionStartedStable = useCallback((projectId: string, taskId: string) => {
+    onForgeTrialSessionStartedRef.current?.(projectId, taskId);
+  }, []);
+
   const renderWorkspaceResource = useCallback((resource: RightWorkspaceResource) => {
     if (
       resource.kind !== 'workflow-view' &&
@@ -359,12 +368,13 @@ export function ConversationRunPage({
         agentRegistry={agentRegistryRef.current}
         workflowTemplates={workflowTemplatesRef.current}
         onWorkflowTemplatesChange={(store) => onWorkflowTemplatesChangeRef.current?.(store)}
+        onForgeTrialSessionStarted={onForgeTrialSessionStartedStable}
         onExecutionPlanSaved={onExecutionPlanSavedStable}
         onNodeOpenSession={onNodeOpenSessionStable}
         onNodeRetry={onNodeRetryStable}
       />
     );
-  }, [onExecutionPlanSavedStable, onNodeOpenSessionStable, onNodeRetryStable]);
+  }, [onExecutionPlanSavedStable, onNodeOpenSessionStable, onNodeRetryStable, onForgeTrialSessionStartedStable]);
 
   useEffect(() => {
     const unregister = [

@@ -3563,7 +3563,13 @@
         "accept": "Acceptance"
       },
       "outputKindLabel": "Output",
-      "onFailureLabel": "On failure"
+      "onFailureLabel": "On failure",
+      "compile": "Compile to template",
+      "compileHint": "Compile the converged Spec into a workflow template with artifact contracts",
+      "compileBlocked": "Open questions remain; compile after they converge",
+      "startTrial": "Trial first node",
+      "startTrialHint": "Creates a real task from the template and stops after the first node",
+      "compiledCount": "Created {{count}} workflow templates"
     },
     "history": {
       "title": "Forge history",

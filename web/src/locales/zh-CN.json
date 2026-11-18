@@ -3563,7 +3563,13 @@
         "accept": "验收"
       },
       "outputKindLabel": "产物形态",
-      "onFailureLabel": "失败策略"
+      "onFailureLabel": "失败策略",
+      "compile": "编译为模板",
+      "compileHint": "Spec 收敛后编译为带产物契约的工作流模板",
+      "compileBlocked": "仍有待澄清项,收敛后可编译",
+      "startTrial": "试运行首节点",
+      "startTrialHint": "以模板创建真实任务,跑通首个节点即停",
+      "compiledCount": "已创建 {{count}} 个工作流模板"
     },
     "history": {
       "title": "铸造历史",

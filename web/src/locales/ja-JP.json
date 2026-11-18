@@ -3563,7 +3563,13 @@
         "accept": "受入"
       },
       "outputKindLabel": "成果物",
-      "onFailureLabel": "失敗時の方針"
+      "onFailureLabel": "失敗時の方針",
+      "compile": "テンプレートへコンパイル",
+      "compileHint": "収束した Spec を産物契約付きワークフローテンプレートにコンパイル",
+      "compileBlocked": "未確定項目が残っています。収束後にコンパイルできます",
+      "startTrial": "第 1 ノードを試実行",
+      "startTrialHint": "テンプレートから実際のタスクを作成し、第 1 ノード完了で停止",
+      "compiledCount": "ワークフローテンプレートを {{count}} 件作成しました"
     },
     "history": {
       "title": "鋳造履歴",

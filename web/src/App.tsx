@@ -3397,6 +3397,24 @@ export function App() {
               setError(displayAppError(t, err));
             }
           }}
+          onForgeTrialSessionStarted={(projectId, taskId) => {
+            // 试运行任务已创建(origin=ForgeTrial,首节点截断工作流);复用 rerun 的
+            // prepare+launch 路径启动首个 run 并导航到试运行会话(方案 §5.6)。
+            rerunConversationTask(projectId, taskId)
+              .then((trialRun) => {
+                rememberConversationWorkspace(trialRun.projectId);
+                updateConversationSessionFollow('auto', trialRun.sessionTree.selectedSessionKey ?? null, trialRun);
+                applyConversationRunSnapshot(trialRun, 'create');
+                onSelectConversation({
+                  kind: 'conversation-run',
+                  projectId: trialRun.projectId,
+                  taskId: trialRun.taskId,
+                  taskUuid: trialRun.taskUuid,
+                  runId: trialRun.runId,
+                });
+              })
+              .catch((err) => setError(displayAppError(t, err)));
+          }}
           workflowTemplates={conversationWorkflowTemplates}
           onWorkflowTemplatesChange={setConversationWorkflowTemplates}
           onNodeRetry={handleConversationNodeRetry}
