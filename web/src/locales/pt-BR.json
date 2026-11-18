@@ -3536,6 +3536,34 @@
     },
     "prefill": {
       "intro": "Forje um workflow a partir da conversa de origem abaixo — acrescente requisitos e envie:"
+    },
+    "preview": {
+      "title": "Prévia da forja",
+      "open": "Abrir prévia da forja",
+      "loading": "Carregando rascunho da forja…",
+      "empty": "Ainda não há rascunho — estágios e contratos aparecem aqui conforme a conversa converge.",
+      "openQuestions": "Perguntas abertas",
+      "outputKind": {
+        "json": "Artefato JSON",
+        "markdown": "Artefato Markdown",
+        "none": "Sem artefato"
+      },
+      "successCondition": "Condição de sucesso",
+      "onFailure": {
+        "retry": "Repetir",
+        "manual-check": "Revisão manual",
+        "new-round": "Nova rodada",
+        "end": "Encerrar"
+      },
+      "role": {
+        "dev": "Desenvolvimento",
+        "test": "Testes",
+        "review": "Revisão",
+        "plan": "Planejamento",
+        "accept": "Aceitação"
+      },
+      "outputKindLabel": "Saída",
+      "onFailureLabel": "Em falha"
     }
   }
 }

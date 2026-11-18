@@ -3536,6 +3536,34 @@
     },
     "prefill": {
       "intro": "Forge a workflow from the source conversation below — add any requirements, then send:"
+    },
+    "preview": {
+      "title": "Forge preview",
+      "open": "Open forge preview",
+      "loading": "Loading forge draft…",
+      "empty": "No forge draft yet — stages and contracts appear here as the conversation converges.",
+      "openQuestions": "Open questions",
+      "outputKind": {
+        "json": "JSON artifact",
+        "markdown": "Markdown artifact",
+        "none": "No artifact"
+      },
+      "successCondition": "Success condition",
+      "onFailure": {
+        "retry": "Retry",
+        "manual-check": "Manual review",
+        "new-round": "New round",
+        "end": "Terminate"
+      },
+      "role": {
+        "dev": "Development",
+        "test": "Testing",
+        "review": "Review",
+        "plan": "Planning",
+        "accept": "Acceptance"
+      },
+      "outputKindLabel": "Output",
+      "onFailureLabel": "On failure"
     }
   }
 }

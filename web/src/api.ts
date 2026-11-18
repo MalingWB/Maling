@@ -182,6 +182,34 @@ export function forgeSourceDigest(projectId: string, taskId: string) {
   return getRuntimeApi().forgeSourceDigest(projectId, taskId);
 }
 
+export function forgeGetSpec(projectId: string, taskId: string) {
+  return getRuntimeApi().forgeGetSpec(projectId, taskId);
+}
+
+export function forgeSaveSpec(projectId: string, taskId: string, spec: Parameters<ReturnType<typeof getRuntimeApi>['forgeSaveSpec']>[2]) {
+  return getRuntimeApi().forgeSaveSpec(projectId, taskId, spec);
+}
+
+export function forgeCompile(spec: Parameters<ReturnType<typeof getRuntimeApi>['forgeCompile']>[0]) {
+  return getRuntimeApi().forgeCompile(spec);
+}
+
+export function forgeFromWorkflow(templateId: string) {
+  return getRuntimeApi().forgeFromWorkflow(templateId);
+}
+
+export function forgeStartTrial(projectId: string, templateId: string, intent: string) {
+  return getRuntimeApi().forgeStartTrial(projectId, templateId, intent);
+}
+
+export function forgeListSessions(projectId: string) {
+  return getRuntimeApi().forgeListSessions(projectId);
+}
+
+export function forgeCleanupSessions(projectId: string, taskIds: string[]) {
+  return getRuntimeApi().forgeCleanupSessions(projectId, taskIds);
+}
+
 export function saveWorkflowTemplate(name: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[1], modelBindings?: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[2]) {
   return getRuntimeApi().saveWorkflowTemplate(name, workflow, modelBindings);
 }

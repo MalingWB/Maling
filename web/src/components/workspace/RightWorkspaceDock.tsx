@@ -1,4 +1,4 @@
-import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, Globe, PencilLine, Plus, Settings2, TriangleAlert, Workflow, X } from 'lucide-react';
+import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, Globe, Hammer, PencilLine, Plus, Settings2, TriangleAlert, Workflow, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ErrorBoundary, type FallbackProps } from 'react-error-boundary';
 import { useTranslation } from 'react-i18next';
@@ -340,6 +340,8 @@ function workspaceTabIcon(tab: RightWorkspaceResource) {
         ? <FileCode2 className="size-3.5 shrink-0" />
         : tab.kind === 'scheduled-task-config'
           ? <AlarmClock className="size-3.5 shrink-0" />
+          : tab.kind === 'forge-preview'
+            ? <Hammer className="size-3.5 shrink-0" />
           : tab.kind === 'raw-frames'
           ? <Braces className="size-3.5 shrink-0" />
           : tab.kind === 'source-control'

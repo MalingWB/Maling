@@ -3536,6 +3536,34 @@
     },
     "prefill": {
       "intro": "基於以下源會話鑄造工作流，可補充要求後傳送："
+    },
+    "preview": {
+      "title": "鑄造預覽",
+      "open": "開啟鑄造預覽",
+      "loading": "正在讀取鑄造草稿…",
+      "empty": "尚未產出鑄造草稿——對話收斂後此處展示階段與契約。",
+      "openQuestions": "待釐清",
+      "outputKind": {
+        "json": "JSON 產物",
+        "markdown": "Markdown 產物",
+        "none": "無產物"
+      },
+      "successCondition": "成功條件",
+      "onFailure": {
+        "retry": "自動重試",
+        "manual-check": "人工複核",
+        "new-round": "開啟新一輪",
+        "end": "終止"
+      },
+      "role": {
+        "dev": "開發",
+        "test": "測試",
+        "review": "審查",
+        "plan": "規劃",
+        "accept": "驗收"
+      },
+      "outputKindLabel": "產物形態",
+      "onFailureLabel": "失敗策略"
     }
   }
 }

@@ -3536,6 +3536,34 @@
     },
     "prefill": {
       "intro": "基于以下源会话铸造工作流，可补充要求后发送："
+    },
+    "preview": {
+      "title": "铸造预览",
+      "open": "打开铸造预览",
+      "loading": "正在读取铸造草稿…",
+      "empty": "尚未产出铸造草稿——对话收敛后此处展示阶段与契约。",
+      "openQuestions": "待澄清",
+      "outputKind": {
+        "json": "JSON 产物",
+        "markdown": "Markdown 产物",
+        "none": "无产物"
+      },
+      "successCondition": "成功条件",
+      "onFailure": {
+        "retry": "自动重试",
+        "manual-check": "人工复核",
+        "new-round": "开启新一轮",
+        "end": "终止"
+      },
+      "role": {
+        "dev": "开发",
+        "test": "测试",
+        "review": "审查",
+        "plan": "规划",
+        "accept": "验收"
+      },
+      "outputKindLabel": "产物形态",
+      "onFailureLabel": "失败策略"
     }
   }
 }

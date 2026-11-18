@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { getAcpRawFrames, getAcpSession, getAgentRegistry, getConversationExecutionPlan, getWorkflowTemplates, preflightConversationExecutionPlanSave, recoverConversationExecutionPlanOperation, saveConversationExecutionPlan } from '@/api';
 import { RawFrameViewer, SystemPromptPanel } from '@/components/acp/ACPChatDialog';
 import { CompactionSummaryWorkspacePanel } from './CompactionSummaryWorkspacePanel';
+import { ForgePreviewPanel } from './ForgePreviewPanel';
 import type { CompactionSummaryWorkspaceResource } from './right-workspace-context';
 import { resolveGoldBandHiddenSection } from '@/components/acp/hiddenPromptSections';
 import { GraphView } from '@/components/GraphView';
@@ -55,6 +56,7 @@ import type {
 } from '@/types';
 import {
   type AutoConfigWorkspaceResource,
+  type ForgePreviewWorkspaceResource,
   type RawFramesWorkspaceResource,
   type RightWorkspaceResource,
   type HiddenPromptSectionWorkspaceResource,
@@ -70,7 +72,8 @@ type ConversationRunWorkspaceResource =
   | SystemPromptWorkspaceResource
   | HiddenPromptSectionWorkspaceResource
   | CompactionSummaryWorkspaceResource
-  | RawFramesWorkspaceResource;
+  | RawFramesWorkspaceResource
+  | ForgePreviewWorkspaceResource;
 
 interface ConversationRunWorkspaceResourcePanelProps {
   resource: ConversationRunWorkspaceResource;
@@ -147,6 +150,9 @@ function ConversationRunWorkspaceResourcePanelComponent({
   }
   if (resource.kind === 'compaction-summary') {
     return <CompactionSummaryWorkspacePanel key={resource.key} resource={resource} />;
+  }
+  if (resource.kind === 'forge-preview') {
+    return <ForgePreviewPanel resource={resource} />;
   }
   return <RawFramesWorkspacePanel resource={resource} />;
 }

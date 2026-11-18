@@ -28,6 +28,7 @@ import {
   Copy,
   Eye,
   FileText,
+  Hammer,
   ListTodo,
   Loader2,
   Search,
@@ -377,6 +378,10 @@ export interface AcpDirectSessionHeaderProps {
   onTitleChange?: (title: string) => void;
   /** Absent while the conversation's residency is unknown or not editable. */
   resident?: ResidentPinToggleProps;
+  /** 工作流铸造会话:打开铸造预览 Tab(方案 §5.2,Forge 会话常驻入口)。 */
+  forgePreview?: {
+    onOpen: () => void;
+  };
 }
 
 export type AcpInitialSessionQueryState = "loading" | "success" | "error";
@@ -8141,6 +8146,22 @@ export function ACPSessionHeader({
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {directSessionHeader?.resident ? <ResidentPinToggle {...directSessionHeader.resident} /> : null}
+          {directSessionHeader?.forgePreview ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-5.5"
+                  aria-label={t("forge.preview.open")}
+                  onClick={directSessionHeader.forgePreview.onOpen}
+                >
+                  <Hammer className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t("forge.preview.open")}</TooltipContent>
+            </Tooltip>
+          ) : null}
           {showSystemPromptAction ? (
             <Button
               size="sm"

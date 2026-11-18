@@ -3536,6 +3536,34 @@
     },
     "prefill": {
       "intro": "以下のソース会話からワークフローを鋳造します。要求を追記してから送信してください："
+    },
+    "preview": {
+      "title": "鋳造プレビュー",
+      "open": "鋳造プレビューを開く",
+      "loading": "鋳造草稿を読み込み中…",
+      "empty": "鋳造草稿はまだありません。対話が収束するとステージと契約がここに表示されます。",
+      "openQuestions": "未確定項目",
+      "outputKind": {
+        "json": "JSON 成果物",
+        "markdown": "Markdown 成果物",
+        "none": "成果物なし"
+      },
+      "successCondition": "成功条件",
+      "onFailure": {
+        "retry": "自動リトライ",
+        "manual-check": "手動レビュー",
+        "new-round": "新ラウンド開始",
+        "end": "終了"
+      },
+      "role": {
+        "dev": "開発",
+        "test": "テスト",
+        "review": "レビュー",
+        "plan": "計画",
+        "accept": "受入"
+      },
+      "outputKindLabel": "成果物",
+      "onFailureLabel": "失敗時の方針"
     }
   }
 }

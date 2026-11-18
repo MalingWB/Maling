@@ -19,6 +19,8 @@ interface ConversationRunHeaderProps {
   /// 铸造为工作流（入口 A）：携带本会话上下文预填 composer（仅 Direct 会话；
   /// Forge 会话隐藏入口，G3）。
   onForgeWorkflow?: () => void;
+  /// 打开铸造预览 Tab（仅 Forge 会话;入口 A 按钮在 Forge 会话内切换为预览入口）。
+  onOpenForgePreview?: () => void;
   readOnly?: boolean;
   onSessionSwitcherOpenChange: (open: boolean) => void;
   sessionSwitcherOpen: boolean;
@@ -37,6 +39,7 @@ export function ConversationRunHeader({
   onViewWorkflow,
   onConfigureAuto,
   onForgeWorkflow,
+  onOpenForgePreview,
   readOnly = false,
   onSessionSwitcherOpenChange,
   sessionSwitcherOpen,
@@ -117,6 +120,16 @@ export function ConversationRunHeader({
                 </Button>
               </TooltipTrigger>
               <TooltipContent>{t('forge.entry.action')}</TooltipContent>
+            </Tooltip>
+          ) : null}
+          {run.origin === 'forge' && onOpenForgePreview ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="size-5.5" aria-label={t('forge.preview.open')} onClick={onOpenForgePreview}>
+                  <Hammer className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('forge.preview.open')}</TooltipContent>
             </Tooltip>
           ) : null}
 

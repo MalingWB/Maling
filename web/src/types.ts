@@ -3354,6 +3354,60 @@ export interface ForgeSourceDigestVm {
   markdown: string;
 }
 
+/// Forge Spec（后端 serde camelCase 投影;role 的 custom 变体为对象）。
+export interface ForgeStageVm {
+  id?: string;
+  role: string | { custom: { 'profile-name': string } };
+  goal: string;
+  artifact?: string | null;
+  outputKind: 'json' | 'markdown' | 'none';
+  schemaHint?: unknown;
+  successCondition?: string | null;
+  onFailure: 'retry' | 'manual-check' | 'new-round' | 'end';
+  manualCheck: boolean;
+}
+
+export interface ForgeWorkflowVm {
+  name: string;
+  stages: ForgeStageVm[];
+}
+
+export interface ForgeSpecVm {
+  specVersion: string;
+  name?: string | null;
+  intent: string;
+  sourceSkills: string[];
+  workflows: ForgeWorkflowVm[];
+  openQuestions: string[];
+}
+
+export interface ForgeCompileResultVm {
+  createdTemplateIds: string[];
+  templates: WorkflowTemplateStore;
+}
+
+export interface ForgeSessionCreatedVm {
+  projectId: string;
+  taskId: string;
+  title?: string | null;
+}
+
+export interface ForgeSpecSummaryVm {
+  name: string;
+  intent: string;
+  stageCount: number;
+  workflowCount: number;
+  openQuestionCount: number;
+}
+
+export interface ForgeSessionEntryVm {
+  taskId: string;
+  title?: string | null;
+  origin: 'forge' | 'forge-trial';
+  specSummary?: ForgeSpecSummaryVm | null;
+  updatedAt: string;
+}
+
 export interface ConversationQueuedPromptDraftVm {
   content: string;
   quotes: UserPromptQuote[];

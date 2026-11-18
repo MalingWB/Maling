@@ -3735,6 +3735,27 @@ export const browserApi: RuntimeApi = {
     // 浏览器桩:无桌面文件系统,返回空摘要。
     return Promise.resolve({ title: '', markdown: '' });
   },
+  forgeGetSpec(_projectId: string, _taskId: string) {
+    return Promise.resolve(null);
+  },
+  forgeSaveSpec() {
+    return Promise.resolve();
+  },
+  forgeCompile(_spec) {
+    return Promise.resolve({ createdTemplateIds: [], templates: { version: '', lastUsedTemplateId: null, lastCreatedWorkflow: null, templates: [] } });
+  },
+  forgeFromWorkflow(_templateId: string) {
+    return Promise.reject(new Error('forge is desktop-only'));
+  },
+  forgeStartTrial() {
+    return Promise.reject(new Error('forge is desktop-only'));
+  },
+  forgeListSessions(_projectId: string) {
+    return Promise.resolve([]);
+  },
+  forgeCleanupSessions(_projectId: string, _taskIds: string[]) {
+    return Promise.resolve([]);
+  },
   createConversationRun(input) {
     const timestamp = new Date().toISOString();
     const run: ConversationRunVm = {

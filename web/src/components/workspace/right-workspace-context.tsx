@@ -190,6 +190,17 @@ export type ScheduledTaskConfigWorkspaceResource = RightWorkspaceResourceBase & 
   kind: 'scheduled-task-config';
 };
 
+/**
+ * 工作流铸造预览（方案 §5.2）：Forge 会话的 Spec 只读摘要（第一阶段视图；
+ * 第三阶段同 Tab 原位切换为流程图/编辑器预览）。Task 级定位——Spec 是会话
+ * 状态，不随 run 变化；重开时从 Spec 存档全量重建。
+ */
+export type ForgePreviewWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'forge-preview';
+  projectId: string;
+  taskId: string;
+};
+
 export type BrowserWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'browser';
 };
@@ -224,6 +235,7 @@ export type RightWorkspaceResource =
   | CompactionSummaryWorkspaceResource
   | RawFramesWorkspaceResource
   | ScheduledTaskConfigWorkspaceResource
+  | ForgePreviewWorkspaceResource
   | BrowserWorkspaceResource;
 
 export interface RightWorkspaceSessionState {

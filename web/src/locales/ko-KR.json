@@ -3536,6 +3536,34 @@
     },
     "prefill": {
       "intro": "아래 소스 대화에서 워크플로를 단조합니다. 요구사항을 보강한 뒤 전송하세요:"
+    },
+    "preview": {
+      "title": "단조 미리보기",
+      "open": "단조 미리보기 열기",
+      "loading": "단조 초안을 불러오는 중…",
+      "empty": "아직 단조 초안이 없습니다. 대화가 수렴하면 단계와 계약이 여기에 표시됩니다.",
+      "openQuestions": "미해결 항목",
+      "outputKind": {
+        "json": "JSON 산출물",
+        "markdown": "Markdown 산출물",
+        "none": "산출물 없음"
+      },
+      "successCondition": "성공 조건",
+      "onFailure": {
+        "retry": "자동 재시도",
+        "manual-check": "수동 검토",
+        "new-round": "새 라운드 시작",
+        "end": "종료"
+      },
+      "role": {
+        "dev": "개발",
+        "test": "테스트",
+        "review": "리뷰",
+        "plan": "기획",
+        "accept": "인수"
+      },
+      "outputKindLabel": "산출물",
+      "onFailureLabel": "실패 시 정책"
     }
   }
 }

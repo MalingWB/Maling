@@ -16,7 +16,11 @@ import type {
   ConversationAutoConfigVm,
   ConversationCreateResultVm,
   ConversationCreateInput,
+  ForgeCompileResultVm,
+  ForgeSessionCreatedVm,
+  ForgeSessionEntryVm,
   ForgeSourceDigestVm,
+  ForgeSpecVm,
   ConversationRunModeVm,
   ConversationRunVm,
   ConversationRunSummaryPageVm,
@@ -666,6 +670,13 @@ export interface RuntimeApi {
   validateConversationCreate(input: ConversationCreateInput): Promise<ConversationValidationResultVm>;
   createConversationRun(input: ConversationCreateInput): Promise<ConversationCreateResultVm>;
   forgeSourceDigest(projectId: string, taskId: string): Promise<ForgeSourceDigestVm>;
+  forgeGetSpec(projectId: string, taskId: string): Promise<ForgeSpecVm | null>;
+  forgeSaveSpec(projectId: string, taskId: string, spec: ForgeSpecVm): Promise<void>;
+  forgeCompile(spec: ForgeSpecVm): Promise<ForgeCompileResultVm>;
+  forgeFromWorkflow(templateId: string): Promise<ForgeSpecVm>;
+  forgeStartTrial(projectId: string, templateId: string, intent: string): Promise<ForgeSessionCreatedVm>;
+  forgeListSessions(projectId: string): Promise<ForgeSessionEntryVm[]>;
+  forgeCleanupSessions(projectId: string, taskIds: string[]): Promise<string[]>;
   rerunConversationTask(projectId: string, taskId: string): Promise<ConversationRunVm>;
   updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null): Promise<ConversationTaskRowVm>;
   deleteConversationTask(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;

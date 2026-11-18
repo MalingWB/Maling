@@ -255,6 +255,21 @@ export function ConversationRunPage({
     });
   }, [t, workflowLocator, workspace.openResource, workspace.scopeKey]);
 
+  // 铸造预览(方案 §5.2):Forge 会话的 Spec 只读摘要 Tab,task 级 key
+  // (Spec 不随 run 变化),重开从存档全量重建。
+  const handleViewForgePreview = useCallback(() => {
+    if (!workspace.scopeKey) return;
+    workspace.openResource({
+      kind: 'forge-preview',
+      key: `forge-preview:${run.projectId}:${run.taskId}`,
+      scopeKey: workspace.scopeKey,
+      title: t('forge.preview.title'),
+      attention: false,
+      projectId: run.projectId,
+      taskId: run.taskId,
+    });
+  }, [run.projectId, run.taskId, t, workspace.openResource, workspace.scopeKey]);
+
   const handleWorkflowNodeOpenSession = useCallback((graphNode: GraphNodeVm) => {
     const leaf = conversationSessionLeafForGraphNode(run.sessionTree, graphNode);
     if (!leaf) return;
@@ -264,6 +279,19 @@ export function ConversationRunPage({
     onAutoFollowChange?.(false);
     onSelectSession(leaf);
   }, [run.sessionTree, onAutoFollowChange, onSelectSession]);
+
+  // 铸造会话首次进入时自动打开预览 Tab(方案 §5.2:会话创建→右栏自动打开);
+  // 用户关闭后不强制重开——头部 hammer 常驻可随时再开。
+  const forgePreviewAutoOpenedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (run.origin !== 'forge' || !workspace.scopeKey) return;
+    const taskKey = `${run.projectId}:${run.taskId}`;
+    if (forgePreviewAutoOpenedForRef.current === taskKey) return;
+    forgePreviewAutoOpenedForRef.current = taskKey;
+    handleViewForgePreview();
+    // 仅按 task 触发一次;handleViewForgePreview 稳定依 projectId/taskId。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run.origin, run.projectId, run.taskId, workspace.scopeKey]);
 
   // The workspace renderer is a registry entry, not a projection of the live
   // run. Keeping its identity stable prevents RightWorkspaceProvider from
@@ -320,7 +348,8 @@ export function ConversationRunPage({
       resource.kind !== 'system-prompt' &&
       resource.kind !== 'hidden-prompt-section' &&
       resource.kind !== 'compaction-summary' &&
-      resource.kind !== 'raw-frames'
+      resource.kind !== 'raw-frames' &&
+      resource.kind !== 'forge-preview'
     ) return null;
     return (
       <ConversationRunWorkspaceResourcePanel
@@ -346,6 +375,7 @@ export function ConversationRunPage({
       workspace.registerResourceRenderer('hidden-prompt-section', renderWorkspaceResource),
       workspace.registerResourceRenderer('compaction-summary', renderWorkspaceResource),
       workspace.registerResourceRenderer('raw-frames', renderWorkspaceResource),
+      workspace.registerResourceRenderer('forge-preview', renderWorkspaceResource),
     ];
     return () => unregister.forEach((dispose) => dispose());
   }, [renderWorkspaceResource, workspace.registerResourceRenderer]);
@@ -622,6 +652,7 @@ export function ConversationRunPage({
             onRerun={handleRerun}
             onEditWorkflow={handleEditWorkflow}
             onForgeWorkflow={onForgeWorkflow}
+            onOpenForgePreview={run.origin === 'forge' ? handleViewForgePreview : undefined}
             onConfigureAuto={readOnly ? undefined : handleConfigureAuto}
             readOnly={readOnly}
             onViewWorkflow={handleViewWorkflow}
@@ -737,6 +768,7 @@ export function ConversationRunPage({
               title: taskTitle,
               onTitleChange,
               resident: readOnly ? undefined : resident,
+              forgePreview: run.origin === 'forge' ? { onOpen: handleViewForgePreview } : undefined,
             } : undefined}
             usageCompact
             cacheNamespace={run.taskUuid ?? `${run.projectId}:${run.taskId}`}

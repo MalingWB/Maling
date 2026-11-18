@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRecentTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, ForgeSourceDigestVm, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaUpstreamPullEventVm, MulticaUpstreamPullPendingVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteImageTrustVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, RuntimeAssetInstalledEventVm, RuntimeAssetUninstalledEventVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRecentTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, ForgeCompileResultVm, ForgeSessionCreatedVm, ForgeSessionEntryVm, ForgeSourceDigestVm, ForgeSpecVm, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaUpstreamPullEventVm, MulticaUpstreamPullPendingVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteImageTrustVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, RuntimeAssetInstalledEventVm, RuntimeAssetUninstalledEventVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { RetryCurrentNodeRequest } from '../types';
 import { BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT } from './client';
@@ -912,6 +912,27 @@ export const desktopApi: RuntimeApi = {
   },
   forgeSourceDigest(projectId, taskId) {
     return invokeCommand<ForgeSourceDigestVm>('forge_source_digest', { projectId, taskId });
+  },
+  forgeGetSpec(projectId, taskId) {
+    return invokeCommand<ForgeSpecVm | null>('forge_get_spec', { projectId, taskId });
+  },
+  forgeSaveSpec(projectId, taskId, spec) {
+    return invokeCommand<void>('forge_save_spec', { projectId, taskId, spec });
+  },
+  forgeCompile(spec) {
+    return invokeCommand<ForgeCompileResultVm>('forge_compile', { spec });
+  },
+  forgeFromWorkflow(templateId) {
+    return invokeCommand<ForgeSpecVm>('forge_from_workflow', { templateId });
+  },
+  forgeStartTrial(projectId, templateId, intent) {
+    return invokeCommand<ForgeSessionCreatedVm>('forge_start_trial', { projectId, templateId, intent });
+  },
+  forgeListSessions(projectId) {
+    return invokeCommand<ForgeSessionEntryVm[]>('forge_list_sessions', { projectId });
+  },
+  forgeCleanupSessions(projectId, taskIds) {
+    return invokeCommand<string[]>('forge_cleanup_sessions', { projectId, taskIds });
   },
   rerunConversationTask(projectId, taskId) {
     return invokeCommand<ConversationRunVm>('rerun_conversation_task', { projectId, taskId });
