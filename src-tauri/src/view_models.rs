@@ -1677,6 +1677,10 @@ pub fn task_list_vm(app: &App) -> Result<TaskListVm> {
     let mut invalid = 0usize;
 
     for summary in summaries {
+        // Forge 铸造/试运行会话不进默认任务列表(方案 G2,铸造历史统一管理)。
+        if summary.task.origin.is_some() {
+            continue;
+        }
         let row = task_row_vm(app, &summary)?;
         match row.display_status.as_str() {
             "running" => running += 1,

@@ -1678,6 +1678,9 @@ pub fn conversation_task_page_vm(
     for task_id in task_ids {
         match app.task_show(&task_id) {
             Ok(task) => {
+                if is_forge_session_task(&task) {
+                    continue;
+                }
                 let pin_order = state
                     .conversation_pins
                     .iter()
@@ -1899,6 +1902,9 @@ pub fn conversation_recent_task_page_vm(
         let source = &sources[index];
         match source.app.task_show(&key.task_id) {
             Ok(task) => {
+                if is_forge_session_task(&task) {
+                    continue;
+                }
                 if unread_by_source[index].is_none() {
                     unread_by_source[index] = Some(unread_terminal_results(&source.app).ok());
                 }
@@ -1979,6 +1985,12 @@ pub fn conversation_run_summary_page_vm(
     })
 }
 
+/// Forge 铸造/试运行会话不进默认列表(侧栏、项目会话页、最近会话页、
+/// 任务页),由铸造历史入口统一管理(工作流铸造实施方案 G2)。
+pub(crate) fn is_forge_session_task(task: &gold_band::runtime::TaskState) -> bool {
+    task.origin.is_some()
+}
+
 pub fn conversation_sidebar_vm_from_sources(
     state: &StateConfig,
     sources: &[ConversationWorkspaceSource],
@@ -2006,6 +2018,9 @@ pub fn conversation_sidebar_vm_from_sources(
         let unread_terminal_results = unread_terminal_results(&source.app).unwrap_or_default();
         if let Ok(tasks) = source.app.task_list() {
             for task in tasks {
+                if is_forge_session_task(&task) {
+                    continue;
+                }
                 let task_id = &task.id;
                 let project_id = &source.workspace.project_id;
                 let pinned = pinned_set.contains(&(project_id.clone(), task_id.clone()));
@@ -5242,6 +5257,7 @@ mod tests {
             id: "custom".to_string(),
             name: "Custom".to_string(),
             is_built_in: false,
+            source: None,
             optional_entry_stage: None,
             workflow: custom.clone(),
             model_bindings: WorkflowModelBindings::default(),
@@ -5263,6 +5279,7 @@ mod tests {
             id: "default".to_string(),
             name: "Default".to_string(),
             is_built_in: true,
+            source: None,
             optional_entry_stage: Some(OptionalEntryStage {
                 node_id: "interview".to_string(),
                 label_key: "conversation.home.includeInterview".to_string(),
@@ -5291,6 +5308,7 @@ mod tests {
             id: "default".to_string(),
             name: "Default".to_string(),
             is_built_in: true,
+            source: None,
             optional_entry_stage: Some(OptionalEntryStage {
                 node_id: "interview".to_string(),
                 label_key: "conversation.home.includeInterview".to_string(),
@@ -7484,6 +7502,7 @@ mod tests {
             requirement_content: "hello".to_string(),
             workflow,
             workflow_template_id: None,
+            origin: None,
         });
 
         assert!(created.is_ok(), "{created:?}");
@@ -7894,6 +7913,60 @@ mod tests {
             vm.tasks_by_workspace["workspace-b"][0].project_id,
             "workspace-b"
         );
+    }
+
+    #[test]
+    fn forge_sessions_stay_out_of_default_lists() {
+        let repo = temp_repo_root();
+        let app = App::new(repo.clone());
+        write_sidebar_task_fixture(&app, "task-001", "Normal", "run-a", "2026-06-15T00:00:00Z");
+        // Forge 铸造与试运行会话:默认列表不可见(方案 G2)。
+        write_sidebar_task_fixture(&app, "task-002", "Forge", "run-b", "2026-06-15T00:01:00Z");
+        write_sidebar_task_fixture(&app, "task-003", "Trial", "run-c", "2026-06-15T00:02:00Z");
+        for task_id in ["task-002", "task-003"] {
+            let task_file = app.paths.task_file(task_id);
+            let mut with_origin: serde_json::Value =
+                gold_band::storage::read_json(&task_file).unwrap();
+            with_origin["origin"] = json!("forge-trial");
+            gold_band::storage::write_json(&task_file, &with_origin).unwrap();
+        }
+
+        let mut state = gold_band::config::StateConfig::default();
+        state
+            .conversation_workspaces
+            .push(gold_band::config::ConversationWorkspaceEntry {
+                project_id: "workspace-a".to_string(),
+                workspace_path: repo.to_string(),
+                name: "Workspace A".to_string(),
+                added_at: "2026-06-15T00:00:00Z".to_string(),
+            });
+        let sources = vec![ConversationWorkspaceSource {
+            workspace: ConversationWorkspaceVm {
+                project_id: "workspace-a".to_string(),
+                workspace_path: repo.to_string(),
+                name: "Workspace A".to_string(),
+            },
+            app: app.clone_for_background(),
+        }];
+
+        let sidebar = conversation_sidebar_vm_from_sources(&state, &sources);
+        let sidebar_ids: Vec<&str> = sidebar.tasks_by_workspace["workspace-a"]
+            .iter()
+            .map(|task| task.task_id.as_str())
+            .collect();
+        assert_eq!(sidebar_ids, vec!["task-001"]);
+
+        let page = conversation_task_page_vm(&app, &state, "workspace-a", None, 10).unwrap();
+        let page_ids: Vec<&str> = page.tasks.iter().map(|t| t.task_id.as_str()).collect();
+        assert_eq!(page_ids, vec!["task-001"]);
+
+        let recent = conversation_recent_task_page_vm(&sources, None, 10);
+        let recent_ids: Vec<&str> = recent
+            .tasks
+            .iter()
+            .map(|row| row.task.task_id.as_str())
+            .collect();
+        assert_eq!(recent_ids, vec!["task-001"]);
     }
 
     #[test]

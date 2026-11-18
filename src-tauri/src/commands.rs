@@ -3612,6 +3612,7 @@ pub async fn create_task(
             requirement_content: input.requirement_content,
             workflow: input.workflow.clone(),
             workflow_template_id: input.workflow_template_id,
+            origin: None,
         };
         background_app.create_task_from_requirement_with_bindings(
             task_input,
@@ -14174,6 +14175,7 @@ mod tests {
                     id: "template-a".to_string(),
                     name: "Template A".to_string(),
                     is_built_in: false,
+                    source: None,
                     optional_entry_stage: None,
                     workflow: template_authoring.workflow,
                     model_bindings: template_authoring.model_bindings,
@@ -14184,6 +14186,7 @@ mod tests {
                     id: "template-dynamic".to_string(),
                     name: "Dynamic Template".to_string(),
                     is_built_in: false,
+                    source: None,
                     optional_entry_stage: None,
                     workflow: dynamic_template_authoring.workflow,
                     model_bindings: dynamic_template_authoring.model_bindings,
@@ -14837,6 +14840,7 @@ mod tests {
                 title: Some("Indexed title".to_string()),
                 description: Some("Indexed description".to_string()),
                 uuid: None,
+                origin: None,
             },
         )
         .unwrap();
@@ -14874,6 +14878,7 @@ mod tests {
                 title: Some("Missing row repair".to_string()),
                 description: None,
                 uuid: None,
+                origin: None,
             },
         )
         .unwrap();
@@ -14922,7 +14927,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(schema_version, 6);
+        assert_eq!(schema_version, gold_band::storage::sqlite::SEARCH_INDEX_SCHEMA_VERSION);
         assert_eq!(session_count, 1);
         assert!(
             task_update_trigger_sql

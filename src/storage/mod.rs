@@ -997,12 +997,22 @@ fn user_gold_band_root(repo_root: &Utf8Path, path_config: StoragePathConfig) -> 
 }
 
 fn is_under_system_temp(path: &Utf8Path) -> bool {
-    let path = normalize_workspace_path(path);
-    std::env::temp_dir()
-        .to_str()
-        .map(Utf8Path::new)
-        .map(normalize_workspace_path)
-        .is_some_and(|temp| path.starts_with(&temp))
+    // 对最近存在的祖先目录做 canonicalize：TEMP 环境变量可能是 8.3
+    // 短名形式（如 C:\Users\SHIMON~1），目标路径又常在构造时还不存在，
+    // 直接文本前缀比对会漏判，导致本应隔离在临时目录的数据写进真实
+    // 用户 home。祖先存在即可展开短名为长形态后再比对。
+    let mut nearest = path.to_path_buf();
+    while !nearest.as_std_path().exists() {
+        match nearest.parent() {
+            Some(parent) => nearest = parent.to_path_buf(),
+            None => break,
+        }
+    }
+    let temp = std::env::temp_dir();
+    let Some(temp) = temp.to_str().map(Utf8Path::new) else {
+        return false;
+    };
+    normalize_workspace_path(&nearest).starts_with(&normalize_workspace_path(temp))
 }
 
 pub fn normalize_workspace_path(repo_root: &Utf8Path) -> String {

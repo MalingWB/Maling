@@ -89,6 +89,7 @@ mod tests {
             id: "my-pipeline".to_string(),
             name: "我的流水线".to_string(),
             is_built_in: false,
+            source: None,
             optional_entry_stage: None,
             workflow: sample_workflow(),
             model_bindings: Default::default(),

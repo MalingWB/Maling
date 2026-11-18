@@ -1257,6 +1257,7 @@ mod tests {
             id: "my-pipeline".into(),
             name: "我的流水线".into(),
             is_built_in: false,
+            source: None,
             optional_entry_stage: None,
             workflow: sample_workflow_dsl(),
             model_bindings: Default::default(),

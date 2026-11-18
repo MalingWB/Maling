@@ -13,6 +13,7 @@ fn task_state_uuid_roundtrip() {
         title: Some("Test Task".into()),
         description: Some("A task for testing".into()),
         uuid: Some("abc123def456".into()),
+        origin: None,
     };
     let json = serde_json::to_string(&task).unwrap();
     let parsed: TaskState = serde_json::from_str(&json).unwrap();

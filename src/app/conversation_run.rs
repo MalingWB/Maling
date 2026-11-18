@@ -284,6 +284,7 @@ impl App {
                 requirement_content: command.content.clone(),
                 workflow: workflow.clone(),
                 workflow_template_id: command.workflow_template_id.clone(),
+                origin: None,
             },
             workflow,
             model_bindings,

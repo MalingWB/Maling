@@ -18634,6 +18634,7 @@ mod tests {
             requirement_content: "test worktree".to_string(),
             workflow,
             workflow_template_id: None,
+            origin: None,
         })
         .unwrap()
         .task
@@ -21263,6 +21264,7 @@ mod tests {
                 title: None,
                 description: None,
                 uuid: None,
+                origin: None,
             },
         )
         .unwrap();

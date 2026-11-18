@@ -206,6 +206,40 @@ pub struct TaskState {
     pub description: Option<String>,
     #[serde(default)]
     pub uuid: Option<String>,
+    /// 任务来源（工作流铸造）：普通任务缺省为 None，向后兼容。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<TaskOrigin>,
+}
+
+/// Task 来源标记：Forge 铸造会话与试运行任务不进默认会话列表，
+/// 由铸造历史入口统一管理（见工作流铸造实施方案 §6 C1/G2）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskOrigin {
+    /// Forge 铸造会话（引导式对话产出工作流）。
+    Forge,
+    /// Forge 试运行任务（以模板创建、首节点即停）。
+    ForgeTrial,
+}
+
+impl TaskOrigin {
+    /// 稳定字符串形式（与 serde kebab-case 序列化一致），
+    /// 供 SQLite 索引列与前端标识使用。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Forge => "forge",
+            Self::ForgeTrial => "forge-trial",
+        }
+    }
+
+    /// 从索引列值解析（未知值视为普通任务 None）。
+    pub fn from_index_value(value: &str) -> Option<Self> {
+        match value {
+            "forge" => Some(Self::Forge),
+            "forge-trial" => Some(Self::ForgeTrial),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -653,6 +687,7 @@ impl TaskState {
             title: None,
             description: None,
             uuid: Some(Uuid::new_v4().simple().to_string()),
+            origin: None,
         }
     }
 }

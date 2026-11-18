@@ -3116,6 +3116,7 @@ mod tests {
                 title: Some("Searchable conversation".to_string()),
                 description: None,
                 uuid: Some("search-task-uuid".to_string()),
+                origin: None,
             },
         )
         .unwrap();
@@ -3161,6 +3162,7 @@ mod tests {
                 description: String::new(),
                 requirement_preview: "find a file".to_string(),
                 match_preview: "find a file".to_string(),
+                origin: String::new(),
             },
         )
         .unwrap();

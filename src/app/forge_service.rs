@@ -1,0 +1,431 @@
+//! Forge 铸造的 App 层服务（方案 §6 C3/D 线）。
+//!
+//! - `create_forge_task`：入口 A 创建 origin=Forge 的 Task 并落初始 Spec 存档；
+//! - `save_forge_spec` / `forge_spec`：每轮 Spec 变更原子写 / 会话恢复读取；
+//! - `forge_trial`：以模板创建 origin=ForgeTrial 的试运行任务
+//!   （control 覆写 max_rounds=1，首节点完成即停由现有 pause 机制承接）；
+//! - `forge_sessions` / `cleanup_forge_sessions`：铸造历史列表与一键清理（G2）。
+//!
+//! 存储语义：Task/模板均为现有结构，Forge 只增加 `origin`/`source`
+//! 标记与 task 级 Spec 存档（`<task_dir>/forge/spec.json`），不新增
+//! canonical 数据结构（方案自评审结论）。
+
+use crate::app::{App, CreateTaskInput, TaskSummary};
+use crate::forge::spec::ForgeSpec;
+use crate::runtime::TaskOrigin;
+use anyhow::{Context, Result, bail};
+
+impl App {
+    /// 入口 A：创建 Forge 铸造会话 Task（origin=Forge）。
+    ///
+    /// `context` 为源会话摘要/意图等上下文（写进 requirement，作为
+    /// Forge 会话的首轮素材）。初始 Spec（可为未收敛态）落存档供
+    /// 会话恢复。创建后由前端自动打开右侧“铸造预览”Tab。
+    pub fn create_forge_task(&self, context: CreateForgeTaskInput) -> Result<TaskSummary> {
+        if context.requirement_content.trim().is_empty() {
+            bail!("forge context cannot be empty");
+        }
+        let summary = self.create_task_from_requirement(CreateTaskInput {
+            title: context.title.filter(|value| !value.trim().is_empty()),
+            description: None,
+            requirement_file_name: None,
+            requirement_content: context.requirement_content,
+            // 铸造会话是对话型会话（RawAgent 单节点，同 Direct preset），
+            // 不跑流水线图；工作流产物由编译链路另行创建。
+            workflow: context
+                .workflow
+                .unwrap_or_else(|| forge_conversation_workflow(&context.agent_type)),
+            workflow_template_id: None,
+            origin: Some(TaskOrigin::Forge),
+        })?;
+        if let Some(spec) = &context.initial_spec {
+            self.save_forge_spec(&summary.task.id, spec)?;
+        }
+        Ok(summary)
+    }
+
+    /// 每轮 Spec 变更后原子写存档（方案 D2）。
+    pub fn save_forge_spec(&self, task_id: &str, spec: &ForgeSpec) -> Result<()> {
+        let task_dir = self.paths.task_dir(task_id);
+        if !task_dir.exists() {
+            bail!("task `{task_id}` not found");
+        }
+        crate::forge::archive::save_spec_archive(&task_dir, spec)?;
+        Ok(())
+    }
+
+    /// 读取 Spec 存档（会话恢复/预览 Tab 重开）。
+    pub fn forge_spec(&self, task_id: &str) -> Result<Option<ForgeSpec>> {
+        let task_dir = self.paths.task_dir(task_id);
+        if !task_dir.exists() {
+            bail!("task `{task_id}` not found");
+        }
+        Ok(crate::forge::archive::load_spec_archive(&task_dir)?)
+    }
+
+    /// 试运行（方案 D1）：以模板创建真实 Task（origin=ForgeTrial）。
+    ///
+    /// 复用 task→run 全链路，不造 dry-run 专用代码路径。“首节点即停”以
+    /// 数据级截断实现：只保留 entry 节点、success 边直连 `$end`，模板
+    /// 本体不动——首节点产物/契约照常验证，跑完即终止。`control` 同步
+    /// 覆写 `max_rounds=1`。样例需求 = 锚定轮确认的 intent。
+    pub fn forge_trial(&self, template_id: &str, intent: &str) -> Result<TaskSummary> {
+        if intent.trim().is_empty() {
+            bail!("forge trial intent cannot be empty");
+        }
+        let store = self.load_workflow_template_store_forge()?;
+        let template = store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .with_context(|| format!("workflow template `{template_id}` not found"))?;
+        let mut workflow = truncate_to_first_node(template.workflow.clone());
+        // 试运行降级：单轮、首节点验证即停。
+        workflow.control.max_rounds = Some(1);
+        self.create_task_from_requirement_with_bindings(
+            CreateTaskInput {
+                title: Some(format!("试运行：{}", template.name)),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: intent.to_string(),
+                workflow: workflow.clone(),
+                workflow_template_id: Some(template_id.to_string()),
+                origin: Some(TaskOrigin::ForgeTrial),
+            },
+            workflow,
+            template.model_bindings.clone(),
+        )
+    }
+
+    /// 铸造历史（方案 D3）：列出 origin=Forge/ForgeTrial 的 Task 与
+    /// Spec 摘要（会话恢复入口）、产出模板组关联。
+    pub fn forge_sessions(&self) -> Result<Vec<ForgeSessionEntry>> {
+        let mut sessions = Vec::new();
+        for task in self.task_list()? {
+            let Some(origin) = task.origin else {
+                continue;
+            };
+            let task_dir = self.paths.task_dir(&task.id);
+            let spec = crate::forge::archive::load_spec_archive(&task_dir).ok().flatten();
+            let spec_summary = spec.as_ref().map(|spec| ForgeSpecSummary {
+                name: spec.name.clone().unwrap_or_default(),
+                intent: spec.intent.clone(),
+                stage_count: spec
+                    .workflows
+                    .iter()
+                    .map(|workflow| workflow.stages.len())
+                    .sum::<usize>(),
+                workflow_count: spec.workflows.len(),
+                open_question_count: spec.open_questions.len(),
+            });
+            sessions.push(ForgeSessionEntry {
+                task_id: task.id.clone(),
+                title: task.title.clone(),
+                origin,
+                spec_summary,
+                updated_at: spec_archive_mtime(&task_dir),
+            });
+        }
+        sessions.sort_by(|left, right| right.task_id.cmp(&left.task_id));
+        Ok(sessions)
+    }
+
+    /// 一键清理未完成铸造与试运行 Task（G2）。
+    ///
+    /// 删除 task 目录（进回收站由 Tauri 层 trash 语义承接；本层为
+    /// 文件系统删除 + SQLite 索引清理，与现有 delete 链路一致）。
+    /// 返回实际删除的 task id 列表（不存在或非 Forge 来源的跳过）。
+    pub fn cleanup_forge_sessions(&self, task_ids: &[String]) -> Result<Vec<String>> {
+        let mut deleted = Vec::new();
+        for task_id in task_ids {
+            let Ok(task) = self.task_show(task_id) else {
+                continue;
+            };
+            if task.origin.is_none() {
+                continue;
+            }
+            let task_dir = self.paths.task_dir(task_id);
+            if !task_dir.exists() {
+                continue;
+            }
+            std::fs::remove_dir_all(task_dir.as_std_path())?;
+            crate::storage::sqlite::delete_task(&task_dir);
+            deleted.push(task_id.clone());
+        }
+        Ok(deleted)
+    }
+
+    /// 反投影入口（方案 §4 Tauri 命令 `forge_from_workflow` 的底层）：
+    /// 现有模板 → Forge Spec，进入 Forge 会话做对话式修改。
+    pub fn forge_from_workflow(&self, template_id: &str) -> Result<ForgeSpec> {
+        let store = self.load_workflow_template_store_forge()?;
+        let template = store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .with_context(|| format!("workflow template `{template_id}` not found"))?;
+        let spec = crate::forge::project::from_dsl(
+            &template.workflow,
+            &template.name,
+            "",
+        )?;
+        Ok(spec)
+    }
+
+    fn load_workflow_template_store_forge(
+        &self,
+    ) -> Result<crate::app::WorkflowTemplateStore> {
+        // 复用现有模板加载入口（含内置模板物化与迁移）。
+        self.workflow_templates()
+    }
+}
+
+/// `create_forge_task` 输入。
+#[derive(Debug, Clone)]
+pub struct CreateForgeTaskInput {
+    pub title: Option<String>,
+    /// 源会话摘要/意图上下文（写入 requirement 作为首轮素材）。
+    pub requirement_content: String,
+    /// 承载 Forge 对话的 agent 类型（同 Direct 会话的 agent 绑定）。
+    pub agent_type: String,
+    /// 铸造会话初始工作流（可选；缺省用 Direct 同构的对话型单节点）。
+    pub workflow: Option<crate::dsl::WorkflowDsl>,
+    /// 初始 Spec（锚定轮产出；可为未收敛态）。
+    pub initial_spec: Option<ForgeSpec>,
+}
+
+/// 铸造历史条目（方案 D3）。
+#[derive(Debug, Clone)]
+pub struct ForgeSessionEntry {
+    pub task_id: String,
+    pub title: Option<String>,
+    pub origin: TaskOrigin,
+    /// Spec 存档摘要（无存档时 None：会话尚未产出 Spec）。
+    pub spec_summary: Option<ForgeSpecSummary>,
+    /// Spec 存档最后修改时间（epoch 秒文本；无存档为空）。
+    pub updated_at: String,
+}
+
+/// Spec 存档摘要（列表投影，不加载全量 Spec）。
+#[derive(Debug, Clone)]
+pub struct ForgeSpecSummary {
+    pub name: String,
+    pub intent: String,
+    pub stage_count: usize,
+    pub workflow_count: usize,
+    pub open_question_count: usize,
+}
+
+/// Forge 铸造会话的工作流：与 Direct 会话同构的对话型单节点
+/// （RawAgent、无 role 绑定），会话本体不跑流水线图，仅承载对话。
+fn forge_conversation_workflow(agent_type: &str) -> crate::dsl::WorkflowDsl {
+    crate::dsl::presets::direct_workflow(
+        agent_type.to_string(),
+        None,
+        None,
+        false,
+        Default::default(),
+    )
+}
+
+/// 试运行截断：仅保留 entry 节点，success 边直连 `$end`。
+///
+/// 数据级变换（模板本体不动），复用现有 runtime 全链路：首节点按原
+/// 产物契约执行与验证，完成后无后继节点即停——等价于“真实运行的
+/// 第一环”验证语义（方案 §9.4）。
+fn truncate_to_first_node(mut workflow: crate::dsl::WorkflowDsl) -> crate::dsl::WorkflowDsl {
+    use crate::dsl::{EdgeDsl, EdgeOutcome, END_NODE};
+    let entry = workflow.entry.clone();
+    workflow.nodes.retain(|node| node.id() == entry);
+    workflow.edges = vec![EdgeDsl {
+        from: entry,
+        to: END_NODE.to_string(),
+        on: EdgeOutcome::Success,
+        session: None,
+        new_round_entry: None,
+    }];
+    workflow
+}
+
+/// Spec 存档最后修改时间（epoch 秒文本；无存档为空字符串）。
+fn spec_archive_mtime(task_dir: &camino::Utf8Path) -> String {
+    let modified = crate::forge::archive::spec_archive_path(task_dir)
+        .metadata()
+        .and_then(|meta| meta.modified())
+        .ok();
+    modified
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tests::{env_guard, test_app};
+    use crate::forge::spec::{
+        ForgeStage, ForgeWorkflow, StageOutputKind, StageRole, OnFailure, SPEC_VERSION,
+    };
+    use camino::Utf8PathBuf;
+    use tempfile::tempdir;
+
+    /// 与兄弟测试模块同惯例:guard + tempdir 由测试全程持有。
+    fn forge_test_app() -> (App, tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+        let guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        (test_app(repo_root), temp, guard)
+    }
+
+    fn sample_spec() -> ForgeSpec {
+        ForgeSpec {
+            spec_version: SPEC_VERSION.to_string(),
+            name: Some("样本流程".to_string()),
+            intent: "从会话到工作流".to_string(),
+            source_skills: vec![],
+            workflows: vec![ForgeWorkflow {
+                name: "样本流程".to_string(),
+                stages: vec![ForgeStage {
+                    id: Some("s1".to_string()),
+                    role: StageRole::Dev,
+                    goal: "<输入>会话上下文\n<产出>结构化产物\n<边界>不做部署\n<验收>产物过schema".to_string(),
+                    artifact: Some("result".to_string()),
+                    output_kind: StageOutputKind::Json,
+                    schema_hint: Some(serde_json::json!({ "ok": "boolean" })),
+                    success_condition: Some("$.ok == true".to_string()),
+                    on_failure: OnFailure::Retry,
+                    manual_check: false,
+                }],
+            }],
+            open_questions: vec![],
+        }
+    }
+
+    #[test]
+    fn forge_task_lifecycle_create_spec_roundtrip_cleanup() {
+        let (app, _temp, _guard) = forge_test_app();
+        // 创建
+        let summary = app
+            .create_forge_task(CreateForgeTaskInput {
+                title: Some("铸造会话".to_string()),
+                requirement_content: "源会话摘要".to_string(),
+                agent_type: "claude-acp".to_string(),
+                workflow: None,
+                initial_spec: Some(sample_spec()),
+            })
+            .unwrap();
+        let task_id = &summary.task.id;
+        assert_eq!(summary.task.origin, Some(TaskOrigin::Forge));
+        // Spec 存档 round-trip
+        let loaded = app.forge_spec(task_id).unwrap().expect("spec archived");
+        assert_eq!(loaded.intent, "从会话到工作流");
+        // 每轮变更覆写
+        let mut revised = loaded;
+        revised.intent = "新意图".to_string();
+        app.save_forge_spec(task_id, &revised).unwrap();
+        assert_eq!(app.forge_spec(task_id).unwrap().unwrap().intent, "新意图");
+        // 铸造历史列表包含该会话
+        let sessions = app.forge_sessions().unwrap();
+        let entry = sessions
+            .iter()
+            .find(|session| session.task_id == *task_id)
+            .expect("forge session listed");
+        assert_eq!(entry.spec_summary.as_ref().unwrap().stage_count, 1);
+        // 清理
+        let deleted = app.cleanup_forge_sessions(&[task_id.clone()]).unwrap();
+        assert_eq!(deleted, vec![task_id.clone()]);
+        assert!(app.task_show(task_id).is_err());
+    }
+
+    #[test]
+    fn forge_task_rejects_empty_context() {
+        let (app, _temp, _guard) = forge_test_app();
+        let error = app
+            .create_forge_task(CreateForgeTaskInput {
+                title: None,
+                requirement_content: "   ".to_string(),
+                agent_type: "claude-acp".to_string(),
+                workflow: None,
+                initial_spec: None,
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn cleanup_skips_normal_tasks() {
+        let (app, _temp, _guard) = forge_test_app();
+        let normal = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("普通任务".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "需求".to_string(),
+                workflow: forge_conversation_workflow("claude-acp"),
+                workflow_template_id: None,
+                origin: None,
+            })
+            .unwrap();
+        let deleted = app
+            .cleanup_forge_sessions(&[normal.task.id.clone()])
+            .unwrap();
+        assert!(deleted.is_empty());
+        assert!(app.task_show(&normal.task.id).is_ok());
+    }
+
+    #[test]
+    fn forge_sessions_exclude_normal_tasks() {
+        let (app, _temp, _guard) = forge_test_app();
+        let _normal = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("普通任务2".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "需求".to_string(),
+                workflow: forge_conversation_workflow("claude-acp"),
+                workflow_template_id: None,
+                origin: None,
+            })
+            .unwrap();
+        let sessions = app.forge_sessions().unwrap();
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn forge_trial_uses_template_with_single_round() {
+        let (app, _temp, _guard) = forge_test_app();
+        let store = app.workflow_templates().unwrap();
+        let template = &store.templates[0];
+        let summary = app
+            .forge_trial(&template.id, "试运行样例需求")
+            .unwrap();
+        assert_eq!(summary.task.origin, Some(TaskOrigin::ForgeTrial));
+        let authoring: crate::workflow_model_binding::TaskAuthoringWorkflow = crate::storage::read_json(
+            &app.paths.workflow_file(&summary.task.id),
+        )
+        .unwrap();
+        // 试运行 control 降级为 max_rounds=1。
+        assert_eq!(authoring.workflow.control.max_rounds, Some(1));
+        // 首节点即停:仅保留 entry 节点,success 边直连 $end。
+        assert_eq!(authoring.workflow.nodes.len(), 1);
+        assert_eq!(authoring.workflow.nodes[0].id(), template.workflow.entry);
+        assert_eq!(authoring.workflow.edges.len(), 1);
+        assert_eq!(authoring.workflow.edges[0].to, crate::dsl::END_NODE);
+        // 模板本体未被截断改动。
+        let store_after = app.workflow_templates().unwrap();
+        let template_after = store_after
+            .templates
+            .iter()
+            .find(|t| t.id == template.id)
+            .unwrap();
+        assert_eq!(template_after.workflow.nodes.len(), template.workflow.nodes.len());
+    }
+
+    #[test]
+    fn forge_trial_rejects_unknown_template_and_empty_intent() {
+        let (app, _temp, _guard) = forge_test_app();
+        assert!(app.forge_trial("no-such-template", "x").is_err());
+        let store = app.workflow_templates().unwrap();
+        assert!(app.forge_trial(&store.templates[0].id, "  ").is_err());
+    }
+}

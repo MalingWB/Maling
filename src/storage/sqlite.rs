@@ -7,7 +7,7 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::acp::events::{AcpSessionMetadata, load_timeline_items};
-use crate::runtime::TaskState;
+use crate::runtime::{TaskOrigin, TaskState};
 use crate::storage::read_json;
 
 // ── global singleton ─────────────────────────────────────────────────
@@ -136,7 +136,10 @@ pub fn delete_task(task_dir: &Utf8Path) {
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAYS_MS: [u64; 3] = [200, 500, 1500];
-const SEARCH_INDEX_SCHEMA_VERSION: i32 = 6;
+pub const SEARCH_INDEX_SCHEMA_VERSION: i32 = 7;
+/// v6 库升级到 v7 仅新增 tasks.origin 列(ALTER ADD COLUMN,不触碰 FTS
+/// 可搜索列),跳过 FTS 重建与 sessions 表重建。
+const SEARCH_INDEX_ALTER_ONLY_SCHEMA_VERSION: i32 = 6;
 const SEARCH_INDEX_FULL_REBUILD_SCHEMA_VERSION: i32 = 5;
 const UNTRACKED_TASK_ACTIVITY_AT: &str = "1970-01-01T00:00:00Z";
 
@@ -212,6 +215,7 @@ impl SearchIndex {
                         title        TEXT NOT NULL DEFAULT '',
                         description  TEXT NOT NULL DEFAULT '',
                         requirement_text TEXT NOT NULL DEFAULT '',
+                        origin       TEXT NOT NULL DEFAULT '',
                         created_at   TEXT NOT NULL DEFAULT '',
                         updated_at   TEXT NOT NULL DEFAULT ''
                     );
@@ -226,8 +230,27 @@ impl SearchIndex {
             }
         }
 
+        // v7: tasks 新增 origin 列(任务来源标记,非 FTS 可搜索列)。
+        // 结构化检测缺列 + ALTER ADD COLUMN:带常量默认值,元数据操作不
+        // 重写行;与版本号无关,幂等。置于主键迁移之后,避免被表重建覆盖。
+        if tasks_table_exists {
+            let origin_column_exists = {
+                let mut stmt = conn.prepare("PRAGMA table_info(tasks)")?;
+                let columns = stmt
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                columns.iter().any(|name| name == "origin")
+            };
+            if !origin_column_exists {
+                conn.execute_batch(
+                    "ALTER TABLE tasks ADD COLUMN origin TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
+        }
+
         let rebuild_task_fts = tasks_table_exists
             && schema_version != SEARCH_INDEX_SCHEMA_VERSION
+            && schema_version != SEARCH_INDEX_ALTER_ONLY_SCHEMA_VERSION
             && schema_version != SEARCH_INDEX_FULL_REBUILD_SCHEMA_VERSION;
         if rebuild_task_fts && !task_schema_migrated {
             conn.execute_batch(
@@ -246,6 +269,7 @@ impl SearchIndex {
         }
 
         if schema_version != SEARCH_INDEX_SCHEMA_VERSION
+            && schema_version != SEARCH_INDEX_ALTER_ONLY_SCHEMA_VERSION
             && schema_version != SEARCH_INDEX_FULL_REBUILD_SCHEMA_VERSION
         {
             conn.execute_batch(
@@ -265,6 +289,7 @@ impl SearchIndex {
                 title        TEXT NOT NULL DEFAULT '',
                 description  TEXT NOT NULL DEFAULT '',
                 requirement_text TEXT NOT NULL DEFAULT '',
+                origin       TEXT NOT NULL DEFAULT '',
                 created_at   TEXT NOT NULL DEFAULT '',
                 updated_at   TEXT NOT NULL DEFAULT ''
             );
@@ -817,6 +842,11 @@ impl SearchIndex {
                 )
             })
             .unwrap_or(("", ""));
+        let origin = task
+            .as_ref()
+            .and_then(|t| t.origin)
+            .map(task_origin_index_value)
+            .unwrap_or_default();
 
         let conn = self.conn.lock().expect("search index lock poisoned");
         let existing = conn
@@ -848,15 +878,25 @@ impl SearchIndex {
         let updated_at = latest_task_activity(existing_activity_at, incoming_activity_at)
             .unwrap_or(UNTRACKED_TASK_ACTIVITY_AT);
         conn.execute(
-            "INSERT INTO tasks (task_id, task_path, title, description, requirement_text, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)
+            "INSERT INTO tasks (task_id, task_path, title, description, requirement_text, origin, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
              ON CONFLICT(task_path) DO UPDATE SET
                 task_id=excluded.task_id,
                 title=excluded.title,
                 description=excluded.description,
                 requirement_text=excluded.requirement_text,
+                origin=excluded.origin,
                 updated_at=excluded.updated_at",
-            params![task_id, task_path, title, description, requirement_text, created_at, updated_at],
+            params![
+                task_id,
+                task_path,
+                title,
+                description,
+                requirement_text,
+                origin,
+                created_at,
+                updated_at
+            ],
         )?;
         Ok(())
     }
@@ -1022,7 +1062,8 @@ impl SearchIndex {
         let sql = format!(
             "SELECT t.task_id, t.task_path, t.title, t.description,
                     substr(t.requirement_text, 1, 500),
-                    t.requirement_text
+                    t.requirement_text,
+                    t.origin
              {from_and_match}
              {scope_clause}
              {order_by}
@@ -1054,6 +1095,7 @@ impl SearchIndex {
                 title,
                 description,
                 requirement_preview: row.get(4)?,
+                origin: row.get(6)?,
             });
         }
         Ok(results)
@@ -1253,6 +1295,11 @@ fn compile_literal_fts_query(terms: &[&str]) -> String {
         .join(" AND ")
 }
 
+/// Task 来源 → 索引列存储值(与 `TaskOrigin::as_str` 对齐)。
+fn task_origin_index_value(origin: TaskOrigin) -> String {
+    origin.as_str().to_string()
+}
+
 fn task_match_preview(
     title: &str,
     description: &str,
@@ -1337,6 +1384,8 @@ pub struct TaskSearchResult {
     pub requirement_preview: String,
     /// Context excerpt selected from the field that matched the current query.
     pub match_preview: String,
+    /// 任务来源索引值(TaskOrigin::as_str;空串为普通任务)。
+    pub origin: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1508,6 +1557,97 @@ mod tests {
     }
 
     #[test]
+    fn v6_database_gains_origin_column_and_keeps_rows() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+
+        // v6 形态:当前 tasks 结构但无 origin 列。
+        {
+            let conn = Connection::open(db_path.as_std_path()).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE tasks (
+                    task_id      TEXT NOT NULL,
+                    task_path    TEXT NOT NULL PRIMARY KEY,
+                    title        TEXT NOT NULL DEFAULT '',
+                    description  TEXT NOT NULL DEFAULT '',
+                    requirement_text TEXT NOT NULL DEFAULT '',
+                    created_at   TEXT NOT NULL DEFAULT '',
+                    updated_at   TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO tasks (task_id, task_path, title, description, requirement_text, created_at, updated_at)
+                VALUES ('task-6', '/tmp/task-6', 'V6 Task', '', 'v6 body', '', '');
+                PRAGMA user_version = 6;",
+            )
+            .unwrap();
+        }
+
+        let index = SearchIndex::open(&db_path).unwrap();
+        let conn = index.conn.lock().unwrap();
+        let schema_version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(schema_version, SEARCH_INDEX_SCHEMA_VERSION);
+
+        let mut stmt = conn.prepare("PRAGMA table_info(tasks)").unwrap();
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        drop(stmt);
+        assert!(columns.iter().any(|name| name == "origin"));
+
+        // ALTER 路径不重写行:既有数据保留。
+        let (count, origin): (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(origin), '') FROM tasks WHERE task_id = 'task-6'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(origin, "");
+        drop(conn);
+
+        let results = index.search_tasks("v6 body", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].task_id, "task-6");
+        assert_eq!(results[0].origin, "");
+    }
+
+    #[test]
+    fn task_origin_indexed_and_returned_by_search() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = SearchIndex::open(&db_path).unwrap();
+        let task_dir = camino::Utf8PathBuf::from_path_buf(dir.path().join("tasks").join("t1"))
+            .unwrap();
+        std::fs::create_dir_all(task_dir.join("authoring").as_std_path()).unwrap();
+        crate::storage::write_json(
+            &task_dir.join("task.json"),
+            &TaskState {
+                version: crate::domain::VERSION.to_string(),
+                id: "t1".to_string(),
+                title: Some("Forge Session".to_string()),
+                description: None,
+                uuid: None,
+                origin: Some(TaskOrigin::Forge),
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            task_dir.join("authoring").join("requirement.md").as_std_path(),
+            "forge requirement body",
+        )
+        .unwrap();
+        index.index_task_with_retry(&task_dir, "t1");
+
+        let results = index.search_tasks("forge requirement", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].origin, "forge");
+    }
+
+    #[test]
     fn task_index_identity_is_workspace_path_not_local_task_id() {
         let dir = tempdir().unwrap();
         let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
@@ -1538,6 +1678,7 @@ mod tests {
                     title: Some(title.to_string()),
                     description: None,
                     uuid: None,
+                    origin: None,
                 },
             )
             .unwrap();
@@ -1657,6 +1798,7 @@ mod tests {
                     title: Some("Needle".to_string()),
                     description: None,
                     uuid: None,
+                    origin: None,
                 },
             )
             .unwrap();
@@ -1675,6 +1817,7 @@ mod tests {
                 title: Some("Needle in sidebar workspace".to_string()),
                 description: None,
                 uuid: None,
+                origin: None,
             },
         )
         .unwrap();
@@ -1712,6 +1855,7 @@ mod tests {
                     title: Some(task_id.to_string()),
                     description: None,
                     uuid: None,
+                    origin: None,
                 },
             )
             .unwrap();
@@ -1784,6 +1928,7 @@ mod tests {
                 title: Some("Indexed title".to_string()),
                 description: Some("Indexed description".to_string()),
                 uuid: None,
+                origin: None,
             },
         )
         .unwrap();
@@ -1844,6 +1989,7 @@ mod tests {
                 title: Some("随便用askUserQuestion".to_string()),
                 description: None,
                 uuid: None,
+                origin: None,
             },
         )
         .unwrap();
@@ -1867,6 +2013,7 @@ mod tests {
                 title: Some("你好".to_string()),
                 description: None,
                 uuid: None,
+                origin: None,
             },
         )
         .unwrap();

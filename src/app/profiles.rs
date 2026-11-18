@@ -21,7 +21,8 @@ use crate::prompts::{
     LocalizedText, PROFILE_ACCEPT, PROFILE_CICD, PROFILE_CLEAN, PROFILE_DEV, PROFILE_DEV_TEST,
     PROFILE_GRILLME, PROFILE_INTERVIEW, PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT,
     PROFILE_OVERLAY_REQUIREMENT_IDENTITY, PROFILE_PLAN, PROFILE_REVIEW, PROFILE_TEST,
-    PROFILE_WEAPM, profile_template_validation_contexts, prompt_by_language, render,
+    PROFILE_WEAPM, PROFILE_WORKFLOW_FORGE, profile_template_validation_contexts,
+    prompt_by_language, render,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
 
@@ -507,6 +508,30 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
             "계획이나 의사결정을 심층 인터뷰로 엄격히 따져 공통 이해에 도달하는 Grill 역할입니다.",
             "Papel de Grill para questionar planos ou decisões em entrevistas profundas até haver entendimento comum.",
             "Rol de Grill para cuestionar planes o decisiones en entrevistas profundas hasta alcanzar un entendimiento común.",
+        ),
+        dynamic_template: false,
+    },
+    DefaultProfileSeed {
+        key: "workflow-forge",
+        required_capability: None,
+        id: "pf-builtin-workflow-forge",
+        name: LocalizedProfileText::all(
+            "铸造",
+            "鑄造",
+            "Forge",
+            "鋳造",
+            "단조",
+            "Forja",
+            "Forja",
+        ),
+        summary: LocalizedProfileText::all(
+            "工作流铸造角色，通过引导式对话把会话记录或 skill 组合铸造成带产物契约的工作流。",
+            "工作流鑄造角色，透過引導式對話把會話記錄或 skill 組合鑄造成帶產物契約的工作流。",
+            "Forge role for turning conversation records or skill sets into workflows with artifact contracts through guided interviews.",
+            "会話記録やスキルの組み合わせを、ガイド対話を通じて産物契約付きワークフローへ鋳造する Forge ロールです。",
+            "대화 기록이나 스킬 조합을 안내형 대화를 통해 산출물 계약이 있는 워크플로로 단조하는 Forge 역할입니다.",
+            "Papel de Forge para transformar registros de conversa ou conjuntos de skills em workflows com contratos de artefato por entrevistas guiadas.",
+            "Rol de Forge para convertir registros de conversación o conjuntos de skills en workflows con contratos de artefacto mediante entrevistas guiadas.",
         ),
         dynamic_template: false,
     },
@@ -1188,6 +1213,7 @@ fn built_in_profile_content(key: &str, language: DesktopLanguage) -> String {
         "cleanup" => prompt_by_language(language, PROFILE_CLEAN),
         "interview" => prompt_by_language(language, PROFILE_INTERVIEW),
         "grill" => prompt_by_language(language, PROFILE_GRILLME),
+        "workflow-forge" => prompt_by_language(language, PROFILE_WORKFLOW_FORGE),
         _ => "",
     };
     let mut composed = content.to_string();
@@ -1767,7 +1793,7 @@ profile body
     fn channel_profile_catalog_preserves_shared_roles_and_restricts_cicd() {
         for channel in ["default", "wb", "enterprise", ""] {
             let profiles = default_profile_seeds_for_channel(channel).collect::<Vec<_>>();
-            assert_eq!(profiles.len(), if channel == "wb" { 11 } else { 9 });
+            assert_eq!(profiles.len(), if channel == "wb" { 12 } else { 10 });
             assert_eq!(
                 profiles.iter().any(|seed| seed.id == "pf-builtin-cicd"),
                 channel == "wb"

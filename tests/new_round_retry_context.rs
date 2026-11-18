@@ -134,6 +134,7 @@ fn write_fixture(app: &App, completed: bool, current_attempt: &str) {
             title: None,
             description: None,
             uuid: None,
+            origin: None,
         },
     )
     .unwrap();

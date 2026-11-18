@@ -238,6 +238,7 @@ fn create_task_from_requirement_writes_authoring_files() {
             requirement_content: "Build a workflow".to_string(),
             workflow: workflow(&app, "plan"),
             workflow_template_id: None,
+            origin: None,
         })
         .unwrap();
 
@@ -369,6 +370,7 @@ fn create_task_accepts_lightweight_authoring_workflow_with_model_bindings() {
                 requirement_content: "Implement the configured task".to_string(),
                 workflow: template.workflow.clone(),
                 workflow_template_id: Some(template.id),
+                origin: None,
             },
             template.workflow,
             bindings,
@@ -918,6 +920,7 @@ fn deleting_referenced_profile_requires_confirmation_for_templates_and_tasks() {
         requirement_content: "Task workflow uses custom profile".to_string(),
         workflow: template_workflow,
         workflow_template_id: None,
+        origin: None,
     })
     .unwrap();
 
@@ -966,6 +969,7 @@ fn deleting_referenced_profile_requires_confirmation_for_actionable_runs() {
             requirement_content: "Task workflow uses resumable role".to_string(),
             workflow: run_workflow.clone(),
             workflow_template_id: None,
+            origin: None,
         },
         run_workflow,
         bindings,
@@ -1013,6 +1017,7 @@ fn force_deleting_referenced_profile_requires_workflow_reset_afterward() {
         requirement_content: "Task workflow uses profile".to_string(),
         workflow: template_workflow,
         workflow_template_id: None,
+        origin: None,
     })
     .unwrap();
 
@@ -1072,6 +1077,7 @@ fn force_deleting_referenced_profile_breaks_run_continue() {
             requirement_content: "Task workflow uses resumable profile".to_string(),
             workflow: run_workflow.clone(),
             workflow_template_id: None,
+            origin: None,
         },
         run_workflow,
         bindings,
@@ -1150,6 +1156,7 @@ fn task_workflow_revisions_advance_once_per_binding_change() {
             requirement_content: "Verify authoring revisions".to_string(),
             workflow: initial_workflow.clone(),
             workflow_template_id: None,
+            origin: None,
         },
         initial_workflow,
         initial_bindings,
@@ -1347,6 +1354,7 @@ fn creating_task_with_template_duplicate_workflow_id_fails() {
             requirement_content: "duplicate template workflow id".to_string(),
             workflow: task_workflow,
             workflow_template_id: Some("222".to_string()),
+            origin: None,
         })
         .unwrap_err();
     let typed = err.downcast_ref::<WorkflowValidationError>().unwrap();
@@ -1381,6 +1389,7 @@ fn editing_authoring_workflow_does_not_mutate_run_snapshot() {
             requirement_content: "Keep snapshot stable".to_string(),
             workflow: run_workflow.clone(),
             workflow_template_id: None,
+            origin: None,
         },
         run_workflow,
         bindings,

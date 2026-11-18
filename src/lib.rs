@@ -11,6 +11,7 @@ pub mod dsl;
 pub mod dynamic;
 pub mod dynamic_store;
 pub mod execution_plan;
+pub mod forge;
 pub mod frontmatter;
 pub mod git;
 pub mod im;

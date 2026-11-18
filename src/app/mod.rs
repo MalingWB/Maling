@@ -1,6 +1,7 @@
 mod conversation_run;
 mod execution_plan_service;
 mod failed_node_rerun;
+pub mod forge_service;
 mod ids;
 pub mod intervention;
 mod node_executor;
@@ -282,6 +283,7 @@ fn default_workflow_template(
         id: DEFAULT_WORKFLOW_TEMPLATE_ID.to_string(),
         name: workflow_display_name("full", language).to_string(),
         is_built_in: true,
+        source: None,
         optional_entry_stage: Some(OptionalEntryStage {
             node_id: "interview".to_string(),
             label_key: "conversation.home.includeInterview".to_string(),
@@ -303,6 +305,7 @@ fn default_lightweight_workflow_template(
         id: DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID.to_string(),
         name: workflow_display_name("light", language).to_string(),
         is_built_in: true,
+        source: None,
         optional_entry_stage: Some(OptionalEntryStage {
             node_id: "grill".to_string(),
             label_key: "conversation.home.includeGrill".to_string(),
@@ -957,6 +960,8 @@ pub struct CreateTaskInput {
     pub requirement_content: String,
     pub workflow: WorkflowDsl,
     pub workflow_template_id: Option<String>,
+    /// 任务来源（Forge 铸造/试运行）；普通创建路径不填。
+    pub origin: Option<crate::runtime::TaskOrigin>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -979,6 +984,9 @@ pub struct WorkflowTemplate {
     pub name: String,
     #[serde(default)]
     pub is_built_in: bool,
+    /// 模板来源（铸造/导入/手动），供来源颜色 tag（方案 §6 C2）；旧数据缺省 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<TemplateSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optional_entry_stage: Option<OptionalEntryStage>,
     pub workflow: WorkflowDsl,
@@ -988,6 +996,18 @@ pub struct WorkflowTemplate {
     pub created_at: String,
     #[serde(alias = "updated_at")]
     pub updated_at: String,
+}
+
+/// 工作流模板来源：铸造产物带主题色 tag、导入中性色、手动灰阶（方案 §7）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TemplateSource {
+    /// Forge 铸造产出。
+    Forged,
+    /// 分享/Multica 导入。
+    Imported,
+    /// 手动创建。
+    Manual,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -3977,6 +3997,7 @@ impl App {
             id,
             name: name.to_string(),
             is_built_in: false,
+            source: Some(TemplateSource::Imported),
             optional_entry_stage: None,
             workflow: validated.raw,
             model_bindings,
@@ -4033,6 +4054,7 @@ impl App {
             id: id.clone(),
             name: name.to_string(),
             is_built_in: false,
+            source: Some(TemplateSource::Manual),
             optional_entry_stage: None,
             workflow: validated.raw,
             model_bindings,
@@ -4819,6 +4841,7 @@ impl App {
             title: input.title.filter(|value| !value.trim().is_empty()),
             description: input.description.filter(|value| !value.trim().is_empty()),
             uuid: Some(generate_uuid()),
+            origin: input.origin,
         };
         validate_task_state(&task)?;
         fs::create_dir_all(task_dir.join("authoring").as_std_path())?;
@@ -7447,7 +7470,7 @@ mod tests {
         };
     }
 
-    fn test_app(repo_root: Utf8PathBuf) -> App {
+    pub(super) fn test_app(repo_root: Utf8PathBuf) -> App {
         set_test_home(&repo_root);
         App::with_config_and_path_config(repo_root, RuntimeConfig::default(), test_path_config())
     }
@@ -7468,6 +7491,7 @@ mod tests {
                 requirement_content: "report this Direct turn".to_string(),
                 workflow,
                 workflow_template_id: None,
+                origin: None,
             })
             .unwrap()
             .task;
@@ -7622,6 +7646,7 @@ mod tests {
                 requirement_content: "find a project file".to_string(),
                 workflow,
                 workflow_template_id: None,
+                origin: None,
             })
             .unwrap();
 
@@ -7658,6 +7683,7 @@ mod tests {
                 requirement_content: "prepare without launching".to_string(),
                 workflow,
                 workflow_template_id: None,
+                origin: None,
             })
             .unwrap();
 
@@ -7700,6 +7726,7 @@ mod tests {
                 requirement_content: "use the scheduled model".to_string(),
                 workflow,
                 workflow_template_id: None,
+                origin: None,
             })
             .unwrap();
         let authoring_path = app.paths.workflow_file(&created.task.id);
@@ -8120,6 +8147,7 @@ mod tests {
                 id: "custom".to_string(),
                 name: "Custom".to_string(),
                 is_built_in: false,
+                source: None,
                 optional_entry_stage: None,
                 workflow: stale_workflow.clone(),
                 model_bindings: WorkflowModelBindings::default(),
@@ -8166,6 +8194,7 @@ mod tests {
                 requirement_content: "verify authoring normalization".to_string(),
                 workflow: stale_workflow,
                 workflow_template_id: None,
+                origin: None,
             })
             .unwrap();
         let persisted_authoring: TaskAuthoringWorkflow =

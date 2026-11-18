@@ -1153,6 +1153,7 @@ mod tests {
                 requirement_content: "edit the plan".to_string(),
                 workflow,
                 workflow_template_id: None,
+                origin: None,
             })
             .unwrap()
             .task
