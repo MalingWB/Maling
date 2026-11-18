@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   COMPOSER_INPUT_AUTO_DROP_PX,
-  COMPOSER_INPUT_HEIGHT_STORAGE_KEY,
+  composerInputHeightStorageKey,
   COMPOSER_INPUT_KEYBOARD_STEP_PX,
   COMPOSER_INPUT_MIN_HEIGHT_PX,
   clampComposerInputHeight,
@@ -24,7 +24,7 @@ function ResizeProbe({ controller, getBaseHeight }: {
   controller: { read: () => ComposerResizeController };
   getBaseHeight: () => number;
 }) {
-  const resize = useComposerResize({ getBaseHeight });
+  const resize = useComposerResize({ getBaseHeight, scope: 'session' });
   controller.read = () => resize;
   return (
     <div
@@ -110,18 +110,31 @@ describe('composer manual resize', () => {
 
   it('persists a pinned height and forgets it when returning to autosize', () => {
     setViewportHeight(1000);
-    storeComposerInputHeight(180);
-    expect(window.localStorage.getItem(COMPOSER_INPUT_HEIGHT_STORAGE_KEY)).toBe('180');
-    expect(readStoredComposerInputHeight()).toBe(180);
-    storeComposerInputHeight(null);
-    expect(window.localStorage.getItem(COMPOSER_INPUT_HEIGHT_STORAGE_KEY)).toBeNull();
-    expect(readStoredComposerInputHeight()).toBeNull();
+    storeComposerInputHeight(180, 'session');
+    expect(window.localStorage.getItem(composerInputHeightStorageKey('session'))).toBe('180');
+    expect(readStoredComposerInputHeight('session')).toBe(180);
+    storeComposerInputHeight(null, 'session');
+    expect(window.localStorage.getItem(composerInputHeightStorageKey('session'))).toBeNull();
+    expect(readStoredComposerInputHeight('session')).toBeNull();
   });
 
   it('drops stored heights at or below the auto threshold back to autosize', () => {
     setViewportHeight(1000);
-    window.localStorage.setItem(COMPOSER_INPUT_HEIGHT_STORAGE_KEY, String(COMPOSER_INPUT_AUTO_DROP_PX));
-    expect(readStoredComposerInputHeight()).toBeNull();
+    window.localStorage.setItem(composerInputHeightStorageKey('session'), String(COMPOSER_INPUT_AUTO_DROP_PX));
+    expect(readStoredComposerInputHeight('session')).toBeNull();
+  });
+
+  it('keeps home and session height memories independent', () => {
+    setViewportHeight(1000);
+    // A height pinned on the home composer must not leak into the session
+    // composer and vice versa: each surface reads and writes its own slot.
+    storeComposerInputHeight(180, 'home');
+    storeComposerInputHeight(300, 'session');
+    expect(readStoredComposerInputHeight('home')).toBe(180);
+    expect(readStoredComposerInputHeight('session')).toBe(300);
+    storeComposerInputHeight(null, 'home');
+    expect(readStoredComposerInputHeight('home')).toBeNull();
+    expect(readStoredComposerInputHeight('session')).toBe(300);
   });
 
   it('drags from the current content height and commits above the drop threshold', () => {
@@ -139,7 +152,7 @@ describe('composer manual resize', () => {
     firePointerEvent(probe, 'pointerup', { pointerId });
     expect(controller.read().manualHeight).toBe(196);
     expect(controller.read().dragHeight).toBeNull();
-    expect(window.localStorage.getItem(COMPOSER_INPUT_HEIGHT_STORAGE_KEY)).toBe('196');
+    expect(window.localStorage.getItem(composerInputHeightStorageKey('session'))).toBe('196');
   });
 
   it('releases below the drop threshold back to autosize', () => {
@@ -149,7 +162,7 @@ describe('composer manual resize', () => {
     firePointerEvent(probe, 'pointermove', { pointerId, clientY: 560 });
     firePointerEvent(probe, 'pointerup', { pointerId });
     expect(controller.read().manualHeight).toBeNull();
-    expect(window.localStorage.getItem(COMPOSER_INPUT_HEIGHT_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem(composerInputHeightStorageKey('session'))).toBeNull();
   });
 
   it('nudges the pinned height with the keyboard and stops at autosize', () => {

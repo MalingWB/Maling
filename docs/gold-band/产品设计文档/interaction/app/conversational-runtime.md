@@ -982,4 +982,4 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 - 会话运行页与首页 composer 输入区上缘提供拖拽把手（`role="separator"`，键盘上下 ±24px）：向上拖钉住固定高度（48px–40% 视口），拖回 64px 阈值以下松手恢复自适应。
 - 手动档下 textarea 走 uncapped 自适应（`maxHeight=null`），固定高度与滚动由外层输入滚动容器持有——与首页既有滚动收口模式一致；自适应档保持各页原行为（运行页 320px 内滚、首页容器 max-h-80 收口）。
-- 高度按 `composer/input-height-px` 记忆（沿用抽屉 resizeStorageKey 约定），跨会话保留并按当前视口重夹取；运行页附着面板占顶时隐藏把手。
+- 高度按 `composer/input-height-px/<home|session>` 分表面记忆（首页与运行页独立，沿用抽屉 resizeStorageKey 约定），跨会话保留并按当前视口重夹取；运行页附着面板占顶时隐藏把手。

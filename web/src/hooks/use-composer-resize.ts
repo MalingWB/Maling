@@ -5,6 +5,7 @@ import {
   clampComposerInputHeight,
   readStoredComposerInputHeight,
   storeComposerInputHeight,
+  type ComposerResizeScope,
 } from '@/lib/composer-resize';
 
 export interface UseComposerResizeOptions {
@@ -12,6 +13,8 @@ export interface UseComposerResizeOptions {
    * drag origin when resizing from autosize so the first drag step does not
    * snap the box down to the minimum. */
   getBaseHeight: () => number;
+  /** Storage scope: home and session composers remember heights separately. */
+  scope: ComposerResizeScope;
 }
 
 export interface ComposerResizeController {
@@ -29,8 +32,8 @@ export interface ComposerResizeController {
   gripKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void;
 }
 
-export function useComposerResize({ getBaseHeight }: UseComposerResizeOptions): ComposerResizeController {
-  const [manualHeight, setManualHeight] = useState<number | null>(() => readStoredComposerInputHeight());
+export function useComposerResize({ getBaseHeight, scope }: UseComposerResizeOptions): ComposerResizeController {
+  const [manualHeight, setManualHeight] = useState<number | null>(() => readStoredComposerInputHeight(scope));
   const [dragHeight, setDragHeight] = useState<number | null>(null);
   const dragStateRef = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null);
 
@@ -43,8 +46,8 @@ export function useComposerResize({ getBaseHeight }: UseComposerResizeOptions): 
 
   const commit = useCallback((next: number | null) => {
     setManualHeight(next);
-    storeComposerInputHeight(next);
-  }, []);
+    storeComposerInputHeight(next, scope);
+  }, [scope]);
 
   const gripPointerDown = useCallback((event: React.PointerEvent<HTMLElement>) => {
     if (event.button !== 0) return;

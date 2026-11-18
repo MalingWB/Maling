@@ -210,6 +210,7 @@ function AcpConversationComposerContent({
   const inputScrollRef = useRef<HTMLDivElement | null>(null);
   const resize = useComposerResize({
     getBaseHeight: () => inputScrollRef.current?.getBoundingClientRect().height ?? 0,
+    scope: 'session',
   });
   const submit = () => {
     if (effectiveCanSubmit) onSubmit(history.commitHistory() ?? undefined);
