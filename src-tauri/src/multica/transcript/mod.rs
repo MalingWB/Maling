@@ -15,7 +15,10 @@
 //! 设计约束（见《Multica接入方案》执行记录章节）：
 //! - 只在 multica 远程任务执行期间上报；本地会话零开销（一次注册表查找即返回）。
 //! - 观测点在 live emitter 的 IPC 压缩之前，因此工具输入/输出取得到完整 `raw`。
-//! - 失败即丢、不重试；seq 作用域 = 服务端 task_id，新 task 从 1 开始，无需持久水位。
+//! - 失败即丢、不重试；seq 作用域 = 服务端 task_id，claim 的新 task 从 1 开始。
+//! - 同一任务终态后的追问 run 接续上一 run 的 seq 水位与用量累计（M5-de）：内存快路径
+//!   （registry）+ `StateConfig.remote_transcript_continuity` 跨重启恢复；追问 reporter 由
+//!   observe 首查未命中时懒挂载。
 //! - 终态（完成/失败/取消）先上报 error 行，再排空，最后才写 multica 终态。
 //! - 初始输入在 reporter 构造期占住 outbox 最前部（→ seq=1）；中途插话走同一观测点、
 //!   同一批队列，与 agent 事件混批、同频率 flush——没有独立的用户输入通道。

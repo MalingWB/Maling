@@ -3360,6 +3360,29 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.101 改动九十九：终态后追问会话不续报 multica——执行记录生命周期从 claim 域扩展到任务域（M5-de，2026-11-18）
+
+**背景**：内网回归反馈——远程任务完成（completion-output 已交付）后，用户在同一会话继续追问，这段对话不再上报 multica，Web 回放静默缺后续轮次。
+
+**根因**（好设计、实现不完整）：transcript reporter 的生命周期锚在 **claim 域**（`start_run` 只在 claim/resume 时调用，`finish_run` 摘除后注册表为空），而追问 run 产生新的 `local_run_id`、不经过 claim——`observe` 首查注册表未命中即返回，追问事件全部静默丢弃。服务端事实（webank 核对）：`POST /tasks/{id}/messages` 无任务状态门控（终态任务接受追加）、`task_message` 表 seq 无唯一约束但按 `ORDER BY seq` 渲染（seq 必须跨 run 单调续接，重启会交错）、usage UPSERT 按 `(task_id, provider, model)` **整体替换**（追问必须带历史累计种子，否则覆盖清零）。因此正确模型是：**seq/用量水位的作用域 = 服务端 task_id（任务域），不是一次 claim（run 域）**。
+
+**实现**：
+
+- **懒挂载（`reporter.rs` observe 未命中路径）**：先查进程内水位登记（`TranscriptRegistry.finished`，键 = local_task_id）——命中即**同步**挂载（追问的 userTextDelta 回声是该 run 第一条上报事件，异步挂载会丢首拍）；未命中再每任务至多一次异步归属解析（`resolve_followup_baseline`：completed 历史最新条目反查 + 持久水位读取，覆盖跨重启），解析窗口内事件放弃。非 multica 任务经 `foreign` 负缓存短路（未命中后至多多一次集合查找，无磁盘 IO，热路径约束不破坏）。同 remote 已有在飞 reporter 时拒绝挂载（`insert_exclusive`，两路写同一 seq 空间会交错）。追问 reporter 以水位构造：`next_seq = last_seq+1`、用量累计器以已上报行为种子（`UsageAccumulator::seeded`）；用户原话走 live 回声投影，不预置初始输入。
+- **水位捕获与持久化（`finish_run`）**：排空（或 5s 超时——已分配 seq 的安全上界，协议允许空洞不允许重叠）后捕获 `last_seq = next_seq-1` 与累计用量行，写内存快路径 + `StateConfig.remote_transcript_continuity`（`with_state` 原子 RMW；写入键无条件保留——首 run 排空先于 finalize 落历史，其余键随「最近完成」历史淘汰清理，历史有界 → 水位有界）。持久化失败仅 warn（降级为本会话内续报）。
+- **追问 run 终态收尾（`bridge.rs` RunCompleted 无在飞映射分支）**：追问 reporter 无 active 映射、常规终态路径不会为它排空——该分支统一 `finish_run`（Success/Failure/Killed 皆然；失败类先 `report_error` 补 error 行，对齐 `handle_run_failed` 的先记录后失败）。幂等（无 reporter 即返回）。
+- **升级边界**：旧版本收尾的任务无持久水位 → 不续报（seq 基线未知，盲目续报会与服务端既有行交错，宁缺毋乱）；新完成任务全部自动具备水位。
+
+**方案自评审**：过度设计——不新增端点/消息类型/队列/计时器；三个内存集合（finished/foreign/resolving）都是热路径约束（observe 不做磁盘 IO）下的最小机制，持久化只加一个有界 StateConfig map 并复用既有 RMW。明确**不做**：服务端反查 max-seq（GET messages 为全量 catch-up 接口，为拿一个数字拉全部消息违反渐进加载）；每批次持久化水位（每 500ms 落盘不必要，崩溃窗口与「批次失败即丢」同类接受）。性能——非 multica 任务热路径成本不变（注册表未命中 + 至多一次集合查找）；归属解析每任务每进程至多一次（一次 state.json 读）；挂载后回到正常查找路径；无全量扫描、无轮询。
+
+**验证结果**：先按 `bug-fix-verification` 建立红测再修复——`followup_run_attaches_with_seq_and_usage_continuity`（挂载 + seq 接续水位 3→4 + 用量种子 30 上累加至 40）与 `record_finished_clears_foreign_marker`（水位登记清除 foreign 误标）在桩实现上先红（失败信息即根因「追问 run 必须挂载 reporter」），实现后转绿；配套纯函数测试：`followup_attach_refuses_while_same_remote_reporter_active`（同 remote 排他）、`continuation_capture_reports_allocated_seq_watermark`、`resolve_followup_baseline_reads_newest_completed_with_watermark`（只认最新条目、无水位不续报、非 multica 返 None）、`apply_continuation_write_prunes_stale_keys`（当前键保留/历史外清理）、config roundtrip（camelCase、空不序列化、旧 state.json 回落 None）。`cargo test -p gold-band-desktop multica::` **321 passed**（transcript 51、bridge 28 无回归）；`cargo test -p gold-band --lib config::tests::state_config` **6 passed**；clippy 对改动文件零新增告警；rustfmt 通过（`commands.rs` 的全量格式化波及已还原）。内网验收待打包：完成任务后追问一轮，Web Transcript 应出现追问用户消息（`user` 类型）与 agent 响应，seq 与首 run 连续、usage 累计不清零；重启后追问同样续报。
+
+**遗留**：① 追问 run 进行中进程崩溃丢该 run 的增量水位（下次追问从旧水位起可能与已落库行重叠）——与「批次失败即丢」同类，接受不复杂化；② 排空超时（5s）路径下 worker 若仍存活，极端时序下可能与追问 reporter 短暂并发分配 seq；③ 旧版本收尾的任务首次追问不续报（无水位，安全降级）；④ 解析窗口内（仅重启后首拍）的少量事件放弃。
+
+**文件**：`src-tauri/src/multica/transcript/reporter.rs`（懒挂载、水位捕获/持久化、归属解析、用量种子、测试）、`src-tauri/src/multica/transcript/mod.rs`（模块约束修订）、`src-tauri/src/multica/bridge.rs`（追问 run 终态收尾）、`src/config/mod.rs`（`RemoteTranscriptContinuity`/`RemoteTranscriptUsageRow` + StateConfig 字段 + roundtrip 测试）；文档 `接入方案.md` §3.2.8（何时上报/seq/用量/有界性）、本条。
+
+---
+
 ### 12.96 改动九十四：runtime-assets 协议对齐 multica Runtime 页签重构（M5-cz，2026-11-13）
 
 **背景**：multica 把「角色管理」「工作流管理」页面重构为**共享 / Runtime 双页签**（共享：目录发布/安装/导出/删除；Runtime：浏览本机资产清单、逐条发布/卸载/查看），并给出权威对接文档 `.claude/design/multica/2026-11-13-maling-runtime-asset-protocol.md`。逐条对照其 §4 八项改动清单：**六项已满足**（uninstall 心跳分支与幂等执行器、install 写入语义、list `is_builtin`、workflow export 剥 modelBindings、role frontmatter name==key、端点区分、60s 窗口——M5-cq/cr/cw 内网已验证）；真实差异四处，全部是对齐性小改。

@@ -318,6 +318,37 @@ pub fn create_multica_subscriber(
                     // 提出交付说明，用户追问后 agent 补交。反查 completed 历史含 state.json
                     // 磁盘读，故整体移入 spawn 异步执行（订阅器回调在热路径，不可阻塞）；
                     // Failure/Killed 无补发语义，不进 spawn。
+                    //
+                    // M5-de：终态后追问 run 的执行记录收尾。追问 reporter 由 transcript::observe
+                    // 懒挂载（无 active 映射），常规终态路径（complete_with_issue_done /
+                    // handle_run_failed）不会为它排空——这里统一收尾并登记续报水位；幂等
+                    // （无 reporter 即返回）。Failure/Killed 先补 error 行，对齐
+                    // handle_run_failed 的「先记录后失败」语义。
+                    {
+                        let app_handle = app_handle.clone();
+                        let (task_id, run_id, node_label) =
+                            (task_id.clone(), run_id.clone(), node_label.clone());
+                        tauri::async_runtime::spawn(async move {
+                            if outcome != RunOutcome::Success
+                                && let TerminalAction::Fail { error, .. } =
+                                    classify_terminal(outcome, &node_label, None, None)
+                            {
+                                crate::multica::transcript::report_error(
+                                    &app_handle,
+                                    &task_id,
+                                    &run_id,
+                                    &error,
+                                );
+                            }
+                            crate::multica::transcript::finish_run(
+                                &app_handle,
+                                &task_id,
+                                &run_id,
+                                crate::multica::transcript::DRAIN_TIMEOUT,
+                            )
+                            .await;
+                        });
+                    }
                     if outcome == RunOutcome::Success {
                         let app_handle = app_handle.clone();
                         tauri::async_runtime::spawn(async move {

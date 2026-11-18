@@ -1603,6 +1603,11 @@ pub struct StateConfig {
         alias = "multicaCompletedTasks"
     )]
     pub remote_completed_tasks: Vec<RemoteCompletedTask>,
+    /// 终态后追问的执行记录续报水位（键 = remote_task_id，M5-de）。任务终态排空后写入，
+    /// 追问 run 懒挂载时作为 seq/用量基线；随「最近完成」历史淘汰而清理（见 reporter 侧写入）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_transcript_continuity:
+        Option<std::collections::HashMap<String, RemoteTranscriptContinuity>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2465,7 +2470,8 @@ mod tests {
         DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
         DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
         ManagedAgentId, MulticaAccountRef, PersonalizationPreference, ProjectAppConfig,
-        ProjectIdentityConfig, RemoteCompletedTask, RemoteTaskConversation, RemoteWorkspaceRef,
+        ProjectIdentityConfig, RemoteCompletedTask, RemoteTaskConversation,
+        RemoteTranscriptContinuity, RemoteTranscriptUsageRow, RemoteWorkspaceRef,
         ResolvedColorScheme, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
         SystemPromptDelivery, TurnFilesConfig, VisualQuality, WallpaperFitPreference,
         WallpaperImagePreference, WallpaperSchemePersonalization, WorkflowGraphDirectionPreference,
@@ -4437,6 +4443,51 @@ mod tests {
         assert!(!rewritten.contains("multicaCompletedTasks"));
         assert!(!rewritten.contains("multicaTaskConversations"));
     }
+
+    #[test]
+    fn state_config_remote_transcript_continuity_roundtrip_json() {
+        // 续报水位（M5-de）roundtrip：camelCase 键 + 空用量行不序列化 + 旧 state.json 缺键回落 None。
+        let state = StateConfig {
+            remote_transcript_continuity: Some(std::collections::HashMap::from([(
+                "remote-1".to_string(),
+                RemoteTranscriptContinuity {
+                    last_seq: 42,
+                    usage_rows: vec![RemoteTranscriptUsageRow {
+                        provider: "anthropic".to_string(),
+                        model: "claude-sonnet-5-5".to_string(),
+                        input_tokens: 300,
+                        output_tokens: 120,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
+                    }],
+                },
+            )])),
+            ..StateConfig::default()
+        };
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        assert!(json.contains("\"remoteTranscriptContinuity\""));
+        assert!(json.contains("\"lastSeq\": 42"));
+        let roundtripped: StateConfig = serde_json::from_str(&json).unwrap();
+        let entry = roundtripped
+            .remote_transcript_continuity
+            .as_ref()
+            .and_then(|m| m.get("remote-1"))
+            .unwrap();
+        assert_eq!(entry.last_seq, 42);
+        assert_eq!(entry.usage_rows.len(), 1);
+        assert_eq!(entry.usage_rows[0].provider, "anthropic");
+        assert_eq!(entry.usage_rows[0].input_tokens, 300);
+
+        // 空水位不序列化；旧 state.json（无该键）反序列化回落 None。
+        let empty = StateConfig::default();
+        assert!(
+            !serde_json::to_string(&empty)
+                .unwrap()
+                .contains("remoteTranscriptContinuity")
+        );
+        let legacy: StateConfig = serde_json::from_str("{}").unwrap();
+        assert!(legacy.remote_transcript_continuity.is_none());
+    }
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -4570,6 +4621,34 @@ pub struct RemoteCompletedTask {
     /// 已链接都算已回传——两种情况关联都已在服务端成立）。None = 未回传。旧历史条目缺省 None。
     #[serde(default)]
     pub dpms_story_id: Option<i64>,
+}
+
+/// 终态后追问的执行记录续报水位（`StateConfig.remote_transcript_continuity` 条目）。
+///
+/// seq 作用域 = 服务端 task_id，任务终态不变——追问 run 必须接着上一 run 的水位继续编号，
+/// 否则服务端 `ORDER BY seq` 下追问消息与首 run 消息交错；token 用量服务端按
+/// `(task_id, provider, model)` 整体替换，追问 run 必须以历史累计为基数，否则历史用量被覆盖。
+/// 内存快路径同构数据在 transcript registry（进程内权威）；本结构只服务跨进程重启的恢复。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTranscriptContinuity {
+    /// 该任务已分配的最后一个 seq（追问 run 从 `last_seq + 1` 继续；服务端允许空洞、不允许重叠）。
+    pub last_seq: u64,
+    /// 终态排空时已上报的累计用量行（追问 run 的用量种子）。空 = 该任务无用量记录。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub usage_rows: Vec<RemoteTranscriptUsageRow>,
+}
+
+/// 续报水位中的用量行（transcript `UsageRow` 的持久化形状：`cost_usd_ticks` 恒 0 无需保存）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTranscriptUsageRow {
+    pub provider: String,
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

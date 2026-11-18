@@ -1,8 +1,10 @@
 //! 单个远程任务的执行记录上报器：有界缓冲 + 500ms 批 flush + seq 分配 + 终态排空 + 用量上报。
 //!
 //! 生命周期与 `(local_task_id, local_run_id)` 绑定（= 一个 remote task 的一次执行）。服务端
-//! 侧 seq 作用域是 `task_id`，而每次 retry/rerun 服务端都会产生新的 `task_id`，因此**不需要**
-//! 任何跨进程 seq 水位文件：新 run 从 1 开始即可。
+//! 侧 seq 作用域是 `task_id`，claim 产生的每个新 task（含 retry/rerun 子任务）从 1 开始；
+//! **同一任务终态后的追问 run 例外**（M5-de）：服务端 task_id 不变，追问必须接续上一 run
+//! 的 seq 水位（内存快路径 + `StateConfig.remote_transcript_continuity` 跨重启恢复），
+//! 用量也必须以历史累计为种子（服务端按 `(task_id, provider, model)` 整体替换）。
 //!
 //! 失败策略：批次失败即丢弃（协议明确批次原子、不重试；重发同 seq 会产生重复行）；
 //! 只有 404（任务已不可见/无权）会让本 run 停止上报，避免无意义的持续请求。
@@ -13,6 +15,9 @@ use std::time::Duration;
 
 use camino::Utf8Path;
 use gold_band::acp::usage::read_prompt_usage_segments;
+use gold_band::config::{
+    RemoteCompletedTask, RemoteTranscriptContinuity, RemoteTranscriptUsageRow, StateConfig,
+};
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::{Notify, oneshot};
 use tracing::warn;
@@ -26,12 +31,31 @@ use super::projector::Projector;
 /// 取当前连接对应的 client。进程内连接信息可能被用户重配，所以每次发送时重新读取。
 pub(crate) type ClientProvider = Arc<dyn Fn() -> Option<MulticaClient> + Send + Sync>;
 
+/// 终态任务的追问续报基线（finish_run 排空后捕获，追问 run 懒挂载时消费）。
+///
+/// `last_seq` = 该任务已分配的最后一个 seq；`usage_seed` = 已上报的累计用量行（追问 run
+/// 在其之上继续累计——服务端整体替换语义要求每次上报都是任务级累计总量）。
+#[derive(Debug, Clone)]
+pub(crate) struct FinishedContinuation {
+    pub(crate) remote_task_id: String,
+    pub(crate) last_seq: u64,
+    pub(crate) usage_seed: Vec<UsageRow>,
+}
+
 /// 在飞远程任务的上报器注册表（Tauri managed state）。
 ///
 /// 两层 map 用 `&str` 直接查找，避免每条 live 事件都为主键分配字符串。
 #[derive(Default)]
 pub struct TranscriptRegistry {
     runs: Mutex<HashMap<String, HashMap<String, Arc<Reporter>>>>,
+    /// 终态任务的续报基线（键 = local_task_id）：finish_run 写入（进程内权威），
+    /// 追问 run 首个上报事件时同步读取挂载（避免异步挂载丢失追问首拍用户回声）。
+    finished: Mutex<HashMap<String, FinishedContinuation>>,
+    /// 已判定「无续报资格」的本地任务（非 multica / completed 历史无水位）：
+    /// 短路后续事件，避免每条 live 事件都触发一次解析。
+    foreign: Mutex<HashSet<String>>,
+    /// 正在异步解析归属的任务：解析窗口内的重复事件直接放弃（每任务至多 spawn 一次）。
+    resolving: Mutex<HashSet<String>>,
 }
 
 impl TranscriptRegistry {
@@ -45,6 +69,33 @@ impl TranscriptRegistry {
             // 同一 run 重复注册（极端竞态）：旧 worker 立即收尾，避免两路写同一 task 的 seq。
             previous.request_finish();
         }
+    }
+
+    /// 原子「同 remote 排他 + 注册」：已存在同 remote 的在飞 reporter 时拒绝（返回 false），
+    /// 否则注册并接管 `(local_task_id, local_run_id)`。两路 reporter 并发写同一 remote 的
+    /// seq 空间会在服务端产生交错行——宁可少报一路。
+    fn insert_exclusive(
+        &self,
+        local_task_id: &str,
+        local_run_id: &str,
+        remote_task_id: &str,
+        reporter: Arc<Reporter>,
+    ) -> bool {
+        let mut runs = self.lock();
+        let same_remote_active = runs
+            .values()
+            .any(|by_run| by_run.values().any(|r| r.remote_task_id == remote_task_id));
+        if same_remote_active {
+            return false;
+        }
+        if let Some(previous) = runs
+            .entry(local_task_id.to_string())
+            .or_default()
+            .insert(local_run_id.to_string(), reporter)
+        {
+            previous.request_finish();
+        }
+        true
     }
 
     fn find(&self, local_task_id: &str, local_run_id: &str) -> Option<Arc<Reporter>> {
@@ -65,11 +116,109 @@ impl TranscriptRegistry {
         removed
     }
 
+    /// finish_run 写入续报基线（进程内权威，覆盖旧值——后收尾的 run 水位必然更新）。
+    /// 同时清掉 foreign 标记：终态排空竞态窗口内该任务可能已被异步解析误标。
+    fn record_finished(&self, local_task_id: &str, continuation: FinishedContinuation) {
+        self.finished
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(local_task_id.to_string(), continuation);
+        self.mark_resolved(local_task_id, FollowupResolution::Finished);
+    }
+
+    /// 异步解析结果写入：仅在无更新基线时生效（finish_run 的进程内值更新，不会被旧盘值覆盖）。
+    fn record_finished_if_absent(&self, local_task_id: &str, continuation: FinishedContinuation) {
+        let mut finished = self
+            .finished
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        finished
+            .entry(local_task_id.to_string())
+            .or_insert(continuation);
+        drop(finished);
+        self.mark_resolved(local_task_id, FollowupResolution::Finished);
+    }
+
+    fn is_known_foreign(&self, local_task_id: &str) -> bool {
+        self.foreign
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(local_task_id)
+    }
+
+    /// 认领一次解析权（返回 false = 已有在飞解析，本事件放弃）。
+    fn begin_resolution(&self, local_task_id: &str) -> bool {
+        self.resolving
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(local_task_id.to_string())
+    }
+
+    /// 解析收尾：清在飞标记并落地结论（Finished = 有基线，Foreign = 无续报资格）。
+    fn mark_resolved(&self, local_task_id: &str, outcome: FollowupResolution) {
+        self.resolving
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(local_task_id);
+        let mut foreign = self
+            .foreign
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match outcome {
+            FollowupResolution::Finished => {
+                foreign.remove(local_task_id);
+            }
+            FollowupResolution::Foreign => {
+                foreign.insert(local_task_id.to_string());
+            }
+        }
+    }
+
+    /// 懒挂载追问 run 的 reporter（内存基线命中路径；纯内存操作，可在 live 事件热路径同步执行）。
+    fn attach_followup(
+        &self,
+        local_task_id: &str,
+        local_run_id: &str,
+        client: ClientProvider,
+    ) -> Option<Arc<Reporter>> {
+        let continuation = {
+            let finished = self
+                .finished
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            finished.get(local_task_id).cloned()?
+        };
+        let reporter = Arc::new(Reporter::new(
+            continuation.remote_task_id.clone(),
+            client,
+            // 追问的用户原话走 live userTextDelta 回声事件投影（originalUserText 过滤器放行），
+            // 不在此预置 seq=1 初始输入。
+            None,
+            Some(&continuation),
+        ));
+        if !self.insert_exclusive(
+            local_task_id,
+            local_run_id,
+            &continuation.remote_task_id,
+            reporter.clone(),
+        ) {
+            return None;
+        }
+        tauri::async_runtime::spawn(run_worker(reporter.clone()));
+        Some(reporter)
+    }
+
     fn lock(&self) -> MutexGuard<'_, HashMap<String, HashMap<String, Arc<Reporter>>>> {
         self.runs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+/// 归属解析结论：有续报基线 / 无续报资格（非 multica 任务、旧版本收尾无水位）。
+enum FollowupResolution {
+    Finished,
+    Foreign,
 }
 
 pub(crate) struct Reporter {
@@ -98,6 +247,7 @@ impl Reporter {
         remote_task_id: String,
         client: ClientProvider,
         initial_user_text: Option<&str>,
+        continuation: Option<&FinishedContinuation>,
     ) -> Self {
         Self {
             remote_task_id,
@@ -106,9 +256,13 @@ impl Reporter {
                 // 初始需求原话在构造期即占据 outbox 最前部 → 首批 drain 分到 seq=1，
                 // 保证「任务开始执行前，初始输入是第一条消息」（multica 回放时序要求）。
                 project: Projector::new(initial_user_text),
-                // seq 作用域 = task_id；每个 task 的第一次上报从 1 开始，严格递增。
-                next_seq: 1,
-                usage: UsageAccumulator::default(),
+                // seq 作用域 = task_id：claim 的新 task 从 1 开始；终态后追问 run（M5-de）
+                // 接续上一 run 水位（服务端 task_id 不变，重叠 seq 会产生交错/重复行）。
+                next_seq: continuation.map_or(1, |c| c.last_seq.saturating_add(1)),
+                // 用量种子 = 已上报的任务级累计（服务端按三元组整体替换，追问必须报累计总量）。
+                usage: UsageAccumulator::seeded(
+                    continuation.map(|c| c.usage_seed.as_slice()).unwrap_or(&[]),
+                ),
                 usage_pending: BTreeSet::new(),
                 usage_dirty: false,
                 closing: false,
@@ -179,6 +333,15 @@ impl Reporter {
     }
 }
 
+/// 构造连接 client 提供器（start_run 与追问懒挂载共用；每次发送时重读连接配置）。
+fn client_provider(app: &AppHandle) -> ClientProvider {
+    let provider_app = app.clone();
+    Arc::new(move || {
+        let context = crate::multica::bridge::desktop_context(&provider_app)?;
+        crate::multica::bridge::multica_client(&context)
+    })
+}
+
 /// 注册一个新的上报器并启动 flush worker。
 ///
 /// `initial_user_text`：任务初始需求原话（用户的话，非组装后 prompt），作为 seq=1 的
@@ -193,15 +356,11 @@ pub(crate) fn start_run(
     let Some(registry) = app.try_state::<TranscriptRegistry>() else {
         return;
     };
-    let provider_app = app.clone();
-    let client: ClientProvider = Arc::new(move || {
-        let context = crate::multica::bridge::desktop_context(&provider_app)?;
-        crate::multica::bridge::multica_client(&context)
-    });
     let reporter = Arc::new(Reporter::new(
         remote_task_id.to_string(),
-        client,
+        client_provider(app),
         initial_user_text,
+        None,
     ));
     registry.insert(local_task_id, local_run_id, reporter.clone());
     tauri::async_runtime::spawn(run_worker(reporter));
@@ -226,9 +385,146 @@ pub(crate) fn observe(
         return;
     };
     let Some(reporter) = registry.find(&context.task_id, &context.run_id) else {
+        // M5-de：终态后追问 run 懒挂载。首查未命中先试内存基线（本进程内收尾过该任务的
+        // run），命中即同步挂载并投影本事件——追问的 userTextDelta 回声是该 run 的第一条
+        // 上报事件，异步挂载会丢掉追问首拍。未命中再一次性异步解析（跨重启恢复）。
+        let Some(reporter) =
+            attach_followup_if_owned(app, &registry, &context.task_id, &context.run_id)
+        else {
+            return;
+        };
+        reporter.lock().project.observe(event);
         return;
     };
     reporter.lock().project.observe(event);
+}
+
+/// 终态后追问 run 的懒挂载入口：内存基线 → 同步挂载；未命中 → 一次性异步解析归属。
+///
+/// 热路径成本：非 multica 任务在 registry 首查未命中后，至多多一次 `finished`/`foreign`
+/// 集合查找（无磁盘 IO）；解析（含 state.json 读）只在每任务首个未命中事件发生一次。
+fn attach_followup_if_owned(
+    app: &AppHandle,
+    registry: &TranscriptRegistry,
+    local_task_id: &str,
+    local_run_id: &str,
+) -> Option<Arc<Reporter>> {
+    if let Some(reporter) =
+        registry.attach_followup(local_task_id, local_run_id, client_provider(app))
+    {
+        return Some(reporter);
+    }
+    if registry.is_known_foreign(local_task_id) {
+        return None;
+    }
+    spawn_baseline_resolution(app, local_task_id);
+    None
+}
+
+/// 跨重启的归属解析（spawn 内执行，每任务至多一次）：completed 历史反查 + 持久水位读取。
+///
+/// 解析窗口内到达的事件放弃（仅影响重启后首个追问的首拍）；结论落地后，后续事件走
+/// `attach_followup`（命中基线）或 `foreign` 短路。
+fn spawn_baseline_resolution(app: &AppHandle, local_task_id: &str) {
+    let Some(registry) = app.try_state::<TranscriptRegistry>() else {
+        return;
+    };
+    if !registry.begin_resolution(local_task_id) {
+        return;
+    }
+    let app = app.clone();
+    let local_task_id = local_task_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let Some(registry) = app.try_state::<TranscriptRegistry>() else {
+            return;
+        };
+        // 桌面上下文不可用（极端：managed state 缺失）按非 multica 处理，与 observe 的
+        // fail-open 一致；state 读取失败同样短路（避免每事件重复 spawn 打磁盘）。
+        let baseline = crate::multica::bridge::desktop_context(&app)
+            .and_then(|context| context.app().load_state().ok())
+            .and_then(|state| resolve_followup_baseline(&state, &local_task_id));
+        match baseline {
+            Some(continuation) => {
+                registry.record_finished_if_absent(&local_task_id, continuation);
+            }
+            None => registry.mark_resolved(&local_task_id, FollowupResolution::Foreign),
+        }
+    });
+}
+
+/// 纯函数：从 StateConfig 解析追问续报基线。
+///
+/// 只认该 local task 的**最新** completed 条目（历史最新在前；旧 remote 已被 rerun 顶替，
+/// 向其续报会写错任务）。最新条目无持久水位（旧版本收尾的任务）→ None：seq 基线未知，
+/// 盲目续报会与服务端既有行交错，宁可不报（与升级前行为一致）。
+fn resolve_followup_baseline(
+    state: &StateConfig,
+    local_task_id: &str,
+) -> Option<FinishedContinuation> {
+    let newest = state
+        .remote_completed_tasks
+        .iter()
+        .find(|c| c.local_task_id == local_task_id)?;
+    let continuity = state
+        .remote_transcript_continuity
+        .as_ref()?
+        .get(&newest.remote_task_id)?;
+    Some(FinishedContinuation {
+        remote_task_id: newest.remote_task_id.clone(),
+        last_seq: continuity.last_seq,
+        usage_seed: continuity
+            .usage_rows
+            .iter()
+            .map(|row| UsageRow {
+                provider: row.provider.clone(),
+                model: row.model.clone(),
+                input_tokens: row.input_tokens,
+                output_tokens: row.output_tokens,
+                cache_read_tokens: row.cache_read_tokens,
+                cache_write_tokens: row.cache_write_tokens,
+                // 恒 0：无权威费用，服务端按费率估算（协议约定）。
+                cost_usd_ticks: 0,
+            })
+            .collect(),
+    })
+}
+
+/// 纯函数：写入持久水位并清理已淘汰任务的旧条目。
+///
+/// 当前写入的键无条件保留（首 run 排空先于 finalize 落历史，此刻它还不在 completed 列表）；
+/// 其余键以 completed 历史为准——历史有界（最新在前截断），水位随之有界。
+fn apply_continuation_write(
+    state: &mut StateConfig,
+    remote_task_id: &str,
+    last_seq: u64,
+    usage_rows: &[UsageRow],
+) {
+    let map = state
+        .remote_transcript_continuity
+        .get_or_insert_with(HashMap::new);
+    map.insert(
+        remote_task_id.to_string(),
+        RemoteTranscriptContinuity {
+            last_seq,
+            usage_rows: usage_rows
+                .iter()
+                .map(|row| RemoteTranscriptUsageRow {
+                    provider: row.provider.clone(),
+                    model: row.model.clone(),
+                    input_tokens: row.input_tokens,
+                    output_tokens: row.output_tokens,
+                    cache_read_tokens: row.cache_read_tokens,
+                    cache_write_tokens: row.cache_write_tokens,
+                })
+                .collect(),
+        },
+    );
+    let in_history: HashSet<&str> = state
+        .remote_completed_tasks
+        .iter()
+        .map(|c: &RemoteCompletedTask| c.remote_task_id.as_str())
+        .collect();
+    map.retain(|key, _| key == remote_task_id || in_history.contains(key.as_str()));
 }
 
 fn is_reported_event(event: &gold_band::acp::events::AcpUiEvent) -> bool {
@@ -290,16 +586,19 @@ pub(crate) fn accumulate_usage<R: Runtime>(
 /// 终态排空：把剩余消息与最终用量送出去，最多等 `timeout`。
 ///
 /// 幂等：同 run 重复调用第二次拿不到 reporter，直接返回。
+///
+/// M5-de：排空后捕获续报基线（seq 高水位 + 累计用量），登记进程内快路径并持久化——
+/// 同一任务终态后的追问 run 依赖它续接 seq 与用量（服务端 task_id 不变、用量整体替换）。
 pub(crate) async fn finish_run<R: Runtime>(
     app: &AppHandle<R>,
     local_task_id: &str,
     local_run_id: &str,
     timeout: Duration,
 ) {
-    let Some(reporter) = app
-        .try_state::<TranscriptRegistry>()
-        .and_then(|registry| registry.remove(local_task_id, local_run_id))
-    else {
+    let Some(registry) = app.try_state::<TranscriptRegistry>() else {
+        return;
+    };
+    let Some(reporter) = registry.remove(local_task_id, local_run_id) else {
         return;
     };
     let (done_tx, done_rx) = oneshot::channel();
@@ -317,12 +616,52 @@ pub(crate) async fn finish_run<R: Runtime>(
             task = %reporter.remote_task_id,
             "multica transcript drain timed out; remaining messages dropped"
         );
-        return;
     }
+    // 水位登记对排空超时同样生效：next_seq-1 是已分配 seq 的安全上界（协议允许空洞，
+    // 不允许重叠）；crash 场景见模块文档遗留说明。
+    let continuation = capture_continuation(&reporter);
+    registry.record_finished(local_task_id, continuation.clone());
+    persist_continuation(app, &continuation);
     let dropped = reporter.lock().project.dropped_messages();
     if dropped > 0 {
         // 背压上限生效（服务端写入跟不上或任务产出行数过大）——只记录，不重发。
         warn!(task = %reporter.remote_task_id, dropped, "multica transcript dropped messages");
+    }
+}
+
+/// 捕获续报基线（纯读取）：`last_seq` = 已分配的最后一个 seq（`next_seq - 1`），
+/// 用量 = 该任务截至当前的累计行。
+fn capture_continuation(reporter: &Reporter) -> FinishedContinuation {
+    let state = reporter.lock();
+    FinishedContinuation {
+        remote_task_id: reporter.remote_task_id.clone(),
+        last_seq: state.next_seq.saturating_sub(1),
+        usage_seed: state.usage.rows(),
+    }
+}
+
+/// 持久化续报基线（with_state 原子 RMW；失败仅 warn——内存快路径仍然生效，降级为本会话内续报）。
+fn persist_continuation<R: Runtime>(app: &AppHandle<R>, continuation: &FinishedContinuation) {
+    let Some(context) = app
+        .try_state::<crate::state::DesktopState>()
+        .and_then(|desktop| desktop.context().ok())
+    else {
+        return;
+    };
+    if let Err(error) = context.app().with_state(|state| {
+        apply_continuation_write(
+            state,
+            &continuation.remote_task_id,
+            continuation.last_seq,
+            &continuation.usage_seed,
+        );
+        (true, ())
+    }) {
+        warn!(
+            task = %continuation.remote_task_id,
+            %error,
+            "multica transcript continuity persist failed"
+        );
     }
 }
 
@@ -442,6 +781,27 @@ struct UsageAccumulator {
     totals: BTreeMap<(String, String), TokenSums>,
 }
 
+impl UsageAccumulator {
+    /// 以历史累计行为种子构造（追问 run，M5-de）：服务端按 `(task_id, provider, model)`
+    /// 整体替换，追问 run 的新增用量必须在旧累计之上继续加，否则历史用量被覆盖丢失。
+    fn seeded(seed: &[UsageRow]) -> Self {
+        let mut accumulator = Self::default();
+        accumulator.apply_seed(seed);
+        accumulator
+    }
+
+    fn apply_seed(&mut self, seed: &[UsageRow]) {
+        for row in seed {
+            let key = (row.provider.clone(), row.model.clone());
+            let totals = self.totals.entry(key).or_default();
+            totals.input += row.input_tokens;
+            totals.output += row.output_tokens;
+            totals.cache_read += row.cache_read_tokens;
+            totals.cache_write += row.cache_write_tokens;
+        }
+    }
+}
+
 #[derive(Default, Clone, Copy)]
 struct TokenSums {
     input: u64,
@@ -511,7 +871,68 @@ mod tests {
     use super::*;
 
     fn reporter() -> Arc<Reporter> {
-        Arc::new(Reporter::new("task-1".to_string(), Arc::new(|| None), None))
+        Arc::new(Reporter::new(
+            "task-1".to_string(),
+            Arc::new(|| None),
+            None,
+            None,
+        ))
+    }
+
+    fn seed_row(provider: &str, model: &str, input: u64) -> UsageRow {
+        UsageRow {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            input_tokens: input,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cost_usd_ticks: 0,
+        }
+    }
+
+    fn cont(remote: &str, last_seq: u64, seed: Vec<UsageRow>) -> FinishedContinuation {
+        FinishedContinuation {
+            remote_task_id: remote.to_string(),
+            last_seq,
+            usage_seed: seed,
+        }
+    }
+
+    fn usage_segment(turn_seq: u64, input: u64) -> gold_band::acp::usage::AcpPromptUsageSegment {
+        gold_band::acp::usage::AcpPromptUsageSegment {
+            turn_id: format!("turn-{turn_seq}"),
+            turn_seq,
+            elapsed_ms: None,
+            provider: Some("anthropic".to_string()),
+            model: Some("claude-sonnet-5-5".to_string()),
+            usage: gold_band::acp::usage::AcpPromptTokenUsage {
+                input_tokens: Some(input),
+                output_tokens: None,
+                cached_read_tokens: None,
+                cached_write_tokens: None,
+                total_tokens: None,
+            },
+        }
+    }
+
+    fn completed_entry(remote: &str, local: &str) -> RemoteCompletedTask {
+        RemoteCompletedTask {
+            remote_task_id: remote.to_string(),
+            local_task_id: local.to_string(),
+            local_run_id: "run-1".to_string(),
+            workspace_id: "ws-1".to_string(),
+            local_project_id: "proj-1".to_string(),
+            issue_ref: None,
+            kind: None,
+            status: "completed".to_string(),
+            title: "t".to_string(),
+            completed_at: "2026-11-18T00:00:00Z".to_string(),
+            issue_status_category: None,
+            issue_status_name: None,
+            dpms_required: false,
+            dpms_story_id: None,
+        }
     }
 
     #[test]
@@ -709,5 +1130,175 @@ mod tests {
         worker.await.expect("worker task must not panic");
         // 补出的 tool_use 占用 seq 1。
         assert_eq!(reporter.lock().next_seq, 2);
+    }
+
+    // ── M5-de：终态后追问 run 续报 ─────────────────────────────────────────────
+
+    /// 核心不变量：追问 run 挂载后 seq 接续上一 run 水位、用量以历史累计为种子继续累加。
+    #[test]
+    fn followup_run_attaches_with_seq_and_usage_continuity() {
+        let registry = TranscriptRegistry::default();
+        registry.record_finished(
+            "local-1",
+            cont(
+                "remote-1",
+                3,
+                vec![seed_row("anthropic", "claude-sonnet-5-5", 30)],
+            ),
+        );
+        let reporter = registry
+            .attach_followup("local-1", "run-2", Arc::new(|| None))
+            .expect("终态后追问 run 必须挂载 reporter（M5-de）");
+        assert_eq!(reporter.lock().next_seq, 4, "seq 接续水位 3 → 从 4 继续");
+        let rows = reporter.lock().usage.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].input_tokens, 30, "用量带历史种子");
+        // 追问新增用量累加在种子之上（服务端整体替换 → 必须报任务级累计总量）。
+        reporter
+            .lock()
+            .usage
+            .merge("attempt-2", vec![usage_segment(1, 10)]);
+        let rows = reporter.lock().usage.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].input_tokens, 40, "30 种子 + 10 新增 = 累计 40");
+    }
+
+    /// 同 remote 已有在飞 reporter 时拒绝挂载（两路并发写同一 seq 空间 → 服务端交错行）。
+    #[test]
+    fn followup_attach_refuses_while_same_remote_reporter_active() {
+        let registry = TranscriptRegistry::default();
+        registry.record_finished("local-1", cont("remote-1", 2, vec![]));
+        let active = Arc::new(Reporter::new(
+            "remote-1".to_string(),
+            Arc::new(|| None),
+            None,
+            None,
+        ));
+        registry.insert("local-other", "run-9", active);
+        assert!(
+            registry
+                .attach_followup("local-1", "run-2", Arc::new(|| None))
+                .is_none(),
+            "同 remote 在飞时不得挂载第二路"
+        );
+        assert!(
+            registry.find("local-1", "run-2").is_none(),
+            "拒绝挂载即不得注册"
+        );
+    }
+
+    /// finish 登记清除 foreign 误标：终态排空竞态窗口内被异步解析标过的任务仍可续报。
+    #[test]
+    fn record_finished_clears_foreign_marker() {
+        let registry = TranscriptRegistry::default();
+        registry.mark_resolved("local-1", FollowupResolution::Foreign);
+        registry.record_finished("local-1", cont("remote-1", 5, vec![]));
+        assert!(
+            registry
+                .attach_followup("local-1", "run-2", Arc::new(|| None))
+                .is_some(),
+            "水位登记后 foreign 标记不得遮蔽挂载"
+        );
+    }
+
+    /// 水位捕获：排空后 next_seq-1 = 已分配 seq 高水位（超时路径同一捕获逻辑，空洞允许）。
+    #[test]
+    fn continuation_capture_reports_allocated_seq_watermark() {
+        let reporter = reporter();
+        {
+            let mut guard = reporter.lock();
+            let state = &mut *guard;
+            state.project.push_error("boom");
+            let batch = state.project.drain(&mut state.next_seq);
+            assert_eq!(batch.len(), 1);
+            assert_eq!(batch[0].seq, 1);
+        }
+        let continuation = capture_continuation(&reporter);
+        assert_eq!(continuation.remote_task_id, "task-1");
+        assert_eq!(continuation.last_seq, 1);
+    }
+
+    /// 重启恢复解析：只认最新 completed 条目（旧 remote 已被 rerun 顶替，续报会写错任务）；
+    /// 最新条目无持久水位（旧版本收尾）→ 不续报（seq 基线未知，宁可少报不可交错）。
+    #[test]
+    fn resolve_followup_baseline_reads_newest_completed_with_watermark() {
+        let mut state = StateConfig::default();
+        state.remote_completed_tasks = vec![
+            completed_entry("remote-2", "local-9"),
+            completed_entry("remote-1", "local-9"),
+        ];
+        state.remote_transcript_continuity = Some(HashMap::from([(
+            "remote-1".to_string(),
+            RemoteTranscriptContinuity {
+                last_seq: 7,
+                usage_rows: vec![],
+            },
+        )]));
+        assert!(
+            resolve_followup_baseline(&state, "local-9").is_none(),
+            "最新条目无水位 → 不续报（不得回退旧 remote）"
+        );
+        let continuity = state.remote_transcript_continuity.as_mut().unwrap();
+        continuity.insert(
+            "remote-2".to_string(),
+            RemoteTranscriptContinuity {
+                last_seq: 9,
+                usage_rows: vec![RemoteTranscriptUsageRow {
+                    provider: "anthropic".to_string(),
+                    model: "claude-sonnet-5-5".to_string(),
+                    input_tokens: 25,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                }],
+            },
+        );
+        let baseline =
+            resolve_followup_baseline(&state, "local-9").expect("最新条目有水位 → 可续报");
+        assert_eq!(baseline.remote_task_id, "remote-2");
+        assert_eq!(baseline.last_seq, 9);
+        assert_eq!(baseline.usage_seed[0].input_tokens, 25);
+        assert_eq!(baseline.usage_seed[0].cost_usd_ticks, 0);
+        assert!(
+            resolve_followup_baseline(&state, "local-x").is_none(),
+            "非 multica 任务 → None"
+        );
+    }
+
+    /// 持久化写入：当前键无条件保留（首 run 排空先于 finalize 落历史），
+    /// completed 历史外的旧水位清理（历史有界 → 水位有界）。
+    #[test]
+    fn apply_continuation_write_prunes_stale_keys() {
+        let mut state = StateConfig::default();
+        state.remote_completed_tasks = vec![completed_entry("remote-keep", "local-a")];
+        state.remote_transcript_continuity = Some(HashMap::from([
+            (
+                "remote-keep".to_string(),
+                RemoteTranscriptContinuity {
+                    last_seq: 2,
+                    usage_rows: vec![],
+                },
+            ),
+            (
+                "remote-old".to_string(),
+                RemoteTranscriptContinuity {
+                    last_seq: 1,
+                    usage_rows: vec![],
+                },
+            ),
+        ]));
+        apply_continuation_write(
+            &mut state,
+            "remote-cur",
+            5,
+            &[seed_row("anthropic", "claude-sonnet-5-5", 10)],
+        );
+        let map = state.remote_transcript_continuity.as_ref().unwrap();
+        let current = map.get("remote-cur").unwrap();
+        assert_eq!(current.last_seq, 5);
+        assert_eq!(current.usage_rows.len(), 1);
+        assert_eq!(current.usage_rows[0].input_tokens, 10);
+        assert!(map.contains_key("remote-keep"), "历史内水位保留");
+        assert!(!map.contains_key("remote-old"), "历史外旧水位清理");
     }
 }

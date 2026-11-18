@@ -486,7 +486,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 
 **真实约束（写入设计、不掩盖）**：会话级续跑**依赖 ACP provider 的 session 在重启后仍可 `session/load`**。若 provider 不持久化 session（或已过期清理），`strict_continue` 必失败 → 码灵自动 fallback 到整 task rerun（新会话从头跑），不会卡死或静默丢上下文。该 fallback 用 `multica.session-resume-failed` 错误码上报。
 
-#### 3.2.8 执行记录（transcript）实时上报（M5-cy；用户输入 M5-da；usage 对齐 M5-db）
+#### 3.2.8 执行记录（transcript）实时上报（M5-cy；用户输入 M5-da；usage 对齐 M5-db；终态后追问续报 M5-de）
 
 **目标**：执行远程任务期间把模型文本、工具调用/结果、运行期错误、**用户输入**实时上报，让 multica **既有** Web UI 直接获得执行时间线、工具步骤行、产物与 diff，Transcript 弹窗完整回放会话（用户的话和 agent 的响应交替出现）——**multica 服务端零改动**（协议核对结论见 §4.2 C3/C4）。
 
@@ -494,6 +494,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 
 - 只在 multica 远程任务执行期间。观测点 = ACP live emitter（`acp_live_update_emitter`）在 IPC 压缩**之前**——压缩会剥掉 `rawInput/rawOutput`，之后就拿不到工具输入/输出。
 - 一次 remote task 的一次执行 = 一个 reporter，键 `(local_task_id, local_run_id)`：resume 分支在 `register_active_run` 后注册，fresh 分支在 `create_conversation_run_vm` 返回后注册；终态/启动失败时摘除。
+- **终态后追问续报（M5-de）**：任务终态（completion-output 已交付）后用户在同一会话继续对话，multica 回放此前会静默缺这段。追问 run 产生新的 `local_run_id` 但服务端 task_id 不变，`messages` 端点也不做任务状态门控——因此追问 run 的 reporter 由 `observe` 首查注册表未命中时**懒挂载**：先查进程内水位登记（`TranscriptRegistry.finished`，finish_run 排空后写入），命中即同步挂载（追问的用户回声是该 run 第一条上报事件，异步挂载会丢首拍）；未命中再每任务至多一次异步解析（completed 历史反查 + 持久水位读取，覆盖跨重启场景），解析窗口内的少数事件放弃。追问 run 无 active 映射，其终态收尾（含水位登记）由 bridge `RunCompleted` 无在飞映射分支统一执行，Failure/Killed 同样先补 `error` 行再排空。追问挂载前提是存在水位：旧版本收尾的任务（无持久水位）不续报——seq 基线未知，盲目续报会与服务端既有行交错，宁缺毋乱。
 - 子 agent 分支（`event_branch_id != root`）不上报（与 Gold Band 本地折叠展示一致）。
 
 **上报哪些**
@@ -509,12 +510,12 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 **如何上报**
 
 - 500ms 批 flush（最多 200 条 / 256KB）→ `POST /api/daemon/tasks/{id}/messages`，body `{messages:[{seq,type,tool?,content?,input?,output?}]}`（None 字段省略）。
-- `seq` 由客户端从 1 自增，顺序 = 事件顺序；**作用域 = 服务端 task_id**。每次 retry/rerun 服务端都产生新 task_id，因此不需要任何跨进程 seq 水位持久化。
+- `seq` 由客户端从 1 自增，顺序 = 事件顺序；**作用域 = 服务端 task_id**。claim 产生的每个新 task（含 retry/rerun 子任务）从 1 开始；**同一任务终态后的追问 run 接续上一 run 的水位**（服务端 task_id 不变，seq 重叠会产生交错/重复行）：finish_run 排空后捕获 `last_seq = next_seq-1`（排空超时同样捕获——已分配 seq 的安全上界，协议允许空洞、不允许重叠）与累计用量行，写进程内快路径 + `StateConfig.remote_transcript_continuity`（键 = remote_task_id，随「最近完成」历史淘汰清理，历史有界 → 水位有界）。遗留边界：追问 run 进行中进程崩溃会丢该 run 已分配的增量水位（下次追问从旧水位起，可能与已落库行重叠），与「批次失败即丢」同类，接受不复杂化。
 - 失败即丢、**不重试**（批次原子；服务端表上 seq 无唯一约束，重发同 seq 会产生重复行）。404（任务已删除/无权）→ 本 run 停止上报。
 - 终态前排空（waitForDrain，5s 上限；取消路径 3s）：完成 / 失败 / 取消 / 启动失败四条路径都先落 `error`（失败类）并排空，再写 multica 终态，保证「执行记录完整 → 任务终态」的观察顺序。取消检测（remote 已被取消/404）走后台排空，不阻塞 3s 心跳 tick。
 - 用量：**专用端点** `POST /api/daemon/tasks/{id}/usage`，body `{usage:[7 字段]}`（token 不得塞进 messages 请求——服务端只认 messages 字段，塞了会被忽略、进不了 task_usage 展示链路）。节点成功边界与每个 turn 收尾只做一次内存登记（lifecycle 回调是热路径），由 worker 在 blocking 线程池读取该 attempt 的 `acp.prompt-usage.jsonl`（同步 I/O 不占 async worker 线程），按 `(attempt_dir, turn_seq)` 去重、按 `(provider, model)` 汇总。
   - **用量来源双通道（通用字段识别，不按 agent 分支）**：① **结算通道**——`session/prompt` 响应自带 `usage`（`inputTokens/outputTokens/cachedReadTokens/cachedWriteTokens/totalTokens`），一 turn 写一条 `PromptCompleted`，是权威值；② **流式通道**——适配器在 `session/update` 里逐次模型调用推送的用量，从顶层或 `_meta` 下一层的 `usage`/`rawUsage`/`modelUsage`/`tokenUsage` 中识别（字段名覆盖 snake_case 与 camelCase，含 `prompt_tokens`/`completion_tokens` 别名与 `*_details.cached_tokens` 嵌套缓存明细；含缓存的 inclusive input 会先减出缓存）。结算通道缺失或**全零**（= 适配器未上报）时，将本 turn 的流式样本按稳定样本 id（`messageId/callId/responseId/...`，含 `_meta` 命名空间键）去重后求和，写成**同一条** `PromptCompleted`——下游聚合与上报无需感知来源差异。两通道都没有可用用量 → 诊断 `acp.usage.source-missing`（adapter 名 + 样本接受/无 id/溢出计数），作为排查 token 来源的唯一入口。`used/size`（上下文仪表）、`cost`（非 USD 面额）与估算类字段（如 `usageByCategory`）不作为 token 来源。
-  - **每次上报从任务开始的累计总量**（服务端按 `(task_id, provider, model)` UPSERT 替换，重复上报是覆盖不是累加）；一个任务用了多个模型就报多条 entries。
+  - **每次上报从任务开始的累计总量**（服务端按 `(task_id, provider, model)` UPSERT 替换，重复上报是覆盖不是累加）；一个任务用了多个模型就报多条 entries。终态后追问 run 的累计器以已上报行**为种子**构造（M5-de）：追问新增用量在种子之上累加，整体替换语义下不带种子会把首 run 的历史用量覆盖清零。
   - **终态必报一次**：complete/fail/取消/启动失败回滚（release 或 fail）**之前**都先排空上报，与「执行记录完整 → 任务终态」顺序一致——该端点独立于 complete/fail 存在，失败/取消的任务也要有账。中途在每个节点/turn 边界随 dirty 上报（协议称中途可选、无实时消费方；边界触发天然有界，不额外节流）。
   - `provider` 上报前 trim + 小写归一化（服务端自动小写并按 `(task_id, provider, model)` 替换，本端聚合键必须先归一化，否则大小写漂移会被拆成多条 entry、服务端同 key 后写胜 → 少算 token）；provider 缺失/空串由服务端从任务 runtime 回填。
   - `cost_usd_ticks` 单位 1e-10 USD，本端无权威成本 → 恒 0（服务端存 NULL 后按费率估算），不传估算值。
@@ -522,7 +523,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 
 **性能与有界性**
 
-- 每任务每 500ms 至多一个 HTTP（空闲批跳过），观测点是纯内存投影（类型分流 → 子分支过滤 → 注册表查找，子 agent 分支的高频流式事件不进注册表锁），无 I/O、无全量扫描；用量文件读取只在边界登记后由 worker 在 blocking 线程池执行，每个边界一次小文件读取。
+- 每任务每 500ms 至多一个 HTTP（空闲批跳过），观测点是纯内存投影（类型分流 → 子分支过滤 → 注册表查找，子 agent 分支的高频流式事件不进注册表锁），无 I/O、无全量扫描；用量文件读取只在边界登记后由 worker 在 blocking 线程池执行，每个边界一次小文件读取。追问懒挂载不破坏该约束：非 multica 任务在注册表未命中后至多多一次 `finished`/`foreign` 集合查找（无磁盘 IO），归属解析（含 state.json 读）每任务至多 spawn 一次；追问挂载后走正常注册表查找路径。
 - 有界：未发缓冲 512 条（溢出丢最旧文本行，工具行优先保留）、工具/文本流跟踪表 2048/64（超限淘汰最旧）；单批 200 条 / 256KB；流式用量样本每 turn 上限 4096 个（按稳定 id 去重，正常模型调用次数远低于此，超限计数丢弃）。内存不随任务产出行数无界增长。
 - 非 multica 本地会话零开销：一次类型判断 + 注册表查找即返回。流式用量识别只在前台 prompt turn 内对 session/update 帧做固定几处 JSON 字段读取，不扫描文本内容、不做正则。
 
