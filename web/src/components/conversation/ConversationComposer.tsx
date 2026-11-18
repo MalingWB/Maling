@@ -811,6 +811,7 @@ export function ConversationComposer({
   const inputScrollRef = useRef<HTMLDivElement | null>(null);
   const resize = useComposerResize({
     getBaseHeight: () => inputScrollRef.current?.getBoundingClientRect().height ?? 0,
+    scope: 'home',
   });
 
   useEffect(() => {

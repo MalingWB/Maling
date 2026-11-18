@@ -16,6 +16,17 @@ export const COMPOSER_INPUT_KEYBOARD_STEP_PX = 24;
 
 export const COMPOSER_INPUT_HEIGHT_STORAGE_KEY = 'composer/input-height-px';
 
+/**
+ * Height memories are scoped per composer surface: the centered home input
+ * and the session sticky footer live in different layouts, so a height tuned
+ * on one must not leak into the other.
+ */
+export type ComposerResizeScope = 'home' | 'session';
+
+export function composerInputHeightStorageKey(scope: ComposerResizeScope): string {
+  return `${COMPOSER_INPUT_HEIGHT_STORAGE_KEY}/${scope}`;
+}
+
 export function composerInputMaxHeightPx(): number {
   if (typeof window === 'undefined') return 320;
   return Math.max(
@@ -29,9 +40,9 @@ export function clampComposerInputHeight(value: number): number {
   return Math.min(composerInputMaxHeightPx(), Math.max(COMPOSER_INPUT_MIN_HEIGHT_PX, Math.round(value)));
 }
 
-export function readStoredComposerInputHeight(): number | null {
+export function readStoredComposerInputHeight(scope: ComposerResizeScope): number | null {
   if (typeof window === 'undefined') return null;
-  const raw = window.localStorage.getItem(COMPOSER_INPUT_HEIGHT_STORAGE_KEY);
+  const raw = window.localStorage.getItem(composerInputHeightStorageKey(scope));
   if (!raw) return null;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed)) return null;
@@ -41,11 +52,11 @@ export function readStoredComposerInputHeight(): number | null {
   return clampComposerInputHeight(parsed);
 }
 
-export function storeComposerInputHeight(value: number | null): void {
+export function storeComposerInputHeight(value: number | null, scope: ComposerResizeScope): void {
   if (typeof window === 'undefined') return;
   if (value === null) {
-    window.localStorage.removeItem(COMPOSER_INPUT_HEIGHT_STORAGE_KEY);
+    window.localStorage.removeItem(composerInputHeightStorageKey(scope));
     return;
   }
-  window.localStorage.setItem(COMPOSER_INPUT_HEIGHT_STORAGE_KEY, String(clampComposerInputHeight(value)));
+  window.localStorage.setItem(composerInputHeightStorageKey(scope), String(clampComposerInputHeight(value)));
 }

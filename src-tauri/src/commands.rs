@@ -6837,8 +6837,7 @@ pub async fn get_conversation_turn_index(
         branch_id.unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
     // The branch id feeds a filesystem path join; validate it exactly like the
     // other timeline commands so a crafted id cannot escape the attempt dir.
-    gold_band::acp::branches::validate_conversation_branch_id(&branch_id)
-        .map_err(command_error)?;
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id).map_err(command_error)?;
     spawn_blocking_command(move || {
         let attempt_dir = match (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
             (Some(outer_node), Some(outer_attempt)) => app.paths.dynamic_node_attempt_dir(
@@ -6862,15 +6861,17 @@ pub async fn get_conversation_turn_index(
         // lock for the lean parse.
         let events = gold_band::acp::events::load_timeline_items_without_hydration(&timeline_path)
             .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"))?;
-        Ok(gold_band::acp::events::conversation_turn_index_after(&events, after_seq)
-            .into_iter()
-            .map(|entry| ConversationTurnIndexEntryVm {
-                seq: entry.seq,
-                timestamp: entry.timestamp,
-                kind: entry.kind,
-                prompt_preview: entry.prompt_preview,
-            })
-            .collect::<Vec<_>>())
+        Ok(
+            gold_band::acp::events::conversation_turn_index_after(&events, after_seq)
+                .into_iter()
+                .map(|entry| ConversationTurnIndexEntryVm {
+                    seq: entry.seq,
+                    timestamp: entry.timestamp,
+                    kind: entry.kind,
+                    prompt_preview: entry.prompt_preview,
+                })
+                .collect::<Vec<_>>(),
+        )
     })
     .await
 }
