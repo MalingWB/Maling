@@ -178,6 +178,10 @@ export function getWorkflowTemplates() {
   return getRuntimeApi().getWorkflowTemplates();
 }
 
+export function forgeSourceDigest(projectId: string, taskId: string) {
+  return getRuntimeApi().forgeSourceDigest(projectId, taskId);
+}
+
 export function saveWorkflowTemplate(name: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[1], modelBindings?: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[2]) {
   return getRuntimeApi().saveWorkflowTemplate(name, workflow, modelBindings);
 }

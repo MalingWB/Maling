@@ -634,7 +634,8 @@
       "copyAbsolutePath": "复制绝对路径",
       "copyRelativePath": "复制相对路径",
       "relativeToRunDirectory": "相对于运行目录",
-      "relativeToAttachmentDirectory": "相对于附件目录", "relativeToSourceWorkspace": "相对于来源工作目录",
+      "relativeToAttachmentDirectory": "相对于附件目录",
+      "relativeToSourceWorkspace": "相对于来源工作目录",
       "openWorkspaceFile": "打开工作空间文件",
       "referenceToConversation": "引用到对话",
       "removeWorkspaceReference": "移除文件引用",
@@ -1062,7 +1063,6 @@
       "prompt-queue-full": "待发送队列已满，最多可保留 10 条。",
       "prompt-queue-item-not-found": "这条待发送内容已不存在。",
       "prompt-queue-item-dispatching": "这条内容正在发送，暂时无法操作。",
-
       "prompt-queue-item-editing": "这条内容正在取回编辑，暂时无法操作。",
       "prompt-queue-empty": "待发送队列为空。",
       "prompt-queue-revision-conflict": "待发送顺序已发生变化，请在列表更新后重试。",
@@ -2456,7 +2456,6 @@
       "deleteConfirmDescription": "草稿的正文、引用、角色和附件引用会一起删除，此操作无法撤销。",
       "takeConflict": "输入框已有内容，草稿仍保留在草稿箱。",
       "takeDeleteKept": "内容已取回输入框，原草稿仍保留在草稿箱。",
-
       "saveFull": "草稿箱已满，删除旧草稿后可继续保存"
     },
     "sending": "发送中",
@@ -3140,7 +3139,9 @@
       "remoteNeedLocalWorkspace": "请先添加本地工作空间，再执行需求",
       "remoteBindingTag": "{{source}} · {{title}}",
       "removeRemoteBinding": "解除任务绑定",
-      "remoteAttachmentHint": "远程任务附件，发送时自动下载并附加"
+      "remoteAttachmentHint": "远程任务附件，发送时自动下载并附加",
+      "forgeBindingTag": "铸造 · {{title}}",
+      "removeForgeBinding": "解除铸造绑定"
     },
     "branchPicker": {
       "label": "分支",
@@ -3527,6 +3528,14 @@
       "npm-engines-incompatible": "此 npm 不支持当前 Node.js，要求：{{nodeRange}}。",
       "npm-version-mismatch": "npm 版本信息不一致。输出：{{expectedVersion}}；安装包：{{actualVersion}}。",
       "npm-package-mismatch": "npm 与 npx 来自不同安装。npm：{{expectedNpmRoot}}；当前工具：{{actualNpmRoot}}。"
+    }
+  },
+  "forge": {
+    "entry": {
+      "action": "铸造为工作流"
+    },
+    "prefill": {
+      "intro": "基于以下源会话铸造工作流，可补充要求后发送："
     }
   }
 }

@@ -3598,6 +3598,7 @@ fn scheduled_create_input(
         first_prompt_hidden_sections: None,
         role: None,
         quotes: definition.content_snapshot.quotes.clone(),
+        forge_source_task_id: None,
     })
 }
 
@@ -4039,6 +4040,7 @@ mod tests {
     #[test]
     fn scheduled_continue_prompt_keeps_workspace_file_references_and_quotes() {
         let input = crate::view_models_conversation::ConversationCreateInputVm {
+            forge_source_task_id: None,
             project_id: "project-a".to_string(),
             content: "检查状态".to_string(),
             run_mode: "direct".to_string(),

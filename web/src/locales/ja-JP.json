@@ -634,7 +634,8 @@
       "copyAbsolutePath": "絶対パスをコピーする",
       "copyRelativePath": "相対パスをコピーする",
       "relativeToRunDirectory": "実行ディレクトリからの相対パス",
-      "relativeToAttachmentDirectory": "添付ディレクトリからの相対パス", "relativeToSourceWorkspace": "参照元の作業ディレクトリからの相対パス",
+      "relativeToAttachmentDirectory": "添付ディレクトリからの相対パス",
+      "relativeToSourceWorkspace": "参照元の作業ディレクトリからの相対パス",
       "openWorkspaceFile": "ワークスペースファイルを開く",
       "referenceToConversation": "会話で参照",
       "removeWorkspaceReference": "ファイル参照を削除",
@@ -1062,7 +1063,6 @@
       "prompt-queue-full": "保留中のキューがいっぱいです。最大 10 個のプロンプトを保持できます。",
       "prompt-queue-item-not-found": "このキューに入れられたプロンプトはもう存在しません。",
       "prompt-queue-item-dispatching": "このプロンプトは送信中のため、現在変更できません。",
-
       "prompt-queue-item-editing": "このプロンプトは編集用に取得中のため、現在操作できません。",
       "prompt-queue-empty": "保留中のキューは空です。",
       "prompt-queue-revision-conflict": "送信待ちの順序が変更されました。リストの更新後にもう一度試してください。",
@@ -2439,11 +2439,8 @@
       "interruptConfirmDescription": "現在の返信を停止してから、この内容を送信します。",
       "interruptConfirmSkip": "今後表示しない",
       "interruptConfirmAction": "停止して送信",
-
       "itemStateEditing": "編集用に取得中",
-
       "itemStateSending": "送信中",
-
       "storageError": "送信待ちキューの読み取りに失敗しました"
     },
     "composerDrafts": {
@@ -2458,10 +2455,7 @@
       "deleteConfirmTitle": "この下書きを削除しますか？",
       "deleteConfirmDescription": "本文、引用、ロール、添付参照が一緒に削除されます。この操作は取り消せません。",
       "takeConflict": "入力欄に内容があるため、草稿は草稿ボックスに残っています。",
-
       "takeDeleteKept": "内容は入力欄に戻しました。元の下書きも下書きボックスに残っています。",
-
-
       "saveFull": "下書きボックスがいっぱいです。古い下書きを削除すると保存できます"
     },
     "sending": "送信中",
@@ -3145,7 +3139,9 @@
       "remoteNeedLocalWorkspace": "要件を実行する前に、ローカルワークスペースを追加してください",
       "removeRemoteBinding": "タスクのバインド解除",
       "remoteAttachmentHint": "リモートタスクの添付ファイル。送信時に自動でダウンロードして添付されます",
-      "remoteBindingTag": "{{source}} · {{title}}"
+      "remoteBindingTag": "{{source}} · {{title}}",
+      "forgeBindingTag": "鋳造 · {{title}}",
+      "removeForgeBinding": "鋳造のバインドを解除"
     },
     "branchPicker": {
       "label": "ブランチ",
@@ -3532,6 +3528,14 @@
       "npm-engines-incompatible": "この npm は現在の Node.js に対応していません。必要な条件：{{nodeRange}}。",
       "npm-version-mismatch": "npm のバージョン情報が一致しません。出力：{{expectedVersion}}、パッケージ：{{actualVersion}}。",
       "npm-package-mismatch": "npm と npx のインストール先が異なります。npm：{{expectedNpmRoot}}、このツール：{{actualNpmRoot}}。"
+    }
+  },
+  "forge": {
+    "entry": {
+      "action": "ワークフローとして鋳造"
+    },
+    "prefill": {
+      "intro": "以下のソース会話からワークフローを鋳造します。要求を追記してから送信してください："
     }
   }
 }

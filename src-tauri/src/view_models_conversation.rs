@@ -659,6 +659,10 @@ pub struct ConversationRunVm {
     pub task_uuid: Option<String>,
     pub run_id: String,
     pub run_mode: String,
+    /// 任务来源（TaskOrigin::as_str；空串 = 普通会话）。Forge 会话用于
+    /// 隐藏铸造入口（G3）与徽标呈现。
+    #[serde(default)]
+    pub origin: String,
     pub workflow_template_id: Option<String>,
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub agent_identity: Option<ConversationAgentIdentityVm>,
@@ -999,6 +1003,10 @@ pub struct ConversationCreateInputVm {
     pub workspace_files: Vec<PromptWorkspaceFileRef>,
     #[serde(default)]
     pub quotes: Vec<gold_band::provider::UserPromptQuote>,
+    /// 工作流铸造（入口 A）：源会话 task id。后端组装 origin/角色/隐藏材料，
+    /// 前端不搬运会话内容。
+    #[serde(default)]
+    pub forge_source_task_id: Option<String>,
 }
 
 pub fn scheduled_content_snapshot(
@@ -4592,6 +4600,10 @@ pub fn conversation_run_vm(
             .rerun
             .as_ref()
             .and_then(|metadata| metadata.origin.clone()),
+        origin: task_state
+            .origin
+            .map(|origin| origin.as_str().to_string())
+            .unwrap_or_default(),
     })
 }
 
@@ -4959,6 +4971,7 @@ fn conversation_create_command(
     command.workspace_files = input.workspace_files.clone();
     command.quotes = input.quotes.clone();
     command.first_prompt_hidden_sections = input.first_prompt_hidden_sections.clone();
+    command.forge_source_task_id = input.forge_source_task_id.clone();
     Ok(command)
 }
 
@@ -5000,6 +5013,11 @@ pub fn create_conversation_run_vm(
                 task_uuid: task_uuid.clone(),
                 run_id: run.id.clone(),
                 run_mode: input.run_mode.clone(),
+                origin: input
+                    .forge_source_task_id
+                    .as_ref()
+                    .map(|_| "forge".to_string())
+                    .unwrap_or_default(),
                 workflow_template_id: input.workflow_template_id.clone(),
                 direct_config: input.direct_config.clone(),
                 agent_identity: input
@@ -5088,6 +5106,12 @@ pub fn rerun_conversation_task_vm(
                 .or_else(|| Some(task_id.to_string())),
             run_id: run.id.clone(),
             run_mode: "workflow".to_string(),
+            origin: app
+                .task_show(task_id)
+                .ok()
+                .and_then(|task| task.origin)
+                .map(|origin| origin.as_str().to_string())
+                .unwrap_or_default(),
             workflow_template_id: None,
             direct_config: read_conversation_metadata(app, task_id)
                 .and_then(|metadata| metadata.direct_config),
@@ -7396,6 +7420,7 @@ mod tests {
     fn scheduled_auto_snapshot_preserves_agent_and_strategy_identity() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            forge_source_task_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run this automatically".to_string(),
             run_mode: ConversationRunMode::Auto.as_str().to_string(),
@@ -7539,6 +7564,7 @@ mod tests {
             }
         }));
         let input = ConversationCreateInputVm {
+            forge_source_task_id: None,
             project_id: app.paths.project_id.clone(),
             content: "start a direct conversation".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7586,6 +7612,7 @@ mod tests {
     fn worktree_validation_preserves_the_non_git_preflight_error_code() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            forge_source_task_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run in an isolated worktree".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7614,6 +7641,7 @@ mod tests {
     fn a_role_is_accepted_only_for_direct_conversations() {
         let app = App::new(temp_repo_root());
         let input_for = |run_mode: ConversationRunMode| ConversationCreateInputVm {
+            forge_source_task_id: None,
             project_id: app.paths.project_id.clone(),
             content: "改一下这个函数".to_string(),
             run_mode: run_mode.as_str().to_string(),
@@ -7654,6 +7682,7 @@ mod tests {
     fn scheduled_task_materialization_creates_task_without_starting_run() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            forge_source_task_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run this later".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7689,6 +7718,7 @@ mod tests {
     fn task_metadata_update_returns_the_authoritative_task_projection() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            forge_source_task_id: None,
             project_id: app.paths.project_id.clone(),
             content: "h".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7736,6 +7766,7 @@ mod tests {
         let attachment = app.paths.repo_root.join("context.txt");
         fs::write(attachment.as_std_path(), "attachment content").unwrap();
         let input = ConversationCreateInputVm {
+            forge_source_task_id: None,
             project_id: app.paths.project_id.clone(),
             content: String::new(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7784,6 +7815,7 @@ mod tests {
         // 未携带（本地会话）→ 不落盘，与旧行为一致。
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            forge_source_task_id: None,
             project_id: app.paths.project_id.clone(),
             content: "远程任务正文".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7841,6 +7873,7 @@ mod tests {
     fn conversation_task_creation_rolls_back_when_attachment_copy_fails() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
+            forge_source_task_id: None,
             project_id: app.paths.project_id.clone(),
             content: "task must roll back".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),

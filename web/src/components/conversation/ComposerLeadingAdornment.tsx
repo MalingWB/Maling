@@ -1,11 +1,11 @@
 import type { Ref } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Globe, X } from 'lucide-react';
+import { Globe, Hammer, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { SlashCommandInputTag } from '@/components/conversation/SlashCommandInputTag';
 import { COMPOSER_LEADING_ADORNMENT_SLOT_CLASS_NAME } from '@/lib/conversation-composer-layout';
 import { LEADING_ADORNMENT_GAP } from '@/hooks/useLeadingAdornmentTextIndent';
-import type { ConversationComposerRemoteBinding } from '@/lib/conversation-composer-draft';
+import type { ConversationComposerForgeBinding, ConversationComposerRemoteBinding } from '@/lib/conversation-composer-draft';
 import { remoteTaskSourceLabel } from '@/lib/remote-sources';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import type { CommittedSlashItem } from '@/lib/slash-command';
@@ -23,23 +23,29 @@ interface ComposerLeadingAdornmentProps {
   committedSlashCommand: CommittedSlashItem | null;
   /// 远程任务绑定（需求管理「点击执行」prefill 的 draft.remote），null = 未绑定。
   remoteBinding: ConversationComposerRemoteBinding | null;
+  /// 工作流铸造绑定（会话「铸造为工作流」prefill 的 draft.forge），null = 未绑定。
+  forgeBinding: ConversationComposerForgeBinding | null;
   /// slash 标签的 agent 图标 key（kind=command 时按 agent 取图标）。
   slashAgentIconKey?: string;
   /// 槽容器 ref：由 useLeadingAdornmentTextIndent 提供，用于测量总宽做首行缩进。
   adornmentRef: Ref<HTMLSpanElement>;
   /// 解除远程绑定（点 chip ×）。
   onUnbindRemoteTask: () => void;
+  /// 解除铸造绑定（点 chip ×）。
+  onUnbindForge: () => void;
 }
 
 export function ComposerLeadingAdornment({
   committedSlashCommand,
   remoteBinding,
+  forgeBinding,
   slashAgentIconKey,
   adornmentRef,
   onUnbindRemoteTask,
+  onUnbindForge,
 }: ComposerLeadingAdornmentProps) {
   const { t } = useTranslation();
-  if (!committedSlashCommand && !remoteBinding) return null;
+  if (!committedSlashCommand && !remoteBinding && !forgeBinding) return null;
   return (
     // max-w-full：窄窗口下槽宽受滚动容器约束（首行 text-indent = 槽总宽 + gap 不超出行宽），
     // 溢出压力由 chip 内 truncate 消化（min-w-0 允许 Badge 随槽收缩）。
@@ -85,6 +91,26 @@ export function ComposerLeadingAdornment({
             type="button"
             aria-label={t('conversation.composer.removeRemoteBinding')}
             onClick={onUnbindRemoteTask}
+            className="ml-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm hover:bg-accent-foreground/15"
+          >
+            <X className="size-3" />
+          </button>
+        </Badge>
+      ) : null}
+      {forgeBinding ? (
+        /* 同 remote chip 的主题契约:accent/accent-foreground 保证对比度。 */
+        <Badge
+          variant="secondary"
+          className="min-w-0 gap-1 h-6 rounded-md border-accent-foreground/15 bg-accent px-2 text-[0.75rem] font-medium text-accent-foreground"
+        >
+          <Hammer className="size-3 shrink-0" />
+          <span className="max-w-[260px] truncate">
+            {t('conversation.composer.forgeBindingTag', { title: forgeBinding.title })}
+          </span>
+          <button
+            type="button"
+            aria-label={t('conversation.composer.removeForgeBinding')}
+            onClick={onUnbindForge}
             className="ml-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm hover:bg-accent-foreground/15"
           >
             <X className="size-3" />

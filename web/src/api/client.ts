@@ -16,6 +16,7 @@ import type {
   ConversationAutoConfigVm,
   ConversationCreateResultVm,
   ConversationCreateInput,
+  ForgeSourceDigestVm,
   ConversationRunModeVm,
   ConversationRunVm,
   ConversationRunSummaryPageVm,
@@ -664,6 +665,7 @@ export interface RuntimeApi {
   getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null): Promise<ConversationRunVm>;
   validateConversationCreate(input: ConversationCreateInput): Promise<ConversationValidationResultVm>;
   createConversationRun(input: ConversationCreateInput): Promise<ConversationCreateResultVm>;
+  forgeSourceDigest(projectId: string, taskId: string): Promise<ForgeSourceDigestVm>;
   rerunConversationTask(projectId: string, taskId: string): Promise<ConversationRunVm>;
   updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null): Promise<ConversationTaskRowVm>;
   deleteConversationTask(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;

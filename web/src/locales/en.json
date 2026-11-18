@@ -634,7 +634,8 @@
       "copyAbsolutePath": "Copy absolute path",
       "copyRelativePath": "Copy relative path",
       "relativeToRunDirectory": "Relative to the run directory",
-      "relativeToAttachmentDirectory": "Relative to the attachment directory", "relativeToSourceWorkspace": "Relative to the source working directory",
+      "relativeToAttachmentDirectory": "Relative to the attachment directory",
+      "relativeToSourceWorkspace": "Relative to the source working directory",
       "openWorkspaceFile": "Open workspace file",
       "referenceToConversation": "Reference in conversation",
       "removeWorkspaceReference": "Remove file reference",
@@ -1062,7 +1063,6 @@
       "prompt-queue-full": "The pending queue is full. It can hold up to 10 prompts.",
       "prompt-queue-item-not-found": "This queued prompt no longer exists.",
       "prompt-queue-item-dispatching": "This prompt is being sent and cannot be changed right now.",
-
       "prompt-queue-item-editing": "This prompt is being restored for editing and cannot be changed right now.",
       "prompt-queue-empty": "The pending queue is empty.",
       "prompt-queue-revision-conflict": "The pending order changed. Try again after the list updates.",
@@ -2439,11 +2439,8 @@
       "interruptConfirmDescription": "The current reply will be stopped before this message is sent.",
       "interruptConfirmSkip": "Don't ask again",
       "interruptConfirmAction": "Stop and send",
-
       "itemStateEditing": "Restoring for edit",
-
       "itemStateSending": "Sending",
-
       "storageError": "The pending queue could not be read"
     },
     "composerDrafts": {
@@ -2458,10 +2455,7 @@
       "deleteConfirmTitle": "Delete this draft?",
       "deleteConfirmDescription": "Its text, quotes, role, and attachment references will be removed. This cannot be undone.",
       "takeConflict": "The input is not empty. The draft remains in the draft box.",
-
       "takeDeleteKept": "Content was restored to the composer; the original draft is still saved.",
-
-
       "saveFull": "The draft box is full; delete an older draft to save more"
     },
     "sending": "Sending",
@@ -3145,7 +3139,9 @@
       "remoteNeedLocalWorkspace": "Add a local workspace before running a requirement",
       "remoteBindingTag": "{{source}} · {{title}}",
       "removeRemoteBinding": "Unbind task",
-      "remoteAttachmentHint": "Remote task attachment; downloaded and attached automatically on send"
+      "remoteAttachmentHint": "Remote task attachment; downloaded and attached automatically on send",
+      "forgeBindingTag": "Forge · {{title}}",
+      "removeForgeBinding": "Unbind forge"
     },
     "branchPicker": {
       "label": "Branch",
@@ -3532,6 +3528,14 @@
       "npm-engines-incompatible": "This npm does not support the current Node.js. Required: {{nodeRange}}.",
       "npm-version-mismatch": "npm version information differs. Output: {{expectedVersion}}; package: {{actualVersion}}.",
       "npm-package-mismatch": "npm and npx belong to different installations. npm: {{expectedNpmRoot}}; this tool: {{actualNpmRoot}}."
+    }
+  },
+  "forge": {
+    "entry": {
+      "action": "Forge as workflow"
+    },
+    "prefill": {
+      "intro": "Forge a workflow from the source conversation below — add any requirements, then send:"
     }
   }
 }

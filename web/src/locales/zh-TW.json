@@ -634,7 +634,8 @@
       "copyAbsolutePath": "複製絕對路徑",
       "copyRelativePath": "複製相對路徑",
       "relativeToRunDirectory": "相對於執行目錄",
-      "relativeToAttachmentDirectory": "相對於附件目錄", "relativeToSourceWorkspace": "相對於來源工作目錄",
+      "relativeToAttachmentDirectory": "相對於附件目錄",
+      "relativeToSourceWorkspace": "相對於來源工作目錄",
       "openWorkspaceFile": "開啟工作區檔案",
       "referenceToConversation": "引用到對話",
       "removeWorkspaceReference": "移除檔案引用",
@@ -1062,7 +1063,6 @@
       "prompt-queue-full": "待傳送佇列已滿，最多可保留 10 條。",
       "prompt-queue-item-not-found": "這條待傳送內容已不存在。",
       "prompt-queue-item-dispatching": "這條內容正在傳送，暫時無法操作。",
-
       "prompt-queue-item-editing": "這條內容正在取回編輯，暫時無法操作。",
       "prompt-queue-empty": "待傳送佇列為空。",
       "prompt-queue-revision-conflict": "待傳送順序已發生變化，請在清單更新後重試。",
@@ -2439,11 +2439,8 @@
       "interruptConfirmDescription": "目前的回覆會先停止，接著傳送這則內容。",
       "interruptConfirmSkip": "之後不再提示",
       "interruptConfirmAction": "停止並傳送",
-
       "itemStateEditing": "取回編輯中",
-
       "itemStateSending": "傳送中",
-
       "storageError": "待傳送佇列讀取失敗"
     },
     "composerDrafts": {
@@ -2458,10 +2455,7 @@
       "deleteConfirmTitle": "刪除這條草稿？",
       "deleteConfirmDescription": "草稿的正文、引用、角色和附件引用會一起刪除，此操作無法復原。",
       "takeConflict": "輸入框已有內容，草稿仍保留在草稿箱。",
-
       "takeDeleteKept": "內容已取回輸入框，原草稿仍保留在草稿箱。",
-
-
       "saveFull": "草稿箱已滿，刪除舊草稿後可繼續保存"
     },
     "sending": "傳送中",
@@ -3145,7 +3139,9 @@
       "remoteNeedLocalWorkspace": "請先新增本機工作區，再執行需求",
       "removeRemoteBinding": "解除任務綁定",
       "remoteAttachmentHint": "遠端任務附件，發送時自動下載並附加",
-      "remoteBindingTag": "{{source}} · {{title}}"
+      "remoteBindingTag": "{{source}} · {{title}}",
+      "forgeBindingTag": "鑄造 · {{title}}",
+      "removeForgeBinding": "解除鑄造綁定"
     },
     "branchPicker": {
       "label": "分支",
@@ -3532,6 +3528,14 @@
       "npm-engines-incompatible": "此 npm 不支援目前的 Node.js，要求：{{nodeRange}}。",
       "npm-version-mismatch": "npm 版本資訊不一致。輸出：{{expectedVersion}}；套件：{{actualVersion}}。",
       "npm-package-mismatch": "npm 與 npx 來自不同安裝。npm：{{expectedNpmRoot}}；目前工具：{{actualNpmRoot}}。"
+    }
+  },
+  "forge": {
+    "entry": {
+      "action": "鑄造為工作流"
+    },
+    "prefill": {
+      "intro": "基於以下源會話鑄造工作流，可補充要求後傳送："
     }
   }
 }

@@ -531,6 +531,7 @@ impl ScheduledTaskService {
             first_prompt_hidden_sections: None,
             role: None,
             quotes: input.quotes.clone(),
+            forge_source_task_id: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {
@@ -722,6 +723,7 @@ impl ScheduledTaskService {
             first_prompt_hidden_sections: None,
             role: None,
             quotes: effective_quotes,
+            forge_source_task_id: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {

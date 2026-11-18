@@ -85,6 +85,8 @@ interface ConversationRunPageProps {
   agentRegistry: AgentRegistryVm | null;
   onRerun: () => void;
   onEditWorkflow: () => void;
+  /// 铸造为工作流（入口 A）：携带本会话上下文预填 composer。
+  onForgeWorkflow?: () => void;
   workflowTemplates?: WorkflowTemplateStore | null;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
   onExecutionPlanSaved?: (saved: ExecutionPlanSaveResultVm) => void | Promise<void>;
@@ -108,6 +110,7 @@ export function ConversationRunPage({
   agentRegistry,
   onRerun,
   onEditWorkflow,
+  onForgeWorkflow,
   workflowTemplates = null,
   onWorkflowTemplatesChange,
   onExecutionPlanSaved,
@@ -618,6 +621,7 @@ export function ConversationRunPage({
             canEditWorkflow={!readOnly && run.runMode === 'workflow'}
             onRerun={handleRerun}
             onEditWorkflow={handleEditWorkflow}
+            onForgeWorkflow={onForgeWorkflow}
             onConfigureAuto={readOnly ? undefined : handleConfigureAuto}
             readOnly={readOnly}
             onViewWorkflow={handleViewWorkflow}

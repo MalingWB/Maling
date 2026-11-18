@@ -550,6 +550,7 @@ fn run() -> anyhow::Result<()> {
             remote_image_trust::revoke_remote_image_host,
             get_task_list,
             commands_forge::forge_create_session,
+            commands_forge::forge_source_digest,
             commands_forge::forge_get_spec,
             commands_forge::forge_save_spec,
             commands_forge::forge_compile,

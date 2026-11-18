@@ -35,6 +35,23 @@ export interface ConversationComposerRemoteBinding {
   attachments: readonly RemoteTaskAttachmentVm[];
 }
 
+/**
+ * 工作流铸造（入口 A）的「预填 + 发送时组装」绑定（claim-at-send，与远程任务绑定同构）。
+ *
+ * 会话里点「铸造为工作流」只读取源会话摘要预填 composer 并记下这份绑定；发送时若草稿
+ * 仍带绑定，则以 forgeSourceTaskId 走 create_conversation_run——后端固定 workflow-forge
+ * 角色、注入源会话隐藏材料并标记 origin=Forge。删 chip 只清绑定、正文保留，草稿降级为
+ * 普通本地会话。与远程绑定互斥（一次只有一个来源声明）。
+ */
+export interface ConversationComposerForgeBinding {
+  /// 源会话 task id（后端据此组装隐藏材料）。
+  sourceTaskId: string;
+  /// 源会话所属项目（须与 composer 当前项目一致，发送前校验）。
+  sourceProjectId: string;
+  /// 源会话标题，仅用于绑定 chip 展示。
+  title: string;
+}
+
 export interface ConversationComposerDraftState {
   content: string;
   attachments: AttachmentItem[];
@@ -42,6 +59,8 @@ export interface ConversationComposerDraftState {
   quotes: ComposerQuote[];
   /// 当前 prepare 中的远程任务绑定（null = 普通本地新建会话，走 create_conversation_run）。
   remote: ConversationComposerRemoteBinding | null;
+  /// 当前工作流铸造绑定（null = 非铸造草稿）。与远程绑定互斥。
+  forge: ConversationComposerForgeBinding | null;
   /// 提交意图：普通发送，或从 composer 直接创建 scheduled task。与远程绑定互斥（见 prefill / enterScheduledTask）。
   submission:
     | { kind: 'send' }
@@ -49,7 +68,7 @@ export interface ConversationComposerDraftState {
 }
 
 export function createInitialConversationComposerDraft(): ConversationComposerDraftState {
-  return { content: '', attachments: [], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } };
+  return { content: '', attachments: [], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'send' } };
 }
 
 /**
@@ -64,6 +83,8 @@ export type ConversationComposerDraftAction =
   | { type: 'changeWorkspace'; projectId: string | null }
   | { type: 'prefill'; content: string; remote: ConversationComposerRemoteBinding }
   | { type: 'clearRemote' }
+  | { type: 'prefillForge'; content: string; forge: ConversationComposerForgeBinding }
+  | { type: 'clearForge' }
   | { type: 'enterScheduledTask' }
   | { type: 'setScheduledTaskConfig'; config: ScheduledTaskConfig }
   | { type: 'exitScheduledTask' }
@@ -91,16 +112,23 @@ export function conversationComposerDraftReducer(
     case 'prefill':
       // 远程任务 prepare：覆盖式新草稿——正文预填 + 绑定 remote + 清空附件、工作区文件引用与引用片段，
       // 并回到 send 提交意图（scheduled-task 与远程绑定是互斥的提交意图，prefill 即声明本草稿为远程执行草稿；
-      // 远程任务在远程工作空间执行，本地工作区文件引用与引用片段不适用）。
-      return { content: action.content, attachments: [], workspaceFiles: [], quotes: [], remote: action.remote, submission: { kind: 'send' } };
+      // 远程任务在远程工作空间执行，本地工作区文件引用与引用片段不适用）。远程与铸造绑定互斥，一并清除。
+      return { content: action.content, attachments: [], workspaceFiles: [], quotes: [], remote: action.remote, forge: null, submission: { kind: 'send' } };
     case 'clearRemote':
       // 解除远程绑定但保留正文与附件：用户删掉绑定 chip 后，草稿降级为普通本地会话（发送走 create_conversation_run）。
       return state.remote === null ? state : { ...state, remote: null };
+    case 'prefillForge':
+      // 工作流铸造 prepare：与远程 prefill 同构的覆盖式草稿——正文预填源会话摘要 + 绑定 forge，
+      // 清空附件/引用并回到 send 提交意图（一次只有一个来源声明）。
+      return { content: action.content, attachments: [], workspaceFiles: [], quotes: [], remote: null, forge: action.forge, submission: { kind: 'send' } };
+    case 'clearForge':
+      // 解除铸造绑定但保留正文：删 chip 后草稿降级为普通本地会话（发送不带 forgeSourceTaskId）。
+      return state.forge === null ? state : { ...state, forge: null };
     case 'enterScheduledTask':
-      // scheduled-task 与远程绑定互斥：进入排程模式即本地解绑远程任务（任务仍在服务端 queued，可再次点执行）。
+      // scheduled-task 与远程/铸造绑定互斥：进入排程模式即本地解绑（远程任务仍在服务端 queued，可再次点执行）。
       return state.submission.kind === 'scheduled-task'
         ? state
-        : { ...state, remote: null, submission: { kind: 'scheduled-task', config: null } };
+        : { ...state, remote: null, forge: null, submission: { kind: 'scheduled-task', config: null } };
     case 'setScheduledTaskConfig':
       return { ...state, submission: { kind: 'scheduled-task', config: action.config } };
     case 'exitScheduledTask':
@@ -127,6 +155,10 @@ export interface ConversationComposerDraftContextValue {
   prefill: (content: string, remote: ConversationComposerRemoteBinding) => void;
   /// 解除远程绑定（保留正文与附件）。claim-at-send 下删 chip 纯属本地解绑——任务未被领取（仍 queued），无需通知服务端。
   clearRemote: () => void;
+  /// 会话「铸造为工作流」预填：写正文（源会话摘要）+ 绑定 forge，清空既有附件与引用。
+  prefillForge: (content: string, forge: ConversationComposerForgeBinding) => void;
+  /// 解除铸造绑定（保留正文）。
+  clearForge: () => void;
   enterScheduledTask: () => void;
   setScheduledTaskConfig: (config: ScheduledTaskConfig) => void;
   exitScheduledTask: () => void;
@@ -136,6 +168,8 @@ export interface ConversationComposerDraftContextValue {
 export interface ConversationComposerDraftBoundaryHandle {
   reset: () => void;
   changeWorkspace: (projectId: string | null) => void;
+  /// 会话页「铸造为工作流」入口在 boundary 外触发预填（入口在 run header，composer 在 home）。
+  prefillForge: (content: string, forge: ConversationComposerForgeBinding) => void;
 }
 
 const ConversationComposerDraftContext = createContext<ConversationComposerDraftContextValue | null>(null);
@@ -153,7 +187,11 @@ export const ConversationComposerDraftProvider = ConversationComposerDraftContex
 export function createConversationComposerDraftBoundaryHandle(
   owner: ConversationComposerDraftContextValue,
 ): ConversationComposerDraftBoundaryHandle {
-  return { reset: owner.reset, changeWorkspace: owner.changeWorkspace };
+  return {
+    reset: owner.reset,
+    changeWorkspace: owner.changeWorkspace,
+    prefillForge: owner.prefillForge,
+  };
 }
 
 export function resetConversationComposerDraft(
@@ -241,6 +279,21 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
     [],
   );
 
+  const prefillForge = useCallback(
+    (content: string, forge: ConversationComposerForgeBinding) => {
+      setDraft((prev) => {
+        // 覆盖式预填：释放上一份附件的预览 URL（与 prefill/reset 一致）。
+        revokeAttachmentPreviewUrls(prev.attachments);
+        return conversationComposerDraftReducer(prev, { type: 'prefillForge', content, forge });
+      });
+    },
+    [],
+  );
+
+  const clearForge = useCallback(() => {
+    setDraft((prev) => conversationComposerDraftReducer(prev, { type: 'clearForge' }));
+  }, []);
+
   const enterScheduledTask = useCallback(() => {
     setDraft((prev) => conversationComposerDraftReducer(prev, { type: 'enterScheduledTask' }));
   }, []);
@@ -274,11 +327,13 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
       changeWorkspace,
       prefill,
       clearRemote,
+      prefillForge,
+      clearForge,
       enterScheduledTask,
       setScheduledTaskConfig,
       exitScheduledTask,
       reset,
     }),
-    [draft, setContent, setAttachments, setWorkspaceFiles, setQuotes, changeWorkspace, prefill, clearRemote, enterScheduledTask, setScheduledTaskConfig, exitScheduledTask, reset],
+    [draft, setContent, setAttachments, setWorkspaceFiles, setQuotes, changeWorkspace, prefill, clearRemote, prefillForge, clearForge, enterScheduledTask, setScheduledTaskConfig, exitScheduledTask, reset],
   );
 }

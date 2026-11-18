@@ -137,6 +137,9 @@ pub struct CreateConversationTaskCommand {
     /// 首条 prompt 的隐式隐藏区段（远程任务上下文等）：仅首次执行（SessionMode::New）
     /// 加载并随首条 prompt 下发；续跑/追问不重放。
     pub first_prompt_hidden_sections: Option<Vec<crate::provider::PromptHiddenSection>>,
+    /// 工作流铸造（入口 A）：源会话 task id。置位时任务标记 origin=Forge、
+    /// 角色固定为 workflow-forge、源会话材料作为隐藏区段注入（G5 预算）。
+    pub forge_source_task_id: Option<String>,
 }
 
 impl CreateConversationTaskCommand {
@@ -159,6 +162,7 @@ impl CreateConversationTaskCommand {
             workspace_files: Vec::new(),
             quotes: Vec::new(),
             first_prompt_hidden_sections: None,
+            forge_source_task_id: None,
         }
     }
 }
@@ -259,13 +263,36 @@ impl App {
             ),
             "conversation payload cannot be empty"
         );
+        // 工作流铸造（入口 A）：固定 Direct 模式、固定 workflow-forge 角色、
+        // 源会话材料注入隐藏区段（G5 预算内），任务标记 origin=Forge。
+        let mut command = command.clone();
+        let forge_origin = if let Some(source_task_id) = command.forge_source_task_id.clone() {
+            ensure!(
+                command.run_mode == ConversationRunMode::Direct,
+                "forge conversation requires direct run mode"
+            );
+            let material = self.forge_source_material(&source_task_id)?;
+            if command.role.is_none() {
+                command.role = Some(self.workflow_forge_role()?);
+            }
+            let sections = command.first_prompt_hidden_sections.take().unwrap_or_default();
+            command.first_prompt_hidden_sections = Some(
+                sections
+                    .into_iter()
+                    .chain(std::iter::once(material.hidden_section))
+                    .collect(),
+            );
+            Some(crate::runtime::TaskOrigin::Forge)
+        } else {
+            None
+        };
         let title = conversation_auto_title(
             &command.content,
             self.config.conversation_auto_title_max_chars,
         );
 
         let (mut workflow, mut model_bindings, effective_include_optional_entry) =
-            self.conversation_workflow(command)?;
+            self.conversation_workflow(&command)?;
         migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
 
         // Git is an authoritative prerequisite for Auto and every workflow that
@@ -284,7 +311,7 @@ impl App {
                 requirement_content: command.content.clone(),
                 workflow: workflow.clone(),
                 workflow_template_id: command.workflow_template_id.clone(),
-                origin: None,
+                origin: forge_origin,
             },
             workflow,
             model_bindings,
@@ -608,6 +635,75 @@ mod tests {
         let reloaded = App::with_config(app.paths.repo_root.clone(), RuntimeConfig::default());
         reloaded.set_conversation_resident(&task_id, false).unwrap();
         assert!(!read_json::<ConversationMetadata>(&path).unwrap().resident);
+    }
+
+    #[test]
+    fn forge_source_conversation_pins_role_origin_and_hidden_context() {
+        let (_temp, repo) = git_repo();
+        let app = App::with_config(repo, RuntimeConfig::default());
+
+        // 源会话:最小 task(title + requirement)。
+        let source_task_id = "task-001";
+        let source_dir = app.paths.task_dir(source_task_id);
+        std::fs::create_dir_all(source_dir.join("authoring").as_std_path()).unwrap();
+        crate::storage::write_json(
+            &source_dir.join("task.json"),
+            &json!({
+                "version": crate::domain::VERSION,
+                "id": source_task_id,
+                "title": "源会话",
+                "description": null,
+            }),
+        )
+        .unwrap();
+        std::fs::write(
+            source_dir.join("authoring").join("requirement.md").as_std_path(),
+            "实现登录功能并补齐测试",
+        )
+        .unwrap();
+
+        let mut command = CreateConversationTaskCommand::new(
+            CONVERSATION_SOURCE_CLI,
+            "把以上会话铸造为工作流".to_string(),
+            ConversationRunMode::Direct,
+        );
+        command.direct_config = Some(super::ConversationDirectConfig {
+            agent_type: "claude-acp".to_string(),
+            model_id: None,
+            permission_mode: None,
+            auto_accept: false,
+            config_options: Default::default(),
+            model_bound_overrides: Default::default(),
+        });
+        command.forge_source_task_id = Some(source_task_id.to_string());
+
+        let prepared = app.prepare_conversation_task(&command).unwrap();
+        let (task_id, _, _) = prepared.accept();
+
+        // origin=Forge。
+        let task = app.task_show(&task_id).unwrap();
+        assert_eq!(task.origin, Some(crate::runtime::TaskOrigin::Forge));
+        // 角色固定为 workflow-forge。
+        let prompt_input: crate::provider::TaskPromptInput =
+            read_json(&app.paths.task_prompt_input_file(&task_id)).unwrap();
+        let role = prompt_input.role.expect("forge role pinned");
+        assert_eq!(role.profile_id, "pf-builtin-workflow-forge");
+        // 源会话材料进入首条 prompt 隐藏区段。
+        let sections: Vec<crate::provider::PromptHiddenSection> =
+            read_json(&app.paths.first_prompt_hidden_sections_file(&task_id)).unwrap();
+        assert!(sections.len() == 1);
+        assert!(sections[0].content.contains("实现登录功能并补齐测试"));
+
+        // 摘要入口:可见摘要短于隐藏材料且含需求。
+        let digest = app.forge_source_digest(source_task_id).unwrap();
+        assert_eq!(digest.title, "源会话");
+        assert!(digest.markdown.contains("实现登录功能并补齐测试"));
+
+        // 非 Direct 模式携带 forge 源被拒绝。
+        let mut auto_like = command.clone();
+        auto_like.run_mode = ConversationRunMode::Auto;
+        auto_like.auto_config = auto_command().auto_config;
+        assert!(app.prepare_conversation_task(&auto_like).is_err());
     }
 
     #[test]

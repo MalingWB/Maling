@@ -194,12 +194,133 @@ impl App {
         Ok(created_template_ids)
     }
 
+    /// 源会话材料（入口 A）：标题 + 需求 + 用户消息，按 G5 预算截断。
+    ///
+    /// 可见摘要供 composer 预填（用户可编辑），完整材料作为首条
+    /// prompt 的隐藏区段注入（`prepare_conversation_task` 消费）。
+    pub fn forge_source_material(&self, source_task_id: &str) -> Result<ForgeSourceMaterial> {
+        let task_dir = self.paths.task_dir(source_task_id);
+        let task: crate::runtime::TaskState = crate::storage::read_json(&task_dir.join("task.json"))
+            .with_context(|| format!("forge source task `{source_task_id}` not found"))?;
+        let title = task.title.unwrap_or_else(|| source_task_id.to_string());
+        let requirement = std::fs::read_to_string(
+            task_dir
+                .join("authoring")
+                .join("requirement.md")
+                .as_std_path(),
+        )
+        .unwrap_or_default();
+        let prompts = crate::storage::sqlite::search_index()
+            .map(|index| index.prompts_for_task(source_task_id, HIDDEN_PROMPT_CHAR_CAP))
+            .transpose()
+            .map_err(|error| anyhow::anyhow!("failed to load source prompts: {error}"))?
+            .unwrap_or_default();
+        let mut content = String::new();
+        content.push_str(&format!("# {title}\n\n"));
+        if !requirement.trim().is_empty() {
+            let cap = HIDDEN_TOTAL_CHAR_CAP / 2;
+            let requirement = char_truncate(&requirement, cap);
+            content.push_str("## 需求\n\n");
+            content.push_str(&requirement);
+            content.push_str("\n\n");
+        }
+        if !prompts.is_empty() {
+            content.push_str("## 用户消息（时间序）\n\n");
+            for prompt in prompts {
+                let prompt = prompt.trim();
+                if prompt.is_empty() {
+                    continue;
+                }
+                content.push_str("- ");
+                content.push_str(prompt);
+                content.push('\n');
+            }
+        }
+        let content = char_truncate(&content, HIDDEN_TOTAL_CHAR_CAP);
+        Ok(ForgeSourceMaterial {
+            title,
+            hidden_section: crate::provider::PromptHiddenSection {
+                title: "源会话材料".to_string(),
+                content,
+            },
+        })
+    }
+
+    /// composer 预填用的可见摘要（比隐藏材料更短：需求 + 少量近期消息）。
+    pub fn forge_source_digest(&self, source_task_id: &str) -> Result<ForgeSourceDigest> {
+        let material = self.forge_source_material(source_task_id)?;
+        // 可见摘要只保留标题与需求段（用户消息全量走隐藏注入）。
+        let requirement = material
+            .hidden_section
+            .content
+            .split("## 用户消息")
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        Ok(ForgeSourceDigest {
+            title: material.title,
+            markdown: char_truncate(&requirement, DIGEST_CHAR_CAP),
+        })
+    }
+
+    /// workflow-forge 角色（按界面语言解析内置 profile）。
+    pub(crate) fn workflow_forge_role(&self) -> Result<crate::provider::UserPromptRole> {
+        let profile = crate::app::profiles::find_profile_by_id(
+            &self.paths,
+            WORKFLOW_FORGE_PROFILE_ID,
+            self.config.desktop_language,
+        )?
+        .ok_or_else(|| {
+            anyhow::anyhow!("built-in profile `{WORKFLOW_FORGE_PROFILE_ID}` is unavailable")
+        })?;
+        Ok(crate::provider::UserPromptRole {
+            profile_id: profile.id,
+            name: profile.name,
+            content: profile.content,
+        })
+    }
+
     fn load_workflow_template_store_forge(
         &self,
     ) -> Result<crate::app::WorkflowTemplateStore> {
         // 复用现有模板加载入口（含内置模板物化与迁移）。
         self.workflow_templates()
     }
+}
+
+/// 源会话材料（入口 A,G5 预算内截断）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgeSourceMaterial {
+    pub title: String,
+    /// 随首条 prompt 注入的隐藏区段。
+    pub hidden_section: crate::provider::PromptHiddenSection,
+}
+
+/// composer 预填用的可见摘要（比隐藏材料更短）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgeSourceDigest {
+    pub title: String,
+    pub markdown: String,
+}
+
+/// 内置 workflow-forge profile id（`DEFAULT_PROFILE_SEEDS`）。
+pub const WORKFLOW_FORGE_PROFILE_ID: &str = "pf-builtin-workflow-forge";
+/// 隐藏注入预算（G5：单条用户消息字符上限）。
+const HIDDEN_PROMPT_CHAR_CAP: usize = 2_000;
+/// 隐藏注入总预算（约 50KB 上限,UTF-8 中文约 3 字节/字符）。
+const HIDDEN_TOTAL_CHAR_CAP: usize = 16_000;
+/// composer 预填摘要上限。
+const DIGEST_CHAR_CAP: usize = 2_000;
+
+/// 按字符数截断（不切断 UTF-8 边界）。
+fn char_truncate(text: &str, cap: usize) -> String {
+    if text.chars().count() <= cap {
+        return text.to_string();
+    }
+    text.chars().take(cap).collect()
 }
 
 /// `create_forge_task` 输入。

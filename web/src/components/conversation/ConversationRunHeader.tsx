@@ -1,4 +1,4 @@
-import { AlarmClock, Eye, RotateCcw, Settings2, Workflow, ChevronDown } from 'lucide-react';
+import { AlarmClock, Eye, Hammer, RotateCcw, Settings2, Workflow, ChevronDown } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ConversationRunVm, ConversationSessionLeafVm } from '../../types';
@@ -16,6 +16,9 @@ interface ConversationRunHeaderProps {
   onEditWorkflow: () => void;
   onViewWorkflow: () => void;
   onConfigureAuto?: () => void;
+  /// 铸造为工作流（入口 A）：携带本会话上下文预填 composer（仅 Direct 会话；
+  /// Forge 会话隐藏入口，G3）。
+  onForgeWorkflow?: () => void;
   readOnly?: boolean;
   onSessionSwitcherOpenChange: (open: boolean) => void;
   sessionSwitcherOpen: boolean;
@@ -33,6 +36,7 @@ export function ConversationRunHeader({
   onEditWorkflow,
   onViewWorkflow,
   onConfigureAuto,
+  onForgeWorkflow,
   readOnly = false,
   onSessionSwitcherOpenChange,
   sessionSwitcherOpen,
@@ -105,6 +109,17 @@ export function ConversationRunHeader({
 
         {/* Actions */}
         <div className="flex shrink-0 items-center gap-1">
+          {isDirect && !run.origin && onForgeWorkflow ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="size-5.5" disabled={readOnly} aria-label={t('forge.entry.action')} onClick={onForgeWorkflow}>
+                  <Hammer className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('forge.entry.action')}</TooltipContent>
+            </Tooltip>
+          ) : null}
+
           {canViewWorkflow ? (
             <Tooltip>
               <TooltipTrigger asChild>

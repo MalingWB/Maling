@@ -634,7 +634,8 @@
       "copyAbsolutePath": "Copiar caminho absoluto",
       "copyRelativePath": "Copiar caminho relativo",
       "relativeToRunDirectory": "Relativo ao diretório de execução",
-      "relativeToAttachmentDirectory": "Relativo ao diretório de anexos", "relativeToSourceWorkspace": "Relativo ao diretório de trabalho de origem",
+      "relativeToAttachmentDirectory": "Relativo ao diretório de anexos",
+      "relativeToSourceWorkspace": "Relativo ao diretório de trabalho de origem",
       "openWorkspaceFile": "Abrir arquivo do espaço de trabalho",
       "referenceToConversation": "Referenciar na conversa",
       "removeWorkspaceReference": "Remover referência ao arquivo",
@@ -1062,7 +1063,6 @@
       "prompt-queue-full": "A fila pendente está cheia. Ela pode guardar até 10 itens.",
       "prompt-queue-item-not-found": "Este conteúdo na fila não existe mais.",
       "prompt-queue-item-dispatching": "Este conteúdo está sendo enviado e não pode ser alterado agora.",
-
       "prompt-queue-item-editing": "Este prompt está sendo restaurado para edição e não pode ser alterado agora.",
       "prompt-queue-empty": "A fila pendente está vazia.",
       "prompt-queue-revision-conflict": "A ordem pendente mudou. Tente novamente após a lista atualizar.",
@@ -2439,11 +2439,8 @@
       "interruptConfirmDescription": "A resposta atual será interrompida antes do envio desta mensagem.",
       "interruptConfirmSkip": "Não perguntar novamente",
       "interruptConfirmAction": "Interromper e enviar",
-
       "itemStateEditing": "Restaurando para edição",
-
       "itemStateSending": "Enviando",
-
       "storageError": "Não foi possível ler a fila de envio"
     },
     "composerDrafts": {
@@ -2458,10 +2455,7 @@
       "deleteConfirmTitle": "Excluir este rascunho?",
       "deleteConfirmDescription": "O texto, as citações, o papel e as referências de anexos serão removidos. Não será possível desfazer.",
       "takeConflict": "O campo de entrada contém conteúdo. O rascunho permanece na caixa de rascunhos.",
-
       "takeDeleteKept": "O conteúdo foi restaurado para o campo de entrada; o rascunho original continua salvo.",
-
-
       "saveFull": "A caixa de rascunhos está cheia; exclua um rascunho antigo para salvar mais"
     },
     "sending": "Enviando",
@@ -2894,7 +2888,7 @@
       }
     },
     "wallpaper": {
-    "deleteRecent": "Excluir este papel de parede",
+      "deleteRecent": "Excluir este papel de parede",
       "title": "Papel de parede",
       "chooseTitle": "Papel de parede da área de trabalho",
       "description": "Um papel de parede personalizado substitui o do tema e se adapta ao tamanho do cliente.",
@@ -3145,7 +3139,9 @@
       "remoteNeedLocalWorkspace": "Adicione um espaço de trabalho local antes de executar um requisito",
       "removeRemoteBinding": "Desvincular tarefa",
       "remoteAttachmentHint": "Anexo da tarefa remota; baixado e anexado automaticamente no envio",
-      "remoteBindingTag": "{{source}} · {{title}}"
+      "remoteBindingTag": "{{source}} · {{title}}",
+      "forgeBindingTag": "Forja · {{title}}",
+      "removeForgeBinding": "Desvincular forja"
     },
     "branchPicker": {
       "label": "Branch",
@@ -3532,6 +3528,14 @@
       "npm-engines-incompatible": "Este npm não suporta o Node.js atual. Requisito: {{nodeRange}}.",
       "npm-version-mismatch": "As informações de versão de npm diferem. Saída: {{expectedVersion}}; pacote: {{actualVersion}}.",
       "npm-package-mismatch": "npm e npx pertencem a instalações diferentes. npm: {{expectedNpmRoot}}; esta ferramenta: {{actualNpmRoot}}."
+    }
+  },
+  "forge": {
+    "entry": {
+      "action": "Forjar como workflow"
+    },
+    "prefill": {
+      "intro": "Forje um workflow a partir da conversa de origem abaixo — acrescente requisitos e envie:"
     }
   }
 }

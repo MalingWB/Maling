@@ -3731,6 +3731,10 @@ export const browserApi: RuntimeApi = {
   validateConversationCreate(_input) {
     return Promise.resolve({ valid: true, missingItems: [] });
   },
+  forgeSourceDigest(_projectId: string, _taskId: string) {
+    // 浏览器桩:无桌面文件系统,返回空摘要。
+    return Promise.resolve({ title: '', markdown: '' });
+  },
   createConversationRun(input) {
     const timestamp = new Date().toISOString();
     const run: ConversationRunVm = {

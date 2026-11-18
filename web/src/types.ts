@@ -3287,6 +3287,8 @@ export interface ConversationRunVm {
   taskUuid?: string | null;
   runId: string;
   runMode: 'direct' | 'auto' | 'workflow';
+  /// 任务来源（'forge' | 'forge-trial' | ''）——Forge 会话隐藏铸造入口（G3）。
+  origin?: string;
   workflowTemplateId?: string | null;
   directConfig?: ConversationDirectConfigVm | null;
   agentIdentity?: ConversationAgentIdentityVm | null;
@@ -3344,6 +3346,12 @@ export interface RuntimeErrorInfoVm {
 export interface ConversationCreateResultVm {
   task: ConversationTaskRowVm;
   run: ConversationRunVm;
+}
+
+/// 工作流铸造入口 A 的源会话摘要（composer 预填用）。
+export interface ForgeSourceDigestVm {
+  title: string;
+  markdown: string;
 }
 
 export interface ConversationQueuedPromptDraftVm {
@@ -3466,6 +3474,9 @@ export interface ConversationCreateInput {
   role?: UserPromptRole | null;
   workspaceFiles?: PromptWorkspaceFileRef[];
   quotes?: UserPromptQuote[];
+  /// 工作流铸造（入口 A）：源会话 task id。后端固定 workflow-forge 角色、
+  /// 注入源会话隐藏材料并标记 origin=Forge。
+  forgeSourceTaskId?: string;
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';

@@ -52,18 +52,78 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('initial draft is empty', () => {
-    expect(createInitialConversationComposerDraft()).toEqual({ content: '', attachments: [], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } });
+    expect(createInitialConversationComposerDraft()).toEqual({ content: '', attachments: [], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'send' } });
+  });
+
+  it('prefillForge overwrites the draft and clears a remote binding (sources are mutually exclusive)', () => {
+    const state: ConversationComposerDraftState = {
+      content: '旧正文',
+      attachments: [makeAttachment('a1')],
+      workspaceFiles: [],
+      quotes: [],
+      remote: { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: '远程任务', attachments: [] },
+      forge: null,
+      submission: { kind: 'send' },
+    };
+    const next = conversationComposerDraftReducer(state, {
+      type: 'prefillForge',
+      content: '基于以下源会话铸造工作流',
+      forge: { sourceTaskId: 'task-001', sourceProjectId: 'project-a', title: '源会话' },
+    });
+    expect(next).toEqual({
+      content: '基于以下源会话铸造工作流',
+      attachments: [],
+      workspaceFiles: [],
+      quotes: [],
+      remote: null,
+      forge: { sourceTaskId: 'task-001', sourceProjectId: 'project-a', title: '源会话' },
+      submission: { kind: 'send' },
+    });
+  });
+
+  it('clearForge keeps the body and downgrades the draft to a normal local conversation', () => {
+    const state: ConversationComposerDraftState = {
+      content: '基于以下源会话铸造工作流',
+      attachments: [],
+      workspaceFiles: [],
+      quotes: [],
+      remote: null,
+      forge: { sourceTaskId: 'task-001', sourceProjectId: 'project-a', title: '源会话' },
+      submission: { kind: 'send' },
+    };
+    const next = conversationComposerDraftReducer(state, { type: 'clearForge' });
+    expect(next.content).toBe('基于以下源会话铸造工作流');
+    expect(next.forge).toBeNull();
+  });
+
+  it('remote prefill clears the forge binding', () => {
+    const state: ConversationComposerDraftState = {
+      content: '',
+      attachments: [],
+      workspaceFiles: [],
+      quotes: [],
+      remote: null,
+      forge: { sourceTaskId: 'task-001', sourceProjectId: 'project-a', title: '源会话' },
+      submission: { kind: 'send' },
+    };
+    const next = conversationComposerDraftReducer(state, {
+      type: 'prefill',
+      content: '远程需求',
+      remote: { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: '远程任务', attachments: [] },
+    });
+    expect(next.forge).toBeNull();
+    expect(next.remote?.remoteTaskId).toBe('rt-1');
   });
 
   it('setContent stores text without losing attachments', () => {
-    const state: ConversationComposerDraftState = { content: '', attachments: [makeAttachment('a1')], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } };
+    const state: ConversationComposerDraftState = { content: '', attachments: [makeAttachment('a1')], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'send' } };
     const next = conversationComposerDraftReducer(state, { type: 'setContent', content: 'hello' });
     expect(next.content).toBe('hello');
     expect(next.attachments).toHaveLength(1);
   });
 
   it('setAttachments stores attachments without losing text', () => {
-    const state: ConversationComposerDraftState = { content: 'hello', attachments: [], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } };
+    const state: ConversationComposerDraftState = { content: 'hello', attachments: [], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'send' } };
     const next = conversationComposerDraftReducer(state, { type: 'setAttachments', attachments: [makeAttachment('a1'), makeAttachment('a2')] });
     expect(next.content).toBe('hello');
     expect(next.attachments.map((a) => a.id)).toEqual(['a1', 'a2']);
@@ -78,8 +138,7 @@ describe('ConversationComposer draft cross-page retention', () => {
         makeWorkspaceFile('project-b-file', 'project-b', 'src/b.ts'),
       ],
       quotes: [],
-      remote: null,
-      submission: { kind: 'send' },
+      remote: null,      forge: null,      submission: { kind: 'send' },
     };
 
     const next = conversationComposerDraftReducer(state, {
@@ -97,8 +156,7 @@ describe('ConversationComposer draft cross-page retention', () => {
       attachments: [],
       workspaceFiles: [makeWorkspaceFile('project-a-file', 'project-a', 'src/a.ts')],
       quotes: [],
-      remote: null,
-      submission: { kind: 'send' },
+      remote: null,      forge: null,      submission: { kind: 'send' },
     };
 
     const next = conversationComposerDraftReducer(state, {
@@ -121,7 +179,7 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('setContent with identical value is a no-op (stable reference)', () => {
-    const state: ConversationComposerDraftState = { content: 'same', attachments: [], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } };
+    const state: ConversationComposerDraftState = { content: 'same', attachments: [], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'send' } };
     const next = conversationComposerDraftReducer(state, { type: 'setContent', content: 'same' });
     expect(next).toBe(state);
   });
@@ -180,13 +238,13 @@ describe('ConversationComposer draft cross-page retention', () => {
     state = conversationComposerDraftReducer(state, { type: 'enterScheduledTask' });
     state = conversationComposerDraftReducer(state, { type: 'exitScheduledTask' });
 
-    expect(state).toEqual({ content: '保留正文', attachments: [], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } });
+    expect(state).toEqual({ content: '保留正文', attachments: [], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'send' } });
   });
 
   it('does not revoke image preview URLs during ordinary cross-page retention', () => {
     const revokeSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
     const attachment = makeImageAttachment('img');
-    let state: ConversationComposerDraftState = { content: 'x', attachments: [attachment], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } };
+    let state: ConversationComposerDraftState = { content: 'x', attachments: [attachment], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'send' } };
 
     state = conversationComposerDraftReducer(state, { type: 'setContent', content: 'x after navigation' });
 
@@ -204,15 +262,15 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('reset clears content and attachments (used after successful create)', () => {
-    let state: ConversationComposerDraftState = { content: 'x', attachments: [makeAttachment('a1')], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } };
+    let state: ConversationComposerDraftState = { content: 'x', attachments: [makeAttachment('a1')], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'send' } };
     state = conversationComposerDraftReducer(state, { type: 'reset' });
-    expect(state).toEqual({ content: '', attachments: [], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } });
+    expect(state).toEqual({ content: '', attachments: [], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'send' } });
   });
 
   it('reset clears a scheduled-task submission mode as well', () => {
-    let state: ConversationComposerDraftState = { content: 'x', attachments: [makeAttachment('a1')], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'scheduled-task', config: null } };
+    let state: ConversationComposerDraftState = { content: 'x', attachments: [makeAttachment('a1')], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'scheduled-task', config: null } };
     state = conversationComposerDraftReducer(state, { type: 'reset' });
-    expect(state).toEqual({ content: '', attachments: [], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } });
+    expect(state).toEqual({ content: '', attachments: [], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'send' } });
   });
 
   it('does not reset the shared draft from either workspace selector path', () => {
@@ -227,8 +285,7 @@ describe('ConversationComposer draft cross-page retention', () => {
       attachments: [makeAttachment('a1')],
       workspaceFiles: [makeWorkspaceFile('project-a-file', 'project-a', 'src/a.ts')],
       quotes: [],
-      remote: null,
-      submission: { kind: 'send' },
+      remote: null,      forge: null,      submission: { kind: 'send' },
     };
     const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1', attachments: [] };
     const next = conversationComposerDraftReducer(state, { type: 'prefill', content: '远程任务需求正文', remote: binding });
@@ -243,7 +300,7 @@ describe('ConversationComposer draft cross-page retention', () => {
   it('editing prefilled content keeps the remote binding (setContent preserves the binding)', () => {
     const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1', attachments: [] };
     let state = conversationComposerDraftReducer(
-      { content: '需求', attachments: [], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } },
+      { content: '需求', attachments: [], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'send' } },
       { type: 'prefill', content: '需求', remote: binding },
     );
     // 用户在预填基础上微调正文。
@@ -266,7 +323,7 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('clearRemote is a no-op when no binding is present (stable reference)', () => {
-    const state: ConversationComposerDraftState = { content: 'x', attachments: [], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } };
+    const state: ConversationComposerDraftState = { content: 'x', attachments: [], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'send' } };
     const next = conversationComposerDraftReducer(state, { type: 'clearRemote' });
     expect(next).toBe(state);
   });
@@ -282,7 +339,7 @@ describe('ConversationComposer draft cross-page retention', () => {
     ];
     const binding: ConversationComposerRemoteBinding = { source: 'multica', remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1', attachments };
     let state = conversationComposerDraftReducer(
-      { content: '', attachments: [], workspaceFiles: [], quotes: [], remote: null, submission: { kind: 'send' } },
+      { content: '', attachments: [], workspaceFiles: [], quotes: [], remote: null, forge: null, submission: { kind: 'send' } },
       { type: 'prefill', content: '需求正文', remote: binding },
     );
 
@@ -353,7 +410,7 @@ describe('ConversationComposer draft cross-page retention', () => {
       reset,
     });
 
-    expect(Object.keys(handle)).toEqual(['reset', 'changeWorkspace']);
+    expect(Object.keys(handle)).toEqual(['reset', 'changeWorkspace', 'prefillForge']);
 
     resetConversationComposerDraft(handle);
     expect(reset).toHaveBeenCalledTimes(1);

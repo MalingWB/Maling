@@ -59,8 +59,10 @@ describe('ComposerLeadingAdornment', () => {
       <ComposerLeadingAdornment
         committedSlashCommand={null}
         remoteBinding={null}
+        forgeBinding={null}
         adornmentRef={React.createRef<HTMLSpanElement>()}
         onUnbindRemoteTask={vi.fn()}
+        onUnbindForge={vi.fn()}
         {...props}
       />,
     ));
@@ -99,5 +101,21 @@ describe('ComposerLeadingAdornment', () => {
     await renderAdornment();
 
     expect(host.querySelector('span')).toBeNull();
+  });
+
+  it('shows the forge binding chip with an unbind control, coexisting with a committed role', async () => {
+    const onUnbindForge = vi.fn();
+    await renderAdornment({
+      committedSlashCommand: committedRole,
+      forgeBinding: { sourceTaskId: 'task-001', sourceProjectId: 'project-a', title: '源会话' },
+      onUnbindForge,
+    });
+
+    expect(host.querySelector('[data-slot="slash-command-input-tag"]')).toBeTruthy();
+    expect(host.textContent).toContain('铸造 · 源会话');
+    const unbindButton = host.querySelector<HTMLButtonElement>('button[aria-label="解除铸造绑定"]');
+    expect(unbindButton).toBeTruthy();
+    await act(async () => unbindButton?.click());
+    expect(onUnbindForge).toHaveBeenCalledTimes(1);
   });
 });

@@ -806,7 +806,9 @@ export function ConversationComposer({
   // legal combination — see ComposerLeadingAdornment). The shared slot measures its total width
   // for the first-line text indent; wrapped lines return to the left edge (standard CSS
   // text-indent behavior, which only affects the first line).
-  const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand) || remoteBinding !== null);
+  const committedInputLayout = useLeadingAdornmentTextIndent(
+    Boolean(committedSlashCommand) || remoteBinding !== null || composerDraft.draft.forge !== null,
+  );
 
   const inputScrollRef = useRef<HTMLDivElement | null>(null);
   const resize = useComposerResize({
@@ -954,6 +956,10 @@ export function ConversationComposer({
       ...(role ? { role } : {}),
       workspaceFiles: workspaceFiles.map(({ source }) => source),
       quotes,
+      // 工作流铸造绑定：源会话须仍在当前项目下（切换工作区后源任务不可寻址）。
+      ...(composerDraft.draft.forge && composerDraft.draft.forge.sourceProjectId === projectId
+        ? { forgeSourceTaskId: composerDraft.draft.forge.sourceTaskId }
+        : {}),
     };
     setSubmittingAttachments(true);
     try {
@@ -1078,22 +1084,29 @@ export function ConversationComposer({
     composerDraft.clearRemote();
   }, [composerDraft]);
 
+  // 解除铸造绑定(claim-at-send 同 remote):正文保留,草稿降级为普通本地会话。
+  const handleUnbindForge = useCallback(() => {
+    if (!composerDraft.draft.forge) return;
+    composerDraft.clearForge();
+  }, [composerDraft]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (slashCommands.onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>)) return;
     // The remote binding chip is a leading adornment at the very front of the body; the Backspace
     // removal rule lives in shouldBackspaceClearRemoteBinding: the chip is deleted only when the
     // cursor sits at the very start with no selection (mimicking deleting the first token); all
     // other cases delete a character normally. When a slash command is committed, the slash
-    // controller takes over.
+    // controller takes over. Forge chip follows the same rule.
     if (shouldBackspaceClearRemoteBinding({
       key: e.key,
-      remoteActive,
+      remoteActive: remoteActive || composerDraft.draft.forge !== null,
       hasCommittedSlashCommand: Boolean(committedSlashCommand),
       selectionStart: composerTextareaRef.current?.selectionStart ?? -1,
       selectionEnd: composerTextareaRef.current?.selectionEnd ?? -1,
     })) {
       e.preventDefault();
-      handleUnbindRemoteTask();
+      if (remoteActive) handleUnbindRemoteTask();
+      else handleUnbindForge();
       return;
     }
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1193,9 +1206,11 @@ export function ConversationComposer({
               <ComposerLeadingAdornment
                 committedSlashCommand={committedSlashCommand}
                 remoteBinding={remoteBinding}
+                forgeBinding={composerDraft.draft.forge}
                 slashAgentIconKey={slashAgentIconKey}
                 adornmentRef={committedInputLayout.adornmentRef}
                 onUnbindRemoteTask={handleUnbindRemoteTask}
+                onUnbindForge={handleUnbindForge}
               />
               <PromptInputTextarea
                 ref={composerTextareaRef}
