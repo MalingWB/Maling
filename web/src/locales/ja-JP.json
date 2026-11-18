@@ -2481,6 +2481,8 @@
     "manualCheckSubmitFailed": "手動 check の送信に失敗しました",
     "continueWorkflow": "ワークフローを継続する",
     "continueWorkflowHint": "ワークフローの実行を継続する",
+    "runtimeResumeBusyStarting": "起動中です。しばらくお待ちください",
+    "runtimeResumeBusyPromptActive": "会話を処理中です。完了後に続行できます。",
     "continueAndSend": "続けて送信",
     "continueAndSendHint": "メッセージを送信してワークフローを続行します",
     "continueWorkflowStarting": "継続中",
@@ -2814,6 +2816,7 @@
         "permission": "許可リクエスト",
         "elicitation": "質問",
         "manualCheck": "手動チェック",
+        "workflowResume": "ワークフロー続行リクエスト",
         "runSuccess": "Run 成功",
         "runFailure": "Run 失敗",
         "acpTurnFinished": "ACPターン終了"
@@ -2856,7 +2859,10 @@
         "IM_STALE_GENERATION": "接続状態が変化しました。最新の状態からリトライしてください。",
         "IM_RUNTIME_UNAVAILABLE": "IM ランタイムの準備ができていません。",
         "IM_CHANNEL_CLEANUP_PENDING": "構成が削除されました。ローカル クリーンアップはバックグラウンドで再試行されます。",
-        "IM_OPERATION_FAILED": "操作は失敗しました。もう一度やり直してください。"
+        "IM_OPERATION_FAILED": "操作は失敗しました。もう一度やり直してください。",
+        "IM_ACTION_BUSY": "一時的に処理中です。しばらくしてから再試行してください。",
+        "IM_ACTION_STATE_CHANGED": "ワークフローの状態が変わったため、この操作は無効です。最新のカードから再試行してください。",
+        "IM_ACTION_RETRYABLE_FAILURE": "操作は送信されていません。しばらくしてから再試行してください。"
       }
     },
     "avatar": {

@@ -60,12 +60,15 @@ mod tests {
     const TTL: Duration = Duration::from_secs(600);
     const MAX_IDLE: usize = 8;
 
-    fn candidates(count: usize, age: Duration, protected: bool) -> Vec<RetentionCandidate<usize>> {
-        let now = Instant::now();
+    fn candidates(
+        count: usize,
+        last_activity: Instant,
+        protected: bool,
+    ) -> Vec<RetentionCandidate<usize>> {
         (0..count)
             .map(|key| RetentionCandidate {
                 key,
-                last_activity: now - age,
+                last_activity,
                 protected,
             })
             .collect()
@@ -81,9 +84,11 @@ mod tests {
             (12, 10, 4),
             (12, 601, 12),
         ] {
-            let entries = candidates(count, Duration::from_secs(age), false);
+            let last_activity = Instant::now();
+            let now = last_activity + Duration::from_secs(age);
+            let entries = candidates(count, last_activity, false);
             assert_eq!(
-                eviction_candidates(TTL, MAX_IDLE, Instant::now(), entries).len(),
+                eviction_candidates(TTL, MAX_IDLE, now, entries).len(),
                 expected,
                 "count={count} age={age}"
             );
@@ -92,27 +97,31 @@ mod tests {
 
     #[test]
     fn protected_sessions_neither_expire_nor_count_toward_the_cap() {
-        let mut entries = candidates(20, Duration::from_secs(30_000), true);
-        assert!(eviction_candidates(TTL, MAX_IDLE, Instant::now(), entries).is_empty());
-        entries = candidates(20, Duration::from_secs(10), true);
+        let last_activity = Instant::now();
+        let mut entries = candidates(20, last_activity, true);
+        let expired_at = last_activity + Duration::from_secs(30_000);
+        assert!(eviction_candidates(TTL, MAX_IDLE, expired_at, entries).is_empty());
+        entries = candidates(20, last_activity, true);
         entries.extend(
-            candidates(8, Duration::from_secs(10), false)
+            candidates(8, last_activity, false)
                 .into_iter()
                 .map(|mut entry| {
                     entry.key += 100;
                     entry
                 }),
         );
-        assert!(eviction_candidates(TTL, MAX_IDLE, Instant::now(), entries).is_empty());
+        let fresh_at = last_activity + Duration::from_secs(10);
+        assert!(eviction_candidates(TTL, MAX_IDLE, fresh_at, entries).is_empty());
     }
 
     #[test]
     fn cap_overflow_evicts_the_least_recently_active_sessions() {
-        let now = Instant::now();
+        let last_activity = Instant::now();
+        let now = last_activity + Duration::from_secs(100);
         let entries = (0..10)
             .map(|key| RetentionCandidate {
                 key,
-                last_activity: now - Duration::from_secs(100 - key as u64),
+                last_activity: last_activity + Duration::from_secs(key as u64),
                 protected: false,
             })
             .collect();
@@ -123,9 +132,11 @@ mod tests {
 
     #[test]
     fn fresh_activity_renews_the_idle_window() {
-        let mut entries = candidates(3, Duration::from_secs(601), false);
-        entries[0].last_activity = Instant::now();
-        let evicted = eviction_candidates(TTL, MAX_IDLE, Instant::now(), entries);
+        let last_activity = Instant::now();
+        let now = last_activity + Duration::from_secs(601);
+        let mut entries = candidates(3, last_activity, false);
+        entries[0].last_activity = now;
+        let evicted = eviction_candidates(TTL, MAX_IDLE, now, entries);
         assert_eq!(evicted.len(), 2);
         assert!(!evicted.contains(&0));
     }

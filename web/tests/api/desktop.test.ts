@@ -1,4 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { RuntimeResumeOfferVm } from '../../src/types';
+
+const runtimeContinueOffer: RuntimeResumeOfferVm = {
+  locator: {
+    projectId: 'project-1', taskId: 'task-1', runId: 'run-1',
+    roundId: 'round-1', nodeId: 'node-1', attemptId: 'attempt-1',
+  },
+  sourceIdentity: { taskUuid: 'task-uuid-1', runUuid: 'run-uuid-1' },
+  kind: 'continueCurrentAttempt',
+  boundary: { kind: 'runExecution', revision: 7 },
+};
 
 const openerMocks = vi.hoisted(() => ({
   openPath: vi.fn(() => Promise.resolve()),
@@ -142,6 +153,14 @@ describe('desktopApi', () => {
   });
 
   it('forwards the visible input and attachments with one runtime continue command', async () => {
+    const resumeOffer: RuntimeResumeOfferVm = {
+      ...runtimeContinueOffer,
+      locator: {
+        ...runtimeContinueOffer.locator,
+        outerNodeId: 'outer-node-1', outerAttemptId: 'outer-attempt-1',
+      },
+      boundary: { kind: 'dynamicLeaf', revision: 11 },
+    };
     const input = {
       displayText: '请继续并补充测试',
       quotes: [{ id: 'quote-1', sourceMessageKey: 'answer-1', text: '原始回答' }],
@@ -154,6 +173,7 @@ describe('desktopApi', () => {
       'round-1',
       'node-1',
       'attempt-1',
+      resumeOffer,
       'outer-node-1',
       'outer-attempt-1',
       input,
@@ -168,6 +188,7 @@ describe('desktopApi', () => {
       roundId: 'round-1',
       nodeId: 'node-1',
       attemptId: 'attempt-1',
+      resumeOffer,
       outerNodeId: 'outer-node-1',
       outerAttemptId: 'outer-attempt-1',
       input,
@@ -179,11 +200,14 @@ describe('desktopApi', () => {
   it('preserves the project-scoped runtime admission command contracts', async () => {
     const createInput = { projectId: 'project-1' } as Parameters<typeof desktopApi.createConversationRun>[0];
     const promptInput = { displayText: '继续', quotes: [] };
+    const recoveryOffer: RuntimeResumeOfferVm = {
+      ...runtimeContinueOffer, kind: 'recoverCompletedAttempt',
+    };
 
     await desktopApi.validateConversationCreate(createInput);
     await desktopApi.createConversationRun(createInput);
     await desktopApi.rerunConversationTask('project-1', 'task-1');
-    await desktopApi.continueRun('project-1', 'task-1', 'run-1');
+    await desktopApi.continueRun('project-1', 'task-1', 'run-1', runtimeContinueOffer);
     await desktopApi.recoverConversationRuntime(
       'project-1',
       'task-1',
@@ -191,7 +215,7 @@ describe('desktopApi', () => {
       'round-1',
       'node-1',
       'attempt-1',
-      7,
+      recoveryOffer,
     );
     await desktopApi.submitConversationPrompt(
       'project-1',
@@ -212,7 +236,7 @@ describe('desktopApi', () => {
       ['validate_conversation_create', { input: createInput }],
       ['create_conversation_run', { input: createInput }],
       ['rerun_conversation_task', { projectId: 'project-1', taskId: 'task-1' }],
-      ['continue_run', { projectId: 'project-1', taskId: 'task-1', runId: 'run-1' }],
+      ['continue_run', { projectId: 'project-1', taskId: 'task-1', runId: 'run-1', resumeOffer: runtimeContinueOffer }],
       ['recover_conversation_runtime', {
         projectId: 'project-1',
         taskId: 'task-1',
@@ -220,7 +244,7 @@ describe('desktopApi', () => {
         roundId: 'round-1',
         nodeId: 'node-1',
         attemptId: 'attempt-1',
-        expectedRevision: 7,
+        resumeOffer: recoveryOffer,
       }],
       ['submit_conversation_prompt', {
         projectId: 'project-1',

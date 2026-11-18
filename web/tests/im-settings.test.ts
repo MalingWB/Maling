@@ -21,6 +21,7 @@ const quietDefaults = (): ImNotificationPreferencesVm => ({
   permission: true,
   elicitation: true,
   manualCheck: true,
+  workflowResume: true,
   runSuccess: false,
   runFailure: true,
   acpTurnFinished: false,

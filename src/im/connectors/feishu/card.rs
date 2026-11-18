@@ -126,9 +126,9 @@ pub(crate) fn delivery_card_content(
             )
             .content())
         }
-        ImDeliveryPayload::Information { .. } => Ok(read_only_card_content(
-            &notification_markdown(delivery, locale),
-        )),
+        ImDeliveryPayload::Information { .. } | ImDeliveryPayload::ActionFeedback { .. } => Ok(
+            read_only_card_content(&notification_markdown(delivery, locale)),
+        ),
         ImDeliveryPayload::InterventionResolution { .. } => Ok(resolution_payload_card_content(
             &delivery.payload,
             locale,
@@ -714,11 +714,24 @@ pub(crate) fn action_reply(
                 Some(terminal_card(response, locale, token)),
             )
         }
+        ImActionResponseState::Processing => Reply::new(
+            ToastType::Info,
+            localized(locale, "im.workflowResume.processing"),
+            None,
+        ),
         ImActionResponseState::Rejected(ImErrorCode::ActionExpired) => Reply::new(
             ToastType::Warning,
             content,
             Some(terminal_card(response, locale, token)),
         ),
+        ImActionResponseState::Rejected(ImErrorCode::ActionStateChanged) => {
+            let content = error_copy(ImErrorCode::ActionStateChanged, locale);
+            Reply::new(
+                ToastType::Warning,
+                content,
+                Some(terminal_read_only_card(content, content)),
+            )
+        }
         ImActionResponseState::Rejected(code) => {
             Reply::new(ToastType::Error, error_copy(code, locale), None)
         }
@@ -765,6 +778,11 @@ pub(crate) fn decode_error_reply(error: FeishuCardDecodeError, locale: ImLocale)
 
 fn error_copy(code: ImErrorCode, locale: ImLocale) -> &'static str {
     match code {
+        ImErrorCode::ActionStateChanged => localized(locale, "im.workflowResume.stateChanged"),
+        ImErrorCode::ActionBusy => localized(locale, "im.workflowResume.busy"),
+        ImErrorCode::ActionRetryableFailure => {
+            localized(locale, "im.workflowResume.retryableFailure")
+        }
         ImErrorCode::FormCustomAnswerMissing => localized(locale, "im.feishu.customAnswerMissing"),
         ImErrorCode::FormTextTooLong => localized(locale, "im.feishu.textTooLong"),
         ImErrorCode::InformationNotActionable => localized(locale, "im.feishu.notActionable"),
@@ -941,6 +959,9 @@ fn outcome_copy(
     locale: ImLocale,
 ) -> String {
     match outcome {
+        ImResolutionOutcome::RuntimeResume { result } => {
+            localized(locale, super::super::runtime_resume_result_key(result)).to_owned()
+        }
         ImResolutionOutcome::PermissionOption { option_id } => delivery
             .and_then(|delivery| {
                 let ImDeliveryPayload::Intervention { reference, .. } = &delivery.payload else {
@@ -1109,6 +1130,89 @@ pub(super) mod tests {
             name: format!("action_{index}"),
             permission_kind: PermissionActionKind::AllowOnce,
         }
+    }
+
+    #[test]
+    fn runtime_resume_card_shows_reason_and_continue_or_recovery_action() {
+        use crate::app::runtime_resume::RuntimeResumeKind;
+        for (kind, title_key, summary_key, title, action) in [
+            (
+                RuntimeResumeKind::ContinueCurrentAttempt,
+                "im.notification.workflowResume.title",
+                "im.notification.workflowResume.interruptedSummary",
+                "工作流已暂停",
+                "继续工作流",
+            ),
+            (
+                RuntimeResumeKind::RecoverCompletedAttempt,
+                "im.notification.workflowResume.recoverTitle",
+                "im.notification.workflowResume.recoverInterruptedSummary",
+                "工作流等待恢复",
+                "恢复工作流",
+            ),
+        ] {
+            let mut source = delivery(
+                ImNotificationKind::Permission,
+                vec![InterventionAllowedAction::RuntimeResume { resume_kind: kind }],
+            );
+            source.notification_kind = ImNotificationKind::WorkflowResume;
+            if let ImDeliveryPayload::Intervention { presentation, .. } = &mut source.payload {
+                presentation.title_key = title_key.into();
+                presentation.summary_key = summary_key.into();
+                presentation.title = None;
+                presentation.summary = None;
+                presentation.fields = BTreeMap::from([
+                    ("workspaceLabel".into(), "Gold-Band".into()),
+                    ("taskTitle".into(), "Repair download".into()),
+                    ("nodeLabel".into(), "Reviewer".into()),
+                ]);
+            }
+            let content = delivery_card_content(&source, &codec(), ImLocale::ZhCn).unwrap();
+            let card: Value = serde_json::from_str(&content).unwrap();
+            assert_eq!(card["header"]["title"]["content"], title);
+            for text in [
+                "执行进程中断",
+                "Gold-Band",
+                "Repair download",
+                "Reviewer",
+                action,
+            ] {
+                assert!(content.contains(text), "missing {text}: {content}");
+            }
+            assert_eq!(content.matches("\"tag\":\"button\"").count(), 1);
+        }
+    }
+
+    #[test]
+    fn runtime_resume_stale_feedback_is_read_only_and_not_an_invalid_answer() {
+        let code = crate::im::inbound::ImInboundError::Intervention(
+            crate::app::intervention::InterventionError::new(
+                crate::app::intervention::InterventionErrorCode::InterventionRevisionConflict,
+            ),
+        )
+        .code();
+        let response = ImActionResponse {
+            state: ImActionResponseState::Rejected(code),
+            resolved_by: None,
+            outcome: None,
+            delivery: Some(delivery(
+                ImNotificationKind::Permission,
+                vec![InterventionAllowedAction::RuntimeResume {
+                    resume_kind:
+                        crate::app::runtime_resume::RuntimeResumeKind::ContinueCurrentAttempt,
+                }],
+            )),
+        };
+        let reply = action_reply(&response, ImLocale::ZhCn, &codec());
+        assert_eq!(reply["toast"]["type"], "warning");
+        let wire = reply.to_string();
+        assert!(wire.contains("工作流状态已变化"), "{wire}");
+        assert!(!wire.contains("回答无效"), "{wire}");
+        assert!(
+            reply.get("card").is_some(),
+            "stale callback must close its old action"
+        );
+        assert!(!wire.contains("\"disabled\":false"));
     }
 
     fn card(delivery: &ImDelivery) -> Value {

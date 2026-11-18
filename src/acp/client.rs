@@ -1171,6 +1171,28 @@ pub fn request_prompt_cancel(attempt_dir: &Utf8Path) -> bool {
         .unwrap_or(false)
 }
 
+/// A scoped handle to the observed prompt, not a lookup of whichever prompt
+/// later occupies this attempt. Its executor owns transport cancellation and
+/// interaction settlement, so a late cleanup cannot cancel a newer turn.
+pub(crate) struct PromptCancellationTarget(Arc<ProviderControl>);
+
+impl PromptCancellationTarget {
+    pub(crate) fn request_cancel(&self) {
+        self.0.request_prompt_cancel();
+    }
+}
+
+pub(crate) fn capture_prompt_cancellation(
+    attempt_dir: &Utf8Path,
+) -> Option<PromptCancellationTarget> {
+    PROVIDER_CONTROLS
+        .lock()
+        .ok()?
+        .get(&attempt_control_key(attempt_dir))
+        .cloned()
+        .map(PromptCancellationTarget)
+}
+
 pub fn prompt_activity(attempt_dir: &Utf8Path) -> Option<PromptActivity> {
     let key = attempt_control_key(attempt_dir);
     let state = PROVIDER_CONTROLS

@@ -59,6 +59,7 @@ resvg = "0.45"
 notify-rust = { version = "4", optional = true }
 
 [dev-dependencies]
+async-trait = "0.1"
 tauri = { version = "2", features = ["test", "unstable"] }
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }

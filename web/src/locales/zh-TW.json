@@ -2481,6 +2481,8 @@
     "manualCheckSubmitFailed": "人工 check 提交失敗",
     "continueWorkflow": "繼續工作流",
     "continueWorkflowHint": "繼續執行工作流",
+    "runtimeResumeBusyStarting": "正在啟動，請稍候",
+    "runtimeResumeBusyPromptActive": "目前對話仍在處理，結束後即可繼續",
     "continueAndSend": "繼續並傳送",
     "continueAndSendHint": "傳送訊息並繼續工作流",
     "continueWorkflowStarting": "正在繼續",
@@ -2814,6 +2816,7 @@
         "permission": "權限請求",
         "elicitation": "追問",
         "manualCheck": "人工檢查",
+        "workflowResume": "工作流繼續請求",
         "runSuccess": "Run 成功",
         "runFailure": "Run 失敗",
         "acpTurnFinished": "ACP 回合結束"
@@ -2856,7 +2859,10 @@
         "IM_STALE_GENERATION": "連線狀態已更新，請根據最新狀態重試。",
         "IM_RUNTIME_UNAVAILABLE": "IM 執行時尚未就緒。",
         "IM_CHANNEL_CLEANUP_PENDING": "設定已刪除，本機清理將在背景自動重試。",
-        "IM_OPERATION_FAILED": "操作失敗，請重試。"
+        "IM_OPERATION_FAILED": "操作失敗，請重試。",
+        "IM_ACTION_BUSY": "目前暫時忙碌，請稍後重試。",
+        "IM_ACTION_STATE_CHANGED": "工作流狀態已變更，此操作已失效，請使用最新卡片重試。",
+        "IM_ACTION_RETRYABLE_FAILURE": "操作未提交，請稍後重試。"
       }
     },
     "avatar": {

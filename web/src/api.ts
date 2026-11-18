@@ -222,16 +222,16 @@ export function startRun(taskId: string) {
   return getRuntimeApi().startRun(taskId);
 }
 
-export function continueRun(projectId: string | null | undefined, taskId: string, runId: string) {
-  return getRuntimeApi().continueRun(projectId, taskId, runId);
+export function continueRun(projectId: string | null | undefined, taskId: string, runId: string, resumeOffer: import('./types').RuntimeResumeOfferVm) {
+  return getRuntimeApi().continueRun(projectId, taskId, runId, resumeOffer);
 }
 
-export function continueConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null, input?: import('./types').ConversationPromptInput, promptId?: string | null, attachmentPaths?: string[]) {
-  return getRuntimeApi().continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, input, promptId, attachmentPaths);
+export function continueConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, resumeOffer: import('./types').RuntimeResumeOfferVm, outerNodeId?: string | null, outerAttemptId?: string | null, input?: import('./types').ConversationPromptInput, promptId?: string | null, attachmentPaths?: string[]) {
+  return getRuntimeApi().continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, resumeOffer, outerNodeId, outerAttemptId, input, promptId, attachmentPaths);
 }
 
-export function recoverConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number) {
-  return getRuntimeApi().recoverConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision);
+export function recoverConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, resumeOffer: import('./types').RuntimeResumeOfferVm) {
+  return getRuntimeApi().recoverConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, resumeOffer);
 }
 
 export function pauseRun(taskId: string, runId: string, projectId?: string | null) {

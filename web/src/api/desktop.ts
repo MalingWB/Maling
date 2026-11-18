@@ -448,14 +448,14 @@ export const desktopApi: RuntimeApi = {
   startRun(taskId: string) {
     return invokeCommand('start_run', { taskId });
   },
-  continueRun(projectId, taskId, runId) {
-    return invokeCommand('continue_run', { projectId, taskId, runId });
+  continueRun(projectId, taskId, runId, resumeOffer) {
+    return invokeCommand('continue_run', { projectId, taskId, runId, resumeOffer });
   },
-  continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, input, promptId, attachmentPaths) {
-    return invokeCommand('continue_conversation_runtime', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, input, promptId, attachmentPaths });
+  continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, resumeOffer, outerNodeId, outerAttemptId, input, promptId, attachmentPaths) {
+    return invokeCommand('continue_conversation_runtime', { projectId, taskId, runId, roundId, nodeId, attemptId, resumeOffer, outerNodeId, outerAttemptId, input, promptId, attachmentPaths });
   },
-  recoverConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision) {
-    return invokeCommand('recover_conversation_runtime', { projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision });
+  recoverConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, resumeOffer) {
+    return invokeCommand('recover_conversation_runtime', { projectId, taskId, runId, roundId, nodeId, attemptId, resumeOffer });
   },
   pauseRun(taskId: string, runId: string, projectId?: string | null) {
     return invokeCommand('pause_run', { taskId, runId, projectId });

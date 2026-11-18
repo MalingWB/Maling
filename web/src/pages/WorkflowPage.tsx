@@ -31,7 +31,6 @@ interface WorkflowPageProps {
   onOpenRound: (taskId: string, runId: string, roundId: string) => void;
   onRefresh: () => void;
   onStartRun: (taskId: string) => Promise<RunSummaryVm | undefined>;
-  onContinueRun: (taskId: string, runId: string) => void;
   onStopRun: (taskId: string, runId: string) => void;
   onSaveWorkflow: (taskId: string, workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => Promise<WorkflowVm | undefined>;
   onOpenProfileManagement: () => void;

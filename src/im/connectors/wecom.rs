@@ -72,6 +72,8 @@ pub(crate) const WECOM_CHANNEL_CAPABILITIES: ImChannelCapabilities = ImChannelCa
     message_update: ImMessageUpdateMode::CallbackOnly,
     interaction: WECOM_INTERACTION_CAPABILITIES,
 };
+const WECOM_CALLBACK_BUDGET: Duration = Duration::from_secs(5);
+const WECOM_CALLBACK_SAFETY_MARGIN: Duration = Duration::from_millis(500);
 const PERMISSION_FIELD_PRIORITY: [&str; 4] = [
     "permissionTool",
     "permissionCommand",
@@ -545,14 +547,71 @@ impl ImConnector for WeComConnector {
             .map_err(|_| ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None))?
     }
 
+    fn action_response_deadline(&self, context: &ImActionResponseContext) -> Option<Instant> {
+        context
+            .downcast_ref::<WeComResponseHandle>()
+            .map(|handle| handle.deadline)
+    }
+
     async fn respond_to_action(
         &self,
         context: ImActionResponseContext,
         action_response: ImActionResponse,
-    ) -> Result<(), ImIntegrationError> {
-        let sender = self.command_sender()?;
+    ) -> Result<crate::im::ImActionResponseReceipt, ImIntegrationError> {
+        let handle = context
+            .downcast_ref::<WeComResponseHandle>()
+            .ok_or_else(|| ImIntegrationError::permanent(ImErrorCode::ProtocolInvalid))?;
+        let deadline = handle.deadline;
+        if deadline <= Instant::now() {
+            return Ok(crate::im::ImActionResponseReceipt::Unconfirmed {
+                reason: crate::im::ImActionUnconfirmedReason::Expired,
+            });
+        }
+        let receipt = match (&action_response.state, action_response.delivery.as_ref()) {
+            (
+                ImActionResponseState::Handled | ImActionResponseState::AlreadyHandled,
+                Some(delivery),
+            ) if action_response.outcome.is_some() => {
+                crate::im::ImActionResponseReceipt::FinalCardUpdated {
+                    source_delivery_id: delivery.delivery_id.clone(),
+                    action_id: handle.action_id.clone(),
+                    generation: handle.generation,
+                }
+            }
+            (ImActionResponseState::Processing, _) => {
+                crate::im::ImActionResponseReceipt::FeedbackOnly {
+                    kind: crate::im::ImActionFeedbackKind::Processing,
+                }
+            }
+            (
+                ImActionResponseState::Rejected(
+                    ImErrorCode::ActionBusy | ImErrorCode::ActionRetryableFailure,
+                ),
+                _,
+            ) => crate::im::ImActionResponseReceipt::FeedbackOnly {
+                kind: crate::im::ImActionFeedbackKind::RetryableFailure,
+            },
+            _ => crate::im::ImActionResponseReceipt::Unconfirmed {
+                reason: crate::im::ImActionUnconfirmedReason::Unknown,
+            },
+        };
+        let arrived_at = handle.arrived_at;
+        let elapsed_ms = arrived_at.elapsed().as_millis();
+        let sender = {
+            let slot = self
+                .commands
+                .lock()
+                .expect("WeCom connector command lock poisoned");
+            if slot.generation != handle.generation {
+                return Ok(crate::im::ImActionResponseReceipt::Unconfirmed {
+                    reason: crate::im::ImActionUnconfirmedReason::Expired,
+                });
+            }
+            slot.sender.clone().ok_or_else(|| {
+                ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None)
+            })?
+        };
         let (response_tx, response_rx) = oneshot::channel();
-        let deadline = Instant::now() + WECOM_REQUEST_TIMEOUT;
         tokio::time::timeout_at(
             deadline,
             sender.send(WeComCommand::RespondToAction {
@@ -568,7 +627,13 @@ impl ImConnector for WeComConnector {
         tokio::time::timeout_at(deadline, response_rx)
             .await
             .map_err(|_| request_timeout_error())?
-            .map_err(|_| ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None))?
+            .map_err(|_| ImIntegrationError::retryable(ImErrorCode::NetworkUnavailable, None))??;
+        tracing::debug!(
+            elapsed_ms,
+            total_ms = arrived_at.elapsed().as_millis(),
+            "IM callback update acknowledged"
+        );
+        Ok(receipt)
     }
 
     /// WeCom template cards can only be replaced inside the click callback.
@@ -696,6 +761,7 @@ fn vote_option_presentation(action: &InterventionAllowedAction) -> Option<(usize
 
 fn remote_action_rank(action: &RenderedAction) -> usize {
     match &action.value.action {
+        crate::app::intervention::InterventionAction::RuntimeResume { .. } => 0,
         crate::app::intervention::InterventionAction::PermissionOption { .. } => {
             match action.permission_kind {
                 Some(crate::app::intervention::PermissionActionKind::RejectOnce) => 0,
@@ -801,6 +867,7 @@ fn send_request(
 ) -> Result<Value, ImIntegrationError> {
     let body = match &delivery.payload {
         ImDeliveryPayload::Information { .. }
+        | ImDeliveryPayload::ActionFeedback { .. }
         | ImDeliveryPayload::InterventionResolution { .. } => json!({
             "chatid": delivery.destination.destination_id,
             "msgtype": "markdown",
@@ -815,11 +882,8 @@ fn send_request(
             else {
                 unreachable!("intervention branch has intervention payload")
             };
-            let fields = horizontal_content_fields(
-                &presentation.fields,
-                locale,
-                delivery.notification_kind == ImNotificationKind::Permission,
-            );
+            let fields =
+                horizontal_content_fields(&presentation.fields, locale, delivery.notification_kind);
             let linked_detail = requires_linked_detail(delivery.notification_kind);
             let title = if linked_detail {
                 linked_display_title(delivery.notification_kind, locale, delivery.display_ref)?
@@ -831,7 +895,7 @@ fn send_request(
                     .unwrap_or_else(|| localized(locale, &presentation.title_key))
                     .to_owned()
             };
-            let desc = if linked_detail {
+            let summary = if linked_detail {
                 localized(locale, card_summary_key(delivery.notification_kind))
             } else {
                 presentation
@@ -839,6 +903,11 @@ fn send_request(
                     .as_deref()
                     .filter(|desc| !desc.trim().is_empty())
                     .unwrap_or_else(|| localized(locale, &presentation.summary_key))
+            };
+            let desc = if delivery.notification_kind == ImNotificationKind::WorkflowResume {
+                ""
+            } else {
+                summary
             };
             let task_id = card_task_id(&delivery.delivery_id, req_id);
             if card_delivery_id(&task_id) != Some(delivery.delivery_id.as_str()) {
@@ -934,7 +1003,9 @@ fn send_request(
                 }
             };
             let details = presentation_detail_text(presentation, locale);
-            if !details.is_empty() && !linked_detail {
+            if delivery.notification_kind == ImNotificationKind::WorkflowResume {
+                template_card["sub_title_text"] = Value::String(truncate_chars(summary, 112));
+            } else if !details.is_empty() && !linked_detail {
                 template_card["sub_title_text"] = Value::String(truncate_chars(&details, 112));
             }
             json!({
@@ -1143,10 +1214,13 @@ fn linked_detail_markdown(
 fn horizontal_content_fields(
     fields: &std::collections::BTreeMap<String, String>,
     locale: ImLocale,
-    permission: bool,
+    kind: ImNotificationKind,
 ) -> Vec<Value> {
+    let permission = kind == ImNotificationKind::Permission;
     let visible = |key: &str, value: &str| {
-        !value.trim().is_empty() && key != "permissionTitle" && !is_intervention_context_field(key)
+        !value.trim().is_empty()
+            && key != "permissionTitle"
+            && (kind == ImNotificationKind::WorkflowResume || !is_intervention_context_field(key))
     };
     let mut entries = Vec::new();
     if permission {
@@ -1188,6 +1262,10 @@ fn valid_wecom_task_id(task_id: &str) -> bool {
 /// `ImActionResponseContext`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WeComResponseHandle {
+    arrived_at: Instant,
+    deadline: Instant,
+    generation: u64,
+    action_id: String,
     req_id: String,
     task_id: String,
     selection: WeComCallbackSelection,
@@ -1243,6 +1321,21 @@ fn action_response_request(
     let state = response.state.message_state();
     let req_id = handle.req_id.as_str();
     let task_id = handle.task_id.as_str();
+    if response.state == ImActionResponseState::Rejected(ImErrorCode::ActionStateChanged) {
+        return json!({
+            "cmd": "aibot_respond_update_msg",
+            "headers": { "req_id": req_id },
+            "body": {
+                "response_type": "update_template_card",
+                "template_card": {
+                    "card_type": "text_notice",
+                    "main_title": { "title": truncate_chars(localized(locale, "im.workflowResume.stateChanged"), 26) },
+                    "sub_title_text": localized(locale, "im.workflowResume.stateChanged"),
+                    "task_id": task_id,
+                },
+            },
+        });
+    }
     let intervention = response
         .delivery
         .as_ref()
@@ -1297,8 +1390,33 @@ fn action_response_request(
         }
         WeComCallbackSelection::Vote { selected_option_id } => selected_option_id,
         WeComCallbackSelection::Button => {
-            let content = message_state_label(locale, state);
+            let retryable = matches!(
+                response.state,
+                ImActionResponseState::Processing
+                    | ImActionResponseState::Rejected(
+                        ImErrorCode::ActionBusy | ImErrorCode::ActionRetryableFailure
+                    )
+            );
+            let content = if response.state == ImActionResponseState::Processing {
+                localized(locale, "im.workflowResume.processing")
+            } else if retryable {
+                localized(locale, "im.workflowResume.retryableFailure")
+            } else if let Some(ImResolutionOutcome::RuntimeResume { result }) =
+                response.outcome.as_ref()
+            {
+                localized(locale, super::runtime_resume_result_key(result))
+            } else {
+                message_state_label(locale, state)
+            };
             let action_key = format!("{task_id}:0");
+            let button_text = if retryable {
+                intervention
+                    .and_then(|(_, reference)| reference.allowed_actions.first())
+                    .map(|action| super::action_label(locale, action))
+                    .unwrap_or_else(|| content.to_owned())
+            } else {
+                content.to_owned()
+            };
             return json!({
                 "cmd": "aibot_respond_update_msg",
                 "headers": { "req_id": req_id },
@@ -1308,7 +1426,7 @@ fn action_response_request(
                         "card_type": "button_interaction",
                         "main_title": { "title": &content },
                         "button_list": [
-                            { "text": &content, "key": &action_key }
+                            { "text": &button_text, "key": &action_key }
                         ],
                         "task_id": task_id,
                     },
@@ -1695,6 +1813,7 @@ async fn handle_callback(
     commands: &mpsc::Sender<WeComCommand>,
     value: Value,
 ) -> Result<(), ImIntegrationError> {
+    let arrived_at = Instant::now();
     match value.get("cmd").and_then(Value::as_str) {
         Some("aibot_msg_callback") => {
             if let Some(binding) = observed_binding(&value) {
@@ -1725,6 +1844,16 @@ async fn handle_callback(
             }
             match action_envelope(&value) {
                 Ok((envelope, response_context)) => {
+                    let mut handle = response_context
+                        .downcast_ref::<WeComResponseHandle>()
+                        .expect("parsed WeCom callback owns its response handle")
+                        .clone();
+                    handle.arrived_at = arrived_at;
+                    handle.deadline =
+                        arrived_at + WECOM_CALLBACK_BUDGET - WECOM_CALLBACK_SAFETY_MARGIN;
+                    handle.generation = generation;
+                    handle.action_id = envelope.action_id.clone();
+                    let response_context = ImActionResponseContext::new(handle);
                     let _ = events
                         .send(ImConnectorEvent::InboundAction {
                             generation,
@@ -1772,7 +1901,10 @@ fn queue_failed_action_response(
                 outcome: None,
                 delivery: None,
             },
-            deadline: Instant::now() + WECOM_REQUEST_TIMEOUT,
+            deadline: context
+                .downcast_ref::<WeComResponseHandle>()
+                .map(|handle| handle.deadline)
+                .unwrap_or_else(Instant::now),
             response,
         })
         .is_ok()
@@ -2035,6 +2167,10 @@ fn action_envelope(
             action,
         },
         ImActionResponseContext::new(WeComResponseHandle {
+            arrived_at: Instant::now(),
+            deadline: Instant::now() + WECOM_CALLBACK_BUDGET - WECOM_CALLBACK_SAFETY_MARGIN,
+            generation: 0,
+            action_id: String::new(),
             req_id: req_id.to_owned(),
             task_id,
             selection,
@@ -2095,6 +2231,10 @@ fn callback_response_context(value: &Value) -> Option<ImActionResponseContext> {
         .or_else(|| form_callback_response_context(value))
         .unwrap_or(WeComCallbackSelection::Button);
     Some(ImActionResponseContext::new(WeComResponseHandle {
+        arrived_at: Instant::now(),
+        deadline: Instant::now() + WECOM_CALLBACK_BUDGET - WECOM_CALLBACK_SAFETY_MARGIN,
+        generation: 0,
+        action_id: String::new(),
         req_id: non_empty_json_str(value.pointer("/headers/req_id"))?.to_owned(),
         task_id,
         selection,
@@ -2500,8 +2640,22 @@ mod tests {
             .expect("WeCom response context")
     }
 
+    fn assert_handle_matches(actual: &WeComResponseHandle, expected: &WeComResponseHandle) {
+        assert_eq!(actual.req_id, expected.req_id);
+        assert_eq!(actual.task_id, expected.task_id);
+        assert_eq!(actual.selection, expected.selection);
+        assert_eq!(actual.generation, expected.generation);
+        assert_eq!(actual.action_id, expected.action_id);
+        assert!(actual.deadline > actual.arrived_at);
+        assert!(actual.deadline.duration_since(actual.arrived_at) <= WECOM_CALLBACK_BUDGET);
+    }
+
     fn button_handle(req_id: &str, task_id: &str) -> WeComResponseHandle {
         WeComResponseHandle {
+            arrived_at: Instant::now(),
+            deadline: Instant::now() + WECOM_CALLBACK_BUDGET - WECOM_CALLBACK_SAFETY_MARGIN,
+            generation: 0,
+            action_id: String::new(),
             req_id: req_id.into(),
             task_id: card_task_id(task_id, "req-1"),
             selection: WeComCallbackSelection::Button,
@@ -2510,6 +2664,10 @@ mod tests {
 
     fn vote_handle(selected_option_id: &str) -> WeComResponseHandle {
         WeComResponseHandle {
+            arrived_at: Instant::now(),
+            deadline: Instant::now() + WECOM_CALLBACK_BUDGET - WECOM_CALLBACK_SAFETY_MARGIN,
+            generation: 0,
+            action_id: String::new(),
             req_id: "callback-req-1".into(),
             task_id: card_task_id("delivery-1", "req-1"),
             selection: WeComCallbackSelection::Vote {
@@ -2907,6 +3065,301 @@ mod tests {
         assert!(!delivery_requires_linked_detail(
             &desktop_resolution_delivery(ImNotificationKind::Elicitation)
         ));
+    }
+
+    #[tokio::test]
+    async fn runtime_resume_final_receipt_requires_the_matching_platform_ack() {
+        use crate::im::{ImActionResponseReceipt, ImResolvedBy};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let connector = std::sync::Arc::new(
+            WeComConnector::new(ImActionTokenCodec::new(vec![7; 32]).unwrap())
+                .with_endpoint(format!("ws://{}", listener.local_addr().unwrap())),
+        );
+        let (events, mut receiver) = mpsc::channel(16);
+        let cancellation = CancellationToken::new();
+        let running = connector.clone();
+        let cancel = cancellation.clone();
+        let task = tokio::spawn(async move {
+            running
+                .connect(
+                    ResolvedImChannelConfig {
+                        public_identity: "bot".into(),
+                        credential_fields: BTreeMap::from([(
+                            "secret".into(),
+                            "test-secret".into(),
+                        )]),
+                        locale: ImLocale::ZhCn,
+                    },
+                    7,
+                    events,
+                    cancel,
+                )
+                .await
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let subscribe = parse_json_message(&socket.next().await.unwrap().unwrap())
+            .unwrap()
+            .unwrap();
+        socket
+            .send(Message::Text(
+                json!({"headers":subscribe["headers"],"errcode":0})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            receiver.recv().await,
+            Some(ImConnectorEvent::Connected { .. })
+        ));
+        let mut handle = button_handle("resume-callback-request", "delivery-1");
+        handle.generation = 7;
+        handle.action_id = "resume-action".into();
+        let delivery = permission_delivery(vec![permission_option(
+            "allow_once",
+            "Yes",
+            PermissionActionKind::AllowOnce,
+        )]);
+        let response = ImActionResponse {
+            state: ImActionResponseState::Handled,
+            resolved_by: Some(ImResolvedBy::Channel(ImChannelKind::WeCom)),
+            outcome: Some(ImResolutionOutcome::PermissionOption {
+                option_id: "allow_once".into(),
+            }),
+            delivery: Some(delivery.clone()),
+        };
+        let responding = connector.clone();
+        let reply = tokio::spawn(async move {
+            responding
+                .respond_to_action(ImActionResponseContext::new(handle), response)
+                .await
+        });
+        let update = parse_json_message(&socket.next().await.unwrap().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(update["headers"]["req_id"], "resume-callback-request");
+        socket
+            .send(Message::Text(
+                json!({"headers":{"req_id":"unrelated"},"errcode":0})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            !reply.is_finished(),
+            "an unrelated ACK cannot confirm the update"
+        );
+        socket
+            .send(Message::Text(
+                json!({"headers":{"req_id":"resume-callback-request"},"errcode":0})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            reply.await.unwrap().unwrap(),
+            ImActionResponseReceipt::FinalCardUpdated {
+                source_delivery_id: delivery.delivery_id,
+                action_id: "resume-action".into(),
+                generation: 7
+            }
+        );
+        cancellation.cancel();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn runtime_resume_callback_budget_includes_event_queue_wait() {
+        let (events, mut receiver) = mpsc::channel(1);
+        let (commands, _command_receiver) = mpsc::channel(1);
+        events
+            .send(ImConnectorEvent::BindingObserved {
+                generation: 1,
+                binding: ImObservedBinding {
+                    destination_id: "u".into(),
+                    conversation_id: "u".into(),
+                    actor_id: "u".into(),
+                    is_private: true,
+                    display_name: None,
+                },
+            })
+            .await
+            .unwrap();
+        let action = WeComActionReference {
+            delivery_id: "delivery-1".into(),
+            task_id: card_task_id("delivery-1", "req-1"),
+            action_index: 0,
+        };
+        let callback = official_action_callback(
+            &action,
+            "callback-req-1",
+            "event-1",
+            "delivery-1",
+            Some("single"),
+        );
+        let arrived = Instant::now();
+        let queued =
+            tokio::spawn(async move { handle_callback(9, &events, &commands, callback).await });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(3)).await;
+        receiver.recv().await.unwrap();
+        let ImConnectorEvent::InboundAction {
+            response_context,
+            envelope,
+            ..
+        } = receiver.recv().await.unwrap()
+        else {
+            panic!("expected action")
+        };
+        let handle = handle_of(&response_context);
+        assert_eq!(handle.arrived_at, arrived);
+        assert_eq!(
+            handle.deadline,
+            arrived + WECOM_CALLBACK_BUDGET - WECOM_CALLBACK_SAFETY_MARGIN
+        );
+        assert_eq!(handle.action_id, envelope.action_id);
+        assert_eq!(handle.generation, 9);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let connector = WeComConnector::new(ImActionTokenCodec::new(vec![7; 32]).unwrap());
+        assert!(matches!(
+            connector
+                .respond_to_action(
+                    response_context,
+                    response_with(ImActionResponseState::Processing, None)
+                )
+                .await
+                .unwrap(),
+            crate::im::ImActionResponseReceipt::Unconfirmed {
+                reason: crate::im::ImActionUnconfirmedReason::Expired
+            }
+        ));
+        queued.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn runtime_resume_card_shows_context_reason_and_one_typed_action() {
+        use crate::app::runtime_resume::RuntimeResumeKind;
+        for (kind, title_key, summary_key, title, action) in [
+            (
+                RuntimeResumeKind::ContinueCurrentAttempt,
+                "im.notification.workflowResume.title",
+                "im.notification.workflowResume.interruptedSummary",
+                "工作流已暂停",
+                "继续工作流",
+            ),
+            (
+                RuntimeResumeKind::RecoverCompletedAttempt,
+                "im.notification.workflowResume.recoverTitle",
+                "im.notification.workflowResume.recoverInterruptedSummary",
+                "工作流等待恢复",
+                "恢复工作流",
+            ),
+        ] {
+            let mut delivery =
+                permission_delivery(vec![InterventionAllowedAction::RuntimeResume {
+                    resume_kind: kind,
+                }]);
+            delivery.notification_kind = ImNotificationKind::WorkflowResume;
+            if let ImDeliveryPayload::Intervention { presentation, .. } = &mut delivery.payload {
+                presentation.title_key = title_key.into();
+                presentation.summary_key = summary_key.into();
+                presentation.title = None;
+                presentation.summary = None;
+                presentation.body = None;
+                presentation
+                    .fields
+                    .retain(|key, _| is_intervention_context_field(key));
+            }
+            let wire = send_request(
+                "request-1",
+                &delivery,
+                &ImActionTokenCodec::new(vec![7; 32]).unwrap(),
+                ImLocale::ZhCn,
+            )
+            .unwrap();
+            let card = &wire["body"]["template_card"];
+            assert_eq!(card["card_type"], "button_interaction");
+            assert_eq!(card["main_title"]["title"], title);
+            assert!(
+                card["sub_title_text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("执行进程中断")
+            );
+            let fields = card["horizontal_content_list"].as_array().unwrap();
+            assert_eq!(fields.len(), 3);
+            for context in ["Gold-Band", "Repair download", "Reviewer"] {
+                assert!(fields.iter().any(|field| field["value"] == context));
+            }
+            assert_eq!(card["button_list"].as_array().unwrap().len(), 1);
+            assert_eq!(card["button_list"][0]["text"], action);
+            assert!(
+                card["button_list"][0]["key"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(":0")
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_resume_stale_feedback_closes_the_original_button() {
+        let code = crate::im::inbound::ImInboundError::Intervention(
+            crate::app::intervention::InterventionError::new(
+                crate::app::intervention::InterventionErrorCode::InterventionRevisionConflict,
+            ),
+        )
+        .code();
+        let handle = button_handle("callback-stale", "delivery-stale");
+        let wire = action_response_request(
+            &handle,
+            &response_with(ImActionResponseState::Rejected(code), None),
+            ImLocale::ZhCn,
+        );
+        let card = &wire["body"]["template_card"];
+        assert_eq!(card["card_type"], "text_notice");
+        assert!(wire.to_string().contains("工作流状态已变化"), "{wire}");
+        assert!(
+            card.get("button_list").is_none(),
+            "stale action must not remain clickable"
+        );
+    }
+
+    #[test]
+    fn runtime_resume_retryable_feedback_preserves_the_original_button() {
+        use crate::app::runtime_resume::RuntimeResumeKind;
+        let mut delivery = permission_delivery(vec![]);
+        delivery.notification_kind = ImNotificationKind::WorkflowResume;
+        if let ImDeliveryPayload::Intervention { reference, .. } = &mut delivery.payload {
+            reference.allowed_actions = vec![InterventionAllowedAction::RuntimeResume {
+                resume_kind: RuntimeResumeKind::ContinueCurrentAttempt,
+            }];
+        }
+        let handle = button_handle("callback-1", "delivery-1");
+        for state in [
+            ImActionResponseState::Processing,
+            ImActionResponseState::Rejected(ImErrorCode::ActionBusy),
+            ImActionResponseState::Rejected(ImErrorCode::ActionRetryableFailure),
+        ] {
+            let wire = action_response_request(
+                &handle,
+                &response_with(state, Some(delivery.clone())),
+                ImLocale::ZhCn,
+            );
+            assert_eq!(wire["body"]["template_card"]["task_id"], handle.task_id);
+            assert_eq!(
+                wire["body"]["template_card"]["button_list"][0]["key"],
+                format!("{}:0", handle.task_id)
+            );
+            assert_eq!(
+                wire["body"]["template_card"]["button_list"][0]["text"],
+                "继续工作流"
+            );
+        }
     }
 
     #[tokio::test]
@@ -3535,9 +3988,9 @@ mod tests {
         assert_eq!(envelope.conversation_id, "single-user");
         assert_eq!(envelope.actor_id, "single-user");
         assert_eq!(envelope.platform_event_id, "event-1");
-        assert_eq!(
+        assert_handle_matches(
             handle_of(&response_context),
-            &button_handle("callback-req-1", "delivery-1")
+            &button_handle("callback-req-1", "delivery-1"),
         );
 
         let update = action_response_request(
@@ -3607,9 +4060,9 @@ mod tests {
         let (envelope, context) = action_envelope(&callback).unwrap();
         assert_eq!(envelope.conversation_id, "single-user");
         assert_eq!(envelope.actor_id, "single-user");
-        assert_eq!(
+        assert_handle_matches(
             handle_of(&context),
-            &button_handle("callback-req-1", "delivery-1")
+            &button_handle("callback-req-1", "delivery-1"),
         );
 
         let mut group_without_chattype = callback;
@@ -3642,9 +4095,9 @@ mod tests {
 
         let (envelope, context) = action_envelope(&callback).unwrap();
         assert_eq!(envelope.delivery_id, "delivery-1");
-        assert_eq!(
+        assert_handle_matches(
             handle_of(&context),
-            &button_handle("callback-req-1", "delivery-1")
+            &button_handle("callback-req-1", "delivery-1"),
         );
         assert_eq!(
             envelope.action,
@@ -3670,15 +4123,19 @@ mod tests {
                     index: expected_index
                 }
             );
-            assert_eq!(
+            assert_handle_matches(
                 handle_of(&context),
                 &WeComResponseHandle {
+                    arrived_at: Instant::now(),
+                    deadline: Instant::now() + WECOM_CALLBACK_BUDGET - WECOM_CALLBACK_SAFETY_MARGIN,
+                    generation: 0,
+                    action_id: String::new(),
                     req_id: "callback-req-1".into(),
                     task_id: card_task_id("delivery-1", "req-1"),
                     selection: WeComCallbackSelection::Vote {
                         selected_option_id: selected_option_id.into(),
                     },
-                }
+                },
             );
         }
     }
@@ -4111,6 +4568,10 @@ mod tests {
                 form.questions.push(optional);
             }
             let handle = WeComResponseHandle {
+                arrived_at: Instant::now(),
+                deadline: Instant::now() + WECOM_CALLBACK_BUDGET - WECOM_CALLBACK_SAFETY_MARGIN,
+                generation: 0,
+                action_id: String::new(),
                 req_id: "callback".into(),
                 task_id: card_task_id("delivery-1", "req-1"),
                 selection: WeComCallbackSelection::Form {
@@ -4248,6 +4709,10 @@ mod tests {
         };
         let form_handle =
             |card_kind: WeComFormCardKind, selections: Vec<WeComFormItem>| WeComResponseHandle {
+                arrived_at: Instant::now(),
+                deadline: Instant::now() + WECOM_CALLBACK_BUDGET - WECOM_CALLBACK_SAFETY_MARGIN,
+                generation: 0,
+                action_id: String::new(),
                 req_id: "callback-req-1".into(),
                 task_id: card_task_id("delivery-1", "req-1"),
                 selection: WeComCallbackSelection::Form {
@@ -4385,6 +4850,10 @@ mod tests {
             }]);
         delivery.display_ref = Some(80);
         let handle = WeComResponseHandle {
+            arrived_at: Instant::now(),
+            deadline: Instant::now() + WECOM_CALLBACK_BUDGET - WECOM_CALLBACK_SAFETY_MARGIN,
+            generation: 0,
+            action_id: String::new(),
             req_id: "callback-req-1".into(),
             task_id: card_task_id("delivery-1", "req-1"),
             selection: WeComCallbackSelection::Form {
@@ -4462,9 +4931,9 @@ mod tests {
                 deadline: _,
                 response: _,
             } => {
-                assert_eq!(
+                assert_handle_matches(
                     handle_of(&context),
-                    &button_handle("callback-req-1", "wrong-delivery")
+                    &button_handle("callback-req-1", "wrong-delivery"),
                 );
                 assert_eq!(
                     action_response,
@@ -4664,6 +5133,7 @@ mod tests {
                 .handle(&envelope, 1, |_| {
                     execution_count += 1;
                     Ok(InterventionCommandResult {
+                        runtime_resume: None,
                         status: InterventionCommandStatus::Accepted,
                         canonical_state: "resolved".into(),
                     })

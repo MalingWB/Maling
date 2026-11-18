@@ -114,7 +114,8 @@ fn notification_markdown_impl(
             }
             text
         }
-        ImDeliveryPayload::Information { notification, .. } => {
+        ImDeliveryPayload::Information { notification, .. }
+        | ImDeliveryPayload::ActionFeedback { notification, .. } => {
             let mut text = format!("**{}**", localized(locale, &notification.summary_key));
             for (key, value) in &notification.parameters {
                 if !value.trim().is_empty() {
@@ -133,9 +134,14 @@ fn notification_markdown_impl(
                 return localized(locale, "im.intervention.cancelledRef")
                     .replace("{ref}", &display_ref);
             }
-            localized(locale, "im.intervention.handledOn")
+            let mut text = localized(locale, "im.intervention.handledOn")
                 .replace("{ref}", &display_ref)
-                .replace("{source}", resolved_by_copy(resolution.resolved_by, locale))
+                .replace("{source}", resolved_by_copy(resolution.resolved_by, locale));
+            if let super::ImResolutionOutcome::RuntimeResume { result } = &resolution.outcome {
+                text.push_str("\n\n");
+                text.push_str(localized(locale, runtime_resume_result_key(result)));
+            }
+            text
         }
     }
 }
@@ -250,6 +256,14 @@ pub(crate) fn message_state_label(locale: ImLocale, state: super::ImMessageState
 
 pub(crate) fn action_label(locale: ImLocale, action: &InterventionAllowedAction) -> String {
     let key = match action {
+        InterventionAllowedAction::RuntimeResume { resume_kind } => match resume_kind {
+            crate::app::runtime_resume::RuntimeResumeKind::ContinueCurrentAttempt => {
+                "im.action.continueWorkflow"
+            }
+            crate::app::runtime_resume::RuntimeResumeKind::RecoverCompletedAttempt => {
+                "im.action.recoverWorkflow"
+            }
+        },
         InterventionAllowedAction::PermissionOption {
             option_id,
             permission_kind,
@@ -634,5 +648,17 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+pub(crate) fn runtime_resume_result_key(
+    result: &crate::app::runtime_resume::RuntimeResumeResult,
+) -> &'static str {
+    use crate::app::runtime_resume::RuntimeResumeOutcome;
+    match result.outcome {
+        RuntimeResumeOutcome::Started => "im.workflowResume.started",
+        RuntimeResumeOutcome::Recovered => "im.workflowResume.recovered",
+        RuntimeResumeOutcome::Completed => "im.workflowResume.completed",
+        RuntimeResumeOutcome::LaunchFailed => "im.workflowResume.launchFailed",
     }
 }
