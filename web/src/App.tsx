@@ -159,6 +159,7 @@ import {
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
 import { RemoteTaskManagementPage } from './pages/RemoteTaskManagementPage';
 import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
+import { ForgeSessionHistoryPage } from './pages/ForgeSessionHistoryPage';
 import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
 import { scheduledTriggerTarget } from './lib/scheduled-task-navigation';
 import { PersonalAnalyticsPage } from './pages/PersonalAnalyticsPage';
@@ -3308,6 +3309,9 @@ export function App() {
           }}
         />
       );
+    }
+    if (conversationPage.kind === 'forge-sessions') {
+      return <ForgeSessionHistoryPage projectId={activeWorkspaceIdRef.current ?? defaultProjectId} />;
     }
     if (conversationPage.kind === 'conversation-run') {
       if (isConversationRunNavigationLoading(conversationPage, conversationRun) || !conversationRun) {

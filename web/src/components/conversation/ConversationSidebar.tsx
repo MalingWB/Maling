@@ -1,5 +1,5 @@
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from "../ui/context-menu";
-import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Settings, BookOpen, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Hammer, Settings, BookOpen, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStableCallbacks } from '@/hooks/use-stable-callbacks';
@@ -45,6 +45,7 @@ export type ConversationSidebarNavigationKey =
   | 'contexts'
   | 'run-mode-management'
   | 'scheduled-tasks'
+  | 'forge-sessions'
   | null;
 
 export function conversationSidebarNavigationKey(page: ConversationPage): ConversationSidebarNavigationKey {
@@ -56,6 +57,7 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
     case 'contexts':
     case 'run-mode-management':
     case 'scheduled-tasks':
+    case 'forge-sessions':
       return page.kind;
     case 'scheduled-task-detail':
       return 'scheduled-tasks';
@@ -70,7 +72,8 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
 export function isConversationSidebarMoreNavigationActive(page: ConversationPage): boolean {
   return page.kind === 'remote-tasks'
     || page.kind === 'scheduled-tasks'
-    || page.kind === 'scheduled-task-detail';
+    || page.kind === 'scheduled-task-detail'
+    || page.kind === 'forge-sessions';
 }
 
 interface ConversationSidebarProps {
@@ -533,6 +536,16 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 onClick={() => {
                   setMoreNavigationOpen(true);
                   onSelect({ kind: 'scheduled-tasks' });
+                }}
+              />
+              <SidebarButton
+                compact
+                active={active.kind === 'forge-sessions'}
+                icon={<Hammer className="size-3.5" />}
+                label={t('forge.history.title')}
+                onClick={() => {
+                  setMoreNavigationOpen(true);
+                  onSelect({ kind: 'forge-sessions' });
                 }}
               />
             </CollapsibleContent>

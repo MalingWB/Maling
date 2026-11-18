@@ -3564,6 +3564,25 @@
       },
       "outputKindLabel": "Salida",
       "onFailureLabel": "Ante fallo"
+    },
+    "history": {
+      "title": "Historial de forja",
+      "subtitle": "Las sesiones de forja y prueba no aparecen en la lista predeterminada; revísalas y límpialas aquí.",
+      "loading": "Cargando sesiones de forja…",
+      "loadFailed": "Error al cargar sesiones de forja",
+      "empty": "No hay sesiones de forja en este proyecto",
+      "sessionBadge": "Forja",
+      "trialBadge": "Prueba",
+      "noSpec": "Aún sin borrador",
+      "stageCount": "{{count}} etapas",
+      "openQuestionCount": "{{count}} abiertas",
+      "openQuestionHint": "Aún hay preguntas sin resolver; la conversación sigue convergiendo",
+      "cleanupUnfinished": "Limpiar inacabadas",
+      "cleanupSelected": "Limpiar seleccionadas ({{count}})",
+      "cleanupConfirmTitle": "Limpiar sesiones de forja",
+      "cleanupConfirmDescription": "Esto elimina los directorios de tareas de {{count}} sesiones (historial y borradores incluidos). No se puede deshacer.",
+      "cleanupConfirmAction": "Limpiar",
+      "selectSession": "Seleccionar {{title}}"
     }
   }
 }

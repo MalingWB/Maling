@@ -3564,6 +3564,25 @@
       },
       "outputKindLabel": "產物形態",
       "onFailureLabel": "失敗策略"
+    },
+    "history": {
+      "title": "鑄造歷史",
+      "subtitle": "鑄造與試執行會話不進入預設會話清單,在此統一查看和清理。",
+      "loading": "正在讀取鑄造會話…",
+      "loadFailed": "鑄造會話讀取失敗",
+      "empty": "當前專案沒有鑄造會話",
+      "sessionBadge": "鑄造",
+      "trialBadge": "試執行",
+      "noSpec": "尚未產出鑄造草稿",
+      "stageCount": "{{count}} 個階段",
+      "openQuestionCount": "{{count}} 項待釐清",
+      "openQuestionHint": "仍有未收斂項,會話繼續拷問後收斂",
+      "cleanupUnfinished": "清理未完成鑄造",
+      "cleanupSelected": "清理所選（{{count}}）",
+      "cleanupConfirmTitle": "確認清理鑄造會話",
+      "cleanupConfirmDescription": "將刪除 {{count}} 個會話的任務目錄（含對話記錄與鑄造草稿存檔）,此操作無法復原。",
+      "cleanupConfirmAction": "清理",
+      "selectSession": "選擇 {{title}}"
     }
   }
 }

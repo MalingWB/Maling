@@ -3564,6 +3564,25 @@
       },
       "outputKindLabel": "Output",
       "onFailureLabel": "On failure"
+    },
+    "history": {
+      "title": "Forge history",
+      "subtitle": "Forge and trial sessions stay out of the default conversation list; review and clean them up here.",
+      "loading": "Loading forge sessions…",
+      "loadFailed": "Failed to load forge sessions",
+      "empty": "No forge sessions in this project",
+      "sessionBadge": "Forge",
+      "trialBadge": "Trial",
+      "noSpec": "No forge draft yet",
+      "stageCount": "{{count}} stages",
+      "openQuestionCount": "{{count}} open",
+      "openQuestionHint": "Still has unresolved questions; the conversation keeps converging",
+      "cleanupUnfinished": "Clean up unfinished",
+      "cleanupSelected": "Clean up selected ({{count}})",
+      "cleanupConfirmTitle": "Clean up forge sessions",
+      "cleanupConfirmDescription": "This deletes the task directories of {{count}} sessions (conversation history and spec archives included). This cannot be undone.",
+      "cleanupConfirmAction": "Clean up",
+      "selectSession": "Select {{title}}"
     }
   }
 }

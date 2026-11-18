@@ -3564,6 +3564,25 @@
       },
       "outputKindLabel": "产物形态",
       "onFailureLabel": "失败策略"
+    },
+    "history": {
+      "title": "铸造历史",
+      "subtitle": "铸造与试运行会话不进入默认会话列表,在此统一查看和清理。",
+      "loading": "正在读取铸造会话…",
+      "loadFailed": "铸造会话读取失败",
+      "empty": "当前项目没有铸造会话",
+      "sessionBadge": "铸造",
+      "trialBadge": "试运行",
+      "noSpec": "尚未产出铸造草稿",
+      "stageCount": "{{count}} 个阶段",
+      "openQuestionCount": "{{count}} 项待澄清",
+      "openQuestionHint": "仍有未收敛项,会话继续拷打后收敛",
+      "cleanupUnfinished": "清理未完成铸造",
+      "cleanupSelected": "清理所选（{{count}}）",
+      "cleanupConfirmTitle": "确认清理铸造会话",
+      "cleanupConfirmDescription": "将删除 {{count}} 个会话的任务目录（含对话记录与铸造草稿存档）,此操作无法撤销。",
+      "cleanupConfirmAction": "清理",
+      "selectSession": "选择 {{title}}"
     }
   }
 }

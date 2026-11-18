@@ -3564,6 +3564,25 @@
       },
       "outputKindLabel": "산출물",
       "onFailureLabel": "실패 시 정책"
+    },
+    "history": {
+      "title": "단조 기록",
+      "subtitle": "단조·시험 실행 세션은 기본 대화 목록에 표시되지 않습니다. 여기서 확인하고 정리하세요.",
+      "loading": "단조 세션을 불러오는 중…",
+      "loadFailed": "단조 세션을 불러오지 못했습니다",
+      "empty": "이 프로젝트에는 단조 세션이 없습니다",
+      "sessionBadge": "단조",
+      "trialBadge": "시험 실행",
+      "noSpec": "아직 단조 초안이 없습니다",
+      "stageCount": "단계 {{count}}개",
+      "openQuestionCount": "미해결 {{count}}건",
+      "openQuestionHint": "미수렴 항목이 남아 있습니다. 대화로 계속 수렴시킵니다",
+      "cleanupUnfinished": "미완료 정리",
+      "cleanupSelected": "선택 정리 ({{count}})",
+      "cleanupConfirmTitle": "단조 세션 정리",
+      "cleanupConfirmDescription": "{{count}}개 세션의 작업 디렉터리(대화 기록과 단조 초안 포함)를 삭제합니다. 되돌릴 수 없습니다.",
+      "cleanupConfirmAction": "정리",
+      "selectSession": "{{title}} 선택"
     }
   }
 }

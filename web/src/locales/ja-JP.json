@@ -3564,6 +3564,25 @@
       },
       "outputKindLabel": "成果物",
       "onFailureLabel": "失敗時の方針"
+    },
+    "history": {
+      "title": "鋳造履歴",
+      "subtitle": "鋳造・試実行セッションは既定の会話一覧に出ません。ここで確認と整理を行います。",
+      "loading": "鋳造セッションを読み込み中…",
+      "loadFailed": "鋳造セッションの読み込みに失敗しました",
+      "empty": "このプロジェクトに鋳造セッションはありません",
+      "sessionBadge": "鋳造",
+      "trialBadge": "試実行",
+      "noSpec": "鋳造草稿はまだありません",
+      "stageCount": "{{count}} ステージ",
+      "openQuestionCount": "未確定 {{count}} 件",
+      "openQuestionHint": "未収束の項目が残っています。対話で引き続き収束させます",
+      "cleanupUnfinished": "未完了を整理",
+      "cleanupSelected": "選択を整理（{{count}}）",
+      "cleanupConfirmTitle": "鋳造セッションを整理",
+      "cleanupConfirmDescription": "{{count}} 件のセッションのタスクディレクトリ（対話記録と鋳造草稿を含む）を削除します。元に戻せません。",
+      "cleanupConfirmAction": "整理",
+      "selectSession": "{{title}} を選択"
     }
   }
 }

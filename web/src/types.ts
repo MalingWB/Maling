@@ -2627,6 +2627,7 @@ export type ConversationPage =
     }
   | { kind: 'run-mode-management'; projectId?: string; taskId?: string; taskUuid?: string; runId?: string }
   | { kind: 'remote-tasks' }
+  | { kind: 'forge-sessions' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
   | { kind: 'scheduled-tasks' }
