@@ -3569,7 +3569,8 @@
       "compileBlocked": "Quedan preguntas abiertas; compila tras la convergencia",
       "startTrial": "Probar primera etapa",
       "startTrialHint": "Crea una tarea real desde la plantilla y se detiene tras la primera etapa",
-      "compiledCount": "{{count}} plantillas de workflow creadas"
+      "compiledCount": "{{count}} plantillas de workflow creadas",
+      "bindingMissing": "Aún no hay vinculación de modelos disponible: configura una en Ajustes antes de las pruebas"
     },
     "history": {
       "title": "Historial de forja",

@@ -161,6 +161,7 @@ function ConversationRunWorkspaceResourcePanelComponent({
         resource={resource}
         onWorkflowTemplatesChange={onWorkflowTemplatesChange}
         onTrialSessionStarted={onForgeTrialSessionStarted}
+        agentRegistry={agentRegistry}
       />
     );
   }

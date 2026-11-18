@@ -3569,7 +3569,8 @@
       "compileBlocked": "Ainda há perguntas abertas; compile após a convergência",
       "startTrial": "Testar primeiro estágio",
       "startTrialHint": "Cria uma tarefa real a partir do template e para após o primeiro estágio",
-      "compiledCount": "{{count}} templates de workflow criados"
+      "compiledCount": "{{count}} templates de workflow criados",
+      "bindingMissing": "Nenhuma vinculação de modelo disponível — configure uma em Ajustes antes dos testes"
     },
     "history": {
       "title": "Histórico de forja",

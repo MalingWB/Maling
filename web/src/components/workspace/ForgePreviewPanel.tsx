@@ -14,6 +14,8 @@ interface ForgePreviewPanelProps {
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
   /// 试运行任务创建并启动后,由持有方导航到该会话(方案 §5.6)。
   onTrialSessionStarted?: (projectId: string, taskId: string) => void;
+  /// G1 绑定检查:无任何可用 agent 时编译成功后提醒(不阻塞)。
+  agentRegistry?: { agents: { diagnostic?: { available: boolean } | null }[] } | null;
 }
 
 /**
@@ -24,7 +26,7 @@ interface ForgePreviewPanelProps {
  * 为模板(source=Forged),并可发起首节点试运行(第三阶段在本 Tab 原位
  * 切换为流程图与编辑器预览,本组件届时退役为摘要区块)。
  */
-export function ForgePreviewPanel({ resource, onWorkflowTemplatesChange, onTrialSessionStarted }: ForgePreviewPanelProps) {
+export function ForgePreviewPanel({ resource, onWorkflowTemplatesChange, onTrialSessionStarted, agentRegistry }: ForgePreviewPanelProps) {
   const { t } = useTranslation();
   const [spec, setSpec] = useState<ForgeSpecVm | null | undefined>(undefined);
   const [compileResult, setCompileResult] = useState<ForgeCompileResultVm | null>(null);
@@ -157,6 +159,10 @@ export function ForgePreviewPanel({ resource, onWorkflowTemplatesChange, onTrial
       {compileResult ? (
         <div className="shrink-0 px-3 py-1.5 text-xs text-muted-foreground">
           {t('forge.preview.compiledCount', { count: compileResult.createdTemplateIds.length })}
+          {agentRegistry && agentRegistry.agents.length > 0
+          && agentRegistry.agents.every((agent) => agent.diagnostic && !agent.diagnostic.available) ? (
+            <span className="ml-2 text-foreground/70">{t('forge.preview.bindingMissing')}</span>
+          ) : null}
         </div>
       ) : null}
       {actionError ? (

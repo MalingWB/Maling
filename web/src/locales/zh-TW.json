@@ -3569,7 +3569,8 @@
       "compileBlocked": "仍有待釐清項,收斂後可編譯",
       "startTrial": "試執行首節點",
       "startTrialHint": "以範本建立真實任務,跑通首個節點即停",
-      "compiledCount": "已建立 {{count}} 個工作流範本"
+      "compiledCount": "已建立 {{count}} 個工作流範本",
+      "bindingMissing": "尚未設定可用的模型綁定,試執行前請先在設定中完成綁定"
     },
     "history": {
       "title": "鑄造歷史",

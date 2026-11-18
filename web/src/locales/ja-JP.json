@@ -3569,7 +3569,8 @@
       "compileBlocked": "未確定項目が残っています。収束後にコンパイルできます",
       "startTrial": "第 1 ノードを試実行",
       "startTrialHint": "テンプレートから実際のタスクを作成し、第 1 ノード完了で停止",
-      "compiledCount": "ワークフローテンプレートを {{count}} 件作成しました"
+      "compiledCount": "ワークフローテンプレートを {{count}} 件作成しました",
+      "bindingMissing": "利用可能なモデルバインドがまだありません。試実行前に設定でバインドしてください"
     },
     "history": {
       "title": "鋳造履歴",
