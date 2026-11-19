@@ -966,6 +966,7 @@ mod tests {
             outer_attempt_id: None,
         };
         let run = crate::runtime::RunState {
+            connection_specs: Vec::new(),
             version: crate::domain::VERSION.to_string(),
             id: locator.run_id.clone(),
             task_id: locator.task_id.clone(),
@@ -1068,6 +1069,7 @@ mod tests {
             outer_attempt_id: None,
         };
         let run = crate::runtime::RunState {
+            connection_specs: Vec::new(),
             version: crate::domain::VERSION.to_string(),
             id: locator.run_id.clone(),
             task_id: locator.task_id.clone(),
@@ -1216,6 +1218,7 @@ mod tests {
             outer_attempt_id: None,
         };
         let run = crate::runtime::RunState {
+            connection_specs: Vec::new(),
             version: crate::domain::VERSION.to_string(),
             id: locator.run_id.clone(),
             task_id: locator.task_id.clone(),

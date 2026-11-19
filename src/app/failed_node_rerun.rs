@@ -1534,6 +1534,9 @@ impl App {
                     uuid: Some(generate_uuid()),
                     last_executed_node: None,
                     worktree: current.worktree.clone(),
+                    // 重跑沿袭来源运行的连接绑定（连接→对话 阶段4）：重跑出的新 run
+                    // 与来源 run 共享同一工作目标，连接规格随之复制。
+                    connection_specs: current.connection_specs.clone(),
                     rerun: Some(RunRerunMetadata {
                         sealed_by: None,
                         origin: Some(RunRerunOrigin {
@@ -1719,6 +1722,7 @@ mod tests {
             rerun: None,
             last_executed_node: None,
             worktree: None,
+            connection_specs: Vec::new(),
             execution: RuntimeExecutionState {
                 phase: if status == RunStatus::Paused {
                     RuntimeExecutionPhase::Paused

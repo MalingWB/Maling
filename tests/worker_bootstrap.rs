@@ -2379,6 +2379,7 @@ fn new_round_predecessor_context_uses_stable_prefix_and_current_round() {
 #[test]
 fn error_blocked_run_is_not_continuable() {
     let run = RunState {
+        connection_specs: Vec::new(),
         version: VERSION.to_string(),
         id: "run-001".to_string(),
         task_id: "task-001".to_string(),

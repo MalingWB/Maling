@@ -17,7 +17,9 @@ export type ConversationRunSnapshotSource =
   | 'session-stopped'
   | 'continue'
   | 'rerun'
-  | 'node-retry';
+  | 'node-retry'
+  | 'connection-unbind'
+  | 'connection-bind';
 
 export function conversationSessionKeyFromParts(parts: {
   roundId: string;

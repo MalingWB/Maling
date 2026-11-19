@@ -1,8 +1,12 @@
+mod connection_mcp;
+mod connection_mcp_http;
 mod conversation_run;
+mod credentials;
 mod execution_plan_service;
 mod failed_node_rerun;
 mod ids;
 pub mod intervention;
+mod known_hosts;
 mod node_executor;
 mod notification;
 pub mod observability;
@@ -10,8 +14,11 @@ mod orchestrator;
 mod profile_resolver;
 mod profiles;
 mod runtime_recovery;
+mod server_connections;
+mod ssh_sessions;
 mod state_access;
 mod state_factory;
+mod terminal_sessions;
 mod transition_context;
 pub mod upstream;
 mod workflow_share;
@@ -84,6 +91,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use self::credentials::CredentialStore;
 use self::ids::{generate_uuid, next_workflow_id, now_rfc3339_like, reserve_next_task_dir};
 pub use self::orchestrator::ManualCheckSubmissionLease;
 use self::orchestrator::{
@@ -173,10 +181,32 @@ pub(crate) fn attempt_runtime_state_lock(
 /// 按规范化后的 `user_state_file()` 路径取同一把锁）。
 const STATE_CONFIG_LOCK_SHARDS: usize = 32;
 static STATE_CONFIG_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
+pub use self::connection_mcp::{
+    AppConnectionMcpRuntime, CONNECTION_MCP_PROTOCOL_VERSION, CONNECTION_MCP_SERVER_NAME,
+    CONNECTION_MCP_SERVER_VERSION, ConnectionMcpRuntime, ConnectionMcpRuntimeFactory,
+    ConnectionOutputChunk, ConnectionToolError, connection_mcp_server_config,
+    connection_tools_schema, handle_jsonrpc,
+};
+pub use self::connection_mcp_http::{
+    HttpRequest, HttpResponse, MCP_ENDPOINT_PATH, connection_mcp_url, parse_http_request, respond,
+    respond_scoped, serve,
+};
+pub use self::known_hosts::{HostKeyTrust, KnownHostsError, KnownHostsStore};
 pub use self::profiles::{
     ImportProfileFilesInput, ImportProfilesInput, ImportProfilesResult, MulticaInstallOutcome,
     MulticaRoleExchange, ProfileCommandError, ProfileEntry, ProfileInput, ProfileList,
     ProfileScope, multica_exchange_to_profile_input, profile_to_multica_exchange,
+};
+pub use self::server_connections::{
+    ConnectionAuthMethod, ConnectionEnvironment, ConnectionSpec, RecentConnectionSummary,
+    ServerConnection, ServerConnectionCommandError, ServerConnectionInput, ServerConnectionStore,
+    ServerConnectionSummary,
+};
+pub use self::ssh_sessions::{SshAuth, SshOpenRequest, SshSessionCommandError};
+pub use self::terminal_sessions::{
+    ConnectionRunLocator, MAX_TERMINAL_SESSIONS, TerminalEvent, TerminalEventSink,
+    TerminalSessionCommandError, TerminalSessionKind, TerminalSessionManager,
+    TerminalSessionStatus, TerminalSessionView,
 };
 pub use self::workflow_share::{MulticaWorkflowExchange, workflow_template_to_multica_exchange};
 
@@ -1386,6 +1416,7 @@ impl RuntimeLifecycleEvent {
 pub struct App {
     pub paths: GoldBandPaths,
     pub config: RuntimeConfig,
+    credential_store: Arc<dyn CredentialStore>,
     task_search_indexer: Arc<dyn Fn(&Utf8Path, &str) + Send + Sync>,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
     upstream_output_resolver: Option<Arc<dyn upstream::UpstreamOutputResolver>>,
@@ -1416,6 +1447,9 @@ pub struct App {
     scheduled_occurrence_id: Option<String>,
     scheduled_task_context: Option<crate::provider::ScheduledTaskContextInfo>,
     runtime_recovery: Option<Arc<RuntimeRecoveryCoordinator>>,
+    /// localhost 端口，供应用内连接 MCP 工具 server（连接→对话 阶段4）监听。
+    /// `None` 时不注入 `mcp_servers`（无绑定连接、或桌面层尚未起监听）。
+    connection_mcp_endpoint_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1706,6 +1740,7 @@ impl App {
         Self {
             paths: self.paths.clone(),
             config: self.config.clone(),
+            credential_store: self.credential_store.clone(),
             task_search_indexer: self.task_search_indexer.clone(),
             provider_override: self.provider_override.clone(),
             upstream_output_resolver: self.upstream_output_resolver.clone(),
@@ -1721,7 +1756,27 @@ impl App {
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
             scheduled_task_context: self.scheduled_task_context.clone(),
             runtime_recovery: self.runtime_recovery.clone(),
+            connection_mcp_endpoint_port: self.connection_mcp_endpoint_port,
         }
+    }
+
+    /// Replaces the credential store (tests inject a deterministic in-memory
+    /// store; production uses the OS keyring by default).
+    pub fn with_credential_store(mut self, credential_store: Arc<dyn CredentialStore>) -> Self {
+        self.credential_store = credential_store;
+        self
+    }
+
+    /// Records the localhost port the desktop layer has bound the connection
+    /// MCP tools server to (see `connection_mcp_http::serve`). `build_worker_invocation`
+    /// reads this to decide whether/where to inject `mcp_servers`.
+    pub fn with_connection_mcp_endpoint_port(mut self, port: u16) -> Self {
+        self.connection_mcp_endpoint_port = Some(port);
+        self
+    }
+
+    pub fn connection_mcp_endpoint_port(&self) -> Option<u16> {
+        self.connection_mcp_endpoint_port
     }
 
     pub fn with_provider_diagnostics_source(
@@ -1771,6 +1826,7 @@ impl App {
         Self {
             paths,
             config,
+            credential_store: self.credential_store.clone(),
             task_search_indexer: self.task_search_indexer.clone(),
             provider_override: self.provider_override.clone(),
             upstream_output_resolver: self.upstream_output_resolver.clone(),
@@ -1786,6 +1842,7 @@ impl App {
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
             scheduled_task_context: self.scheduled_task_context.clone(),
             runtime_recovery: self.runtime_recovery.clone(),
+            connection_mcp_endpoint_port: self.connection_mcp_endpoint_port,
         }
     }
 
@@ -4702,6 +4759,7 @@ impl App {
         Self {
             paths,
             config,
+            credential_store: self::credentials::default_credential_store(),
             task_search_indexer: default_task_search_indexer(),
             provider_override: None,
             upstream_output_resolver: None,
@@ -4717,6 +4775,7 @@ impl App {
             scheduled_occurrence_id: None,
             scheduled_task_context: None,
             runtime_recovery: None,
+            connection_mcp_endpoint_port: None,
         }
     }
 
@@ -6146,6 +6205,10 @@ impl App {
         invocation.turn_control_mode = crate::domain::TurnControlMode::NonRuntimeControlled;
         invocation.runtime_control_intent = crate::provider::RuntimeControlIntent::ManualFollowUp;
         invocation.extra_hidden_sections.clear();
+        invocation.extra_hidden_sections = crate::provider::connection_hidden_sections(
+            &run.connection_specs,
+            self.config.desktop_language,
+        );
         let prompt = prepare_prompt_bundle(&mut invocation)?;
         Ok(PreparedAcpPrompt {
             prompt,
@@ -6994,6 +7057,7 @@ mod tests {
         runtime_execution_id: Option<&str>,
     ) {
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),
@@ -7775,6 +7839,7 @@ mod tests {
 
     fn resumability_run(reason: PauseReason) -> RunState {
         RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),
@@ -9501,6 +9566,7 @@ mod tests {
         write_json(
             &app.paths.run_file(task_id, run_id),
             &RunState {
+                connection_specs: Vec::new(),
                 version: VERSION.to_string(),
                 id: run_id.to_string(),
                 task_id: task_id.to_string(),
@@ -10019,6 +10085,7 @@ mod tests {
         write_json(
             &app.paths.run_file(task_id, run_id),
             &RunState {
+                connection_specs: Vec::new(),
                 version: VERSION.to_string(),
                 id: run_id.to_string(),
                 task_id: task_id.to_string(),
@@ -10141,6 +10208,7 @@ mod tests {
         write_json(
             &app.paths.run_file(task_id, run_id),
             &RunState {
+                connection_specs: Vec::new(),
                 version: VERSION.to_string(),
                 id: run_id.to_string(),
                 task_id: task_id.to_string(),

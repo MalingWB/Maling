@@ -10,7 +10,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 它不是：
 - CLI / TUI 的图形皮肤
 - 聊天应用
-- 终端模拟器
+- 通用终端模拟器（桌面端保留受管的「连接与终端」隔离模块，只面向受控测试环境的本地 shell 与 SSH 接入，不构成通用终端仿真，见 [连接与终端](terminal-and-connections.md)）
 - 单页运行态大仪表盘
 
 它是：
@@ -84,6 +84,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 - [Agent 管理页](agent-management.md)
 - [上下文管理与角色批量导入](context-management.md)
 - [设置页](settings.md)
+- [连接与终端](terminal-and-connections.md)
 - [WebView 兼容能力与分级降级](webview-compatibility.md)
 
 ---
@@ -110,6 +111,8 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 - terminal 输入区
 - chat input
 - 自然语言命令解析
+
+上述「不使用」适用于任务编排 / 会话等主路径。桌面端另有独立的受管「连接与终端」模块，提供本地 shell 与 SSH 终端用于受控测试环境排障，与主路径命令心智隔离，见 [连接与终端](terminal-and-connections.md)。
 
 ### 5.3 Canonical state 与观测信息分层
 桌面端展示运行过程时必须区分：
@@ -149,6 +152,7 @@ UI 不应根据日志直接推断 workflow 终局，终局状态以 canonical st
 - 桌面端 workspace 不依赖 Tauri 进程启动目录：启动时恢复用户记忆，或向上查找 `.gold-band/` 作为项目根；用户可通过原生目录选择器切换 workspace。
 - 开发热加载启动命令为 `npm run dev`；需要固定当前源码快照、且不随前端或 Rust 文件修改热加载/重启时，使用默认渠道静态开发启动命令 `npm run dev:static`。该命令先将一次性 `web:build` 直接输出到本次进程独占的 `src-tauri/target/static-dev/<channel>/<snapshot>/frontend`，再让 Tauri `frontendDist` 只服务该不可变目录；退出后清理本次前端快照。后续其他进程改写 `web/dist` 不会触发当前客户端刷新，深层会话路由也不会在并行构建的清空窗口内落入临时 404。该模式同时关闭 Tauri source watcher，使用独立 Cargo target，并关闭 static dev 专用 Cargo dev profile 的 Rust debug symbols，避免与普通构建争用 Windows PDB 或触发容量限制；普通 `npm run dev` 的源码级调试能力不受影响。默认渠道构建命令为 `npm run build` / `npm run build:default`，wb 内网渠道本地临时构建命令为 `npm run build:wb`。本地渠道构建收集签名安装包和 `latest.json` 时，使用 Cargo 解析后的 target 目录（`cargo metadata` 的 `target_directory`，覆盖本机 `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET_DIR` 与用户或项目 `build.target-dir`），并回退仓库内 `target/` 与 `src-tauri/target/`；不得写死某台机器的绝对路径。渠道 Tauri overlay 把 `bundle.publisher` 固定为该渠道 `productName`，Windows 应用 exe 的 `ProductName` 与 `CompanyName`（厂商）使用同一产品名：`default` 为 `Gold Band`，`wb` 为 `MALING`；不得回退 identifier 第二段，也不另维护独立厂商字段。需要复现生产 WebView 问题时，在任一渠道构建命令后追加 `-- --devtools`；该参数保持 Cargo release profile，只启用项目 `support-devtools` feature，并在本次 Tauri overlay 中关闭 updater artifacts。诊断包可通过 macOS `Cmd+Option+I` 或 Windows/Linux `Ctrl+Shift+I` 打开 WebView DevTools；不得生成或覆盖渠道 `latest.json`、不得进入正式更新发布链路。普通本地构建和 GitHub 正式发布默认不携带该能力。
 - wb 渠道因开启 metrics，`npm run build:wb` 在进入前端或 Tauri 构建前要求 `GOLD_BAND_METRICS_API_KEY`、有效的 `GOLD_BAND_WB_BASE_URL` 和有效的 `GOLD_BAND_WB_MULTICA_URL`；default 渠道不要求这些 WB 配置，`dev:wb` 不要求 metrics key，但必须配置 WB 服务基础地址与 Multica 地址。
+- WB 渠道的本地开发与构建配置通过仓库根 `.env` 提供（`.env.example` 为字段模板，`.env` 已在 `.gitignore` 中忽略）。`dev-channel.mjs`、`dev-static-channel.mjs` 与 `build-channel.mjs` 三个入口统一用 `scripts/local-env.mjs` 加载它：已存在的环境变量优先，因此命令行显式导出和 CI Secret 不会被文件覆盖；`.env` 缺失时静默跳过，default 渠道无需任何配置即可启动。该机制存在的根因是 WB origin 与签名私钥只能来自 CI Secret 或团队口口相传，且 `check-wb-domain.mjs` 禁止真实 WB 域名进入仓库，导致本地新人无法自助启动。签名私钥必须区分两个 Tauri 变量：`TAURI_SIGNING_PRIVATE_KEY` 接收密钥内容本身，`TAURI_SIGNING_PRIVATE_KEY_PATH` 接收密钥文件路径；把路径写入前者会因 base64 解码失败而构建中断，且 `build-channel.mjs` 的 `${CHANNEL}_TAURI_SIGNING_PRIVATE_KEY` 兜底会把该值复制给前者，因此本地推荐只使用 `TAURI_SIGNING_PRIVATE_KEY_PATH`。
 - 只有 Windows 开发环境时，可从 GitHub Actions 手动运行 `Build Intel macOS DevTools DMG`，由固定 `macos-15-intel` runner 执行 `npm run build -- --devtools`。工作流只上传保留 7 天的 Intel DMG Artifact，并校验 `.app` 的严格 codesign 完整性、主二进制包含 `x86_64` 且只生成一个 DMG；它不创建 tag、GitHub Release、`latest.json` 或 updater 资产。Apple Secrets 完整时复用正式 macOS 签名与公证配置，全部缺失时沿用 ad-hoc identity，部分缺失时直接失败，避免产出签名状态不明确的诊断包。
 - Windows 应用图标使用单一多分辨率 `icon.ico` 同时服务开发窗口和生产 EXE；图层顺序固定为 `32 / 16 / 24 / 48 / 64 / 256`，且全部使用 32 位 RGBA。Tauri 在 Windows 下只解码 ICO 首层作为实时窗口图标，因此 32px 必须位于首层，避免 Windows 在常见任务栏 DPI 下把 16px 位图放大；其余图层继续供 EXE、资源管理器、开始菜单和安装包按目标尺寸选择。
 - Tauri updater 按构建渠道内置更新配置：default 指向上游 GitHub Release `latest.json`，wb 指向 `configs/channels/wb.json` 中的内网更新地址；两个渠道内置不同 public key。2026-10-19 起，本 fork 的 GitHub 自动发布与手工重建均构建 `wb`（MALING），保留 Windows x64、Linux x64、macOS Intel、macOS Apple Silicon 四组 runner。WB 不再覆盖为仅 `nsis`，而是继承基础 Tauri 配置的 `bundle.targets: all`，由 Tauri 按宿主平台生成 Windows EXE/MSI、Linux AppImage/DEB/RPM、macOS DMG/App 及对应更新包。渠道身份与平台打包格式分离，不创建额外产品渠道。本地非 default 渠道使用时间戳/提交号版本，Windows 本地构建入口选择 NSIS 以满足 WiX 版本限制；该限制不进入正式发布配置，也不影响 Linux/macOS 原生打包。
@@ -164,7 +168,7 @@ MVP 范围：
 - Agent 管理负责维护已配置 agent type、执行命令、环境变量与诊断状态。
 - Worker / Verify 节点必须显式声明 `provider`，当前语义为 managed agent type；运行时不提供默认 Claude 兜底。
 - 知识库、模型管理保持一级导航占位。
-- 不提供 command bar、slash command、terminal input 或 chat input。
+- 任务编排主路径不提供 command bar、slash command、terminal input 或 chat input；受管「连接与终端」作为独立模块承载测试环境终端排障（见 [连接与终端](terminal-and-connections.md)）。
 
 ---
 

@@ -1369,6 +1369,7 @@ fn claim_agent_prompt_lifecycle(
             quotes: Vec::new(),
             role: None,
             workspace_files: Vec::new(),
+            context_connections: Vec::new(),
         },
         attachment_paths: attachment_paths.to_vec(),
         admitted_at: gold_band::acp::events::current_timestamp(),

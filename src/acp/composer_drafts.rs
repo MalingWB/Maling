@@ -331,6 +331,7 @@ mod tests {
             {"kind":"artifact", "locator":{"projectId":"p", "taskId":"t", "taskUuid":"uuid", "runId":"r", "roundId":"round", "nodeId":"n", "attemptId":"a", "branchId":"root"}, "name":"review.json"}
         ])).unwrap();
         let payload = ConversationPromptInput {
+            context_connections: Vec::new(),
             display_text: "saved context".to_string(),
             quotes: vec![UserPromptQuote {
                 id: "quote-1".to_string(),
