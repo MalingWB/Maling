@@ -821,22 +821,6 @@ fn admit_conversation_prompt_turn(
     Ok((admission, executable_adapter))
 }
 
-fn acp_turn_outcome(run: &client::AcpPromptRun) -> AcpTurnOutcome {
-    if run.terminal_status() == gold_band::provider::ProviderRunStatus::Failure {
-        return AcpTurnOutcome::Failed;
-    }
-    match run
-        .stop_reason
-        .as_deref()
-        .map(|reason| reason.trim().to_ascii_lowercase().replace('_', "-"))
-        .as_deref()
-    {
-        Some("cancelled" | "canceled") => AcpTurnOutcome::Cancelled,
-        Some("interrupted") => AcpTurnOutcome::Failed,
-        _ => AcpTurnOutcome::Completed,
-    }
-}
-
 fn acp_turn_outcome_label(outcome: AcpTurnOutcome) -> &'static str {
     match outcome {
         AcpTurnOutcome::Completed => "completed",
@@ -9093,7 +9077,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 }),
             )
             .map_err(command_error)?;
-            let outcome = acp_turn_outcome(&prompt_run);
+            let outcome = prompt_run.turn_outcome;
             return Ok(outcome);
         }
         let attempt_dir =
@@ -9279,7 +9263,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             }),
         )
         .map_err(command_error)?;
-        let outcome = acp_turn_outcome(&prompt_run);
+        let outcome = prompt_run.turn_outcome;
         Ok(outcome)
     })
     .await;
@@ -15738,73 +15722,6 @@ mod tests {
             )])
         );
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    fn prompt_run_for_outcome(stop_reason: Option<&str>) -> client::AcpPromptRun {
-        client::AcpPromptRun {
-            session_id: "fixture-session".into(),
-            adapter_id: "fixture-agent".into(),
-            adapter_display_name: "Fixture".into(),
-            stop_reason: stop_reason.map(str::to_string),
-            terminal_failure: None,
-            output: client::AcpPromptOutput::default(),
-            restored: false,
-            used_tokens: None,
-            context_window_size: None,
-            total_cost_usd: None,
-            input_tokens: None,
-            output_tokens: None,
-            cached_read_tokens: None,
-            cached_write_tokens: None,
-            total_tokens: None,
-        }
-    }
-
-    #[test]
-    fn acp_turn_outcome_preserves_provider_failures() {
-        let mut run = prompt_run_for_outcome(None);
-        for reason in [
-            None,
-            Some("refusal"),
-            Some("error"),
-            Some("failure"),
-            Some("future_reason"),
-        ] {
-            run.stop_reason = reason.map(str::to_string);
-            assert_eq!(acp_turn_outcome(&run), AcpTurnOutcome::Failed, "{reason:?}");
-        }
-        run.stop_reason = Some("end_turn".into());
-        run.terminal_failure = Some(client::AcpPromptFailure {
-            code: "fixture.error".into(),
-            message: "Quota exceeded".into(),
-            details: None,
-            raw: serde_json::json!({}),
-        });
-        assert_eq!(acp_turn_outcome(&run), AcpTurnOutcome::Failed);
-    }
-
-    #[test]
-    fn acp_turn_outcome_distinguishes_user_cancel_from_transport_failure() {
-        assert_eq!(
-            acp_turn_outcome(&prompt_run_for_outcome(Some("cancelled"))),
-            AcpTurnOutcome::Cancelled
-        );
-        assert_eq!(
-            acp_turn_outcome(&prompt_run_for_outcome(Some("canceled"))),
-            AcpTurnOutcome::Cancelled
-        );
-        assert_eq!(
-            acp_turn_outcome(&prompt_run_for_outcome(Some("interrupted"))),
-            AcpTurnOutcome::Failed
-        );
-        assert_eq!(
-            acp_turn_outcome(&prompt_run_for_outcome(Some("end_turn"))),
-            AcpTurnOutcome::Completed
-        );
-        assert_eq!(
-            acp_turn_outcome(&prompt_run_for_outcome(None)),
-            AcpTurnOutcome::Failed
-        );
     }
 
     #[test]

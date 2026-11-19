@@ -1475,15 +1475,21 @@ describe('ACP error banner ownership', () => {
     }
   });
 
-  it('shows a CodeBuddy quota failure and clears it after a successful follow-up', async () => {
-    const lifecycle = runtimeAbnormalLifecycle();
-    const error = {
+  it.each([
+    {
       code: { domain: 'provider', code: 'provider.quota-insufficient' },
       domain: 'provider', recovery: 'manual' as const, params: {},
       diagnostic: 'Quota exceeded: Credits Rate Limit exceeded',
       raw: { stopReason: 'refusal', _meta: { 'codebuddy.ai/traceId': 'fixture-trace' } },
-    };
-    lifecycle.acp = { ...lifecycle.acp, turnId: 'quota-turn', operationId: 'quota-operation', turnError: error };
+    },
+    {
+      code: { domain: 'provider', code: 'acp.turn-execution-failed' },
+      domain: 'provider', recovery: 'manual' as const, params: { stopReason: 'max_tokens' },
+      diagnostic: 'ACP prompt ended with stop reason `max_tokens`',
+    },
+  ])('shows the current failure ($diagnostic) until a successful follow-up', async (error) => {
+    const lifecycle = runtimeAbnormalLifecycle();
+    lifecycle.acp = { ...lifecycle.acp, turnId: 'failed-turn', operationId: 'failed-operation', turnError: error };
     const result = await renderPausedDialog({
       initialLifecycle: lifecycle, sessionStatus: 'failed', session: readySessionHistory(),
     });

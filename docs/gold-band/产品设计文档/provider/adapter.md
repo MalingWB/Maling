@@ -114,7 +114,10 @@ ACP prompt 的协议结束与 Gold Band Provider 执行结果是两个不同领�
 - `session/update` 中的 fatal session 状态属于本轮 prompt 生命周期证据，必须进入 Provider 返回值，不能只落入 timeline 或 diagnostics。
 - ACP turn snapshot 与 Provider 必须复用同一个集中归约函数，同时消费 `stopReason` 与结构化 terminal failure，不能让 Direct、普通 worker、AI-DYNAMIC bootstrap/worker/merge/acceptance 各自推断。归约失败不得先发布 `completed`；必须将 `latestTurnStatus=failed` 与本轮 `turnError` 原子写入后再通知 UI。
 - 桌面命令的 turn 完成事件、通知和队列派发结果也必须消费同一归约；禁止把非取消的 prompt response 默认当作 Completed，以免失败后继续自动派发队列或发送成功通知。
+- 只有归约为 `Success` 的 turn 可以写入 ACP `completed`、发出成功通知和由 turn 完成事件触发自动派发。达到 token 或请求上限、等待用户输入或权限时，ACP 使用现有 `failed` 与 `turnError.params.stopReason` 记录本轮未完成并保留停止原因。Workflow 保留 Provider 的 `Interrupted` 或等待结果并暂停，Direct 通过现有失败暂停机制保留待发送消息。已经进入重试的用户消息随本轮错误写入失败终态并保留重试次数。用户取消走原有停止流程。
 - `session/prompt.result._meta["codebuddy.ai/errorMessage"]` 是 CodeBuddy 的显式错误扩展，允许 JSON 字符串或对象；非空但无法解析的文本仍保留为原始诊断。扩展按字段识别，不按 Agent ID 推断，也不扫描任意元数据或正文猜测失败。错误进入既有 terminal failure，保留完整 result（含上游 code、traceId）用于排障；额度错误复用 `provider.quota-insufficient` 归一化，终局错误只能由用户显式重试。
+- 匹配的 `session/prompt` RPC 响应一到达就提取其显式错误。尾部事件排空失败时，保留已收到的结构化错误作为本轮主因，把排空故障另记为诊断，并隔离未排空的会话路由。没有明确错误响应时仍须满足原有排空契约。
+- 已接受的用户停止优先于并发返回的 Provider 结果。ACP 在返回中携带已裁决的 `AcpTurnOutcome`，桌面事件、通知和队列直接使用该结果。原始 `stopReason` 可保留用于诊断。终态快照写入若因 Stop 接管回合身份而失效，原执行者不得发布成功或失败结果。
 
 归约优先级固定为：
 
