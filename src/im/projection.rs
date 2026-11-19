@@ -1518,7 +1518,6 @@ mod tests {
 
     #[test]
     fn runtime_resume_busy_is_projected_once_per_channel_and_boundary() {
-        use crate::app::runtime_resume::*;
         let temp = tempfile::tempdir().unwrap();
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
         write_permission_projection_fixture(&app);
@@ -1570,17 +1569,16 @@ mod tests {
         *request = offer.request();
         *event_id = offer.canonical_event_id();
         *kind = RuntimeInterventionKind::RuntimeResumeRequired;
+        let dir = app.runtime_resume_attempt_dir(&locator);
+        crate::storage::write_json(
+            &dir.join("acp.snapshot.json"),
+            &serde_json::json!({"promptRetry": {"promptId": "turn-1", "retryAttempt": 0}}),
+        )
+        .unwrap();
         let activity = crate::acp::client::register_test_prompt_activity(
-            app.paths
-                .attempt_dir("task-1", "run-1", "round-1", "node-1", "attempt-1"),
-            crate::acp::client::PromptActivity::Running,
+            dir,
+            crate::acp::client::PromptActivity::CancelRequested,
         );
-        assert!(matches!(
-            app.inspect_runtime_resume(locator.clone())
-                .unwrap()
-                .readiness,
-            RuntimeResumeReadiness::Busy { .. }
-        ));
         let repository = Arc::new(ImRepository::new(
             Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
         ));

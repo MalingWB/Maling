@@ -102,7 +102,7 @@ describe('prompt-kit Markdown', () => {
     { flavor: 'chat', streaming: true },
     { flavor: 'document', streaming: false },
     { flavor: 'github-release', streaming: false },
-  ] as const)('keeps $flavor tables full-width and wrappable (streaming=$streaming)', ({ flavor, streaming }) => {
+  ] as const)('keeps $flavor tables readable, full-width and wrappable (streaming=$streaming)', ({ flavor, streaming }) => {
     const identifier = 'ConversationSidebarWithVeryLongContinuousIdentifier';
     const url = `https://example.com/${'long-path-segment-'.repeat(8)}`;
     const html = renderToStaticMarkup(createElement(Markdown, {
@@ -120,13 +120,16 @@ describe('prompt-kit Markdown', () => {
     expect(tableClass).toContain('w-full');
     expect(tableClass).toContain('table-auto');
     expect(tableClass).not.toContain('min-w-max');
-    const cells = Array.from(html.matchAll(/<(?:th|td) class="([^"]+)"/g));
+    const cells = Array.from(html.matchAll(/<(th|td) class="([^"]+)"/g));
     expect(cells).toHaveLength(9);
-    for (const [, className] of cells) {
-      expect(className.split(' ')).toEqual(expect.arrayContaining([
+    for (const [, tag, className] of cells) {
+      const classes = className.split(' ');
+      expect(classes).toEqual(expect.arrayContaining([
         'whitespace-normal', '[overflow-wrap:anywhere]', 'align-top',
       ]));
+      if (tag === 'td') expect(classes).not.toContain('text-muted-foreground');
     }
+    expect(tableClass).toContain('text-foreground');
     expect(renderedText(html)).toContain(identifier);
     expect(renderedText(html)).toContain(url);
     expect(renderedText(html)).toContain('说明文字在当前消息宽度内自动换行，不截断内容。');

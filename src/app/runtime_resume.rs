@@ -221,6 +221,9 @@ impl App {
                 &locator.run_id,
             )
         };
+        // promptRetry identifies the logical turn even on its first attempt.
+        // Actual retries require a running execution; an old prompt still
+        // active after a committed pause only blocks admission, not the offer.
         let readiness = if starting {
             RuntimeResumeReadiness::Busy {
                 reason: RuntimeResumeBusyReason::Starting,
@@ -452,14 +455,6 @@ impl App {
                         }
                     }
                 }
-            }
-            if metadata
-                .get("promptRetry")
-                .is_some_and(|retry| !retry.is_null())
-                && crate::acp::client::prompt_activity(&self.runtime_resume_attempt_dir(locator))
-                    .is_some()
-            {
-                return Err(unavailable("automatic-retry-active"));
             }
         }
         Ok((

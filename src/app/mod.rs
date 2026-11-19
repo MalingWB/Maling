@@ -7235,7 +7235,10 @@ mod tests {
     }
 
     #[test]
-    fn resumable_pause_publishes_actionable_intervention() {
+    fn runtime_resume_attempt_pause_publishes_while_prompt_is_cancelling() {
+        use super::intervention::InterventionErrorCode;
+        use super::runtime_resume::{RuntimeResumeBusyReason, RuntimeResumeReadiness};
+
         let temp = tempdir().unwrap();
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = events.clone();
@@ -7244,28 +7247,23 @@ mod tests {
                 captured.lock().unwrap().push(event);
             }));
         write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        bind_resume_test_identity(&app);
+        let locator = super::intervention::InterventionLocator {
+            project_id: app.paths.project_id.clone(),
+            ..resume_test_locator()
+        };
+        let dir = app.runtime_resume_attempt_dir(&locator);
         write_json(
-            &app.paths.task_file("task-001"),
-            &crate::runtime::TaskState {
-                version: VERSION.into(),
-                id: "task-001".into(),
-                title: None,
-                description: None,
-                uuid: Some("task-instance-a".into()),
-            },
+            &dir.join("acp.snapshot.json"),
+            &serde_json::json!({"promptRetry": {"promptId": "turn-1", "retryAttempt": 0}}),
         )
         .unwrap();
-        let mut run = app.run_status("task-001", "run-001").unwrap();
-        run.task_uuid = Some("task-instance-a".into());
-        run.uuid = Some("run-instance-a".into());
-        write_json(
-            &app.paths
-                .task_dir("task-001")
-                .join("authoring/conversation.json"),
-            &serde_json::json!({"runMode":"workflow"}),
-        )
-        .unwrap();
-        write_json(&app.paths.run_file("task-001", "run-001"), &run).unwrap();
+        let activity = crate::acp::client::register_test_prompt_activity(
+            dir,
+            crate::acp::client::PromptActivity::CancelRequested,
+        );
+        let error = app.inspect_runtime_resume(locator.clone()).unwrap_err();
+        assert_eq!(error.details.get("reason").unwrap(), "run-not-resumable");
         app.pause_attempt_runtime_state(
             "task-001",
             "run-001",
@@ -7286,8 +7284,23 @@ mod tests {
                 ))
                 .count(),
             1,
-            "a committed resumable pause must publish an actionable request"
+            "a committed resumable pause must publish before the old prompt finishes cancelling"
         );
+        let busy = app.inspect_runtime_resume(locator.clone()).unwrap();
+        assert_eq!(
+            busy.readiness,
+            RuntimeResumeReadiness::Busy {
+                reason: RuntimeResumeBusyReason::PromptActive,
+            }
+        );
+        let error = app
+            .execute_runtime_resume(busy.offer.clone(), Default::default())
+            .unwrap_err();
+        assert_eq!(error.code, InterventionErrorCode::InterventionBusy);
+        drop(activity);
+        let ready = app.inspect_runtime_resume(locator).unwrap();
+        assert_eq!(ready.readiness, RuntimeResumeReadiness::Ready);
+        assert_eq!(ready.offer, busy.offer);
     }
 
     fn bind_resume_test_identity(app: &App) {
