@@ -3398,19 +3398,17 @@ export function App() {
             }
           }}
           onForgeTrialSessionStarted={(projectId, taskId) => {
-            // 试运行任务已创建(origin=ForgeTrial,首节点截断工作流);复用 rerun 的
-            // prepare+launch 路径启动首个 run 并导航到试运行会话(方案 §5.6)。
-            rerunConversationTask(projectId, taskId)
-              .then((trialRun) => {
-                rememberConversationWorkspace(trialRun.projectId);
-                updateConversationSessionFollow('auto', trialRun.sessionTree.selectedSessionKey ?? null, trialRun);
-                applyConversationRunSnapshot(trialRun, 'create');
+            // 试运行任务是工作流型任务(origin=ForgeTrial,首节点截断工作流,无会话
+            // 元数据):走 start_run(工作流任务标准启动)而非会话 rerun,启动后导航
+            // 到试运行会话(方案 §5.6)。
+            startRun(taskId)
+              .then((run) => {
+                rememberConversationWorkspace(projectId);
                 onSelectConversation({
                   kind: 'conversation-run',
-                  projectId: trialRun.projectId,
-                  taskId: trialRun.taskId,
-                  taskUuid: trialRun.taskUuid,
-                  runId: trialRun.runId,
+                  projectId,
+                  taskId,
+                  runId: run.id,
                 });
               })
               .catch((err) => setError(displayAppError(t, err)));

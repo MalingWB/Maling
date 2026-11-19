@@ -382,6 +382,10 @@ export interface AcpDirectSessionHeaderProps {
   forgePreview?: {
     onOpen: () => void;
   };
+  /** 普通直接会话:铸造为工作流入口 A(方案 §5,G3:Forge 会话不显示)。 */
+  forgeWorkflow?: {
+    onOpen: () => void;
+  };
 }
 
 export type AcpInitialSessionQueryState = "loading" | "success" | "error";
@@ -8160,6 +8164,22 @@ export function ACPSessionHeader({
                 </Button>
               </TooltipTrigger>
               <TooltipContent>{t("forge.preview.open")}</TooltipContent>
+            </Tooltip>
+          ) : null}
+          {directSessionHeader?.forgeWorkflow ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-5.5"
+                  aria-label={t("forge.entry.action")}
+                  onClick={directSessionHeader.forgeWorkflow.onOpen}
+                >
+                  <Hammer className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t("forge.entry.action")}</TooltipContent>
             </Tooltip>
           ) : null}
           {showSystemPromptAction ? (

@@ -26,6 +26,25 @@ interface ForgePreviewPanelProps {
  * 为模板(source=Forged),并可发起首节点试运行(第三阶段在本 Tab 原位
  * 切换为流程图与编辑器预览,本组件届时退役为摘要区块)。
  */
+/// invoke 错误(CommandErrorVm 或 Error)转可读文本。
+function forgeActionErrorText(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'object' && err !== null) {
+    const record = err as { message?: unknown; code?: unknown; params?: { message?: unknown } };
+    if (typeof record.message === 'string' && record.message) return record.message;
+    if (typeof record.params?.message === 'string' && record.params.message) {
+      return `${String(record.code ?? '')} ${record.params.message}`.trim();
+    }
+    if (typeof record.code === 'string') return record.code;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return String(err);
+    }
+  }
+  return String(err);
+}
+
 export function ForgePreviewPanel({ resource, onWorkflowTemplatesChange, onTrialSessionStarted, agentRegistry }: ForgePreviewPanelProps) {
   const { t } = useTranslation();
   const [spec, setSpec] = useState<ForgeSpecVm | null | undefined>(undefined);
@@ -65,7 +84,8 @@ export function ForgePreviewPanel({ resource, onWorkflowTemplatesChange, onTrial
     setActionError(null);
   }, [resource.key]);
 
-  const converged = spec !== null && spec !== undefined && spec.openQuestions.length === 0;
+  const openQuestions = spec?.openQuestions ?? [];
+  const converged = spec !== null && spec !== undefined && openQuestions.length === 0;
 
   const handleCompile = async () => {
     if (!spec || busy) return;
@@ -76,7 +96,7 @@ export function ForgePreviewPanel({ resource, onWorkflowTemplatesChange, onTrial
       setCompileResult(result);
       onWorkflowTemplatesChange?.(result.templates);
     } catch (err) {
-      setActionError(String((err as Error)?.message ?? err));
+      setActionError(forgeActionErrorText(err));
     } finally {
       setBusy(null);
     }
@@ -94,7 +114,7 @@ export function ForgePreviewPanel({ resource, onWorkflowTemplatesChange, onTrial
       const trial = await forgeStartTrial(resource.projectId, templateId, spec.intent);
       onTrialSessionStarted?.(trial.projectId, trial.taskId);
     } catch (err) {
-      setActionError(String((err as Error)?.message ?? err));
+      setActionError(forgeActionErrorText(err));
     } finally {
       setBusy(null);
     }
@@ -174,7 +194,7 @@ export function ForgePreviewPanel({ resource, onWorkflowTemplatesChange, onTrial
         </div>
       ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {spec.workflows.map((workflow, index) => (
+        {(spec.workflows ?? []).map((workflow, index) => (
           <section key={`${workflow.name}-${index}`} className="mt-3">
             <h3 className="text-sm font-medium">{workflow.name}</h3>
             <ol className="mt-1.5 space-y-2">
@@ -184,11 +204,11 @@ export function ForgePreviewPanel({ resource, onWorkflowTemplatesChange, onTrial
             </ol>
           </section>
         ))}
-        {spec.openQuestions.length > 0 ? (
+        {openQuestions.length > 0 ? (
           <section className="mt-3">
             <h3 className="text-sm font-medium">{t('forge.preview.openQuestions')}</h3>
             <ul className="mt-1.5 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-              {spec.openQuestions.map((question, index) => (
+              {openQuestions.map((question, index) => (
                 <li key={index}>{question}</li>
               ))}
             </ul>

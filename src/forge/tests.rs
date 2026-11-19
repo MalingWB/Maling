@@ -248,3 +248,22 @@ fn retry_stage_without_explicit_failure_edge_still_valid() {
     let dsl = &compile(&spec).unwrap()[0].workflow;
     crate::dsl::validate_authoring_workflow(dsl.clone()).unwrap();
 }
+
+#[test]
+fn natural_prefix_goal_elements_pass_validation() {
+    // 真机验收回归:模型常以「输入：…；产出：…」自然段落表达四要素
+    // (无尖括号标记),语义等价不应被拒(2026-11-19 真机发现)。
+    let spec = spec_with_stages(vec![ForgeStage {
+        id: None,
+        role: StageRole::Dev,
+        goal: "输入：用户提供的文章原文；产出：中文 markdown 要点总结；边界：只提炼要点，不做事实真伪判断；验收：要点覆盖文章全部核心信息。".to_string(),
+        artifact: Some("要点总结".to_string()),
+        output_kind: StageOutputKind::Markdown,
+        schema_hint: None,
+        success_condition: None,
+        on_failure: OnFailure::Retry,
+        manual_check: false,
+    }]);
+    let result = crate::forge::compiler::compile(&spec);
+    assert!(result.is_ok(), "natural-prefix goal must compile: {:?}", result.err().map(|e| e.to_string()));
+}

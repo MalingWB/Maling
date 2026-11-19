@@ -3377,9 +3377,10 @@ export interface ForgeSpecVm {
   specVersion: string;
   name?: string | null;
   intent: string;
-  sourceSkills: string[];
-  workflows: ForgeWorkflowVm[];
-  openQuestions: string[];
+  /// 后端 skip_serializing_if 空时不序列化,前端按可选契约兜底。
+  sourceSkills?: string[];
+  workflows?: ForgeWorkflowVm[];
+  openQuestions?: string[];
 }
 
 export interface ForgeCompileResultVm {

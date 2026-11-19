@@ -779,6 +779,7 @@ export function ConversationRunPage({
               onTitleChange,
               resident: readOnly ? undefined : resident,
               forgePreview: run.origin === 'forge' ? { onOpen: handleViewForgePreview } : undefined,
+              forgeWorkflow: !run.origin && onForgeWorkflow ? { onOpen: onForgeWorkflow } : undefined,
             } : undefined}
             usageCompact
             cacheNamespace={run.taskUuid ?? `${run.projectId}:${run.taskId}`}

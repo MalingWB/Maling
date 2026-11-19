@@ -96,6 +96,16 @@ impl GoalElement {
             Self::Acceptance => "acceptance",
         }
     }
+
+    /// goal 段落的中文要素名(行首前缀形式检测用)。
+    pub fn chinese_name(&self) -> &'static str {
+        match self {
+            Self::Input => "输入",
+            Self::Output => "产出",
+            Self::Boundary => "边界",
+            Self::Acceptance => "验收",
+        }
+    }
 }
 
 /// stage 的失败策略（§3.2 边映射）。
@@ -192,14 +202,38 @@ pub struct ForgeSpec {
 /// goal 四要素的最小证据检测。
 ///
 /// Spec 输出协议要求 goal 以四段结构表达；此函数检测结构标记而非语义
-/// （语义深浅由 Forge 对话负责，结构缺失在此拦截）。
-/// goal 中每个要素段落以 `<输入>`/`<产出>`/`<边界>`/`<验收>` 标记引导，
-/// 缺失标记的要素报 `forge/missing-goal-element`。
+/// （语义深浅由 Forge 对话负责，结构缺失在此拦截）。每要素接受两种等价
+/// 引导形式：协议示例的 `<输入>` 标记，或行首 `输入：`/`输入:` 前缀
+/// （模型常以自然段落表达,语义等价不应被拒）。
 fn missing_goal_elements(goal: &str) -> Vec<GoalElement> {
     GoalElement::ALL
         .into_iter()
-        .filter(|element| !goal.contains(goal_element_marker(element)))
+        .filter(|element| !goal_has_element(goal, *element))
         .collect()
+}
+
+fn goal_has_element(goal: &str, element: GoalElement) -> bool {
+    if goal.contains(goal_element_marker(&element)) {
+        return true;
+    }
+    // 行首(或分号后)的「要素名：/要素名:」前缀,容忍前后空白。
+    let name = element.chinese_name();
+    for separator in ["：", ":"] {
+        let needle = format!("{name}{separator}");
+        let mut search_from = 0usize;
+        while let Some(offset) = goal[search_from..].find(&needle) {
+            let absolute = search_from + offset;
+            let at_element_start = goal[..absolute]
+                .chars()
+                .next_back()
+                .is_none_or(|c| c.is_whitespace() || c == ';' || c == '；');
+            if at_element_start {
+                return true;
+            }
+            search_from = absolute + needle.len();
+        }
+    }
+    false
 }
 
 fn goal_element_marker(element: &GoalElement) -> &'static str {

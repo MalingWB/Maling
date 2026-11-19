@@ -82,6 +82,11 @@ impl App {
         let mut workflow = truncate_to_first_node(template.workflow.clone());
         // 试运行降级：单轮、首节点验证即停。
         workflow.control.max_rounds = Some(1);
+        let bindings = with_default_agent_bindings(
+            &workflow,
+            template.model_bindings.clone(),
+            &self.config.agents,
+        );
         self.create_task_from_requirement_with_bindings(
             CreateTaskInput {
                 title: Some(format!("试运行：{}", template.name)),
@@ -93,7 +98,7 @@ impl App {
                 origin: Some(TaskOrigin::ForgeTrial),
             },
             workflow,
-            template.model_bindings.clone(),
+            bindings,
         )
     }
 
@@ -175,7 +180,9 @@ impl App {
     /// 编译并保存（方案 §4 `forge_compile` 的落库形态）。
     ///
     /// Spec → WorkflowDsl 若干条；custom role 的 pending profile 注册为
-    /// User scope 后回填节点引用；产物以 `source=Forged` 存为模板。
+    /// User scope 后回填节点引用；产物以 `source=Forged` 存为模板,并为
+    /// 缺绑定的执行槽补默认 agent 绑定（§3.2"默认模型绑定"——作者态
+    /// provider 置空,migrate 不生成绑定,无默认绑定的模板无法启动）。
     /// 返回新建模板 id 列表（多工作流拆分时多个）。
     pub fn forge_compile_and_save(&self, spec: &ForgeSpec) -> Result<Vec<String>> {
         let compiled_list = crate::forge::compiler::compile(spec)
@@ -183,10 +190,11 @@ impl App {
         let mut created_template_ids = Vec::new();
         for mut compiled in compiled_list {
             backfill_pending_profiles(&self.paths, &mut compiled, &spec.intent)?;
+            let bindings = with_default_agent_bindings(&compiled.workflow, WorkflowModelBindings::default(), &self.config.agents);
             let (_store, created_id) = self.save_workflow_template_with_source(
                 compiled.name.clone(),
                 compiled.workflow.clone(),
-                WorkflowModelBindings::default(),
+                bindings,
                 crate::app::TemplateSource::Forged,
             )?;
             created_template_ids.push(created_id);
@@ -330,6 +338,10 @@ impl App {
     }
 
     /// workflow-forge 角色（按界面语言解析内置 profile）。
+    ///
+    /// 角色正文后拼接渲染后的 Spec 输出协议（含 JSON Schema 与空基线
+    /// 状态）——profile 正文只描述策略,增量格式契约由协议模板承载,
+    /// 模型自首轮起即可输出围栏 JSON 增量（B2 的注入点）。
     pub(crate) fn workflow_forge_role(&self) -> Result<crate::provider::UserPromptRole> {
         let profile = crate::app::profiles::find_profile_by_id(
             &self.paths,
@@ -339,10 +351,21 @@ impl App {
         .ok_or_else(|| {
             anyhow::anyhow!("built-in profile `{WORKFLOW_FORGE_PROFILE_ID}` is unavailable")
         })?;
+        let protocol_template =
+            crate::prompts::FORGE_SPEC_PROTOCOL.resolve(self.config.desktop_language);
+        let schema = serde_json::to_string_pretty(&crate::forge::spec::spec_json_schema())
+            .unwrap_or_default();
+        let rendered = crate::prompts::render(
+            protocol_template,
+            serde_json::json!({
+                "spec_schema": schema,
+                "current_spec": "（新会话：基线为空,首条增量将创建初始阶段）",
+            }),
+        )?;
         Ok(crate::provider::UserPromptRole {
             profile_id: profile.id,
             name: profile.name,
-            content: profile.content,
+            content: format!("{}\n\n---\n\n{}", profile.content, rendered),
         })
     }
 
@@ -478,6 +501,52 @@ fn forge_conversation_workflow(agent_type: &str) -> crate::dsl::WorkflowDsl {
         false,
         Default::default(),
     )
+}
+
+/// 为缺绑定的执行槽补默认 agent 绑定（§3.2 默认模型绑定）。
+///
+/// 铸造节点作者态 provider 置空，`migrate_authoring_workflow` 只分配 slot
+/// 不生成绑定；无绑定的模板/任务启动时报
+/// `workflow-model-binding.agent-required`。默认 agent 取配置中排序首个
+/// managed agent（与前端 composer 的 agents[0] 兜底一致）；无任何 agent
+/// 时保持原样（G1 提醒路径）。用户可在工作流编辑器改绑。
+fn with_default_agent_bindings(
+    workflow: &crate::dsl::WorkflowDsl,
+    mut bindings: WorkflowModelBindings,
+    agents: &std::collections::BTreeMap<crate::config::ManagedAgentId, crate::config::ManagedAgentConfig>,
+) -> WorkflowModelBindings {
+    let Some(default_agent) = agents.keys().next().map(|id| id.as_str().to_string()) else {
+        return bindings;
+    };
+    for node in &workflow.nodes {
+        let crate::dsl::NodeDsl::Worker(worker) = node else {
+            continue;
+        };
+        let Some(slot) = worker
+            .execution_slot_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let occupied = bindings
+            .bindings
+            .iter()
+            .any(|binding| binding.execution_slot_id == slot);
+        if !occupied {
+            bindings.bindings.push(crate::workflow_model_binding::WorkerModelBinding {
+                execution_slot_id: slot.to_string(),
+                agent_id: default_agent.clone(),
+                model_id: None,
+                permission_mode_id: None,
+                auto_accept: false,
+                config_options: Default::default(),
+                model_bound_overrides: Default::default(),
+            });
+        }
+    }
+    bindings
 }
 
 /// custom role 的 pending profile 注册为 User scope 并回填节点引用。
@@ -846,6 +915,39 @@ mod tests {
                 .is_none()
         );
         assert!(app.forge_spec(&forge.task.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn forge_trial_fills_default_agent_binding_for_unbound_slots() {
+        let (app, _temp, _guard) = forge_test_app();
+        // 内置模板节点带 slot 但绑定可能为空;试运行必须能启动(§3.2 默认绑定)。
+        let store = app.workflow_templates().unwrap();
+        let template = &store.templates[0];
+        let summary = app.forge_trial(&template.id, "试运行").unwrap();
+        let authoring: crate::workflow_model_binding::TaskAuthoringWorkflow = crate::storage::read_json(
+            &app.paths.workflow_file(&summary.task.id),
+        )
+        .unwrap();
+        let slots: Vec<String> = authoring
+            .workflow
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                crate::dsl::NodeDsl::Worker(worker) => worker.execution_slot_id.clone(),
+                _ => None,
+            })
+            .collect();
+        assert!(!slots.is_empty());
+        for slot in &slots {
+            assert!(
+                authoring
+                    .model_bindings
+                    .bindings
+                    .iter()
+                    .any(|binding| &binding.execution_slot_id == slot),
+                "slot {slot} must have a default binding"
+            );
+        }
     }
 
     fn acp_ui_event(
