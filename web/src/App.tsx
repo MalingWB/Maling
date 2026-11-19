@@ -3422,14 +3422,15 @@ export function App() {
               .catch((err) => setError(displayAppError(t, err)));
           }}
           onEditWorkflow={() => {}}
-          onForgeWorkflow={async () => {
+          onForgeWorkflow={async (fromTimestamp) => {
             const sourceRun = conversationRun;
             if (!sourceRun) return;
             try {
               // 入口 A（方案 §5）：读取源会话摘要预填 composer，绑定 forge 后由用户补充并
               // 手动发送——发送走 create_conversation_run（forgeSourceTaskId），后端固定角色、
-              // 注入隐藏材料并标记 origin=Forge。
-              const digest = await forgeSourceDigest(sourceRun.projectId, sourceRun.taskId);
+              // 注入隐藏材料并标记 origin=Forge。fromTimestamp 为右键"从此处铸造"
+              // 变体（§5.1）：截断为该消息之后的上下文。
+              const digest = await forgeSourceDigest(sourceRun.projectId, sourceRun.taskId, fromTimestamp ?? null);
               composerDraftRef.current?.prefillForge(
                 `${t('forge.prefill.intro')}\n\n${digest.markdown || digest.title}`,
                 {

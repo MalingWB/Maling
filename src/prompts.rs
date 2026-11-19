@@ -96,10 +96,9 @@ pub const PROFILE_CLEAN: LocalizedText = localized_prompt!("profile/clean.md");
 pub const PROFILE_INTERVIEW: LocalizedText = localized_prompt!("profile/interview.md");
 pub const PROFILE_GRILLME: LocalizedText = localized_prompt!("profile/GrillMe.md");
 pub const PROFILE_WORKFLOW_FORGE: LocalizedText = localized_prompt!("profile/workflow-forge.md");
-/// Forge Spec 输出协议/修复模板：zh-CN/en 先行，其余五语言第三阶段补齐
-/// （工作流铸造实施方案 §6 B2/B3）。
-pub const FORGE_SPEC_PROTOCOL: LocalizedText = localized_prompt_zh_en!("forge/spec-protocol.md");
-pub const FORGE_SPEC_REPAIR: LocalizedText = localized_prompt_zh_en!("forge/spec-repair.md");
+/// Forge Spec 输出协议/修复模板（七语言,路径一致）。
+pub const FORGE_SPEC_PROTOCOL: LocalizedText = localized_prompt!("forge/spec-protocol.md");
+pub const FORGE_SPEC_REPAIR: LocalizedText = localized_prompt!("forge/spec-repair.md");
 pub const PROFILE_OVERLAY_REQUIREMENT_IDENTITY: LocalizedText =
     localized_prompt!("profile/overlays/requirement-identity.md");
 pub const PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT: LocalizedText =

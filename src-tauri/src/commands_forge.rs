@@ -81,17 +81,20 @@ pub async fn forge_skills_digest(
 }
 
 /// 入口 A 的源会话摘要：composer 预填用（用户可编辑后手动发送；
-/// 完整材料由后端在发送创建时注入隐藏区段）。
+/// 完整材料由后端在发送创建时注入隐藏区段）。`after` 置位时截断为
+/// 该时间戳之后的消息（右键"从此处铸造",§5.1）。
 #[tauri::command]
 pub async fn forge_source_digest(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
+    after: Option<String>,
 ) -> CommandResult<gold_band::app::forge_service::ForgeSourceDigest> {
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let (app, _project_id) = project_scoped_app(&context, &project_id)?;
-        app.forge_source_digest(&task_id).map_err(command_error)
+        app.forge_source_digest(&task_id, after.as_deref())
+            .map_err(command_error)
     })
     .await
 }

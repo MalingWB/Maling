@@ -678,23 +678,45 @@ impl SearchIndex {
 
     /// 按时间序返回一个 task 的全部用户 prompt 文本（Forge 源会话材料用；
     /// `per_prompt_cap` 截断单条，SQL 层完成避免加载超长正文）。
+    /// `after_timestamp` 置位时只取其后消息（右键"从此处铸造"截断）。
     pub fn prompts_for_task(
         &self,
         task_id: &str,
         per_prompt_cap: usize,
+        after_timestamp: Option<&str>,
     ) -> Result<Vec<String>, rusqlite::Error> {
         let conn = self.conn.lock().expect("search index lock poisoned");
-        let mut stmt = conn.prepare(
-            "SELECT substr(sp.text, 1, ?2)
-             FROM session_prompts sp
-             JOIN sessions s ON s.attempt_path = sp.attempt_path
-             WHERE s.task_id = ?1
-             ORDER BY sp.timestamp, sp.id",
-        )?;
-        let rows = stmt.query_map(params![task_id, per_prompt_cap as i64], |row| {
-            row.get::<_, String>(0)
-        })?;
-        rows.collect()
+        let sql = match after_timestamp {
+            Some(_) => {
+                "SELECT substr(sp.text, 1, ?2)
+                 FROM session_prompts sp
+                 JOIN sessions s ON s.attempt_path = sp.attempt_path
+                 WHERE s.task_id = ?1 AND sp.timestamp > ?3
+                 ORDER BY sp.timestamp, sp.id"
+            }
+            None => {
+                "SELECT substr(sp.text, 1, ?2)
+                 FROM session_prompts sp
+                 JOIN sessions s ON s.attempt_path = sp.attempt_path
+                 WHERE s.task_id = ?1
+                 ORDER BY sp.timestamp, sp.id"
+            }
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows: Vec<_> = match after_timestamp {
+            Some(after) => stmt
+                .query_map(
+                    params![task_id, per_prompt_cap as i64, after],
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?,
+            None => stmt
+                .query_map(params![task_id, per_prompt_cap as i64], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        Ok(rows)
     }
 
     pub fn search_prompts(

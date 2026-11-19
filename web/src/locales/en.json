@@ -3543,7 +3543,8 @@
   },
   "forge": {
     "entry": {
-      "action": "Forge as workflow"
+      "action": "Forge as workflow",
+      "fromHere": "Forge from here"
     },
     "prefill": {
       "intro": "Forge a workflow from the source conversation below — add any requirements, then send:"

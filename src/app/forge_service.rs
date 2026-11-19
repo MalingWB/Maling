@@ -393,7 +393,12 @@ impl App {
     ///
     /// 可见摘要供 composer 预填（用户可编辑），完整材料作为首条
     /// prompt 的隐藏区段注入（`prepare_conversation_task` 消费）。
-    pub fn forge_source_material(&self, source_task_id: &str) -> Result<ForgeSourceMaterial> {
+    /// `after_timestamp` 置位时只取其后消息（右键"从此处铸造"截断,§5.1）。
+    pub fn forge_source_material(
+        &self,
+        source_task_id: &str,
+        after_timestamp: Option<&str>,
+    ) -> Result<ForgeSourceMaterial> {
         let task_dir = self.paths.task_dir(source_task_id);
         let task: crate::runtime::TaskState = crate::storage::read_json(&task_dir.join("task.json"))
             .with_context(|| format!("forge source task `{source_task_id}` not found"))?;
@@ -406,7 +411,9 @@ impl App {
         )
         .unwrap_or_default();
         let prompts = crate::storage::sqlite::search_index()
-            .map(|index| index.prompts_for_task(source_task_id, HIDDEN_PROMPT_CHAR_CAP))
+            .map(|index| {
+                index.prompts_for_task(source_task_id, HIDDEN_PROMPT_CHAR_CAP, after_timestamp)
+            })
             .transpose()
             .map_err(|error| anyhow::anyhow!("failed to load source prompts: {error}"))?
             .unwrap_or_default();
@@ -442,8 +449,12 @@ impl App {
     }
 
     /// composer 预填用的可见摘要（比隐藏材料更短：需求 + 少量近期消息）。
-    pub fn forge_source_digest(&self, source_task_id: &str) -> Result<ForgeSourceDigest> {
-        let material = self.forge_source_material(source_task_id)?;
+    pub fn forge_source_digest(
+        &self,
+        source_task_id: &str,
+        after_timestamp: Option<&str>,
+    ) -> Result<ForgeSourceDigest> {
+        let material = self.forge_source_material(source_task_id, after_timestamp)?;
         // 可见摘要只保留标题与需求段（用户消息全量走隐藏注入）。
         let requirement = material
             .hidden_section

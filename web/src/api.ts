@@ -178,8 +178,8 @@ export function getWorkflowTemplates() {
   return getRuntimeApi().getWorkflowTemplates();
 }
 
-export function forgeSourceDigest(projectId: string, taskId: string) {
-  return getRuntimeApi().forgeSourceDigest(projectId, taskId);
+export function forgeSourceDigest(projectId: string, taskId: string, after?: string | null) {
+  return getRuntimeApi().forgeSourceDigest(projectId, taskId, after);
 }
 
 export function forgeSkillsDigest(projectId: string, skills: Parameters<ReturnType<typeof getRuntimeApi>['forgeSkillsDigest']>[1]) {

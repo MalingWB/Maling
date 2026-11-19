@@ -85,8 +85,9 @@ interface ConversationRunPageProps {
   agentRegistry: AgentRegistryVm | null;
   onRerun: () => void;
   onEditWorkflow: () => void;
-  /// 铸造为工作流（入口 A）：携带本会话上下文预填 composer。
-  onForgeWorkflow?: () => void;
+  /// 铸造为工作流（入口 A）：携带本会话上下文预填 composer。带时间戳为
+  /// 右键消息"从此处铸造"变体（截断其后上下文,§5.1）。
+  onForgeWorkflow?: (fromTimestamp?: string) => void;
   /// 铸造试运行任务创建后启动并导航到该会话（方案 §5.6）。
   onForgeTrialSessionStarted?: (projectId: string, taskId: string) => void;
   workflowTemplates?: WorkflowTemplateStore | null;
@@ -779,8 +780,9 @@ export function ConversationRunPage({
               onTitleChange,
               resident: readOnly ? undefined : resident,
               forgePreview: run.origin === 'forge' ? { onOpen: handleViewForgePreview } : undefined,
-              forgeWorkflow: !run.origin && onForgeWorkflow ? { onOpen: onForgeWorkflow } : undefined,
+              forgeWorkflow: !run.origin && onForgeWorkflow ? { onOpen: () => onForgeWorkflow() } : undefined,
             } : undefined}
+            onForgeFromHere={!run.origin && !readOnly && onForgeWorkflow ? (timestamp) => onForgeWorkflow(timestamp) : undefined}
             usageCompact
             cacheNamespace={run.taskUuid ?? `${run.projectId}:${run.taskId}`}
           />

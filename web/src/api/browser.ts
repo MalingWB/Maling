@@ -3731,7 +3731,7 @@ export const browserApi: RuntimeApi = {
   validateConversationCreate(_input) {
     return Promise.resolve({ valid: true, missingItems: [] });
   },
-  forgeSourceDigest(_projectId: string, _taskId: string) {
+  forgeSourceDigest(_projectId: string, _taskId: string, _after?: string | null) {
     // 浏览器桩:无桌面文件系统,返回空摘要。
     return Promise.resolve({ title: '', markdown: '' });
   },

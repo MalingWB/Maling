@@ -286,7 +286,7 @@ impl App {
                 command.forge_source_skills.is_none() && command.forge_source_template_id.is_none(),
                 "forge sources are mutually exclusive"
             );
-            let material = self.forge_source_material(&source_task_id)?;
+            let material = self.forge_source_material(&source_task_id, None)?;
             if command.role.is_none() {
                 command.role = Some(self.workflow_forge_role()?);
             }
@@ -746,7 +746,7 @@ mod tests {
         assert!(sections[0].content.contains("实现登录功能并补齐测试"));
 
         // 摘要入口:可见摘要短于隐藏材料且含需求。
-        let digest = app.forge_source_digest(source_task_id).unwrap();
+        let digest = app.forge_source_digest(source_task_id, None).unwrap();
         assert_eq!(digest.title, "源会话");
         assert!(digest.markdown.contains("实现登录功能并补齐测试"));
 

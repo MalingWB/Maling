@@ -457,6 +457,9 @@ interface ACPChatDialogProps {
   worktreePath?: string | null;
   showBranchControl?: boolean;
   managedWorktreeBranch?: string | null;
+  /** Direct 会话入口 A 变体(§5.1):消息操作区"从此处铸造",入参为该消息
+   *  时间戳(后端据此截断其后上下文)。 */
+  onForgeFromHere?: (timestamp: string) => void;
 }
 
 type AcpCanvasMode = "chat" | "raw";
@@ -1477,6 +1480,7 @@ export function ACPChatDialog(
     showBranchControl = false,
     managedWorktreeBranch,
     roleSelectionEnabled = false,
+    onForgeFromHere,
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
@@ -7203,6 +7207,7 @@ export function ACPChatDialog(
                           streamingMarkdownItemKey={streamingMarkdownItemKey}
                           messageAttachmentLocator={messageAttachmentLocator}
                           onMessageAttachmentClick={handleOpenMessageAttachment}
+                          onForgeFromHere={onForgeFromHere}
                         />
                       </div>
                     ))}
@@ -8583,12 +8588,14 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   streamingMarkdownItemKey,
   messageAttachmentLocator,
   onMessageAttachmentClick,
+  onForgeFromHere,
   nested = false,
 }: {
   event: AcpTimelineItem;
   streamingMarkdownItemKey?: string | null;
   messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
+  onForgeFromHere?: (timestamp: string) => void;
   nested?: boolean;
 }) {
   const branchLocator = useContext(AcpBranchLocatorContext);
@@ -8636,7 +8643,7 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
       />
     );
   if (event.kind === "textDelta" || event.kind === "userTextDelta")
-    return <MessageBubble event={event} streamingMarkdownItemKey={streamingMarkdownItemKey} messageAttachmentLocator={messageAttachmentLocator} onMessageAttachmentClick={onMessageAttachmentClick} nested={nested} />;
+    return <MessageBubble event={event} streamingMarkdownItemKey={streamingMarkdownItemKey} messageAttachmentLocator={messageAttachmentLocator} onMessageAttachmentClick={onMessageAttachmentClick} onForgeFromHere={onForgeFromHere} nested={nested} />;
   if (event.kind === "thoughtDelta")
     return <ThoughtBlock event={event} streamingMarkdownItemKey={streamingMarkdownItemKey} nested={nested} />;
   if (event.kind === "toolCall" || event.kind === "toolCallUpdate")
@@ -9630,10 +9637,12 @@ const MessageBubble = memo(function MessageBubble({
   streamingMarkdownItemKey,
   messageAttachmentLocator,
   onMessageAttachmentClick,
+  onForgeFromHere,
   nested = false,
 }: {
   event: AcpTimelineEvent;
   streamingMarkdownItemKey?: string | null;
+  onForgeFromHere?: (timestamp: string) => void;
   messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
   nested?: boolean;
@@ -9773,7 +9782,11 @@ const MessageBubble = memo(function MessageBubble({
           </MessageContent>
         ) : null}
         {quotableAgentMessage ? (
-          <AgentMessageCopyAction markdown={messageText} timestamp={event.timestamp} />
+          <AgentMessageCopyAction
+            markdown={messageText}
+            timestamp={event.timestamp}
+            onForgeFromHere={onForgeFromHere && event.timestamp ? () => onForgeFromHere(event.timestamp!) : undefined}
+          />
         ) : null}
         {runtimeControlParts.display ? (
           <RuntimeControlOutputCard
@@ -9859,9 +9872,11 @@ const MessageBubble = memo(function MessageBubble({
 const AgentMessageCopyAction = memo(function AgentMessageCopyAction({
   markdown,
   timestamp,
+  onForgeFromHere,
 }: {
   markdown: string;
   timestamp?: string | null;
+  onForgeFromHere?: () => void;
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
@@ -9906,6 +9921,21 @@ const AgentMessageCopyAction = memo(function AgentMessageCopyAction({
           )}
         </Button>
       </MessageAction>
+      {onForgeFromHere ? (
+        <MessageAction tooltip={t("forge.entry.fromHere")} side="bottom">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-5 text-muted-foreground hover:bg-muted/45 hover:text-foreground"
+            aria-label={t("forge.entry.fromHere")}
+            data-agent-message-forge="true"
+            onClick={onForgeFromHere}
+          >
+            <Hammer className="size-3" aria-hidden="true" />
+          </Button>
+        </MessageAction>
+      ) : null}
       <span
         className="whitespace-nowrap px-1 text-ui-micro leading-5 tabular-nums text-muted-foreground/70"
         data-agent-message-detailed-time="true"
