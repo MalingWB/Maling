@@ -3570,7 +3570,13 @@
       "startTrial": "第 1 ノードを試実行",
       "startTrialHint": "テンプレートから実際のタスクを作成し、第 1 ノード完了で停止",
       "compiledCount": "ワークフローテンプレートを {{count}} 件作成しました",
-      "bindingMissing": "利用可能なモデルバインドがまだありません。試実行前に設定でバインドしてください"
+      "bindingMissing": "利用可能なモデルバインドがまだありません。試実行前に設定でバインドしてください",
+      "element": {
+        "input": "入力",
+        "output": "成果物",
+        "boundary": "境界",
+        "acceptance": "受け入れ"
+      }
     },
     "history": {
       "title": "鋳造履歴",

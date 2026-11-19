@@ -3570,7 +3570,13 @@
       "startTrial": "첫 노드 시험 실행",
       "startTrialHint": "템플릿으로 실제 작업을 만들고 첫 노드 완료 후 중지",
       "compiledCount": "워크플로 템플릿 {{count}}개를 만들었습니다",
-      "bindingMissing": "사용 가능한 모델 바인딩이 없습니다. 시험 실행 전에 설정에서 바인딩하세요"
+      "bindingMissing": "사용 가능한 모델 바인딩이 없습니다. 시험 실행 전에 설정에서 바인딩하세요",
+      "element": {
+        "input": "입력",
+        "output": "산출",
+        "boundary": "경계",
+        "acceptance": "인수"
+      }
     },
     "history": {
       "title": "단조 기록",

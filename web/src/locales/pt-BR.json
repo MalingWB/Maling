@@ -3570,7 +3570,13 @@
       "startTrial": "Testar primeiro estágio",
       "startTrialHint": "Cria uma tarefa real a partir do template e para após o primeiro estágio",
       "compiledCount": "{{count}} templates de workflow criados",
-      "bindingMissing": "Nenhuma vinculação de modelo disponível — configure uma em Ajustes antes dos testes"
+      "bindingMissing": "Nenhuma vinculação de modelo disponível — configure uma em Ajustes antes dos testes",
+      "element": {
+        "input": "Entrada",
+        "output": "Saída",
+        "boundary": "Limite",
+        "acceptance": "Aceitação"
+      }
     },
     "history": {
       "title": "Histórico de forja",

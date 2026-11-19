@@ -97,8 +97,13 @@ describe('ForgePreviewPanel', () => {
     await act(async () => root.render(<ForgePreviewPanel resource={resource} />));
 
     expect(host.textContent).toContain('实现登录并验证');
-    // 阶段 goal 四要素原文可见。
-    expect(host.textContent).toContain('<验收>测试通过');
+    // goal 四要素解析为结构化行:要素标签与内容分行呈现(角标形式样例)。
+    const rows = [...host.querySelectorAll('dl div')];
+    expect(rows.length).toBeGreaterThanOrEqual(4);
+    expect(rows[0].textContent).toContain('输入');
+    expect(rows[0].textContent).toContain('需求');
+    expect(rows[3].textContent).toContain('验收');
+    expect(rows[3].textContent).toContain('测试通过');
     // 产物契约与失败策略投影。
     expect(host.textContent).toContain('JSON 产物');
     expect(host.textContent!.replace(/\s/g, '')).toContain('$.ok==true');
@@ -108,6 +113,39 @@ describe('ForgePreviewPanel', () => {
     expect(host.textContent).toContain('联调');
     // 未收敛项可见。
     expect(host.textContent).toContain('失败后是否自动开新轮?');
+  });
+
+  it('structures the natural colon form of goal elements into labeled rows', async () => {
+    // 真机验收回归:模型常以「输入：…；产出：…」段落表达,同样结构化展示。
+    const spec = {
+      ...sampleSpec,
+      workflows: [{
+        name: '文章摘要事实核查',
+        stages: [{
+          id: 's1',
+          role: 'dev',
+          goal: '输入：用户提供的文章原文；产出：中文 markdown 要点总结；边界：只提炼要点，不做事实真伪判断，不改写原文观点；验收：要点覆盖文章全部核心信息，无遗漏。',
+          artifact: '要点总结',
+          outputKind: 'markdown',
+          schemaHint: null,
+          successCondition: null,
+          onFailure: 'retry',
+          manualCheck: false,
+        }],
+      }],
+      openQuestions: [],
+    };
+    forgeGetSpecMock.mockResolvedValue(spec);
+    await act(async () => root.render(<ForgePreviewPanel resource={resource} />));
+
+    const rows = [...host.querySelectorAll('dl div')];
+    expect(rows).toHaveLength(4);
+    expect(rows[0].textContent).toContain('用户提供的文章原文');
+    expect(rows[1].textContent).toContain('中文 markdown 要点总结');
+    expect(rows[2].textContent).toContain('不做事实真伪判断');
+    expect(rows[3].textContent).toContain('无遗漏');
+    // markdown 产物行可见,无成功条件时不渲染该码片段。
+    expect(host.textContent).toContain('Markdown 产物');
   });
 
   it('renders an error-state empty view when the spec archive cannot be read', async () => {

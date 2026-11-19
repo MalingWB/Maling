@@ -3570,7 +3570,13 @@
       "startTrial": "Trial first node",
       "startTrialHint": "Creates a real task from the template and stops after the first node",
       "compiledCount": "Created {{count}} workflow templates",
-      "bindingMissing": "No model binding available yet — configure one in Settings before trial runs"
+      "bindingMissing": "No model binding available yet — configure one in Settings before trial runs",
+      "element": {
+        "input": "Input",
+        "output": "Output",
+        "boundary": "Boundary",
+        "acceptance": "Acceptance"
+      }
     },
     "history": {
       "title": "Forge history",

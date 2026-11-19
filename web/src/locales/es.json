@@ -3570,7 +3570,13 @@
       "startTrial": "Probar primera etapa",
       "startTrialHint": "Crea una tarea real desde la plantilla y se detiene tras la primera etapa",
       "compiledCount": "{{count}} plantillas de workflow creadas",
-      "bindingMissing": "Aún no hay vinculación de modelos disponible: configura una en Ajustes antes de las pruebas"
+      "bindingMissing": "Aún no hay vinculación de modelos disponible: configura una en Ajustes antes de las pruebas",
+      "element": {
+        "input": "Entrada",
+        "output": "Salida",
+        "boundary": "Límite",
+        "acceptance": "Aceptación"
+      }
     },
     "history": {
       "title": "Historial de forja",

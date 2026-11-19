@@ -220,20 +220,90 @@ export function ForgePreviewPanel({ resource, onWorkflowTemplatesChange, onTrial
   );
 }
 
+/// goal 四要素的结构化解析:接受协议示例的 `<输入>` 标记与模型常见的
+/// 「输入：…；」前缀两种形式;命中不足两段视为不可结构化,调用方回退整段展示。
+type GoalElements = { key: 'input' | 'output' | 'boundary' | 'acceptance'; text: string }[];
+
+function parseGoalElements(goal: string): GoalElements | null {
+  const elements: Array<{ key: 'input' | 'output' | 'boundary' | 'acceptance'; name: string }> = [
+    { key: 'input', name: '输入' },
+    { key: 'output', name: '产出' },
+    { key: 'boundary', name: '边界' },
+    { key: 'acceptance', name: '验收' },
+  ];
+  const hits: Array<{ key: 'input' | 'output' | 'boundary' | 'acceptance'; contentStart: number; start: number }> = [];
+  for (const element of elements) {
+    const angle = goal.indexOf(`<${element.name}>`);
+    if (angle >= 0) {
+      hits.push({ key: element.key, start: angle, contentStart: angle + element.name.length + 2 });
+      continue;
+    }
+    const colon = goal.indexOf(`${element.name}：`) >= 0
+      ? goal.indexOf(`${element.name}：`)
+      : goal.indexOf(`${element.name}:`);
+    if (colon >= 0) {
+      hits.push({ key: element.key, start: colon, contentStart: colon + element.name.length + 1 });
+    }
+  }
+  if (hits.length < 2) return null;
+  hits.sort((left, right) => left.start - right.start);
+  return hits.map((hit, position) => {
+    const end = position + 1 < hits.length ? hits[position + 1].start : goal.length;
+    return {
+      key: hit.key,
+      text: goal.slice(hit.contentStart, end).replace(/^[\s:：]+/, '').replace(/[；;\s]+$/, '').trim(),
+    };
+  }).filter((item) => item.text.length > 0);
+}
+
 function ForgeStageRow({ stage, index }: { stage: ForgeStageVm; index: number }) {
   const { t } = useTranslation();
   const role = typeof stage.role === 'string' ? stage.role : stage.role.custom['profile-name'];
+  const roleLabel = ['dev', 'test', 'review', 'plan', 'accept'].includes(role)
+    ? t(`forge.preview.role.${role}`)
+    : role;
+  const elements = parseGoalElements(stage.goal ?? '');
   return (
-    <li className="rounded-md border border-border/60 bg-card px-3 py-2">
-      <div className="flex items-center gap-2">
-        <span className="text-xs font-medium text-foreground">{index}. {stage.artifact ?? t(`forge.preview.role.${role}`)}</span>
+    <li className="rounded-lg border border-border/60 bg-card px-3.5 py-2.5">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="inline-flex size-4.5 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-[0.65rem] font-medium tabular-nums text-foreground">
+          {index}
+        </span>
+        <span className="min-w-0 truncate text-xs font-medium text-foreground">
+          {stage.artifact || roleLabel}
+        </span>
+        <span className="ml-auto inline-flex shrink-0 items-center rounded border border-border/60 px-1.5 py-px text-[0.65rem] text-muted-foreground">
+          {roleLabel}
+        </span>
+        <span className="inline-flex shrink-0 items-center rounded border border-border/60 px-1.5 py-px text-[0.65rem] text-muted-foreground">
+          {t(`forge.preview.onFailure.${stage.onFailure}`)}
+        </span>
       </div>
-      <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">{stage.goal}</p>
-      <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[0.7rem] text-muted-foreground">
-        <span>{t('forge.preview.outputKindLabel')}: {t(`forge.preview.outputKind.${stage.outputKind}`)}</span>
-        {stage.successCondition ? <span>{t('forge.preview.successCondition')}: {stage.successCondition}</span> : null}
-        <span>{t('forge.preview.onFailureLabel')}: {t(`forge.preview.onFailure.${stage.onFailure}`)}</span>
-      </div>
+      {elements ? (
+        <dl className="mt-2 space-y-1">
+          {elements.map((element) => (
+            <div key={element.key} className="flex gap-2 text-xs leading-relaxed">
+              <dt className="w-7 shrink-0 text-right text-muted-foreground/80">
+                {t(`forge.preview.element.${element.key}`)}
+              </dt>
+              <dd className="min-w-0 flex-1 break-words text-foreground/85">{element.text}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-foreground/85">{stage.goal}</p>
+      )}
+      {(stage.outputKind !== 'none' || stage.successCondition) ? (
+        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-border/40 pt-1.5 text-[0.7rem] text-muted-foreground">
+          <span>{t('forge.preview.outputKindLabel')}: {t(`forge.preview.outputKind.${stage.outputKind}`)}</span>
+          {stage.successCondition ? (
+            <span className="inline-flex min-w-0 items-center gap-1">
+              <span className="shrink-0">{t('forge.preview.successCondition')}:</span>
+              <code className="min-w-0 break-all rounded bg-muted/40 px-1 py-px font-mono text-[0.65rem]">{stage.successCondition}</code>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
     </li>
   );
 }
