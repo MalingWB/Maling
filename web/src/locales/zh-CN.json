@@ -1682,7 +1682,12 @@
     "resumable": "可恢复",
     "noRuns": "当前任务尚无 Run",
     "noRunsForFilter": "没有符合筛选条件的 Run",
-    "openRoundA11y": "查看 {{runId}} 的 {{roundId}}"
+    "openRoundA11y": "查看 {{runId}} 的 {{roundId}}",
+    "sourceTag": {
+      "forged": "铸造",
+      "imported": "导入",
+      "manual": "手动"
+    }
   },
   "workflowEditor": {
     "title": "工作流编辑器",
@@ -3604,6 +3609,16 @@
     },
     "skillPrefill": {
       "intro": "基于以下选中的 skill 铸造工作流，可补充要求后发送："
+    },
+    "report": {
+      "title": "升级对照",
+      "before": "铸造前",
+      "beforeFallback": "一段自然语言对话",
+      "after": "铸造后",
+      "capabilityStages": "{{count}} 个阶段自动衔接,每步做什么、交什么都已写清",
+      "capabilitySchema": "{{count}} 项产物带格式约定,机器自动核对是否合格",
+      "capabilityFailure": "{{count}} 处失败自动处理（重试或转入人工确认）,不会悄悄烂掉",
+      "capabilityResume": "中途断了可以从断点继续,不用从头再来"
     }
   }
 }

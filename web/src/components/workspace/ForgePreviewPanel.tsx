@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FlaskConical, Loader2, Play, TriangleAlert } from 'lucide-react';
+import { Check, FlaskConical, Loader2, Play, TriangleAlert } from 'lucide-react';
 import { forgeCompile, forgeGetSpec, forgeStartTrial, subscribeAcpSessionUpdates } from '../../api';
 import { useEventDrivenRefresh } from '@/lib/use-event-driven-refresh';
 import type { ForgePreviewWorkspaceResource } from './right-workspace-context';
@@ -187,6 +187,7 @@ export function ForgePreviewPanel({ resource, onWorkflowTemplatesChange, onTrial
           ) : null}
         </div>
       ) : null}
+      {compileResult && spec ? <ForgeUpgradeReport spec={spec} /> : null}
       {actionError ? (
         <div className="shrink-0 px-3 py-1.5 text-xs text-destructive">
           <span className="inline-flex min-w-0 items-start gap-1.5">
@@ -307,5 +308,56 @@ function ForgeStageRow({ stage, index }: { stage: ForgeStageVm; index: number })
         </div>
       ) : null}
     </li>
+  );
+}
+
+/// 铸造对照报告(方案 §7.1):编译成功后,左右分栏把"升级"翻译成白话——
+/// 左栏铸造前的素材(意图/skill 清单),右栏现在获得的能力清单。
+/// 验收标准:非技术用户能看懂并认可;不堆术语,每行一句白话。
+function ForgeUpgradeReport({ spec }: { spec: ForgeSpecVm }) {
+  const { t } = useTranslation();
+  const stages = (spec.workflows ?? []).flatMap((workflow) => workflow.stages ?? []);
+  const schemaCount = stages.filter((stage) => stage.outputKind === 'json' && stage.successCondition).length;
+  const autoFailureCount = stages.filter((stage) => stage.onFailure !== 'end').length;
+  const skills = spec.sourceSkills ?? [];
+  return (
+    <section data-forge-upgrade-report className="shrink-0 border-b border-border/60 px-3 py-2.5">
+      <h3 className="text-xs font-medium text-foreground">{t('forge.report.title')}</h3>
+      <div className="mt-1.5 grid grid-cols-[1fr_1.4fr] gap-2">
+        <div className="min-w-0 rounded-md bg-muted/25 px-2.5 py-2">
+          <p className="text-[0.7rem] font-medium text-muted-foreground">{t('forge.report.before')}</p>
+          <p className="mt-1 line-clamp-4 break-words text-[0.7rem] leading-relaxed text-foreground/75">
+            {skills.length > 0
+              ? skills.join(' · ')
+              : spec.intent || t('forge.report.beforeFallback')}
+          </p>
+        </div>
+        <div className="min-w-0 rounded-md border border-accent/30 bg-accent/5 px-2.5 py-2">
+          <p className="text-[0.7rem] font-medium text-foreground">{t('forge.report.after')}</p>
+          <ul className="mt-1 space-y-0.5">
+            <li className="flex items-start gap-1.5 text-[0.7rem] leading-relaxed text-foreground/80">
+              <Check className="mt-0.5 size-3 shrink-0 text-accent-foreground/70" />
+              <span>{t('forge.report.capabilityStages', { count: stages.length })}</span>
+            </li>
+            {schemaCount > 0 ? (
+              <li className="flex items-start gap-1.5 text-[0.7rem] leading-relaxed text-foreground/80">
+                <Check className="mt-0.5 size-3 shrink-0 text-accent-foreground/70" />
+                <span>{t('forge.report.capabilitySchema', { count: schemaCount })}</span>
+              </li>
+            ) : null}
+            {autoFailureCount > 0 ? (
+              <li className="flex items-start gap-1.5 text-[0.7rem] leading-relaxed text-foreground/80">
+                <Check className="mt-0.5 size-3 shrink-0 text-accent-foreground/70" />
+                <span>{t('forge.report.capabilityFailure', { count: autoFailureCount })}</span>
+              </li>
+            ) : null}
+            <li className="flex items-start gap-1.5 text-[0.7rem] leading-relaxed text-foreground/80">
+              <Check className="mt-0.5 size-3 shrink-0 text-accent-foreground/70" />
+              <span>{t('forge.report.capabilityResume')}</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </section>
   );
 }

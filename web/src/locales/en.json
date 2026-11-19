@@ -1682,7 +1682,12 @@
     "resumable": "Resumable",
     "noRuns": "No runs yet",
     "noRunsForFilter": "No runs match this filter",
-    "openRoundA11y": "Open {{roundId}} in {{runId}}"
+    "openRoundA11y": "Open {{roundId}} in {{runId}}",
+    "sourceTag": {
+      "forged": "Forged",
+      "imported": "Imported",
+      "manual": "Manual"
+    }
   },
   "workflowEditor": {
     "title": "Workflow Editor",
@@ -3604,6 +3609,16 @@
     },
     "skillPrefill": {
       "intro": "Forge a workflow from the selected skills below — add any requirements, then send:"
+    },
+    "report": {
+      "title": "What you gained",
+      "before": "Before forging",
+      "beforeFallback": "A natural-language conversation",
+      "after": "After forging",
+      "capabilityStages": "{{count}} stages wired together — what each step does and hands over is written down",
+      "capabilitySchema": "{{count}} outputs carry a format contract the machine checks automatically",
+      "capabilityFailure": "{{count}} failure points handled automatically (retry or hand to a human) — nothing fails silently",
+      "capabilityResume": "Interrupted runs resume from where they stopped — no starting over"
     }
   }
 }

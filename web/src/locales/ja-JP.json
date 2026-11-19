@@ -1682,7 +1682,12 @@
     "resumable": "再開可能",
     "noRuns": "まだ Run はありません",
     "noRunsForFilter": "このフィルターに一致する Run はありません",
-    "openRoundA11y": "{{runId}} で {{roundId}} を開く"
+    "openRoundA11y": "{{runId}} で {{roundId}} を開く",
+    "sourceTag": {
+      "forged": "鋳造",
+      "imported": "取り込み",
+      "manual": "手動"
+    }
   },
   "workflowEditor": {
     "title": "ワークフローエディター",
@@ -3604,6 +3609,16 @@
     },
     "skillPrefill": {
       "intro": "以下の選択した skill からワークフローを鋳造します。要求を追記してから送信してください："
+    },
+    "report": {
+      "title": "アップグレード対照",
+      "before": "鋳造前",
+      "beforeFallback": "自然言語の対話",
+      "after": "鋳造後",
+      "capabilityStages": "{{count}} ステージが自動接続——各步が何をして何を渡すか明記済み",
+      "capabilitySchema": "{{count}} つの成果物に形式契約があり,機械が合格を自動確認",
+      "capabilityFailure": "{{count}} カ所の失敗を自動処理（リトライまたは人への確認）——黙って腐りません",
+      "capabilityResume": "中断してもブレークポイントから再開——やり直し不要"
     }
   }
 }

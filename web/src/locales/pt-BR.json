@@ -1682,7 +1682,12 @@
     "resumable": "Retomável",
     "noRuns": "Ainda não há Run",
     "noRunsForFilter": "Nenhum Run corresponde a este filtro",
-    "openRoundA11y": "Abrir {{roundId}} em {{runId}}"
+    "openRoundA11y": "Abrir {{roundId}} em {{runId}}",
+    "sourceTag": {
+      "forged": "Forjado",
+      "imported": "Importado",
+      "manual": "Manual"
+    }
   },
   "workflowEditor": {
     "title": "Editor de fluxo de trabalho",
@@ -3604,6 +3609,16 @@
     },
     "skillPrefill": {
       "intro": "Forje um workflow a partir das skills selecionadas abaixo — acrescente requisitos e envie:"
+    },
+    "report": {
+      "title": "O que você ganhou",
+      "before": "Antes da forja",
+      "beforeFallback": "Uma conversa em linguagem natural",
+      "after": "Depois da forja",
+      "capabilityStages": "{{count}} estágios encadeados — o que cada passo faz e entrega está escrito",
+      "capabilitySchema": "{{count}} saídas com contrato de formato que a máquina verifica automaticamente",
+      "capabilityFailure": "{{count}} pontos de falha tratados automaticamente (retry ou humano) — nada falha em silêncio",
+      "capabilityResume": "Execuções interrompidas retomam do ponto de parada — sem recomeçar"
     }
   }
 }

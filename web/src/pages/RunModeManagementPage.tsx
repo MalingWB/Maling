@@ -26,7 +26,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { displayAppError } from '@/i18n';
 import { pruneMissingAutoConfigReferences, pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
-import { createBlankWorkflowDraft, hasWorkflowBindingDraftChanges, hasWorkflowDraftChanges, restoreBuiltInWorkflowDefinition, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { createBlankWorkflowDraft, hasWorkflowBindingDraftChanges, hasWorkflowDraftChanges, restoreBuiltInWorkflowDefinition, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName, workflowTemplateSourceTag } from '@/lib/workflow-template';
 import { cn } from '@/lib/utils';
 import { AgentIdentityLabel } from '@/components/AgentIdentityLabel';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
@@ -1456,14 +1456,20 @@ export function RunModeManagementPage({
                       {workflowTemplateList.map((tpl) => {
                         const selected = tpl.id === wfEditTemplateId;
                         const isDefault = tpl.isBuiltIn;
+                        const sourceTag = workflowTemplateSourceTag(tpl);
                         return (
                           <div key={tpl.id} className={cn('flex items-center gap-1 rounded-sm p-1', selected && 'bg-accent text-accent-foreground')}>
                             <button
                               type="button"
-                              className="min-w-0 flex-1 truncate px-1 py-1 text-left text-xs"
+                              className="flex min-w-0 flex-1 items-center gap-1.5 truncate px-1 py-1 text-left text-xs"
                               onClick={() => { selectWfTemplate(tpl.id); setWfTemplatePickerOpen(false); }}
                             >
-                              {workflowTemplateDisplayName(tpl, t)}
+                              <span className="min-w-0 truncate">{workflowTemplateDisplayName(tpl, t)}</span>
+                              {sourceTag ? (
+                                <span className={cn('inline-flex shrink-0 items-center rounded border px-1 py-px text-[0.65rem] font-normal leading-4', sourceTag.className)}>
+                                  {t(`workflow.sourceTag.${sourceTag.source}`)}
+                                </span>
+                              ) : null}
                             </button>
                             <Button
                               variant="ghost"

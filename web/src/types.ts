@@ -1636,6 +1636,8 @@ export interface WorkflowTemplate {
   id: string;
   name: string;
   isBuiltIn: boolean;
+  /// 模板来源(forged/imported/manual;缺省为旧数据)——列表来源颜色 tag 用。
+  source?: 'forged' | 'imported' | 'manual' | null;
   optionalEntryStage?: {
     nodeId: string;
     labelKey: string;

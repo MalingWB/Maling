@@ -189,5 +189,13 @@ describe('ForgePreviewPanel', () => {
     await act(async () => trialButton?.click());
     expect(forgeStartTrialMock).toHaveBeenCalledWith('project-a', 'wf-1', converged.intent);
     expect(onTrialStartedMock).toHaveBeenCalledWith('project-a', 'task-trial');
+
+    // 对照报告:编译成功后出现,左栏素材/右栏能力白话可读。
+    const report = host.querySelector('[data-forge-upgrade-report]');
+    expect(report).toBeTruthy();
+    expect(report!.textContent).toContain('升级对照');
+    expect(report!.textContent).toContain('2 个阶段自动衔接');
+    expect(report!.textContent).toContain('机器自动核对是否合格');
+    expect(report!.textContent).toContain('从断点继续');
   });
 });

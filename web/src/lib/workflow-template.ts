@@ -8,6 +8,28 @@ export function workflowTemplateDisplayName(template: WorkflowTemplate, t: Trans
   return template.name;
 }
 
+/// 模板来源 tag 的视觉语义(方案 §7.4,跨页面一致):
+/// 铸造 = 主题 accent、导入 = 中性 secondary、手动 = 灰阶 outline;
+/// 内置与旧数据(无 source)不显示。
+export type WorkflowTemplateSourceTag = {
+  source: 'forged' | 'imported' | 'manual';
+  className: string;
+};
+
+export function workflowTemplateSourceTag(template: WorkflowTemplate): WorkflowTemplateSourceTag | null {
+  if (template.isBuiltIn || !template.source) return null;
+  switch (template.source) {
+    case 'forged':
+      return { source: 'forged', className: 'bg-accent text-accent-foreground border-transparent' };
+    case 'imported':
+      return { source: 'imported', className: 'bg-secondary text-secondary-foreground border-transparent' };
+    case 'manual':
+      return { source: 'manual', className: 'text-muted-foreground' };
+    default:
+      return null;
+  }
+}
+
 export function hasWorkflowDraftChanges(
   workflow: WorkflowDsl | null | undefined,
   baseline: WorkflowDsl | null | undefined,

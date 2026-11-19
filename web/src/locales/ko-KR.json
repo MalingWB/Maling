@@ -1682,7 +1682,12 @@
     "resumable": "재개 가능",
     "noRuns": "아직 Run 없음",
     "noRunsForFilter": "이 필터에 맞는 Run이 없습니다",
-    "openRoundA11y": "{{runId}}의 {{roundId}} 보기"
+    "openRoundA11y": "{{runId}}의 {{roundId}} 보기",
+    "sourceTag": {
+      "forged": "단조",
+      "imported": "가져오기",
+      "manual": "수동"
+    }
   },
   "workflowEditor": {
     "title": "워크플로 편집기",
@@ -3604,6 +3609,16 @@
     },
     "skillPrefill": {
       "intro": "아래 선택한 skill에서 워크플로를 단조합니다. 요구사항을 보강한 뒤 전송하세요:"
+    },
+    "report": {
+      "title": "업그레이드 비교",
+      "before": "단조 전",
+      "beforeFallback": "자연어 대화 한 편",
+      "after": "단조 후",
+      "capabilityStages": "{{count}}개 단계가 자동 연결——각 단계가 무엇을 하고 무엇을 넘기는지 명시됨",
+      "capabilitySchema": "{{count}}개 산출물에 형식 계약이 있어 기계가 합격을 자동 확인",
+      "capabilityFailure": "{{count}}곳의 실패를 자동 처리(재시도 또는 사람 확인)——소리 없이 썩지 않음",
+      "capabilityResume": "중단돼도 중단 지점부터 재개——처음부터 다시 하지 않음"
     }
   }
 }
