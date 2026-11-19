@@ -25,7 +25,7 @@ use tracing::warn;
 use crate::multica::client::MulticaClient;
 use crate::multica::error::MulticaError;
 
-use super::model::{FLUSH_INTERVAL, UsageRow};
+use super::model::{DRAIN_TIMEOUT, FLUSH_INTERVAL, UsageRow};
 use super::projector::Projector;
 
 /// 取当前连接对应的 client。进程内连接信息可能被用户重配，所以每次发送时重新读取。
@@ -629,6 +629,22 @@ pub(crate) async fn finish_run<R: Runtime>(
     }
 }
 
+/// 无在飞映射的追问 turn 边界收尾（M5-de 修复点）。
+///
+/// Direct 后续追问 / Workflow-AUTO 节点完成后的手动追问在**同一 attempt 内**收尾、不产生
+/// 新的 `RunCompleted`（事件定义见 `RuntimeLifecycleEvent::AcpTurnFinished`），常规终态路径
+/// （`complete_with_issue_done` / `handle_run_failed`）只认 run 边界——追问 reporter 的排空、
+/// 尾部工具行兜底拍与续报水位登记只能挂 turn 边界，否则追问后重启会用首 run 的过期水位
+/// attach，服务端 seq 与累计用量整体回退。bridge 订阅器在 `AcpTurnFinished` 无在飞映射时
+/// 调用；活跃任务的中段 turn 不走此入口（由 RunCompleted 统一收尾）。
+pub(crate) async fn finish_followup_run<R: Runtime>(
+    app: &AppHandle<R>,
+    local_task_id: &str,
+    local_run_id: &str,
+) {
+    finish_run(app, local_task_id, local_run_id, DRAIN_TIMEOUT).await;
+}
+
 /// 捕获续报基线（纯读取）：`last_seq` = 已分配的最后一个 seq（`next_seq - 1`），
 /// 用量 = 该任务截至当前的累计行。
 fn capture_continuation(reporter: &Reporter) -> FinishedContinuation {
@@ -1161,6 +1177,60 @@ mod tests {
         let rows = reporter.lock().usage.rows();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].input_tokens, 40, "30 种子 + 10 新增 = 累计 40");
+    }
+
+    /// M5-de 修复回归：无在飞映射的追问 turn 边界（`AcpTurnFinished`）必须收尾 reporter
+    /// 并推进续报水位。Direct 追问不产生新的 RunCompleted——若边界不收尾，追问后重启会用
+    /// 首 run 的过期水位 attach，服务端 seq 与用量整体回退；reporter 也会泄漏（worker
+    /// 永不退出、收尾兜底拍缺失）。
+    #[tokio::test]
+    async fn followup_turn_boundary_finalizes_reporter_and_watermark() {
+        let app = tauri::test::mock_app();
+        app.manage(TranscriptRegistry::default());
+        let registry = app.state::<TranscriptRegistry>();
+        // 首 run 收尾登记的基线（seq 水位 2）。
+        registry.record_finished("local-1", cont("remote-1", 2, vec![]));
+        // 追问首事件懒挂载（同一 local run 复用键，与生产追问路径一致）+ 一条追问回复。
+        let reporter = registry
+            .attach_followup("local-1", "run-1", Arc::new(|| None))
+            .expect("终态后追问必须挂载 reporter");
+        {
+            let mut guard = reporter.lock();
+            guard.project.observe(&gold_band::acp::events::AcpUiEvent {
+                id: "e-1".to_string(),
+                seq: 1,
+                timestamp: "2026-11-18T00:00:00Z".to_string(),
+                kind: "textDelta".to_string(),
+                session_id: None,
+                content: Some("追问后的回复".to_string()),
+                title: None,
+                tool_call_id: None,
+                status: None,
+                started_seq: None,
+                ended_seq: None,
+                started_at: None,
+                ended_at: None,
+                timing: None,
+                raw: None,
+            });
+        }
+        // AcpTurnFinished 边界（无在飞映射）。
+        finish_followup_run(app.handle(), "local-1", "run-1").await;
+        assert!(
+            registry.find("local-1", "run-1").is_none(),
+            "追问 turn 收尾后 reporter 必须移除（M5-de 修复）"
+        );
+        let finished = registry
+            .finished
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let continuation = finished
+            .get("local-1")
+            .expect("收尾必须登记续报基线（重启恢复的事实源）");
+        assert_eq!(
+            continuation.last_seq, 3,
+            "水位必须推进到追问消息之后（seq 3 已分配），否则重启续报回退"
+        );
     }
 
     /// 同 remote 已有在飞 reporter 时拒绝挂载（两路并发写同一 seq 空间 → 服务端交错行）。

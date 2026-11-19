@@ -30,4 +30,6 @@ mod tool_input;
 
 pub(crate) use model::{DRAIN_TIMEOUT, TranscriptMessage, UsageRow};
 pub use reporter::TranscriptRegistry;
-pub(crate) use reporter::{accumulate_usage, finish_run, observe, report_error, start_run};
+pub(crate) use reporter::{
+    accumulate_usage, finish_followup_run, finish_run, observe, report_error, start_run,
+};

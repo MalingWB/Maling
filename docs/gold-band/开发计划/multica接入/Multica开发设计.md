@@ -3383,6 +3383,24 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.102 改动一百：M5-de 收尾挂错事件——追问执行记录收尾从 RunCompleted 移正到 AcpTurnFinished 边界（M5-de 修正，2026-11-18）
+
+**背景**：M5-de（§12.101）落地后的分支复查发现：追问消息仍实时上报（同会话表象全部正常），但追问 reporter 的收尾**从未执行**——`finish_run` 全部调用点挂在 RunCompleted 路径（完成/失败/无映射兜底/取消），而追问 turn 根本不产生 `RunCompleted`。
+
+**根因**（好设计、实现不完整）：M5-de 实现时误判「追问 run 产生新的 `local_run_id` 并以 RunCompleted 收尾」。事件契约事实是：Direct 后续追问与 Workflow/AUTO 节点完成后的手动追问在**同一 attempt 内收尾、只发 `AcpTurnFinished`**（事件定义注释，与 M5-bn 迟到补发的双入口事实同源），run_id/attempt 均复用首 run。后果：① 追问后水位（内存 + 持久化）停留在首 run 值——**重启后追问**用过期水位 attach，服务端 seq 与累计用量整体回退，恰是 M5-de 声称支持的场景；② 追问 reporter 泄漏（worker 500ms ticker 永不退出，每条发生过追问的会话一个）；③ 收尾兜底拍缺失（未闭合工具行不补出）。同会话内连续追问碰巧正常（第二个追问 find 命中仍存活的 reporter），故演示场景无法暴露。
+
+**实现**：bridge `AcpTurnFinished` 分支在 `accumulate_usage` 之后先查在飞映射：**无映射**（任务已终态 / 普通本地会话）→ spawn `transcript::finish_followup_run`（`finish_run` + DRAIN_TIMEOUT 的边界入口；幂等，无 reporter 即返回；失败/取消 turn 同样收尾——用户停止追问的落点在此）；**有映射**（活跃任务中段 turn）不动，由 RunCompleted 统一收尾。排队追问逐 turn 收尾（`continues=true` 亦然）：下一排队 prompt 首事件按新水位重新懒挂载，seq 单调不回退。`RunCompleted` 无映射分支保留为 rerun 等无映射 run 的幂等兜底，注释同步纠正。
+
+**方案自评审**：过度设计——复用既有 `finish_run`，唯一新增是一个具名边界入口函数（固化「收尾属 turn 边界」契约并给回归测试一个不依赖 Wry 的锚点）；不新增状态/端点/定时器；每 turn 边界一次映射查找与一次幂等 spawn，成本与既有迟到补发 spawn 同级。明确**不做**：订阅器整体泛化（`AppHandle<Wry>` 泛型涟漪波及完成输出队列等深路径，收益仅测试便利）。性能——非 multica 会话每终态 turn 多一次无副作用 spawn（幂等返回）；multica 终态任务每 turn 一次排空（本来就该发生，且消除了泄漏的常驻 ticker）。
+
+**验证结果**：按 `bug-fix-verification` 红绿——`followup_turn_boundary_finalizes_reporter_and_watermark`（mock app + registry：水位 2 → 懒挂载（复用首 run 键，与生产追问路径一致）→ textDelta → 边界收尾 → 断言 reporter 移除 + 水位推进到 3）在桩实现（保留现状「边界不收尾」行为）上先红，失败信息即根因（「追问 turn 收尾后 reporter 必须移除（M5-de 修复）」）；接线后同测试转绿。`cargo test -p gold-band-desktop --bin gold-band-desktop multica::` **322 passed**（321 基线 + 1）；clippy 对改动区域零新增告警；rustfmt 通过（`commands.rs` 既有漂移未触碰）。bridge 事件接线本身无免 Wry 的测试入口（订阅器闭包持有具体 `AppHandle`），由同型先例（RunCompleted 分支、M5-bn 双入口接线）与边界入口回归测试共同覆盖。内网验收待打包：完成任务 → 追问 → **重启** → 再追问，三段 Transcript seq 连续、usage 不回退；追问 turn 结束后 worker 退出（无常驻 ticker）。
+
+**遗留**：§12.101 遗留①（追问 turn 进行中崩溃丢增量水位）的窗口由「run 级收尾」缩小为「turn 级收尾」，性质不变仍接受；其余遗留不变。
+
+**文件**：`src-tauri/src/multica/bridge.rs`（AcpTurnFinished 分支接线 + 注释纠正）、`src-tauri/src/multica/transcript/reporter.rs`（`finish_followup_run` 边界入口 + 回归测试）、`src-tauri/src/multica/transcript/mod.rs`（导出）；文档 `接入方案.md` §3.2.8（追问复用同一 run/attempt、收尾边界移正）。
+
+---
+
 ### 12.96 改动九十四：runtime-assets 协议对齐 multica Runtime 页签重构（M5-cz，2026-11-13）
 
 **背景**：multica 把「角色管理」「工作流管理」页面重构为**共享 / Runtime 双页签**（共享：目录发布/安装/导出/删除；Runtime：浏览本机资产清单、逐条发布/卸载/查看），并给出权威对接文档 `.claude/design/multica/2026-11-13-maling-runtime-asset-protocol.md`。逐条对照其 §4 八项改动清单：**六项已满足**（uninstall 心跳分支与幂等执行器、install 写入语义、list `is_builtin`、workflow export 剥 modelBindings、role frontmatter name==key、端点区分、60s 窗口——M5-cq/cr/cw 内网已验证）；真实差异四处，全部是对齐性小改。

@@ -313,17 +313,17 @@ pub fn create_multica_subscriber(
             } => {
                 let Some((remote_task_id, run)) = lookup_active_run(&app_handle, &task_id, &run_id)
                 else {
-                    // 无在飞映射的本地 run：绝大多数是普通本地任务；唯一需要处理的例外是
-                    // 「multica 任务终态后的追问 run」——首 run fail-open 标 done 时可能没
-                    // 提出交付说明，用户追问后 agent 补交。反查 completed 历史含 state.json
-                    // 磁盘读，故整体移入 spawn 异步执行（订阅器回调在热路径，不可阻塞）；
-                    // Failure/Killed 无补发语义，不进 spawn。
+                    // 无在飞映射的本地 run：绝大多数是普通本地任务；需要处理的例外是
+                    // 「multica 任务终态后的 run」——rerun 等无映射收尾的 run（追问的收尾
+                    // 主边界在 AcpTurnFinished：追问不产生新的 RunCompleted，见该分支）。
+                    // Success 侧迟到补发 completion-output（首 run fail-open 标 done 后补交）；
+                    // 反查 completed 历史含 state.json 磁盘读，故整体移入 spawn 异步执行
+                    // （订阅器回调在热路径，不可阻塞）；Failure/Killed 无补发语义，不进 spawn。
                     //
-                    // M5-de：终态后追问 run 的执行记录收尾。追问 reporter 由 transcript::observe
-                    // 懒挂载（无 active 映射），常规终态路径（complete_with_issue_done /
-                    // handle_run_failed）不会为它排空——这里统一收尾并登记续报水位；幂等
-                    // （无 reporter 即返回）。Failure/Killed 先补 error 行，对齐
-                    // handle_run_failed 的「先记录后失败」语义。
+                    // M5-de：无映射 run 的执行记录收尾（幂等兜底，无 reporter 即返回）——
+                    // 常规终态路径（complete_with_issue_done / handle_run_failed）只覆盖有
+                    // 映射的 run。Failure/Killed 先补 error 行，对齐 handle_run_failed 的
+                    // 「先记录后失败」语义。
                     {
                         let app_handle = app_handle.clone();
                         let (task_id, run_id, node_label) =
@@ -410,37 +410,53 @@ pub fn create_multica_subscriber(
                         attempt_dir,
                     );
                 }
+                let active = lookup_active_run(&app_handle, &task_id, &run_id);
+                if active.is_none() {
+                    // M5-de 修复：追问 turn 在同一 attempt 内收尾、不产生新的 RunCompleted
+                    // （事件定义见 RuntimeLifecycleEvent::AcpTurnFinished），终态任务追问
+                    // reporter 的排空与续报水位登记只能挂本边界（否则追问后重启用过期水位
+                    // attach，服务端 seq 与用量回退；reporter 亦泄漏）。失败/取消 turn 同样
+                    // 收尾——用户停止追问的落点在此。普通本地会话无 reporter，幂等返回。
+                    // 订阅器回调在热路径，移入 spawn。
+                    let app_handle = app_handle.clone();
+                    let (task_id, run_id) = (task_id.clone(), run_id.clone());
+                    tauri::async_runtime::spawn(async move {
+                        crate::multica::transcript::finish_followup_run(
+                            &app_handle,
+                            &task_id,
+                            &run_id,
+                        )
+                        .await;
+                    });
+                }
                 // Failed/Cancelled 无交付语义。
                 if outcome != AcpTurnOutcome::Completed {
                     return;
                 }
                 // Direct 排队的多条追问逐条触发 turn 事件，中间态 turn（batch_continues=true，
                 // 后面还有排队 prompt）不是「最终回复」——此时提取的块可能是中间产物，跳过
-                // 门控也跳过补发（终态 turn / run 收尾会再判）。
+                // 门控也跳过补发（终态 turn / run 收尾会再判）。追问的执行记录收尾不受影响：
+                // 每个 turn 边界都已排空（下一排队 prompt 首事件按新水位重新懒挂载）。
                 if batch_progress.continues {
                     return;
                 }
-                // M5-bp 决策点 2：命中在飞 direct+issue 任务（含被扣留完成的）→ turn 收尾门控。
-                // Direct 后续追问在同一 attempt 内收尾、不产生新的 RunCompleted，被扣留的任务
-                // 只能靠本事件补判完成。
-                if let Some((remote_task_id, run)) =
-                    lookup_active_run(&app_handle, &task_id, &run_id)
-                {
-                    // 仅 direct 门控：工作流/自动编排的节点回合不经过会话 prompt 层（无本事件），
-                    // 其阶段性上送挂在 NodeCompleted 边界（见上方 NodeCompleted 臂）。
+                let Some((remote_task_id, run)) = active else {
+                    // 无在飞映射（任务已终态 / 普通本地会话）：M5-bl/bn 迟到补发——按 completed
+                    // 历史反查，在飞任务天然不在历史里。事件逐消息触发，反查含磁盘读故移入 spawn。
                     let app_handle = app_handle.clone();
                     tauri::async_runtime::spawn(async move {
-                        handle_turn_completion_gate(app_handle, remote_task_id, run, attempt_dir)
+                        relay_late_completion_output(app_handle, &task_id, attempt_dir.as_deref())
                             .await;
                     });
                     return;
-                }
-                // 无在飞映射（任务已终态 / 普通本地会话）：M5-bl/bn 迟到补发——按 completed
-                // 历史反查，在飞任务天然不在历史里。事件逐消息触发，反查含磁盘读故移入 spawn。
+                };
+                // M5-bp 决策点 2：命中在飞 direct+issue 任务（含被扣留完成的）→ turn 收尾门控。
+                // Direct 后续追问在同一 attempt 内收尾、不产生新的 RunCompleted，被扣留的任务
+                // 只能靠本事件补判完成。仅 direct 门控：工作流/自动编排的节点回合不经过会话
+                // prompt 层（无本事件），其阶段性上送挂在 NodeCompleted 边界。
                 let app_handle = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    relay_late_completion_output(app_handle, &task_id, attempt_dir.as_deref())
-                        .await;
+                    handle_turn_completion_gate(app_handle, remote_task_id, run, attempt_dir).await;
                 });
             }
             // RunPaused / InterventionRequested / NodeStarted：不上报终态。

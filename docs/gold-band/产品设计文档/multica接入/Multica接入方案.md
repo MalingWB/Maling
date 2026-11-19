@@ -494,7 +494,7 @@ start_multica_conversation_run(...)   # Req D：会话级续跑并入 classify_r
 
 - 只在 multica 远程任务执行期间。观测点 = ACP live emitter（`acp_live_update_emitter`）在 IPC 压缩**之前**——压缩会剥掉 `rawInput/rawOutput`，之后就拿不到工具输入/输出。
 - 一次 remote task 的一次执行 = 一个 reporter，键 `(local_task_id, local_run_id)`：resume 分支在 `register_active_run` 后注册，fresh 分支在 `create_conversation_run_vm` 返回后注册；终态/启动失败时摘除。
-- **终态后追问续报（M5-de）**：任务终态（completion-output 已交付）后用户在同一会话继续对话，multica 回放此前会静默缺这段。追问 run 产生新的 `local_run_id` 但服务端 task_id 不变，`messages` 端点也不做任务状态门控——因此追问 run 的 reporter 由 `observe` 首查注册表未命中时**懒挂载**：先查进程内水位登记（`TranscriptRegistry.finished`，finish_run 排空后写入），命中即同步挂载（追问的用户回声是该 run 第一条上报事件，异步挂载会丢首拍）；未命中再每任务至多一次异步解析（completed 历史反查 + 持久水位读取，覆盖跨重启场景），解析窗口内的少数事件放弃。追问 run 无 active 映射，其终态收尾（含水位登记）由 bridge `RunCompleted` 无在飞映射分支统一执行，Failure/Killed 同样先补 `error` 行再排空。追问挂载前提是存在水位：旧版本收尾的任务（无持久水位）不续报——seq 基线未知，盲目续报会与服务端既有行交错，宁缺毋乱。
+- **终态后追问续报（M5-de）**：任务终态（completion-output 已交付）后用户在同一会话继续对话，multica 回放此前会静默缺这段。追问 turn 复用同一 `local_run_id`/attempt（Direct 追问与节点后手动追问都在同一 attempt 内收尾、**不产生新的 `RunCompleted`**，见 `AcpTurnFinished` 事件定义），服务端 task_id 不变、`messages` 端点也不做任务状态门控——首 run `finish_run` 已摘除 reporter，因此追问的事件由 `observe` 首查注册表未命中时**懒挂载**：先查进程内水位登记（`TranscriptRegistry.finished`，finish_run 排空后写入），命中即同步挂载（追问的用户回声是该 run 第一条上报事件，异步挂载会丢首拍）；未命中再每任务至多一次异步解析（completed 历史反查 + 持久水位读取，覆盖跨重启场景），解析窗口内的少数事件放弃。追问 turn 的收尾（排空 + 水位登记）挂在 bridge `AcpTurnFinished` 无在飞映射分支——每 turn 边界执行，失败/取消 turn 同样收尾（用户停止追问的落点在此）；活跃任务的中段 turn 不经此路径，由 RunCompleted 统一收尾。`RunCompleted` 无在飞映射分支仅为 rerun 等无映射 run 的幂等兜底（Failure/Killed 先补 `error` 行再排空）。追问挂载前提是存在水位：旧版本收尾的任务（无持久水位）不续报——seq 基线未知，盲目续报会与服务端既有行交错，宁缺毋乱。
 - 子 agent 分支（`event_branch_id != root`）不上报（与 Gold Band 本地折叠展示一致）。
 
 **上报哪些**
