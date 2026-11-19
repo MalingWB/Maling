@@ -22,6 +22,16 @@ import '@/i18n';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+// GraphView(@xyflow)依赖 ResizeObserver;jsdom 环境补桩。
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+if (!('ResizeObserver' in globalThis)) {
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = ResizeObserverStub;
+}
+
 /**
  * 铸造预览 Tab(方案 §5.2 第一阶段视图)契约:Spec 是会话唯一事实源,
  * Tab 是其只读投影——存档为空显示空态引导;有 Spec 时阶段四要素与

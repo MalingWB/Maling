@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, FlaskConical, Loader2, Play, TriangleAlert } from 'lucide-react';
 import { forgeCompile, forgeGetSpec, forgeStartTrial, subscribeAcpSessionUpdates } from '../../api';
 import { useEventDrivenRefresh } from '@/lib/use-event-driven-refresh';
+import { GraphView } from '../GraphView';
+import type { GraphVm } from '../../types';
 import type { ForgePreviewWorkspaceResource } from './right-workspace-context';
 import type { ForgeCompileResultVm, ForgeSpecVm, ForgeStageVm, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
@@ -197,6 +199,7 @@ export function ForgePreviewPanel({ resource, onWorkflowTemplatesChange, onTrial
         </div>
       ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <ForgeSpecGraph spec={spec} />
         {(spec.workflows ?? []).map((workflow, index) => (
           <section key={`${workflow.name}-${index}`} className="mt-3">
             <h3 className="text-sm font-medium">{workflow.name}</h3>
@@ -359,5 +362,51 @@ function ForgeUpgradeReport({ spec }: { spec: ForgeSpecVm }) {
         </div>
       </div>
     </section>
+  );
+}
+
+/// Spec → 流程图投影(§6.3/§7.2:对话与图同屏生长)。纯前端投影,Spec
+/// 结构事件(轮完成存档刷新)驱动整图重建——≤10 节点,重建成本可忽略,
+/// 与 token 流完全解耦;第三阶段的入场动画由图组件自带过渡承接。
+function specToGraph(spec: ForgeSpecVm): GraphVm {
+  const nodes: GraphVm['nodes'] = [];
+  const edges: GraphVm['edges'] = [];
+  for (const workflow of spec.workflows ?? []) {
+    const stages = workflow.stages ?? [];
+    stages.forEach((stage, index) => {
+      const id = stage.id ?? `stage-${index + 1}`;
+      nodes.push({
+        id,
+        nodeId: id,
+        label: stage.artifact || (typeof stage.role === 'string' ? stage.role : stage.role.custom['profile-name']),
+        nodeType: 'worker',
+        runtimeDisplay: { code: 'draft', tone: 'neutral', icon: 'dot', terminal: false, resumable: false, blockingError: false },
+        artifactCount: stage.outputKind === 'json' ? 1 : 0,
+        attachmentCount: 0,
+        current: false,
+        retryable: false,
+        attemptCount: 0,
+        attempts: [],
+      });
+      const next = stages[index + 1];
+      if (next) {
+        edges.push({ from: id, to: next.id ?? `stage-${index + 2}`, label: 'success' });
+      } else {
+        edges.push({ from: id, to: '$end', label: 'success' });
+      }
+      if (stage.onFailure === 'new-round') edges.push({ from: id, to: '$new-round', label: 'failure' });
+      if (stage.onFailure === 'end') edges.push({ from: id, to: '$end', label: 'failure' });
+    });
+  }
+  return { nodes, edges, groups: [] };
+}
+
+function ForgeSpecGraph({ spec }: { spec: ForgeSpecVm }) {
+  const graph = useMemo(() => specToGraph(spec), [spec]);
+  if (graph.nodes.length === 0) return null;
+  return (
+    <div data-forge-spec-graph className="mb-3 rounded-lg border border-border/60 bg-card p-2">
+      <GraphView graph={graph} variant="workflow" allowFullscreen={false} />
+    </div>
   );
 }
