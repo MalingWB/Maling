@@ -37,6 +37,12 @@ npm run demo:build
 
 单目录交付使用 npm run website:build。默认输出到 release/website，将官网放在根目录、Demo 放在 demo/ 子目录；设置 WEBSITE_DIST 可指定目标目录。Demo 完整数据门禁仍然生效。
 
+### 行内客户端下载清单
+
+构建官网时给 `GOLD_BAND_WB_BASE_URL` 设置 WB 服务的 HTTP(S) origin（不带子路径）；这个值只用于定位 `/api/file/download/latest.json`。官网打开下载菜单时读取该清单，并直接使用已发布的 `platforms.*.url`，不依赖官网构建时的应用版本。之后发版只需先上传安装包，再更新发布清单；无需为版本变化重建官网。
+
+建议官网与 WB 下载接口同源，并确保清单路径由 WB 接口提供，而不是落入官网的 SPA 页面回退。不同源时，WB 接口需允许官网来源读取清单；HTTPS 页面必须使用 HTTPS 的 WB 地址，并且清单中的包链接也要匹配该 WB 下载 origin。发布服务器应允许浏览器获取更新后的清单，不把 `latest.json` 当作不可变资产缓存。
+
 ### 子路径部署与 HTTP
 
 挂在非根路径时必须在构建期设置 base，不能靠服务器改路径：`VITE_SITE_BASE='/product/'` 会让 `website:build` 自动把 Demo 推导为 `/product/demo/`。产物内的资源引用是绝对路径。用 `root` 托管时目录名要与 URL 前缀一致，否则改用 `alias`（注意 location 与 alias 的尾部斜杠必须一致）。
