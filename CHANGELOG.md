@@ -1,5 +1,60 @@
 # Changelog
 
+## [0.22.0](https://github.com/MalingWB/Maling/compare/v0.21.1...v0.22.0) (2026-11-19)
+
+
+### Features
+
+* **acp:** add ZCode bridge to agent catalog ([1ddb27d](https://github.com/MalingWB/Maling/commit/1ddb27d3aa74f948d3103f6d899ed22125e7dd59))
+* **acp:** expand Agent catalog and gate onboarding runtime per Agent ([fe758fb](https://github.com/MalingWB/Maling/commit/fe758fb20b1e79ecc38bb7e2b6df34345bd3ba05))
+* **acp:** expand catalog with DeepSeek and Qoder ([1fac962](https://github.com/MalingWB/Maling/commit/1fac962c186bfc54e1c72c65313f2b352e2a4828))
+* **agents:** explain Agent connection requirements ([c176c2c](https://github.com/MalingWB/Maling/commit/c176c2cd64ecee90aad20572a5d0cb0664968624))
+* **agents:** show WorkBuddy and reorder agent catalog ([eb7a484](https://github.com/MalingWB/Maling/commit/eb7a4849b63a170ece82cbd9d4f4f7745a4da66f))
+* **conversation:** session turn rail, composer manual resize, wallpaper deletion and sidebar fixes ([c9a1873](https://github.com/MalingWB/Maling/commit/c9a187320f39dfaf96e45adb3671104799a26391))
+* **im:** support remote workflow continuation and recovery ([60336e4](https://github.com/MalingWB/Maling/commit/60336e449e8e1f52ee4ab3e9b170a4009d991b41))
+* **im:** support remote workflow continuation and recovery ([fcd0756](https://github.com/MalingWB/Maling/commit/fcd075670750c4b3d29be624ca01b45c50397983))
+* **multica:** runtime-assets 协议对齐 Runtime 页签重构 (M5-cz) ([0803a7c](https://github.com/MalingWB/Maling/commit/0803a7cc257faca787cc365de29197c97805749a))
+* **multica:** runtime-assets 卸载工单被动移除本地角色/工作流 (M5-cw) ([fcc7c54](https://github.com/MalingWB/Maling/commit/fcc7c54974e76bf342571f83181d955c9ed52dfb))
+* **multica:** 心跳优化 15s→3s + 工单完成后补发排空 (M5-cx) ([9419966](https://github.com/MalingWB/Maling/commit/9419966e933d7114613f72e15c820a7aa3430b10))
+* **onboarding:** allow Agent detection when npm is limited ([b82e22c](https://github.com/MalingWB/Maling/commit/b82e22c515a7786acabcd7fa15a50bbf61f4e421))
+* **onboarding:** gate runtime per Agent launch path instead of globally ([c1b6d83](https://github.com/MalingWB/Maling/commit/c1b6d83ee9edfd33383d55e8ba3048905bafde62))
+* **personalization:** add builtin.meadow theme, three-state wallpaper sources and settings upgrades ([ee8baaa](https://github.com/MalingWB/Maling/commit/ee8baaacc19fc7f7244328e0a7810e80b96d19eb))
+* **release:** use live WB download links and add 0.22.0 release notes ([2d97c3b](https://github.com/MalingWB/Maling/commit/2d97c3b31fe012292a6c96e26bc0c0969ce9e0c2))
+* **themes:** built-in wallpaper system, eye-care theme and conversation turn rail ([43b2e9a](https://github.com/MalingWB/Maling/commit/43b2e9a89c4f280628b540e39e12d17cd9a97370))
+* **themes:** integrate in-house wallpapers and rename builtin.mobius to builtin.vista ([057a907](https://github.com/MalingWB/Maling/commit/057a90763b8fafcd2a84012127ac12c074b04018))
+* **website:** load internal downloads from the release manifest ([00bd5ee](https://github.com/MalingWB/Maling/commit/00bd5ee8b6d8e7d3a6eb49b7394258dd50237bce))
+* **workflow:** add failed-node rerun and retry context ([c677f42](https://github.com/MalingWB/Maling/commit/c677f4206993acf2c8e8856d5bc00c56be299e96))
+* **workflow:** add safe current-node retry ([258f8b9](https://github.com/MalingWB/Maling/commit/258f8b98b671eb658e7b1592291bb2dd07b615ea))
+
+
+### Bug Fixes
+
+* **acp:** harden catalog recovery and shared authentication ([a173bcb](https://github.com/MalingWB/Maling/commit/a173bcb0495b57d7c420786739cf37206398ab65))
+* **acp:** harden shared authentication and user diagnostics ([71ecb33](https://github.com/MalingWB/Maling/commit/71ecb33bf184fee9d1d0974bc99ebf250c340fcc))
+* **acp:** preserve terminal errors and honor accepted stops ([dce0c66](https://github.com/MalingWB/Maling/commit/dce0c667ddddb28a614d3b3f960e80fe12f7aaa9))
+* **acp:** surface CodeBuddy failures across turn lifecycle ([6b474b0](https://github.com/MalingWB/Maling/commit/6b474b0a73633e765717d55dded5b4585b1fcc45))
+* **acp:** surface CodeBuddy failures across turn lifecycle ([1e97bb0](https://github.com/MalingWB/Maling/commit/1e97bb02ad839103bbc2ec20f627e8886ebc69ea))
+* **agent-catalog:** reuse local icons when downloads fail ([4e019cc](https://github.com/MalingWB/Maling/commit/4e019ccdad9d2f8346e9ef7f1c0d3d306523dbcd))
+* **build:** tolerate icon download failures and remove stale import ([9bf99da](https://github.com/MalingWB/Maling/commit/9bf99da5a98a7a50bc79715ef704c7cb850833d9))
+* **conversation:** serialize run refreshes and update workflow views ([d5b185a](https://github.com/MalingWB/Maling/commit/d5b185a0446dba42ef322e4d02a940cc1e945bb3))
+* **desktop:** isolate invalid agent launch settings ([7bc2cb1](https://github.com/MalingWB/Maling/commit/7bc2cb105524e9c55105249ab288219658401e6f))
+* **desktop:** remove obsolete retry_run command import ([0f00139](https://github.com/MalingWB/Maling/commit/0f00139374910ebbfb98a5172d35aa71d4e87bfb))
+* **im:** publish workflow resume cards after manual stop ([9316c2d](https://github.com/MalingWB/Maling/commit/9316c2df6debcb4e473d18ce518b1105eabb48e2))
+* **markdown:** improve table text contrast ([a39b9e1](https://github.com/MalingWB/Maling/commit/a39b9e1bf71f56981a87127e448dd6251dcb7420))
+* **meadow:** deepen light sidebar into a real green anchor ([199029c](https://github.com/MalingWB/Maling/commit/199029c380e9dc45ed9b89e57dea2194094e31f9))
+* **memory:** support modern MCP tools/list responses ([ba8320d](https://github.com/MalingWB/Maling/commit/ba8320d272b3dfc08b98a93513ccbba8ae159bf8))
+* **onboarding:** align runtime and agent diagnostics ([ccf8ec3](https://github.com/MalingWB/Maling/commit/ccf8ec32cb71e0538a45327c48a87e0827fb1c73))
+* restore IM resume cards and improve Markdown table contrast ([6ed1926](https://github.com/MalingWB/Maling/commit/6ed1926060da5e5952bf3a5a1faabc79f7ce6d5b))
+* **review:** address PR [#38](https://github.com/MalingWB/Maling/issues/38) code review findings ([ec12f21](https://github.com/MalingWB/Maling/commit/ec12f211b4c8cb098da874fc4a37a4c9813afa21))
+* unify CodeBuddy adapter execution ([db43200](https://github.com/MalingWB/Maling/commit/db4320051e38dd9171d45102c7685485c08da642))
+* unify CodeBuddy adapter execution ([3fed7db](https://github.com/MalingWB/Maling/commit/3fed7db0676ea80b220b784931cb1082ff806900))
+* **webview:** restore startup initialization and platform guidance ([2ed5c6e](https://github.com/MalingWB/Maling/commit/2ed5c6ead176b3428be0769604796066ec29dfb9))
+* **workflow:** close rerun handoff and asset boundaries ([60e9430](https://github.com/MalingWB/Maling/commit/60e94302db9ed226c63492d64177d5eb97271898))
+* **workflow:** enforce retry ownership invariants ([cd22708](https://github.com/MalingWB/Maling/commit/cd227085ada944c97448e1ecd339d03e8adb9f04))
+* **workflow:** fence previous successor writes ([fd49248](https://github.com/MalingWB/Maling/commit/fd49248b8c5c921c6901820428e25ef27ba6bd08))
+* **workflow:** move node retry preparation off the main thread ([c4c69b4](https://github.com/MalingWB/Maling/commit/c4c69b4b936489e890bcf5d57e54dfd450fda8d5))
+* **workflow:** restrict retries to workflow workers ([49e3980](https://github.com/MalingWB/Maling/commit/49e3980677aca2f87693edd6dfba875b3a920c35))
+
 ## [0.21.1](https://github.com/MalingWB/Maling/compare/v0.21.0...v0.21.1) (2026-11-10)
 
 
