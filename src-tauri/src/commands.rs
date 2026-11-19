@@ -687,21 +687,6 @@ fn admit_conversation_prompt_turn(
     Ok((admission, executable_adapter))
 }
 
-fn acp_turn_outcome(run: &client::AcpPromptRun) -> AcpTurnOutcome {
-    acp_turn_outcome_for_stop_reason(run.stop_reason.as_deref())
-}
-
-fn acp_turn_outcome_for_stop_reason(stop_reason: Option<&str>) -> AcpTurnOutcome {
-    match stop_reason
-        .map(|reason| reason.trim().to_ascii_lowercase().replace('_', "-"))
-        .as_deref()
-    {
-        Some("cancelled" | "canceled") => AcpTurnOutcome::Cancelled,
-        Some("interrupted") => AcpTurnOutcome::Failed,
-        _ => AcpTurnOutcome::Completed,
-    }
-}
-
 fn acp_turn_outcome_label(outcome: AcpTurnOutcome) -> &'static str {
     match outcome {
         AcpTurnOutcome::Completed => "completed",
@@ -6782,8 +6767,7 @@ pub async fn get_conversation_turn_index(
         branch_id.unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
     // The branch id feeds a filesystem path join; validate it exactly like the
     // other timeline commands so a crafted id cannot escape the attempt dir.
-    gold_band::acp::branches::validate_conversation_branch_id(&branch_id)
-        .map_err(command_error)?;
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id).map_err(command_error)?;
     spawn_blocking_command(move || {
         let attempt_dir = match (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
             (Some(outer_node), Some(outer_attempt)) => app.paths.dynamic_node_attempt_dir(
@@ -6807,15 +6791,17 @@ pub async fn get_conversation_turn_index(
         // lock for the lean parse.
         let events = gold_band::acp::events::load_timeline_items_without_hydration(&timeline_path)
             .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"))?;
-        Ok(gold_band::acp::events::conversation_turn_index_after(&events, after_seq)
-            .into_iter()
-            .map(|entry| ConversationTurnIndexEntryVm {
-                seq: entry.seq,
-                timestamp: entry.timestamp,
-                kind: entry.kind,
-                prompt_preview: entry.prompt_preview,
-            })
-            .collect::<Vec<_>>())
+        Ok(
+            gold_band::acp::events::conversation_turn_index_after(&events, after_seq)
+                .into_iter()
+                .map(|entry| ConversationTurnIndexEntryVm {
+                    seq: entry.seq,
+                    timestamp: entry.timestamp,
+                    kind: entry.kind,
+                    prompt_preview: entry.prompt_preview,
+                })
+                .collect::<Vec<_>>(),
+        )
     })
     .await
 }
@@ -9036,7 +9022,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 }),
             )
             .map_err(command_error)?;
-            let outcome = acp_turn_outcome(&prompt_run);
+            let outcome = prompt_run.turn_outcome;
             return Ok(outcome);
         }
         let attempt_dir =
@@ -9222,7 +9208,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             }),
         )
         .map_err(command_error)?;
-        let outcome = acp_turn_outcome(&prompt_run);
+        let outcome = prompt_run.turn_outcome;
         Ok(outcome)
     })
     .await;
@@ -15822,30 +15808,6 @@ mod tests {
             )])
         );
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn acp_turn_outcome_distinguishes_user_cancel_from_transport_failure() {
-        assert_eq!(
-            acp_turn_outcome_for_stop_reason(Some("cancelled")),
-            AcpTurnOutcome::Cancelled
-        );
-        assert_eq!(
-            acp_turn_outcome_for_stop_reason(Some("canceled")),
-            AcpTurnOutcome::Cancelled
-        );
-        assert_eq!(
-            acp_turn_outcome_for_stop_reason(Some("interrupted")),
-            AcpTurnOutcome::Failed
-        );
-        assert_eq!(
-            acp_turn_outcome_for_stop_reason(Some("end_turn")),
-            AcpTurnOutcome::Completed
-        );
-        assert_eq!(
-            acp_turn_outcome_for_stop_reason(None),
-            AcpTurnOutcome::Completed
-        );
     }
 
     #[test]
