@@ -63,6 +63,23 @@ fn project_scoped_app(
     Ok((app, resolved_project_id))
 }
 
+/// 入口 B：skill 组合的可见摘要（勾选清单,composer 预填用;完整 skill
+/// 正文在发送创建时注入隐藏区段）。项目作用域——Project 源 skill 在
+/// 该项目 workspace 下解析。
+#[tauri::command]
+pub async fn forge_skills_digest(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    skills: Vec<gold_band::app::forge_service::ForgeSkillRef>,
+) -> CommandResult<gold_band::app::forge_service::ForgeSourceDigest> {
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let (app, _project_id) = project_scoped_app(&context, &project_id)?;
+        app.forge_skills_digest(&skills).map_err(command_error)
+    })
+    .await
+}
+
 /// 入口 A 的源会话摘要：composer 预填用（用户可编辑后手动发送；
 /// 完整材料由后端在发送创建时注入隐藏区段）。
 #[tauri::command]

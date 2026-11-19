@@ -182,6 +182,10 @@ export function forgeSourceDigest(projectId: string, taskId: string) {
   return getRuntimeApi().forgeSourceDigest(projectId, taskId);
 }
 
+export function forgeSkillsDigest(projectId: string, skills: Parameters<ReturnType<typeof getRuntimeApi>['forgeSkillsDigest']>[1]) {
+  return getRuntimeApi().forgeSkillsDigest(projectId, skills);
+}
+
 export function forgeGetSpec(projectId: string, taskId: string) {
   return getRuntimeApi().forgeGetSpec(projectId, taskId);
 }

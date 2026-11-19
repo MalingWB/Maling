@@ -1521,7 +1521,12 @@
         "selectedCount": "{{selected}} / {{total}} 선택됨",
         "title": "원격에서 SKILL 동기화",
         "workspace": "워크스페이스"
-      }
+      },
+      "forgeAction": "skill에서 워크플로 생성 ({{count}})",
+      "forgeSelect": "{{name}} 선택",
+      "forgeAnchorTitle": "연결 프로젝트 선택",
+      "forgeAnchorInfo": "단조 세션과 시험 실행은 선택한 프로젝트에 연결됩니다. 생성된 워크플로 템플릿은 모든 프로젝트에서 사용할 수 있습니다.",
+      "forgeAnchorConfirm": "단조 시작"
     },
     "importProfile": "역할 가져오기",
     "importSettingsDescription": "폴더에서 일괄 가져오거나 역할 Markdown 파일을 직접 선택하여 가져옵니다. 이름과 요약이 없으면 자동으로 채웁니다.",
@@ -3596,6 +3601,9 @@
       "cleanupConfirmDescription": "{{count}}개 세션의 작업 디렉터리(대화 기록과 단조 초안 포함)를 삭제합니다. 되돌릴 수 없습니다.",
       "cleanupConfirmAction": "정리",
       "selectSession": "{{title}} 선택"
+    },
+    "skillPrefill": {
+      "intro": "아래 선택한 skill에서 워크플로를 단조합니다. 요구사항을 보강한 뒤 전송하세요:"
     }
   }
 }

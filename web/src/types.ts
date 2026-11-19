@@ -3537,6 +3537,8 @@ export interface ConversationCreateInput {
   /// 工作流铸造（入口 A）：源会话 task id。后端固定 workflow-forge 角色、
   /// 注入源会话隐藏材料并标记 origin=Forge。
   forgeSourceTaskId?: string;
+  /// 工作流铸造（入口 B）：skill 组合引用（与入口 A 互斥）。
+  forgeSourceSkills?: ForgeSkillRefVm[];
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';
@@ -3628,6 +3630,12 @@ export interface SkillMetaVm {
   agentSource: string;
   loadWarnings: string[];
   syncedAgentTypes: string[];
+}
+
+/// 工作流铸造入口 B 的 skill 引用（与后端 ForgeSkillRef 对齐）。
+export interface ForgeSkillRefVm {
+  name: string;
+  source: 'built-in' | 'global' | 'project';
 }
 
 export interface SyncStatusEntryVm {

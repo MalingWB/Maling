@@ -140,6 +140,9 @@ pub struct CreateConversationTaskCommand {
     /// 工作流铸造（入口 A）：源会话 task id。置位时任务标记 origin=Forge、
     /// 角色固定为 workflow-forge、源会话材料作为隐藏区段注入（G5 预算）。
     pub forge_source_task_id: Option<String>,
+    /// 工作流铸造（入口 B）：skill 组合引用。语义同上（skill 正文作为
+    /// 隐藏区段注入）；与 forge_source_task_id 互斥。
+    pub forge_source_skills: Option<Vec<crate::app::forge_service::ForgeSkillRef>>,
 }
 
 impl CreateConversationTaskCommand {
@@ -163,6 +166,7 @@ impl CreateConversationTaskCommand {
             quotes: Vec::new(),
             first_prompt_hidden_sections: None,
             forge_source_task_id: None,
+            forge_source_skills: None,
         }
     }
 }
@@ -263,13 +267,18 @@ impl App {
             ),
             "conversation payload cannot be empty"
         );
-        // 工作流铸造（入口 A）：固定 Direct 模式、固定 workflow-forge 角色、
-        // 源会话材料注入隐藏区段（G5 预算内），任务标记 origin=Forge。
+        // 工作流铸造（入口 A/B）：固定 Direct 模式、固定 workflow-forge 角色、
+        // 源材料注入隐藏区段（G5 预算内），任务标记 origin=Forge。
+        // A（源会话）与 B（skill 组合）互斥。
         let mut command = command.clone();
         let forge_origin = if let Some(source_task_id) = command.forge_source_task_id.clone() {
             ensure!(
                 command.run_mode == ConversationRunMode::Direct,
                 "forge conversation requires direct run mode"
+            );
+            ensure!(
+                command.forge_source_skills.is_none(),
+                "forge sources are mutually exclusive"
             );
             let material = self.forge_source_material(&source_task_id)?;
             if command.role.is_none() {
@@ -282,6 +291,23 @@ impl App {
                     .chain(std::iter::once(material.hidden_section))
                     .collect(),
             );
+            Some(crate::runtime::TaskOrigin::Forge)
+        } else if let Some(skills) = command.forge_source_skills.clone() {
+            ensure!(
+                command.run_mode == ConversationRunMode::Direct,
+                "forge conversation requires direct run mode"
+            );
+            ensure!(
+                !skills.is_empty(),
+                "forge skill sources cannot be empty"
+            );
+            let section = self.forge_skills_material(&skills)?;
+            if command.role.is_none() {
+                command.role = Some(self.workflow_forge_role()?);
+            }
+            let sections = command.first_prompt_hidden_sections.take().unwrap_or_default();
+            command.first_prompt_hidden_sections =
+                Some(sections.into_iter().chain(std::iter::once(section)).collect());
             Some(crate::runtime::TaskOrigin::Forge)
         } else {
             None
@@ -704,6 +730,70 @@ mod tests {
         auto_like.run_mode = ConversationRunMode::Auto;
         auto_like.auto_config = auto_command().auto_config;
         assert!(app.prepare_conversation_task(&auto_like).is_err());
+    }
+
+    #[test]
+    fn forge_skills_conversation_injects_hidden_material() {
+        let (_temp, repo) = git_repo();
+        let app = App::with_config(repo, RuntimeConfig::default());
+
+        // 项目 skill:repo/.gold-band/skills/code-review/SKILL.md。
+        let skill_dir = app.paths.project_skills_dir().join("code-review");
+        std::fs::create_dir_all(skill_dir.as_std_path()).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: code-review\ndescription: 审查代码变更\n---\n审查正文：逐文件核对变更与风险。",
+        )
+        .unwrap();
+
+        let mut command = CreateConversationTaskCommand::new(
+            CONVERSATION_SOURCE_CLI,
+            "把这两个 skill 铸造成工作流".to_string(),
+            ConversationRunMode::Direct,
+        );
+        command.direct_config = Some(super::ConversationDirectConfig {
+            agent_type: "claude-acp".to_string(),
+            model_id: None,
+            permission_mode: None,
+            auto_accept: false,
+            config_options: Default::default(),
+            model_bound_overrides: Default::default(),
+        });
+        command.forge_source_skills = Some(vec![crate::app::forge_service::ForgeSkillRef {
+            name: "code-review".to_string(),
+            source: crate::config::SkillSource::Project,
+        }]);
+
+        let prepared = app.prepare_conversation_task(&command).unwrap();
+        let (task_id, _, _) = prepared.accept();
+
+        let task = app.task_show(&task_id).unwrap();
+        assert_eq!(task.origin, Some(crate::runtime::TaskOrigin::Forge));
+        // 角色固定为 workflow-forge。
+        let prompt_input: crate::provider::TaskPromptInput =
+            read_json(&app.paths.task_prompt_input_file(&task_id)).unwrap();
+        assert_eq!(
+            prompt_input.role.expect("forge role pinned").profile_id,
+            "pf-builtin-workflow-forge"
+        );
+        // skill 正文进入首条 prompt 隐藏区段。
+        let sections: Vec<crate::provider::PromptHiddenSection> =
+            read_json(&app.paths.first_prompt_hidden_sections_file(&task_id)).unwrap();
+        assert_eq!(sections.len(), 1);
+        assert!(sections[0].content.contains("审查正文：逐文件核对变更与风险"));
+
+        // 入口 A/B 互斥。
+        let mut conflicting = command.clone();
+        conflicting.forge_source_task_id = Some("task-x".to_string());
+        assert!(app.prepare_conversation_task(&conflicting).is_err());
+
+        // 未知 skill 整单失败（不静默丢弃）。
+        let mut missing = command.clone();
+        missing.forge_source_skills = Some(vec![crate::app::forge_service::ForgeSkillRef {
+            name: "no-such-skill".to_string(),
+            source: crate::config::SkillSource::Project,
+        }]);
+        assert!(app.prepare_conversation_task(&missing).is_err());
     }
 
     #[test]

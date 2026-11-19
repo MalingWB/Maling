@@ -1521,7 +1521,12 @@
           "multica.remote-error": "服务器错误",
           "multica.not-connected": "未连接远程来源"
         }
-      }
+      },
+      "forgeAction": "从 skill 生成工作流（{{count}}）",
+      "forgeSelect": "选择 {{name}}",
+      "forgeAnchorTitle": "选择挂靠项目",
+      "forgeAnchorInfo": "铸造会话与试运行将挂靠所选项目；生成的工作流模板全项目通用。",
+      "forgeAnchorConfirm": "开始铸造"
     },
     "importProfile": "导入角色",
     "importSettingsDescription": "从文件夹批量导入，或直接选择角色 Markdown 文件导入，缺失的名称和摘要会自动兜底。",
@@ -3596,6 +3601,9 @@
       "cleanupConfirmDescription": "将删除 {{count}} 个会话的任务目录（含对话记录与铸造草稿存档）,此操作无法撤销。",
       "cleanupConfirmAction": "清理",
       "selectSession": "选择 {{title}}"
+    },
+    "skillPrefill": {
+      "intro": "基于以下选中的 skill 铸造工作流，可补充要求后发送："
     }
   }
 }

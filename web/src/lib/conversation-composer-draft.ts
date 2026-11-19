@@ -44,11 +44,13 @@ export interface ConversationComposerRemoteBinding {
  * 普通本地会话。与远程绑定互斥（一次只有一个来源声明）。
  */
 export interface ConversationComposerForgeBinding {
-  /// 源会话 task id（后端据此组装隐藏材料）。
-  sourceTaskId: string;
-  /// 源会话所属项目（须与 composer 当前项目一致，发送前校验）。
+  /// 源会话 task id（后端据此组装隐藏材料；入口 B 为空）。
+  sourceTaskId?: string;
+  /// 入口 B 的 skill 组合引用（与 sourceTaskId 互斥）。
+  sourceSkills?: { name: string; source: 'built-in' | 'global' | 'project' }[];
+  /// 源所属项目（须与 composer 当前项目一致，发送前校验）。
   sourceProjectId: string;
-  /// 源会话标题，仅用于绑定 chip 展示。
+  /// 标题，仅用于绑定 chip 展示。
   title: string;
 }
 

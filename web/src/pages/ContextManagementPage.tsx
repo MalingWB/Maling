@@ -15,7 +15,7 @@ import { displayAppError } from '../i18n';
 import { agentDiagnosticShortReason } from '@/lib/agent-diagnostic';
 import type {
   AppErrorVm, ImportedProfileRecord, ImportProfilesResult, ProfileFieldFallback, ProfileInput, ProfileListVm, ProfileScope, ProfileVm,
-  McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, AgentRegistryVm, ToolInfo,
+  McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, AgentRegistryVm, ToolInfo, ForgeSkillRefVm,
 } from '../types';
 import { AgentIdentityLabel } from '@/components/AgentIdentityLabel';
 import { EntitySection } from '@/components/EntitySection';
@@ -28,6 +28,7 @@ import { Markdown } from '@/components/prompt-kit/markdown';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -66,6 +67,9 @@ interface ContextManagementPageProps {
   initialTab?: 'profiles' | 'mcp' | 'skills';
   agentRegistry: AgentRegistryVm | null;
   onAgentRegistryChange: (registry: AgentRegistryVm) => void;
+  /// 工作流铸造入口 B（方案 §5.1）：勾选 skill 组合生成工作流。App 层编排
+  /// 摘要预填与项目挂靠切换;缺省（只读态）隐藏勾选。
+  onForgeSkills?: (skills: ForgeSkillRefVm[], anchorProjectId: string) => void;
 }
 
 function EntityRefreshButton({ label, loading, onRefresh }: { label: string; loading: boolean; onRefresh: () => void }) {
@@ -81,7 +85,7 @@ function EntityRefreshButton({ label, loading, onRefresh }: { label: string; loa
   );
 }
 
-export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, initialTab = 'profiles' }: ContextManagementPageProps) {
+export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, onForgeSkills, initialTab = 'profiles' }: ContextManagementPageProps) {
   const readOnly = useReadOnlyExperience();
   const measuredProfileListRef = useWebviewMeasuredContainer<HTMLDivElement>('profile-list');
   const { t } = useTranslation();
@@ -165,6 +169,10 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
 
   const [skillTab, setSkillTab] = useState<'global' | 'project'>('global');
   const [skillQuery, setSkillQuery] = useState('');
+  // 入口 B:勾选的 skill(key `${source}:${name}`)与挂靠对话框状态。
+  const [selectedForgeSkills, setSelectedForgeSkills] = useState<Set<string>>(new Set());
+  const [forgeAnchorOpen, setForgeAnchorOpen] = useState<ForgeSkillRefVm[] | null>(null);
+  const [forgeAnchorChoice, setForgeAnchorChoice] = useState<string>('');
   const [skillAgentFilter, setSkillAgentFilter] = useState<string>('all');
   // 远程来源 SKILL 同步弹窗（仅全局 Tab 展示入口；拉取目标恒为全局库）。
   const [remoteSyncOpen, setRemoteSyncOpen] = useState(false);
@@ -208,6 +216,14 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
     }
     return items;
   }, [configuredAgents, projectSkills, skillAgentFilter, skillList, skillQuery, skillTab, selectedWorkspace]);
+
+  // 入口 B:把勾选 key 还原为 skill 引用列表(按当前过滤域内元数据匹配)。
+  const collectSelectedForgeSkills = (): ForgeSkillRefVm[] => {
+    const pool = skillTab === 'global' ? (skillList?.global ?? []) : projectSkills;
+    return pool
+      .filter((skill) => selectedForgeSkills.has(`${skill.source}:${skill.name}`))
+      .map((skill) => ({ name: skill.name, source: skill.source }));
+  };
 
   // 选择 workspace 时加载该项目 SKILL
   const loadProjectSkills = async (wsPath: string) => {
@@ -880,6 +896,30 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
                     {t('contextManagement.skills.remoteSync.action')}
                   </Button>
                 )}
+                {!readOnly && onForgeSkills ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={selectedForgeSkills.size === 0}
+                    onClick={() => {
+                      const selected = collectSelectedForgeSkills();
+                      if (selected.length === 0) return;
+                      // 全部为项目级 skill → 直接挂靠当前所选项目(方案 §5.2);
+                      // 含全局/内置 → 弹项目选择对话框,记忆偏好。
+                      const allProject = selected.every((skill) => skill.source === 'project');
+                      const current = workspaces.find((w) => w.workspacePath === selectedWorkspace);
+                      if (allProject && current) {
+                        onForgeSkills(selected, current.projectId);
+                        setSelectedForgeSkills(new Set());
+                        return;
+                      }
+                      setForgeAnchorChoice(readRememberedSkillProjectWorkspace(workspaces.map((w) => ({ workspacePath: w.workspacePath }))));
+                      setForgeAnchorOpen(selected);
+                    }}
+                  >
+                    {t('contextManagement.skills.forgeAction', { count: selectedForgeSkills.size })}
+                  </Button>
+                ) : null}
                 {!readOnly && <Button size="sm" onClick={() => { setSkillEditTarget(null); setSkillSheetContent(null); setSkillEditWsPath(null); setSkillSheetMode('create'); }}><Plus className="size-4" />{t('contextManagement.skills.createSkill', '创建')}</Button>}
               </>
             )}
@@ -916,12 +956,28 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
                 const sourceAgents = skillSourceAgents(skill, configuredAgents);
                 const syncAgents = selectableSyncAgents(skill, configuredAgents);
                 const syncedAgentTypes = new Set(skill.syncedAgentTypes);
+                const forgeKey = `${skill.source}:${skill.name}`;
                 return (
-                  <Card key={`${skill.source}:${skill.directoryPath}`} className="group flex h-44 gap-0 overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm">
+                  <Card key={forgeKey + ':' + skill.directoryPath} className="group flex h-44 gap-0 overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm">
                     <div className="h-28 shrink-0 px-4 py-3">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
+                            {!readOnly && onForgeSkills ? (
+                              <Checkbox
+                                checked={selectedForgeSkills.has(forgeKey)}
+                                onCheckedChange={() => {
+                                  setSelectedForgeSkills((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(forgeKey)) next.delete(forgeKey);
+                                    else next.add(forgeKey);
+                                    return next;
+                                  });
+                                }}
+                                aria-label={t('contextManagement.skills.forgeSelect', { name: skill.name })}
+                                className="shrink-0"
+                              />
+                            ) : null}
                             <span className="truncate text-sm font-semibold">{skill.name}</span>
                             <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal text-muted-foreground">{skill.agentSource || '.maling'}</Badge>
                           </div>
@@ -987,6 +1043,44 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, in
         onOpenChange={setRemoteSyncOpen}
         onFinished={() => void refreshSkills()}
       />
+
+      {/* 入口 B 项目挂靠对话框(方案 §5.2):含全局/内置 skill 时选择铸造会话
+          挂靠项目;模板库是用户级全局,挂靠只影响会话与试运行归属。 */}
+      <Dialog open={forgeAnchorOpen !== null} onOpenChange={(open) => { if (!open) setForgeAnchorOpen(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t('contextManagement.skills.forgeAnchorTitle')}</DialogTitle>
+            <DialogDescription>{t('contextManagement.skills.forgeAnchorInfo')}</DialogDescription>
+          </DialogHeader>
+          <Select value={forgeAnchorChoice} onValueChange={setForgeAnchorChoice}>
+            <SelectTrigger className="h-9 w-full text-sm">
+              <SelectValue placeholder={t('contextManagement.skills.selectProject', '选择项目...')} />
+            </SelectTrigger>
+            <SelectContent>
+              {workspaces.map((w) => (
+                <SelectItem key={w.projectId} value={w.workspacePath}>{w.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setForgeAnchorOpen(null)}>{t('common.cancel')}</Button>
+            <Button
+              size="sm"
+              disabled={!workspaces.some((w) => w.workspacePath === forgeAnchorChoice)}
+              onClick={() => {
+                const target = workspaces.find((w) => w.workspacePath === forgeAnchorChoice);
+                if (!target || !forgeAnchorOpen) return;
+                rememberSkillProjectWorkspace(target.workspacePath);
+                onForgeSkills?.(forgeAnchorOpen, target.projectId);
+                setSelectedForgeSkills(new Set());
+                setForgeAnchorOpen(null);
+              }}
+            >
+              {t('contextManagement.skills.forgeAnchorConfirm')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={Boolean(skillDeleteTarget)} onOpenChange={(open) => { if (!open && !skillDeleting) setSkillDeleteTarget(null); }}>
         <AlertDialogContent>

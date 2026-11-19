@@ -1521,7 +1521,12 @@
         "selectedCount": "{{selected}} / {{total}} seleccionados",
         "title": "Sincronizar SKILL desde el remoto",
         "workspace": "Espacio de trabajo"
-      }
+      },
+      "forgeAction": "Forjar workflow desde skills ({{count}})",
+      "forgeSelect": "Seleccionar {{name}}",
+      "forgeAnchorTitle": "Elige el proyecto ancla",
+      "forgeAnchorInfo": "La sesión de forja y su prueba se anclan al proyecto elegido; las plantillas generadas quedan disponibles para todos los proyectos.",
+      "forgeAnchorConfirm": "Empezar a forjar"
     },
     "importProfile": "Importar roles",
     "importSettingsDescription": "Importa en lote desde una carpeta o selecciona archivos Markdown de roles directamente. Los nombres y resúmenes faltantes se completan automáticamente.",
@@ -3596,6 +3601,9 @@
       "cleanupConfirmDescription": "Esto elimina los directorios de tareas de {{count}} sesiones (historial y borradores incluidos). No se puede deshacer.",
       "cleanupConfirmAction": "Limpiar",
       "selectSession": "Seleccionar {{title}}"
+    },
+    "skillPrefill": {
+      "intro": "Forja un workflow a partir de las skills seleccionadas abajo — añade requisitos y envía:"
     }
   }
 }

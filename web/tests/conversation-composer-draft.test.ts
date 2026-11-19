@@ -96,6 +96,24 @@ describe('ConversationComposer draft cross-page retention', () => {
     expect(next.forge).toBeNull();
   });
 
+  it('prefillForge carries skill sources through the binding (entry B)', () => {
+    const next = conversationComposerDraftReducer(createInitialConversationComposerDraft(), {
+      type: 'prefillForge',
+      content: '基于以下选中的 skill 铸造工作流',
+      forge: {
+        sourceSkills: [
+          { name: 'code-review', source: 'global' },
+          { name: 'write-tests', source: 'project' },
+        ],
+        sourceProjectId: 'project-a',
+        title: '从 2 个 skill 铸造工作流',
+      },
+    });
+    expect(next.forge?.sourceSkills).toHaveLength(2);
+    expect(next.forge?.sourceTaskId).toBeUndefined();
+    expect(next.forge?.sourceProjectId).toBe('project-a');
+  });
+
   it('remote prefill clears the forge binding', () => {
     const state: ConversationComposerDraftState = {
       content: '',

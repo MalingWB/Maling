@@ -1521,7 +1521,12 @@
         "selectedCount": "{{selected}} / {{total}} 件を選択中",
         "title": "リモートから SKILL を同期",
         "workspace": "ワークスペース"
-      }
+      },
+      "forgeAction": "skill からワークフロー生成（{{count}}）",
+      "forgeSelect": "{{name}} を選択",
+      "forgeAnchorTitle": "紐付けプロジェクトを選択",
+      "forgeAnchorInfo": "鋳造セッションと試実行は選択したプロジェクトに紐付けられます。生成されるワークフローテンプレートは全プロジェクトで利用できます。",
+      "forgeAnchorConfirm": "鋳造を開始"
     },
     "importProfile": "役割のインポート",
     "importSettingsDescription": "フォルダーからバッチインポートするか、ロール Markdown ファイルを直接選択してインポートします。不足している名前と概要は自動的に入力されます。",
@@ -3596,6 +3601,9 @@
       "cleanupConfirmDescription": "{{count}} 件のセッションのタスクディレクトリ（対話記録と鋳造草稿を含む）を削除します。元に戻せません。",
       "cleanupConfirmAction": "整理",
       "selectSession": "{{title}} を選択"
+    },
+    "skillPrefill": {
+      "intro": "以下の選択した skill からワークフローを鋳造します。要求を追記してから送信してください："
     }
   }
 }

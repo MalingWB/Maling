@@ -284,6 +284,111 @@ impl App {
         Ok(Some(merged))
     }
 
+    /// 入口 B：skill 组合的可见摘要（勾选清单,composer 预填用）。
+    ///
+    /// 按 `(name, source)` 逐个解析 skill 元数据;单个缺失即报错
+    /// （勾选列表来自同域扫描,缺失意味着过期勾选,应整单失败而非静默丢弃）。
+    pub fn forge_skills_digest(&self, skills: &[ForgeSkillRef]) -> Result<ForgeSourceDigest> {
+        let contents = self.read_forge_skills(skills)?;
+        let mut markdown = String::from("# 选中的 skill\n\n");
+        for content in &contents {
+            let meta = &content.meta;
+            markdown.push_str(&format!(
+                "- **{}**（{}）—— {}\n",
+                meta.name,
+                match meta.source {
+                    crate::config::SkillSource::BuiltIn => "内置",
+                    crate::config::SkillSource::Global => "全局",
+                    crate::config::SkillSource::Project => "项目",
+                },
+                if meta.description.trim().is_empty() {
+                    content.description_source.trim()
+                } else {
+                    meta.description.trim()
+                },
+            ));
+        }
+        let title = format!("从 {} 个 skill 铸造工作流", contents.len());
+        Ok(ForgeSourceDigest {
+            title,
+            markdown: char_truncate(&markdown, DIGEST_CHAR_CAP),
+        })
+    }
+
+    /// 入口 B：skill 组合的完整材料（正文逐个注入,G5 预算截断）。
+    ///
+    /// 作为首条 prompt 的隐藏区段;超预算的 skill 正文截断并在区段内
+    /// 标注,对话中模型可见"已截断"事实。
+    pub fn forge_skills_material(
+        &self,
+        skills: &[ForgeSkillRef],
+    ) -> Result<crate::provider::PromptHiddenSection> {
+        let contents = self.read_forge_skills(skills)?;
+        let mut body = String::new();
+        let mut remaining = HIDDEN_TOTAL_CHAR_CAP;
+        for content in &contents {
+            let meta = &content.meta;
+            let header = format!(
+                "## skill: {}（{}）\n> {}\n\n",
+                meta.name,
+                match meta.source {
+                    crate::config::SkillSource::BuiltIn => "内置",
+                    crate::config::SkillSource::Global => "全局",
+                    crate::config::SkillSource::Project => "项目",
+                },
+                if meta.description.trim().is_empty() {
+                    content.description_source.trim()
+                } else {
+                    meta.description.trim()
+                },
+            );
+            let header_len = header.chars().count();
+            if header_len >= remaining {
+                body.push_str(&header);
+                body.push_str("（正文因预算省略）\n");
+                remaining = 0;
+                continue;
+            }
+            body.push_str(&header);
+            remaining -= header_len;
+            let content_chars = content.body.chars().count();
+            if content_chars <= remaining {
+                body.push_str(content.body.trim_end());
+                body.push_str("\n\n");
+                remaining -= content_chars;
+            } else {
+                let truncated: String = content.body.chars().take(remaining).collect();
+                body.push_str(&truncated);
+                body.push_str("\n（正文超预算已截断）\n\n");
+                remaining = 0;
+            }
+        }
+        Ok(crate::provider::PromptHiddenSection {
+            title: "skill 材料".to_string(),
+            content: body,
+        })
+    }
+
+    /// 逐个解析 skill 全文;Project 源在当前 app 的项目 skill 域下寻址
+    /// （入口 B 的挂靠项目即 composer 当前项目,由前端在发送前切换）。
+    fn read_forge_skills(
+        &self,
+        skills: &[ForgeSkillRef],
+    ) -> Result<Vec<crate::skill::SkillContent>> {
+        let manager = crate::skill::SkillManager::new(
+            self.paths.clone(),
+            self.config.agents.clone(),
+        );
+        let mut contents = Vec::new();
+        for skill in skills {
+            let content = manager
+                .read(&skill.name, skill.source)
+                .with_context(|| format!("skill `{}` ({:?}) not readable", skill.name, skill.source))?;
+            contents.push(content);
+        }
+        Ok(contents)
+    }
+
     /// 源会话材料（入口 A）：标题 + 需求 + 用户消息，按 G5 预算截断。
     ///
     /// 可见摘要供 composer 预填（用户可编辑），完整材料作为首条
@@ -451,6 +556,14 @@ pub struct ForgeSourceMaterial {
 pub struct ForgeSourceDigest {
     pub title: String,
     pub markdown: String,
+}
+
+/// 入口 B 的 skill 引用：`(name, source)` 在挂靠项目的 skill 域内寻址
+/// （Project 源在该项目 workspace 下解析；Global/BuiltIn 全局可读）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ForgeSkillRef {
+    pub name: String,
+    pub source: crate::config::SkillSource,
 }
 
 /// 内置 workflow-forge profile id（`DEFAULT_PROFILE_SEEDS`）。

@@ -18,6 +18,7 @@ import type {
   ConversationCreateInput,
   ForgeCompileResultVm,
   ForgeSessionCreatedVm,
+  ForgeSkillRefVm,
   ForgeSessionEntryVm,
   ForgeSourceDigestVm,
   ForgeSpecVm,
@@ -670,6 +671,7 @@ export interface RuntimeApi {
   validateConversationCreate(input: ConversationCreateInput): Promise<ConversationValidationResultVm>;
   createConversationRun(input: ConversationCreateInput): Promise<ConversationCreateResultVm>;
   forgeSourceDigest(projectId: string, taskId: string): Promise<ForgeSourceDigestVm>;
+  forgeSkillsDigest(projectId: string, skills: ForgeSkillRefVm[]): Promise<ForgeSourceDigestVm>;
   forgeGetSpec(projectId: string, taskId: string): Promise<ForgeSpecVm | null>;
   forgeSaveSpec(projectId: string, taskId: string, spec: ForgeSpecVm): Promise<void>;
   forgeCompile(spec: ForgeSpecVm, taskId?: string | null): Promise<ForgeCompileResultVm>;

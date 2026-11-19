@@ -1521,7 +1521,12 @@
           "multica.remote-error": "Server error",
           "multica.not-connected": "Remote source not connected"
         }
-      }
+      },
+      "forgeAction": "Forge workflow from skills ({{count}})",
+      "forgeSelect": "Select {{name}}",
+      "forgeAnchorTitle": "Choose the anchor project",
+      "forgeAnchorInfo": "The forge session and its trial run attach to the chosen project; the generated workflow templates are available to every project.",
+      "forgeAnchorConfirm": "Start forging"
     },
     "importProfile": "Import Roles",
     "importSettingsDescription": "Batch import from a folder or select role Markdown files directly. Missing names and summaries are filled automatically.",
@@ -3596,6 +3601,9 @@
       "cleanupConfirmDescription": "This deletes the task directories of {{count}} sessions (conversation history and spec archives included). This cannot be undone.",
       "cleanupConfirmAction": "Clean up",
       "selectSession": "Select {{title}}"
+    },
+    "skillPrefill": {
+      "intro": "Forge a workflow from the selected skills below — add any requirements, then send:"
     }
   }
 }

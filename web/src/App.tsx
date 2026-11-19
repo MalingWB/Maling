@@ -13,6 +13,7 @@ import {
   createTask,
   deleteConversationTask,
   forgeSourceDigest,
+  forgeSkillsDigest,
   getAgentRegistry,
   getConversationRun,
   getConversationRunMode,
@@ -317,6 +318,7 @@ import type {
   WallpaperFitPreference,
   WallpaperPreferencesVm,
   GitCapabilityVm,
+  ForgeSkillRefVm,
 } from './types';
 
 export function workflowRepairTargetFromMissingItems(
@@ -1094,6 +1096,27 @@ export function App() {
     composerDraftRef.current?.changeWorkspace(projectId);
     setDraftConversationWorkspaceId(projectId);
   }, []);
+  /// 入口 B(方案 §5.1):skill 组合 → 摘要预填 composer + 绑定 skills 源;
+  /// composer 切到挂靠项目(Project 源 skill 在该项目域下解析),用户补充后
+  /// 手动发送,完整 skill 正文由后端注入隐藏区段。
+  const handleForgeSkills = useCallback(async (skills: ForgeSkillRefVm[], anchorProjectId: string) => {
+    try {
+      const digest = await forgeSkillsDigest(anchorProjectId, skills);
+      selectDraftConversationWorkspace(anchorProjectId);
+      composerDraftRef.current?.prefillForge(
+        `${t('forge.skillPrefill.intro')}\n\n${digest.markdown}`,
+        {
+          sourceSkills: skills,
+          sourceProjectId: anchorProjectId,
+          title: digest.title,
+        },
+      );
+      onSelectConversation({ kind: 'conversation-home' });
+    } catch (err) {
+      setError(displayAppError(t, err));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectDraftConversationWorkspace]);
   const [error, setError] = useState<string | null>(null);
   const [gitRequirement, setGitRequirement] = useState<GitRequirementState | null>(null);
 
@@ -3049,7 +3072,7 @@ export function App() {
       return <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />;
     }
     if (conversationPage.kind === 'contexts') {
-      return <ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} />;
+      return <ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} onForgeSkills={handleForgeSkills} />;
     }
     if (conversationPage.kind === 'settings') {
       return (

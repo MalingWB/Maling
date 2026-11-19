@@ -3735,6 +3735,9 @@ export const browserApi: RuntimeApi = {
     // 浏览器桩:无桌面文件系统,返回空摘要。
     return Promise.resolve({ title: '', markdown: '' });
   },
+  forgeSkillsDigest(_projectId: string, _skills: unknown[]) {
+    return Promise.resolve({ title: '', markdown: '' });
+  },
   forgeGetSpec(_projectId: string, _taskId: string) {
     return Promise.resolve(null);
   },

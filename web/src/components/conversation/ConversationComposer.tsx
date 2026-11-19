@@ -956,9 +956,16 @@ export function ConversationComposer({
       ...(role ? { role } : {}),
       workspaceFiles: workspaceFiles.map(({ source }) => source),
       quotes,
-      // 工作流铸造绑定：源会话须仍在当前项目下（切换工作区后源任务不可寻址）。
+      // 工作流铸造绑定：源（会话/技能）须仍在当前项目下（切换工作区后源不可寻址）。
       ...(composerDraft.draft.forge && composerDraft.draft.forge.sourceProjectId === projectId
-        ? { forgeSourceTaskId: composerDraft.draft.forge.sourceTaskId }
+        ? {
+            ...(composerDraft.draft.forge.sourceTaskId
+              ? { forgeSourceTaskId: composerDraft.draft.forge.sourceTaskId }
+              : {}),
+            ...(composerDraft.draft.forge.sourceSkills && composerDraft.draft.forge.sourceSkills.length > 0
+              ? { forgeSourceSkills: composerDraft.draft.forge.sourceSkills }
+              : {}),
+          }
         : {}),
     };
     setSubmittingAttachments(true);

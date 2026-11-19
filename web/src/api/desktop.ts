@@ -913,6 +913,9 @@ export const desktopApi: RuntimeApi = {
   forgeSourceDigest(projectId, taskId) {
     return invokeCommand<ForgeSourceDigestVm>('forge_source_digest', { projectId, taskId });
   },
+  forgeSkillsDigest(projectId, skills) {
+    return invokeCommand<ForgeSourceDigestVm>('forge_skills_digest', { projectId, skills });
+  },
   forgeGetSpec(projectId, taskId) {
     return invokeCommand<ForgeSpecVm | null>('forge_get_spec', { projectId, taskId });
   },
