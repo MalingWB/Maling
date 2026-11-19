@@ -17,18 +17,33 @@ use crate::forge::spec::{
     ForgeError, ForgeSpec, ForgeStage, ForgeWorkflow, OnFailure, StageOutputKind, StageRole,
 };
 
-/// 编译产物：一条工作流 +（custom role 的）新 profile 草案。
+/// custom 角色的铸造草案：显示名 + 职责正文 + 既有 profile id。
+///
+/// `profile_id` 为 Some 时表示该角色已铸造过（Spec 反投影或上一轮编译
+/// 回填），调用方按 id 原地更新名称/正文；为 None 时新建 User scope
+/// profile。`definition` 缺省回退 stage goal 正文。
+#[derive(Debug, Clone)]
+pub struct PendingProfile {
+    pub node_id: String,
+    /// 所属工作流内的 stage 序号（编译后回写 Spec 存档的 profileId 用）。
+    pub stage_index: usize,
+    pub name: String,
+    pub definition: String,
+    pub profile_id: Option<String>,
+}
+
+/// 编译产物：一条工作流 +（custom role 的）profile 铸造草案。
 ///
 /// custom role 的 profile 不在编译器内落库（编译器保持纯函数），
-/// 由调用方（`create_forge_task` 保存链路）将草案注册为 User scope profile
-/// 后，用返回的 `profile_id` 替换占位。
+/// 由调用方（`forge_compile_and_save` 保存链路）铸造/更新 User scope
+/// profile 后，用 profile id 替换占位。
 #[derive(Debug, Clone)]
 pub struct CompiledWorkflow {
     /// 模板显示名（单工作流 = Spec 顶层名；拆分 = 各工作流名）。
     pub name: String,
     pub workflow: WorkflowDsl,
-    /// 需要新创建的 profile：node_id → (显示名, goal 正文)。
-    pub pending_profiles: Vec<(String, String, String)>,
+    /// 需要铸造/更新的 custom 角色 profile。
+    pub pending_profiles: Vec<PendingProfile>,
 }
 
 /// role → 内置 profile id 的映射。
@@ -65,22 +80,27 @@ fn compile_one(workflow: &ForgeWorkflow, control: WorkflowControl) -> Result<Com
 
     for (index, stage) in workflow.stages.iter().enumerate() {
         let node_id = node_id_for(workflow, index);
-        let (profile, pending) = match builtin_profile_id(&stage.role) {
-            Some(profile) => (Some(profile), None),
+        let profile = Some(match builtin_profile_id(&stage.role) {
+            Some(profile) => profile,
             None => {
                 let StageRole::Custom { profile_name } = &stage.role else {
                     unreachable!("builtin_profile_id None implies Custom");
                 };
                 let placeholder = format!("{node_id}-profile");
-                pending_profiles.push((
-                    node_id.clone(),
-                    profile_name.clone(),
-                    stage.goal.clone(),
-                ));
-                (Some(placeholder), Some(()))
+                pending_profiles.push(PendingProfile {
+                    node_id: node_id.clone(),
+                    stage_index: index,
+                    name: profile_name.clone(),
+                    definition: stage
+                        .role_definition
+                        .clone()
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| stage.goal.clone()),
+                    profile_id: stage.profile_id.clone(),
+                });
+                placeholder
             }
-        };
-        let _ = pending;
+        });
 
         let (output, success_condition, manual_check) = output_contract_for(stage)?;
 

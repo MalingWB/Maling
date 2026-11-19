@@ -190,8 +190,8 @@ export function forgeSaveSpec(projectId: string, taskId: string, spec: Parameter
   return getRuntimeApi().forgeSaveSpec(projectId, taskId, spec);
 }
 
-export function forgeCompile(spec: Parameters<ReturnType<typeof getRuntimeApi>['forgeCompile']>[0]) {
-  return getRuntimeApi().forgeCompile(spec);
+export function forgeCompile(spec: Parameters<ReturnType<typeof getRuntimeApi>['forgeCompile']>[0], taskId?: string | null) {
+  return getRuntimeApi().forgeCompile(spec, taskId);
 }
 
 export function forgeFromWorkflow(templateId: string) {

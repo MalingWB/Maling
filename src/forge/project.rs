@@ -71,7 +71,12 @@ fn on_failure_for(workflow: &WorkflowDsl, node_id: &str, manual_check: bool) -> 
 
 /// 从 DSL 还原一个 stage（best effort：goal 缺失时给出最小占位文本，
 /// 保证反投影产物可进 Forge 会话继续拷打收敛）。
-fn stage_from_worker(workflow: &WorkflowDsl, node_id: &str) -> Result<ForgeStage, ForgeError> {
+fn stage_from_worker(
+    paths: &crate::storage::GoldBandPaths,
+    language: crate::config::DesktopLanguage,
+    workflow: &WorkflowDsl,
+    node_id: &str,
+) -> Result<ForgeStage, ForgeError> {
     let NodeDsl::Worker(worker) = workflow
         .nodes
         .iter()
@@ -98,9 +103,29 @@ fn stage_from_worker(workflow: &WorkflowDsl, node_id: &str) -> Result<ForgeStage
         // 无 output 契约的节点（markdown 语义）。
         (StageOutputKind::Markdown, None, None, None)
     };
+    // custom 角色（非内置 profile 引用）：还原 profileId 与职责正文进
+    // Spec——对话中可编辑名称/定义，重编译按 id 原地更新（对话反哺）。
+    // profile 解析失败时保留节点引用文本作为名称,不阻塞反投影。
+    let role = role_from_profile(worker.profile.as_deref());
+    let (profile_id, role_definition) = match &role {
+        StageRole::Custom { .. } => {
+            let resolved = worker
+                .profile
+                .as_deref()
+                .and_then(|profile_id| {
+                    crate::app::profiles::find_profile_by_id(paths, profile_id, language).ok()
+                    .flatten()
+                });
+            match resolved {
+                Some(entry) => (Some(entry.id), Some(entry.content)),
+                None => (worker.profile.clone(), None),
+            }
+        }
+        _ => (None, None),
+    };
     Ok(ForgeStage {
         id: Some(node_id.to_string()),
-        role: role_from_profile(worker.profile.as_deref()),
+        role,
         goal: worker
             .goal
             .clone()
@@ -110,6 +135,8 @@ fn stage_from_worker(workflow: &WorkflowDsl, node_id: &str) -> Result<ForgeStage
                 // 由 Forge 会话继续收敛。
                 "<输入>\n<产出>\n<边界>\n<验收>".to_string()
             }),
+        role_definition,
+        profile_id,
         artifact,
         output_kind,
         schema_hint,
@@ -179,11 +206,17 @@ fn ordered_worker_ids(workflow: &WorkflowDsl) -> Result<Vec<String>, ForgeError>
 /// `name`/`intent` 为 Spec 层必填字段，DSL 不承载，由调用方提供
 /// （反投影入口 `forge_from_workflow` 从模板取 name，intent 用空串，
 /// 进入 Forge 会话后由对话收敛）。
-pub fn from_dsl(workflow: &WorkflowDsl, name: &str, intent: &str) -> Result<ForgeSpec, ForgeError> {
+pub fn from_dsl(
+    paths: &crate::storage::GoldBandPaths,
+    language: crate::config::DesktopLanguage,
+    workflow: &WorkflowDsl,
+    name: &str,
+    intent: &str,
+) -> Result<ForgeSpec, ForgeError> {
     let order = ordered_worker_ids(workflow)?;
     let stages = order
         .iter()
-        .map(|node_id| stage_from_worker(workflow, node_id))
+        .map(|node_id| stage_from_worker(paths, language, workflow, node_id))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ForgeSpec {
         spec_version: SPEC_VERSION.to_string(),
@@ -264,6 +297,15 @@ mod tests {
     use crate::forge::compiler::compile;
     use crate::forge::spec::MAX_STAGES_PER_WORKFLOW;
 
+    /// 反投影测试的隔离路径(custom 角色的 profile 解析走临时目录)。
+    fn test_paths() -> crate::storage::GoldBandPaths {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.keep();
+        crate::storage::GoldBandPaths::new(
+            camino::Utf8PathBuf::from_path_buf(path.join("repo")).unwrap(),
+        )
+    }
+
     fn base_goal() -> String {
         "<输入>需求与上一阶段产物\n<产出>通过测试的代码\n<边界>不做数据库迁移\n<验收>全部测试通过"
             .to_string()
@@ -281,6 +323,10 @@ mod tests {
                     ForgeStage {
                         id: None,
                         role: StageRole::Dev,
+
+                        role_definition: None,
+
+                        profile_id: None,
                         goal: base_goal(),
                         artifact: Some("test-result".to_string()),
                         output_kind: StageOutputKind::Json,
@@ -292,6 +338,10 @@ mod tests {
                     ForgeStage {
                         id: None,
                         role: StageRole::Accept,
+
+                        role_definition: None,
+
+                        profile_id: None,
                         goal: base_goal(),
                         artifact: None,
                         output_kind: StageOutputKind::Markdown,
@@ -310,7 +360,7 @@ mod tests {
     #[test]
     fn round_trip_preserves_participating_fields() {
         let compiled = compiled_linear();
-        let spec = from_dsl(&compiled.workflow, "开发测试流程", "意图").unwrap();
+        let spec = from_dsl(&test_paths(), crate::config::DesktopLanguage::ZhCn, &compiled.workflow, "开发测试流程", "意图").unwrap();
         // 反投影 Spec 可再次编译（openQuestions 为空、字段齐全）。
         let recompiled = compile(&spec).unwrap().remove(0);
         // 参与循环的字段等值：goal、profile、output 契约、manual_check。
@@ -340,7 +390,7 @@ mod tests {
     #[test]
     fn round_trip_failure_strategy_survives() {
         let compiled = compiled_linear();
-        let spec = from_dsl(&compiled.workflow, "开发测试流程", "意图").unwrap();
+        let spec = from_dsl(&test_paths(), crate::config::DesktopLanguage::ZhCn, &compiled.workflow, "开发测试流程", "意图").unwrap();
         assert_eq!(spec.workflows[0].stages[1].on_failure, OnFailure::NewRound);
         let recompiled = compile(&spec).unwrap().remove(0);
         let new_round_edges: Vec<_> = recompiled
@@ -407,18 +457,22 @@ mod tests {
             control: Default::default(),
             allowed_workflows: vec![],
         }));
-        let error = from_dsl(&workflow, "n", "i").unwrap_err();
+        let error = from_dsl(&test_paths(), crate::config::DesktopLanguage::ZhCn, &workflow, "n", "i").unwrap_err();
         assert_eq!(error.code(), "forge/invalid-spec");
     }
 
     #[test]
     fn max_stage_limit_enforced_in_round_trip() {
         // 编译产物节点数与 Spec stages 一致，上限在 Spec 校验层兜底。
-        let mut spec = from_dsl(&compiled_linear().workflow, "n", "i").unwrap();
+        let mut spec = from_dsl(&test_paths(), crate::config::DesktopLanguage::ZhCn, &compiled_linear().workflow, "n", "i").unwrap();
         spec.workflows[0].stages = (0..MAX_STAGES_PER_WORKFLOW + 1)
             .map(|_| ForgeStage {
                 id: None,
                 role: StageRole::Dev,
+
+                role_definition: None,
+
+                profile_id: None,
                 goal: base_goal(),
                 artifact: None,
                 output_kind: StageOutputKind::None,

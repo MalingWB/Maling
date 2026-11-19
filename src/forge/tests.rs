@@ -18,6 +18,8 @@ fn stage(role: StageRole) -> ForgeStage {
     ForgeStage {
         id: None,
         role,
+        role_definition: None,
+        profile_id: None,
         goal: base_goal(),
         artifact: Some("test-result".to_string()),
         output_kind: StageOutputKind::Json,
@@ -167,14 +169,14 @@ fn custom_role_yields_pending_profile() {
     let mut s = stage(StageRole::Custom {
         profile_name: "安全审计".to_string(),
     });
-    s.role = StageRole::Custom {
-        profile_name: "安全审计".to_string(),
-    };
+    s.role_definition = Some("你是安全审计员,职责是……".to_string());
     let results = compile(&spec_with_stages(vec![s])).unwrap();
     assert_eq!(results[0].pending_profiles.len(), 1);
-    let (_, name, goal) = &results[0].pending_profiles[0];
-    assert_eq!(name, "安全审计");
-    assert!(goal.contains("<输入>"));
+    let pending = &results[0].pending_profiles[0];
+    assert_eq!(pending.name, "安全审计");
+    // 角色职责正文与 goal 分离,优先使用 roleDefinition。
+    assert_eq!(pending.definition, "你是安全审计员,职责是……");
+    assert!(pending.profile_id.is_none());
 }
 
 #[test]
@@ -256,6 +258,8 @@ fn natural_prefix_goal_elements_pass_validation() {
     let spec = spec_with_stages(vec![ForgeStage {
         id: None,
         role: StageRole::Dev,
+        role_definition: None,
+        profile_id: None,
         goal: "输入：用户提供的文章原文；产出：中文 markdown 要点总结；边界：只提炼要点，不做事实真伪判断；验收：要点覆盖文章全部核心信息。".to_string(),
         artifact: Some("要点总结".to_string()),
         output_kind: StageOutputKind::Markdown,

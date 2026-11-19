@@ -3741,7 +3741,7 @@ export const browserApi: RuntimeApi = {
   forgeSaveSpec() {
     return Promise.resolve();
   },
-  forgeCompile(_spec) {
+  forgeCompile(_spec, _taskId) {
     return Promise.resolve({ createdTemplateIds: [], templates: { version: '', lastUsedTemplateId: null, lastCreatedWorkflow: null, templates: [] } });
   },
   forgeFromWorkflow(_templateId: string) {

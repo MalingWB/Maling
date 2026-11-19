@@ -180,7 +180,7 @@ describe('ForgePreviewPanel', () => {
     compileButton = [...host.querySelectorAll('button')].find((b) => b.textContent?.includes('编译为模板'));
     expect(compileButton!.disabled).toBe(false);
     await act(async () => compileButton?.click());
-    expect(forgeCompileMock).toHaveBeenCalledWith(converged);
+    expect(forgeCompileMock).toHaveBeenCalledWith(converged, 'task-001');
     expect(onTemplatesChangeMock).toHaveBeenCalledWith(templates);
     expect(host.textContent).toContain('已创建 1 个工作流模板');
 

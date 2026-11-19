@@ -56,6 +56,10 @@ mod tests {
                 stages: vec![ForgeStage {
                     id: Some("s1".to_string()),
                     role: StageRole::Dev,
+
+                    role_definition: None,
+
+                    profile_id: None,
                     goal: "<输入>a\n<产出>b\n<边界>c\n<验收>d".to_string(),
                     artifact: None,
                     output_kind: StageOutputKind::None,

@@ -171,6 +171,10 @@ mod tests {
         ForgeStage {
             id: id.map(str::to_string),
             role: StageRole::Dev,
+
+            role_definition: None,
+
+            profile_id: None,
             goal: goal.to_string(),
             artifact: Some("result".to_string()),
             output_kind: StageOutputKind::Json,

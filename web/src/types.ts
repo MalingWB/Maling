@@ -3360,6 +3360,10 @@ export interface ForgeStageVm {
   id?: string;
   role: string | { custom: { 'profile-name': string } };
   goal: string;
+  /// custom 角色的完整职责正文(与 goal 分离;对话反哺的可编辑面)。
+  roleDefinition?: string | null;
+  /// 已铸造角色的 profile id(系统回填;重编译按 id 原地更新)。
+  profileId?: string | null;
   artifact?: string | null;
   outputKind: 'json' | 'markdown' | 'none';
   schemaHint?: unknown;

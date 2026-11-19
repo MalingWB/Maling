@@ -137,18 +137,20 @@ pub async fn forge_save_spec(
     .await
 }
 
-/// Spec → WorkflowDsl 编译并落模板（source=Forged）；custom role 的
-/// pending profile 一并注册。用户级（模板库全局）。
+/// Spec → WorkflowDsl 编译并落模板（source=Forged）；custom 角色按
+/// profileId 更新/新建（对话反哺）。用户级（模板库全局）；`task_id`
+/// 置位时把铸造出的 profileId 回写该会话的 Spec 存档（重编译不重复建角色）。
 #[tauri::command]
 pub async fn forge_compile(
     state: State<'_, DesktopState>,
     spec: ForgeSpec,
+    task_id: Option<String>,
 ) -> CommandResult<ForgeCompileResultVm> {
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
         let created_template_ids = app
-            .forge_compile_and_save(&spec)
+            .forge_compile_and_save(&spec, task_id.as_deref())
             .map_err(command_error)?;
         let templates = app.workflow_templates().map_err(command_error)?;
         Ok(ForgeCompileResultVm {

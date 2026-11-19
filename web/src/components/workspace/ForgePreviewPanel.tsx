@@ -92,7 +92,9 @@ export function ForgePreviewPanel({ resource, onWorkflowTemplatesChange, onTrial
     setBusy('compile');
     setActionError(null);
     try {
-      const result = await forgeCompile(spec);
+      // taskId 使编译把铸造出的角色 id 回写 Spec 存档——重编译原地更新
+      // 同一批角色(对话反哺),不产生重复。
+      const result = await forgeCompile(spec, resource.taskId);
       setCompileResult(result);
       onWorkflowTemplatesChange?.(result.templates);
     } catch (err) {

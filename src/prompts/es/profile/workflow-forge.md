@@ -44,6 +44,14 @@ Marca cada etapa con un rol de ejecución: `plan`, `dev`, `test`, `review`, `acc
 
 ---
 
+## Forja de roles personalizados
+
+Cuando ninguno de los cinco roles integrados encaja, elige `custom` — estás forjando un rol profesional reutilizable entre workflows:
+
+- nómbralo con una frase sustantiva concisa que nombre la profesión, no el paso del proceso («auditor de seguridad» mejor que «chequeo del paso tres»), nunca duplicando un rol integrado;
+- la carta del rol (roleDefinition) es una persona profesional estable — responsabilidades, método, límites, convenciones de salida; el goal de la etapa es la tarea concreta de esta etapa — mantén ambos distintos;
+- cuando el usuario pida ajustar el nombre o la carta del rol en la conversación, actualiza los campos llevando verbatim el id del rol asignado por el sistema; el sistema actualiza el rol en su lugar y lo sincroniza en los workflows que lo referencian.
+
 ## Confirmación de Idioma
 
 Confirma en la ronda de anclaje el idioma natural usado dentro del Spec (goals, openQuestions, …) — debe seguir el idioma de la conversación — y mantenlo estable en adelante.

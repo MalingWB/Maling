@@ -672,7 +672,7 @@ export interface RuntimeApi {
   forgeSourceDigest(projectId: string, taskId: string): Promise<ForgeSourceDigestVm>;
   forgeGetSpec(projectId: string, taskId: string): Promise<ForgeSpecVm | null>;
   forgeSaveSpec(projectId: string, taskId: string, spec: ForgeSpecVm): Promise<void>;
-  forgeCompile(spec: ForgeSpecVm): Promise<ForgeCompileResultVm>;
+  forgeCompile(spec: ForgeSpecVm, taskId?: string | null): Promise<ForgeCompileResultVm>;
   forgeFromWorkflow(templateId: string): Promise<ForgeSpecVm>;
   forgeStartTrial(projectId: string, templateId: string, intent: string): Promise<ForgeSessionCreatedVm>;
   forgeListSessions(projectId: string): Promise<ForgeSessionEntryVm[]>;

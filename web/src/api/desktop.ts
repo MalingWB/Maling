@@ -919,8 +919,8 @@ export const desktopApi: RuntimeApi = {
   forgeSaveSpec(projectId, taskId, spec) {
     return invokeCommand<void>('forge_save_spec', { projectId, taskId, spec });
   },
-  forgeCompile(spec) {
-    return invokeCommand<ForgeCompileResultVm>('forge_compile', { spec });
+  forgeCompile(spec, taskId) {
+    return invokeCommand<ForgeCompileResultVm>('forge_compile', { spec, taskId: taskId ?? null });
   },
   forgeFromWorkflow(templateId) {
     return invokeCommand<ForgeSpecVm>('forge_from_workflow', { templateId });

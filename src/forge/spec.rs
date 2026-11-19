@@ -156,6 +156,15 @@ pub struct ForgeStage {
     pub role: StageRole,
     /// 覆盖四要素的阶段目标（输入/产出/边界/验收）。
     pub goal: String,
+    /// custom 角色的完整职责正文（角色的稳定人格：职责/方法/边界），
+    /// 与 goal（本阶段任务）分离；编译时作为 User scope profile 的
+    /// content。缺省回退 goal 正文。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_definition: Option<String>,
+    /// custom 角色已铸造的 profile id：一经创建即携带，重编译按 id
+    /// 原地更新（名称/正文），不再新建；反投影时从工作流节点还原。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
     /// 产物名（outputKind 为 none 时忽略）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact: Option<String>,
@@ -376,6 +385,8 @@ pub fn spec_json_schema() -> serde_json::Value {
                         ]
                     },
                     "goal": { "type": "string", "minLength": 1 },
+                    "roleDefinition": { "type": "string", "description": "custom 角色的完整职责正文(职责/方法/边界),与 goal 分离;缺省回退 goal" },
+                    "profileId": { "type": "string", "description": "已铸造角色的 profile id;由系统回填,模型原样携带,不得新建或篡改" },
                     "artifact": { "type": "string" },
                     "outputKind": { "enum": ["json", "markdown", "none"] },
                     "schemaHint": {},
@@ -401,6 +412,8 @@ mod spec_tests {
         ForgeStage {
             id: None,
             role,
+            role_definition: None,
+            profile_id: None,
             goal,
             artifact: Some("test-result".to_string()),
             output_kind: StageOutputKind::Json,

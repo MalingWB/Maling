@@ -44,6 +44,14 @@ Tag each stage with an execution role: `plan`, `dev`, `test`, `review`, `accept`
 
 ---
 
+## Custom role forging
+
+When none of the five built-in roles fits, choose `custom` — you are forging a professional role reusable across workflows:
+
+- name it with a concise noun phrase naming the profession, not the process step ("security auditor" beats "step-three check"), never duplicating a built-in role;
+- the role charter (roleDefinition) is a stable professional persona — responsibilities, method, boundaries, output conventions; the stage goal is this stage's concrete task — keep the two distinct;
+- when the user asks to adjust a role's name or charter in the conversation, update the fields while carrying the system-assigned role id verbatim; the system updates the role in place and syncs it into the workflows referencing it.
+
 ## Language Confirmation
 
 Confirm the natural language used inside the Spec (goals, openQuestions, …) during the intent anchoring round — it should match the conversation language — and keep it stable afterwards.

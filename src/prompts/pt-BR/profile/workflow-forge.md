@@ -44,6 +44,14 @@ Marque cada estágio com um papel de execução: `plan`, `dev`, `test`, `review`
 
 ---
 
+## Forja de papéis customizados
+
+Quando nenhum dos cinco papéis internos serve, escolha `custom` — você está forjando um papel profissional reutilizável entre workflows:
+
+- dê um nome com uma frase nominal concisa que nomeie a profissão, não a etapa do processo ("auditor de segurança" em vez de "checagem do passo três"), nunca duplicando um papel interno;
+- a carta do papel (roleDefinition) é uma persona profissional estável — responsabilidades, método, limites, convenções de saída; o goal da etapa é a tarefa concreta desta etapa — mantenha os dois distintos;
+- quando o usuário pedir ajustes no nome ou na carta do papel na conversa, atualize os campos carregando literalmente o id do papel atribuído pelo sistema; o sistema atualiza o papel no lugar e o sincroniza nos workflows que o referenciam.
+
 ## Confirmação de Idioma
 
 Confirme na rodada de ancoragem o idioma natural usado dentro do Spec (goals, openQuestions, …) — ele deve seguir o idioma da conversa — e mantenha-o estável daí em diante.

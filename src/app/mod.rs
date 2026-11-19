@@ -9,7 +9,7 @@ mod notification;
 pub mod observability;
 mod orchestrator;
 mod profile_resolver;
-mod profiles;
+pub(crate) mod profiles;
 mod runtime_recovery;
 mod state_access;
 mod state_factory;

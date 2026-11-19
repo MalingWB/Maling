@@ -170,6 +170,8 @@ impl App {
             .find(|template| template.id == template_id)
             .with_context(|| format!("workflow template `{template_id}` not found"))?;
         let spec = crate::forge::project::from_dsl(
+            &self.paths,
+            self.config.desktop_language,
             &template.workflow,
             &template.name,
             "",
@@ -179,17 +181,29 @@ impl App {
 
     /// 编译并保存（方案 §4 `forge_compile` 的落库形态）。
     ///
-    /// Spec → WorkflowDsl 若干条；custom role 的 pending profile 注册为
-    /// User scope 后回填节点引用；产物以 `source=Forged` 存为模板,并为
-    /// 缺绑定的执行槽补默认 agent 绑定（§3.2"默认模型绑定"——作者态
-    /// provider 置空,migrate 不生成绑定,无默认绑定的模板无法启动）。
-    /// 返回新建模板 id 列表（多工作流拆分时多个）。
-    pub fn forge_compile_and_save(&self, spec: &ForgeSpec) -> Result<Vec<String>> {
+    /// Spec → WorkflowDsl 若干条；custom role 的铸造草案按 profileId
+    /// 更新/新建（对话反哺）；产物以 `source=Forged` 存为模板并为缺绑定
+    /// 的执行槽补默认 agent 绑定（§3.2"默认模型绑定"）。`task_id` 置位时，
+    /// 把铸造出的 profileId 回写该会话的 Spec 存档——后续重编译原地更新
+    /// 同一批角色，不产生重复。
+    pub fn forge_compile_and_save(
+        &self,
+        spec: &ForgeSpec,
+        task_id: Option<&str>,
+    ) -> Result<Vec<String>> {
         let compiled_list = crate::forge::compiler::compile(spec)
             .map_err(|error| anyhow::anyhow!("{}", error.to_string()))?;
+        let mut enriched_spec = spec.clone();
         let mut created_template_ids = Vec::new();
-        for mut compiled in compiled_list {
-            backfill_pending_profiles(&self.paths, &mut compiled, &spec.intent)?;
+        for (workflow_index, mut compiled) in compiled_list.into_iter().enumerate() {
+            let forged_ids = backfill_pending_profiles(&self.paths, &mut compiled, &spec.intent)?;
+            if let Some(target) = enriched_spec.workflows.get_mut(workflow_index) {
+                for (stage_index, profile_id) in forged_ids {
+                    if let Some(stage) = target.stages.get_mut(stage_index) {
+                        stage.profile_id = Some(profile_id);
+                    }
+                }
+            }
             let bindings = with_default_agent_bindings(&compiled.workflow, WorkflowModelBindings::default(), &self.config.agents);
             let (_store, created_id) = self.save_workflow_template_with_source(
                 compiled.name.clone(),
@@ -198,6 +212,9 @@ impl App {
                 crate::app::TemplateSource::Forged,
             )?;
             created_template_ids.push(created_id);
+        }
+        if let Some(task_id) = task_id {
+            self.save_forge_spec(task_id, &enriched_spec)?;
         }
         Ok(created_template_ids)
     }
@@ -549,18 +566,26 @@ fn with_default_agent_bindings(
     bindings
 }
 
-/// custom role 的 pending profile 注册为 User scope 并回填节点引用。
+/// custom 角色的铸造草案落库并回填节点引用（对话反哺的落点）。
 ///
 /// 编译器为 custom stage 置占位 profile（`<node_id>-profile`，无法通过
-/// 保存链路的 profile 解析）；此处创建真实 profile 后整体替换。
+/// 保存链路的 profile 解析）。此处按草案的 `profile_id` 分流：
+/// - `Some(id)`：该角色已铸造过（反投影/上一轮编译回填），按 id 原地
+///   更新名称与职责正文——对话中的调整直接反哺既有角色，不产生重复；
+/// - `None`：新建 User scope profile。
+/// 完成后把节点引用替换为真实 profile id。
 fn backfill_pending_profiles(
     paths: &crate::storage::GoldBandPaths,
     compiled: &mut crate::forge::compiler::CompiledWorkflow,
     intent: &str,
-) -> Result<()> {
-    for (node_id, profile_name, goal_body) in compiled.pending_profiles.clone() {
+) -> Result<Vec<(usize, String)>> {
+    use crate::forge::compiler::PendingProfile;
+    let mut forged_ids = Vec::new();
+    for PendingProfile { node_id, stage_index, name, definition, profile_id } in
+        compiled.pending_profiles.clone()
+    {
         let placeholder = format!("{node_id}-profile");
-        let summary: String = goal_body
+        let summary: String = definition
             .lines()
             .find(|line| !line.trim().is_empty())
             .unwrap_or(intent)
@@ -568,16 +593,22 @@ fn backfill_pending_profiles(
             .chars()
             .take(80)
             .collect();
-        let entry = crate::app::profiles::create_profile(
-            paths,
-            crate::app::profiles::ProfileInput {
-                name: profile_name.clone(),
-                summary,
-                content: goal_body.clone(),
-                dynamic_template: false,
-            },
-        )
-        .with_context(|| format!("failed to create forged profile `{profile_name}`"))?;
+        let input = crate::app::profiles::ProfileInput {
+            name: name.trim().to_string(),
+            summary,
+            content: definition,
+            dynamic_template: false,
+        };
+        let entry = match profile_id.as_deref() {
+            Some(existing_id) => crate::app::profiles::update_profile(
+                paths,
+                existing_id,
+                input,
+            )
+            .with_context(|| format!("failed to update forged profile `{existing_id}`"))?,
+            None => crate::app::profiles::create_profile(paths, input)
+                .with_context(|| format!("failed to create forged profile `{name}`"))?,
+        };
         for node in &mut compiled.workflow.nodes {
             if node.id() == node_id {
                 if let crate::dsl::NodeDsl::Worker(worker) = node {
@@ -587,8 +618,9 @@ fn backfill_pending_profiles(
                 }
             }
         }
+        forged_ids.push((stage_index, entry.id));
     }
-    Ok(())
+    Ok(forged_ids)
 }
 
 /// 试运行截断：仅保留 entry 节点，success 边直连 `$end`。
@@ -651,6 +683,10 @@ mod tests {
                 stages: vec![ForgeStage {
                     id: Some("s1".to_string()),
                     role: StageRole::Dev,
+
+                    role_definition: None,
+
+                    profile_id: None,
                     goal: "<输入>会话上下文\n<产出>结构化产物\n<边界>不做部署\n<验收>产物过schema".to_string(),
                     artifact: Some("result".to_string()),
                     output_kind: StageOutputKind::Json,
@@ -978,7 +1014,7 @@ mod tests {
     #[test]
     fn forge_compile_and_save_creates_forged_template_with_builtin_profiles() {
         let (app, _temp, _guard) = forge_test_app();
-        let ids = app.forge_compile_and_save(&sample_spec()).unwrap();
+        let ids = app.forge_compile_and_save(&sample_spec(), None).unwrap();
         assert_eq!(ids.len(), 1);
         let store = app.workflow_templates().unwrap();
         let template = store
@@ -1002,7 +1038,9 @@ mod tests {
         spec.workflows[0].stages[0].role = StageRole::Custom {
             profile_name: "接口联调".to_string(),
         };
-        let ids = app.forge_compile_and_save(&spec).unwrap();
+        spec.workflows[0].stages[0].role_definition =
+            Some("你是接口联调工程师:负责打通服务间调用、核对契约并输出联调结论。".to_string());
+        let ids = app.forge_compile_and_save(&spec, None).unwrap();
         let store = app.workflow_templates().unwrap();
         let template = store
             .templates
@@ -1012,18 +1050,75 @@ mod tests {
         let crate::dsl::NodeDsl::Worker(worker) = &template.workflow.nodes[0] else {
             panic!("expected worker node");
         };
-        // 占位被回填为真实 User scope profile id，且可解析。
+        // 占位被回填为真实 User scope profile id，且可解析、正文为角色职责。
         let profile = worker.profile.as_deref().expect("profile backfilled");
         assert_ne!(profile, "s1-profile");
         assert!(profile.starts_with("pf-"));
-        assert!(
-            crate::app::profiles::find_profile_by_id(
-                &app.paths,
-                profile,
-                crate::config::DesktopLanguage::ZhCn,
-            )
-            .unwrap()
-            .is_some()
-        );
+        let entry = crate::app::profiles::find_profile_by_id(
+            &app.paths,
+            profile,
+            crate::config::DesktopLanguage::ZhCn,
+        )
+        .unwrap()
+        .expect("forged profile resolvable");
+        assert_eq!(entry.name, "接口联调");
+        assert!(entry.content.contains("接口联调工程师"));
+    }
+
+    #[test]
+    fn forge_recompile_updates_role_in_place_via_archive_writeback() {
+        let (app, _temp, _guard) = forge_test_app();
+        let summary = app
+            .create_forge_task(CreateForgeTaskInput {
+                title: Some("铸造会话".to_string()),
+                requirement_content: "源会话摘要".to_string(),
+                agent_type: "claude-acp".to_string(),
+                workflow: None,
+                initial_spec: None,
+            })
+            .unwrap();
+        let task_id = summary.task.id.clone();
+
+        // 首次编译:创建自定义角色,profileId 回写存档。
+        let mut spec = sample_spec();
+        spec.workflows[0].stages[0].role = StageRole::Custom {
+            profile_name: "联调员".to_string(),
+        };
+        app.forge_compile_and_save(&spec, Some(&task_id)).unwrap();
+        let archived = app.forge_spec(&task_id).unwrap().unwrap();
+        let forged_id = archived.workflows[0].stages[0]
+            .profile_id
+            .clone()
+            .expect("profile id written back to archive");
+
+        // 对话反哺:用户在会话中改角色名与职责,重编译按 id 原地更新。
+        let mut revised = archived;
+        revised.workflows[0].stages[0].role = StageRole::Custom {
+            profile_name: "高级联调工程师".to_string(),
+        };
+        revised.workflows[0].stages[0].role_definition =
+            Some("你是高级联调工程师:除联调外还负责契约评审与风险上报。".to_string());
+        app.forge_compile_and_save(&revised, Some(&task_id)).unwrap();
+
+        let entry = crate::app::profiles::find_profile_by_id(
+            &app.paths,
+            &forged_id,
+            crate::config::DesktopLanguage::ZhCn,
+        )
+        .unwrap()
+        .expect("same profile still resolvable");
+        assert_eq!(entry.name, "高级联调工程师");
+        assert!(entry.content.contains("契约评审"));
+        // 不产生重复:联调角色只有一个。
+        let count = crate::app::profiles::list_profiles(
+            &app.paths,
+            crate::config::DesktopLanguage::ZhCn,
+        )
+        .unwrap()
+        .profiles
+        .iter()
+        .filter(|p| p.content.contains("联调"))
+        .count();
+        assert_eq!(count, 1, "recompile must not duplicate the forged role");
     }
 }
