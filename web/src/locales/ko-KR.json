@@ -3337,7 +3337,8 @@
     "validationRoutingPromptRequired": "라우팅 프롬프트가 필요합니다",
     "validationPositiveNumber": "{{field}}은(는) 0보다 커야 합니다",
     "validationTemplateNameRequired": "템플릿 이름이 필요합니다",
-    "validationTemplateNameDuplicated": "템플릿 이름 {{name}}이(가) 이미 존재합니다"
+    "validationTemplateNameDuplicated": "템플릿 이름 {{name}}이(가) 이미 존재합니다",
+    "forgeModifyTemplate": "{{name}} 대화로 수정"
   },
   "remote": {
     "connect": {
@@ -3619,6 +3620,9 @@
       "capabilitySchema": "{{count}}개 산출물에 형식 계약이 있어 기계가 합격을 자동 확인",
       "capabilityFailure": "{{count}}곳의 실패를 자동 처리(재시도 또는 사람 확인)——소리 없이 썩지 않음",
       "capabilityResume": "중단돼도 중단 지점부터 재개——처음부터 다시 하지 않음"
+    },
+    "modifyPrefill": {
+      "intro": "워크플로 \"{{name}}\"({{count}}단계)를 불러왔습니다. 변경 내용을 적고 전송하면 안내형 조정이 시작됩니다:"
     }
   }
 }

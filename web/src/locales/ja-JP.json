@@ -3337,7 +3337,8 @@
     "validationRoutingPromptRequired": "ルーティングプロンプトは必須です",
     "validationPositiveNumber": "{{field}} は 0 より大きい必要があります",
     "validationTemplateNameRequired": "テンプレート名は必須です",
-    "validationTemplateNameDuplicated": "テンプレート名 {{name}} は既に存在します"
+    "validationTemplateNameDuplicated": "テンプレート名 {{name}} は既に存在します",
+    "forgeModifyTemplate": "{{name}} を対話で修正"
   },
   "remote": {
     "connect": {
@@ -3619,6 +3620,9 @@
       "capabilitySchema": "{{count}} つの成果物に形式契約があり,機械が合格を自動確認",
       "capabilityFailure": "{{count}} カ所の失敗を自動処理（リトライまたは人への確認）——黙って腐りません",
       "capabilityResume": "中断してもブレークポイントから再開——やり直し不要"
+    },
+    "modifyPrefill": {
+      "intro": "ワークフロー「{{name}}」（{{count}} ステージ）を読み込みました。変更内容を記述して送信するとガイド調整が始まります："
     }
   }
 }

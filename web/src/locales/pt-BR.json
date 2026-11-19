@@ -3337,7 +3337,8 @@
     "validationRoutingPromptRequired": "Prompt de roteamento é obrigatório",
     "validationPositiveNumber": "{{field}} deve ser maior que 0",
     "validationTemplateNameRequired": "Nome do template é obrigatório",
-    "validationTemplateNameDuplicated": "Nome do template {{name}} já existe"
+    "validationTemplateNameDuplicated": "Nome do template {{name}} já existe",
+    "forgeModifyTemplate": "Modificar {{name}} conversando"
   },
   "remote": {
     "connect": {
@@ -3619,6 +3620,9 @@
       "capabilitySchema": "{{count}} saídas com contrato de formato que a máquina verifica automaticamente",
       "capabilityFailure": "{{count}} pontos de falha tratados automaticamente (retry ou humano) — nada falha em silêncio",
       "capabilityResume": "Execuções interrompidas retomam do ponto de parada — sem recomeçar"
+    },
+    "modifyPrefill": {
+      "intro": "Workflow \"{{name}}\" carregado ({{count}} estágios). Descreva as mudanças desejadas e envie para iniciar o ajuste guiado:"
     }
   }
 }

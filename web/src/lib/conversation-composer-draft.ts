@@ -48,6 +48,8 @@ export interface ConversationComposerForgeBinding {
   sourceTaskId?: string;
   /// 入口 B 的 skill 组合引用（与 sourceTaskId 互斥）。
   sourceSkills?: { name: string; source: 'built-in' | 'global' | 'project' }[];
+  /// 对话式修改（方案 §5.9）：既有模板 id（反投影为 Spec 初始基线）。
+  sourceTemplateId?: string;
   /// 源所属项目（须与 composer 当前项目一致，发送前校验）。
   sourceProjectId: string;
   /// 标题，仅用于绑定 chip 展示。

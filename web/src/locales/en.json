@@ -3337,7 +3337,8 @@
     "validationRoutingPromptRequired": "Routing prompt is required",
     "validationPositiveNumber": "{{field}} must be greater than 0",
     "validationTemplateNameRequired": "Template name is required",
-    "validationTemplateNameDuplicated": "Template name {{name}} already exists"
+    "validationTemplateNameDuplicated": "Template name {{name}} already exists",
+    "forgeModifyTemplate": "Modify {{name}} conversationally"
   },
   "remote": {
     "taskManagement": {
@@ -3619,6 +3620,9 @@
       "capabilitySchema": "{{count}} outputs carry a format contract the machine checks automatically",
       "capabilityFailure": "{{count}} failure points handled automatically (retry or hand to a human) — nothing fails silently",
       "capabilityResume": "Interrupted runs resume from where they stopped — no starting over"
+    },
+    "modifyPrefill": {
+      "intro": "Workflow \"{{name}}\" loaded ({{count}} stages). Describe the changes you want, then send to start the guided adjustment:"
     }
   }
 }

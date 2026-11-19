@@ -3600,6 +3600,7 @@ fn scheduled_create_input(
         quotes: definition.content_snapshot.quotes.clone(),
         forge_source_task_id: None,
         forge_source_skills: None,
+        forge_source_template_id: None,
     })
 }
 
@@ -4043,6 +4044,7 @@ mod tests {
         let input = crate::view_models_conversation::ConversationCreateInputVm {
             forge_source_task_id: None,
             forge_source_skills: None,
+            forge_source_template_id: None,
             project_id: "project-a".to_string(),
             content: "检查状态".to_string(),
             run_mode: "direct".to_string(),

@@ -3337,7 +3337,8 @@
     "validationRoutingPromptRequired": "路由提示詞不能為空",
     "validationPositiveNumber": "{{field}} 必須大於 0",
     "validationTemplateNameRequired": "範本名稱不能為空",
-    "validationTemplateNameDuplicated": "範本名稱 {{name}} 已存在"
+    "validationTemplateNameDuplicated": "範本名稱 {{name}} 已存在",
+    "forgeModifyTemplate": "對話式修改 {{name}}"
   },
   "remote": {
     "connect": {
@@ -3619,6 +3620,9 @@
       "capabilitySchema": "{{count}} 項產物帶格式約定,機器自動核對是否合格",
       "capabilityFailure": "{{count}} 處失敗自動處理（重試或轉入人工確認）,不會悄悄爛掉",
       "capabilityResume": "中途斷了可以從斷點繼續,不用從頭再來"
+    },
+    "modifyPrefill": {
+      "intro": "已載入工作流「{{name}}」（{{count}} 個階段）。請描述要做的修改，傳送後進入引導式調整："
     }
   }
 }

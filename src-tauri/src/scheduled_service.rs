@@ -533,6 +533,7 @@ impl ScheduledTaskService {
             quotes: input.quotes.clone(),
             forge_source_task_id: None,
             forge_source_skills: None,
+            forge_source_template_id: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {
@@ -726,6 +727,7 @@ impl ScheduledTaskService {
             quotes: effective_quotes,
             forge_source_task_id: None,
             forge_source_skills: None,
+            forge_source_template_id: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {

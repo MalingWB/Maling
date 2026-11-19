@@ -3541,6 +3541,8 @@ export interface ConversationCreateInput {
   forgeSourceTaskId?: string;
   /// 工作流铸造（入口 B）：skill 组合引用（与入口 A 互斥）。
   forgeSourceSkills?: ForgeSkillRefVm[];
+  /// 对话式修改（方案 §5.9）：既有模板 id,反投影为 Spec 初始基线。
+  forgeSourceTemplateId?: string;
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';

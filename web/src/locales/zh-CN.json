@@ -3337,7 +3337,8 @@
     "validationRoutingPromptRequired": "路由提示词不能为空",
     "validationPositiveNumber": "{{field}} 必须大于 0",
     "validationTemplateNameRequired": "模板名称不能为空",
-    "validationTemplateNameDuplicated": "模板名称 {{name}} 已存在"
+    "validationTemplateNameDuplicated": "模板名称 {{name}} 已存在",
+    "forgeModifyTemplate": "对话式修改 {{name}}"
   },
   "remote": {
     "taskManagement": {
@@ -3619,6 +3620,9 @@
       "capabilitySchema": "{{count}} 项产物带格式约定,机器自动核对是否合格",
       "capabilityFailure": "{{count}} 处失败自动处理（重试或转入人工确认）,不会悄悄烂掉",
       "capabilityResume": "中途断了可以从断点继续,不用从头再来"
+    },
+    "modifyPrefill": {
+      "intro": "已加载工作流「{{name}}」（{{count}} 个阶段）。请描述要做的修改，发送后进入引导式调整："
     }
   }
 }

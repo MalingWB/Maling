@@ -3337,7 +3337,8 @@
     "validationRoutingPromptRequired": "El prompt de enrutamiento es obligatorio",
     "validationPositiveNumber": "{{field}} debe ser mayor que 0",
     "validationTemplateNameRequired": "El nombre de la plantilla es obligatorio",
-    "validationTemplateNameDuplicated": "El nombre de plantilla {{name}} ya existe"
+    "validationTemplateNameDuplicated": "El nombre de plantilla {{name}} ya existe",
+    "forgeModifyTemplate": "Modificar {{name}} conversando"
   },
   "remote": {
     "connect": {
@@ -3619,6 +3620,9 @@
       "capabilitySchema": "{{count}} salidas con contrato de formato que la máquina verifica automáticamente",
       "capabilityFailure": "{{count}} puntos de fallo gestionados automáticamente (reintentar o humano) — nada falla en silencio",
       "capabilityResume": "Las ejecuciones interrumpidas retoman desde donde pararon — sin empezar de cero"
+    },
+    "modifyPrefill": {
+      "intro": "Workflow «{{name}}» cargado ({{count}} etapas). Describe los cambios y envía para iniciar el ajuste guiado:"
     }
   }
 }

@@ -14,6 +14,7 @@ import {
   deleteConversationTask,
   forgeSourceDigest,
   forgeSkillsDigest,
+  forgeFromWorkflow,
   getAgentRegistry,
   getConversationRun,
   getConversationRunMode,
@@ -1109,6 +1110,27 @@ export function App() {
           sourceSkills: skills,
           sourceProjectId: anchorProjectId,
           title: digest.title,
+        },
+      );
+      onSelectConversation({ kind: 'conversation-home' });
+    } catch (err) {
+      setError(displayAppError(t, err));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectDraftConversationWorkspace]);
+  /// 对话式修改(方案 §5.9):既有模板反投影 → 预填修改引导,发送时后端以
+  /// 反投影 Spec 作为会话初始存档基线(带既有角色身份,重编译不重复)。
+  const handleForgeTemplate = useCallback(async (templateId: string, templateName: string) => {
+    try {
+      const spec = await forgeFromWorkflow(templateId);
+      const stageCount = (spec.workflows ?? []).reduce((sum, wf) => sum + (wf.stages?.length ?? 0), 0);
+      selectDraftConversationWorkspace(activeWorkspaceIdRef.current ?? defaultProjectId);
+      composerDraftRef.current?.prefillForge(
+        t('forge.modifyPrefill.intro', { name: templateName, count: stageCount }),
+        {
+          sourceTemplateId: templateId,
+          sourceProjectId: activeWorkspaceIdRef.current ?? defaultProjectId,
+          title: templateName,
         },
       );
       onSelectConversation({ kind: 'conversation-home' });
@@ -3314,6 +3336,7 @@ export function App() {
           onExecutionPlanSaved={() => {
             if (conversationPage.projectId) void loadConversationRunMode(conversationPage.projectId);
           }}
+          onForgeTemplate={handleForgeTemplate}
         />
       );
     }

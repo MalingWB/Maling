@@ -1010,6 +1010,9 @@ pub struct ConversationCreateInputVm {
     /// 工作流铸造（入口 B）：skill 组合引用（与入口 A 互斥）。
     #[serde(default)]
     pub forge_source_skills: Option<Vec<gold_band::app::forge_service::ForgeSkillRef>>,
+    /// 对话式修改（方案 §5.9）：既有模板 id,反投影为 Spec 初始基线。
+    #[serde(default)]
+    pub forge_source_template_id: Option<String>,
 }
 
 pub fn scheduled_content_snapshot(
@@ -4976,6 +4979,7 @@ fn conversation_create_command(
     command.first_prompt_hidden_sections = input.first_prompt_hidden_sections.clone();
     command.forge_source_task_id = input.forge_source_task_id.clone();
     command.forge_source_skills = input.forge_source_skills.clone();
+    command.forge_source_template_id = input.forge_source_template_id.clone();
     Ok(command)
 }
 
@@ -7426,6 +7430,7 @@ mod tests {
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
             forge_source_skills: None,
+            forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run this automatically".to_string(),
             run_mode: ConversationRunMode::Auto.as_str().to_string(),
@@ -7571,6 +7576,7 @@ mod tests {
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
             forge_source_skills: None,
+            forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "start a direct conversation".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7620,6 +7626,7 @@ mod tests {
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
             forge_source_skills: None,
+            forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run in an isolated worktree".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7650,6 +7657,7 @@ mod tests {
         let input_for = |run_mode: ConversationRunMode| ConversationCreateInputVm {
             forge_source_task_id: None,
             forge_source_skills: None,
+            forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "改一下这个函数".to_string(),
             run_mode: run_mode.as_str().to_string(),
@@ -7692,6 +7700,7 @@ mod tests {
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
             forge_source_skills: None,
+            forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run this later".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7729,6 +7738,7 @@ mod tests {
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
             forge_source_skills: None,
+            forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "h".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7778,6 +7788,7 @@ mod tests {
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
             forge_source_skills: None,
+            forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: String::new(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7828,6 +7839,7 @@ mod tests {
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
             forge_source_skills: None,
+            forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "远程任务正文".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
@@ -7887,6 +7899,7 @@ mod tests {
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
             forge_source_skills: None,
+            forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "task must roll back".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),

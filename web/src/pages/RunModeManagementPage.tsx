@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Bot, ChevronDown, CircleHelp, Folders, Plus, Route, Trash2 } from 'lucide-react';
+import { AlertTriangle, Bot, ChevronDown, CircleHelp, Folders, Hammer, Plus, Route, Trash2 } from 'lucide-react';
 import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, DynamicAgentRefDsl, DynamicControlDsl, ExecutionPlanSaveResultVm, WorkflowDsl, WorkflowModelBindings, WorkflowRepairTarget, WorkflowTemplate, WorkflowTemplateStore } from '../types';
 import { deleteAutoTemplate as deleteAutoTemplateApi, deleteWorkflowTemplate, getAutoTemplates, replaceAutoTemplates, saveAutoTemplate, saveWorkflowTemplate, updateAutoTemplate, updateWorkflowTemplate } from '@/api';
 import { Page, PageHeader } from '@/components/PageScaffold';
@@ -47,6 +47,8 @@ interface RunModeManagementPageProps {
   runContext?: { projectId: string; taskId: string; taskUuid: string; runId: string } | null;
   /** Run context only: a committed execution-plan save so the owner can refresh project-level run mode. */
   onExecutionPlanSaved?: (saved: ExecutionPlanSaveResultVm) => void;
+  /** 对话式修改（方案 §5.9）：以既有模板发起 Forge 修改会话;缺省隐藏入口。 */
+  onForgeTemplate?: (templateId: string, templateName: string) => void;
   /** Right-workspace tab: same form, without the standalone management page chrome. */
   embedded?: boolean;
 }
@@ -264,6 +266,7 @@ export function RunModeManagementPage({
   onWorkflowTemplatesChange,
   runContext = null,
   onExecutionPlanSaved,
+  onForgeTemplate,
   embedded = false,
 }: RunModeManagementPageProps) {
   const readOnly = useReadOnlyExperience();
@@ -1471,6 +1474,17 @@ export function RunModeManagementPage({
                                 </span>
                               ) : null}
                             </button>
+                            {!readOnly && onForgeTemplate && !isDefault ? (
+                              <Button
+                                variant="ghost"
+                                size="icon-xs"
+                                className="size-6 shrink-0"
+                                aria-label={t('runMode.forgeModifyTemplate', { name: workflowTemplateDisplayName(tpl, t) })}
+                                onClick={() => { setWfTemplatePickerOpen(false); onForgeTemplate(tpl.id, workflowTemplateDisplayName(tpl, t)); }}
+                              >
+                                <Hammer className="size-3" />
+                              </Button>
+                            ) : null}
                             <Button
                               variant="ghost"
                               size="icon-xs"

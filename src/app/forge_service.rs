@@ -768,7 +768,7 @@ fn spec_archive_mtime(task_dir: &camino::Utf8Path) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::app::tests::{env_guard, test_app};
     use crate::forge::spec::{
@@ -783,6 +783,10 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         (test_app(repo_root), temp, guard)
+    }
+
+    pub(crate) fn tests_visible_sample_spec() -> ForgeSpec {
+        sample_spec()
     }
 
     fn sample_spec() -> ForgeSpec {

@@ -965,6 +965,9 @@ export function ConversationComposer({
             ...(composerDraft.draft.forge.sourceSkills && composerDraft.draft.forge.sourceSkills.length > 0
               ? { forgeSourceSkills: composerDraft.draft.forge.sourceSkills }
               : {}),
+            ...(composerDraft.draft.forge.sourceTemplateId
+              ? { forgeSourceTemplateId: composerDraft.draft.forge.sourceTemplateId }
+              : {}),
           }
         : {}),
     };
