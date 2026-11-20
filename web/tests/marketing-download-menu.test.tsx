@@ -1,6 +1,10 @@
 /** @vitest-environment jsdom */
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { readFileSync } from 'node:fs';
+import { EventType, IncrementalSource, MouseInteractions, ReplayerEvents, type eventWithTime } from '@rrweb/types';
+import { createSceneEngine } from '../../marketing/site/Replay';
+import { SceneManifestSchema } from '../../marketing/site/replay-model';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { siteConfig } from '../../marketing/site/config';
 import { copy } from '../../marketing/site/content';
@@ -70,6 +74,41 @@ describe('website download menu', () => {
     expect(document.querySelector('[data-inline-download-option="mac"]')?.textContent).toBe(labels.mac);
     expect(document.querySelector('[role="menu"]')?.textContent).toContain(second);
     expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the open download menu and its focused link when the recording replays a focus event', async () => {
+    const asset = SceneManifestSchema.parse(JSON.parse(readFileSync('marketing/site/media/before/manifest.json', 'utf8'))).assets[0];
+    const { events }: { events: eventWithTime[] } = JSON.parse(readFileSync(`marketing/site${asset.eventsUrl}`, 'utf8'));
+    const focusIndex = events.findIndex(e => e.type === EventType.IncrementalSnapshot
+      && e.data.source === IncrementalSource.MouseInteraction && e.data.type === MouseInteractions.Focus && e.data.id > 0);
+    expect(focusIndex).toBeGreaterThan(0);
+    const at = events[focusIndex].timestamp - events[0].timestamp;
+    const stage = document.body.appendChild(document.createElement('div'));
+    // JSDOM needs the reflected sandbox tokens for rrweb to rebuild its actual iframe.
+    const sandbox = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'sandbox');
+    if (!sandbox) Object.defineProperty(HTMLIFrameElement.prototype, 'sandbox', { configurable: true,
+      get() { return (this.getAttribute('sandbox') ?? '').split(/\s+/); } });
+    let engine: ReturnType<typeof createSceneEngine> | undefined;
+    try {
+      engine = createSceneEngine(events.slice(0, focusIndex + 1), asset, stage);
+      engine.iframe.contentWindow!.scrollTo = () => {};
+      engine.pause(at - 1);
+      await renderMenu(createInlineDownloadLoader(config.inlineDownloadManifestUrl, async () => Response.json({ version: '0.22.0' })));
+      await openMenu();
+      const link = document.querySelector<HTMLAnchorElement>('a[data-inline-download-option="windows"]')!;
+      await act(async () => link.focus());
+      expect(document.activeElement).toBe(link);
+      const interaction = vi.fn();
+      engine.on(ReplayerEvents.MouseInteraction, interaction);
+      await act(async () => engine!.pause(at + 1));
+      expect(interaction).toHaveBeenCalledWith(expect.objectContaining({ type: MouseInteractions.Focus }));
+      expect(document.activeElement?.getAttribute('data-inline-download-option')).toBe('windows');
+      expect(document.querySelector('[role="menu"]')?.contains(link)).toBe(true);
+      await closeMenu();
+    } finally {
+      engine?.destroy(); stage.remove();
+      if (!sandbox) delete (HTMLIFrameElement.prototype as Partial<HTMLIFrameElement>).sandbox;
+    }
   });
 
   it('ignores a late error from a closed menu', async () => {
