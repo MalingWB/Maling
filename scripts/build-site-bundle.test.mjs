@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { parse } from 'yaml';
 import { clearDirectoryContents } from './site-output.mjs';
 
 const bundleScript = resolve(import.meta.dirname, 'build-site-bundle.mjs');
@@ -31,6 +32,19 @@ test('treats a missing output root as already clear', () => {
   } finally {
     rmSync(output, { recursive: true, force: true });
   }
+});
+
+test('PR verification and production builds use the same read-only Demo type check', () => {
+  const repo = resolve(import.meta.dirname, '..');
+  const { scripts } = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
+  const workflow = parse(readFileSync(join(repo, '.github/workflows/pr-checks.yml'), 'utf8'));
+  const steps = workflow.jobs.verify.steps;
+  const install = steps.findIndex(step => step.run === 'npm ci');
+  const check = steps.findIndex(step => step.run === 'npm run demo:typecheck');
+  assert.equal(scripts['demo:typecheck'], 'tsc -p marketing/demo/tsconfig.json');
+  assert.equal(scripts['demo:build'].split(' && ')[0], 'npm run demo:typecheck');
+  assert.ok(install >= 0 && check > install, 'PR verification must check the Demo after dependency installation');
+  assert.ok(!steps[check]['continue-on-error']);
 });
 
 for (const failure of ['site', 'demo', null]) {

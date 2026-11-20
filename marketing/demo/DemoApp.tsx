@@ -156,6 +156,8 @@ export function DemoApp({ bootstrap, layoutPreferences }: { bootstrap: AppBootst
             onSaveAvatar={unusedAction} onSelectRecentAvatar={unusedAction} onSaveAvatarShape={unusedAction}
             onClearAvatar={unusedAction} onImportWallpaper={unusedAction} onSelectRecentWallpaper={unusedAction}
             onSaveWallpaperOpacity={unusedAction} onRestoreThemeWallpaper={unusedAction}
+            onClearWallpaper={unusedAction} onDeleteRecentWallpaper={unusedAction}
+            onSelectThemeWallpaper={unusedAction} onSaveWallpaperFit={unusedAction}
             onSaveUpdaterSettings={unusedAction} onCheckUpdate={unusedAction} onInstallUpdate={async () => {}}
             onViewSettings={noop} onViewAdvanced={noop}
           /> : page.kind === 'conversation-run' ? <DemoConversation key={`${page.projectId}:${page.taskId}:${page.runId}:${preferences.language}`} page={page} parameters={linkParameters} bootstrap={bootstrap} language={preferences.language} title={page.projectId === history?.projectId ? history.title : demoTitle(page.taskId, preferences.language)} /> : null}
