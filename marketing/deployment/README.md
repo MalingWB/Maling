@@ -14,6 +14,7 @@ Use the repository lockfile (`npm ci`) and Node 22.18+ (recording scripts import
 - Shared client UI: `web/src`; read-only injection: `marketing/demo/runtime.ts`, `api.ts`, `dataset.ts`; fixtures: `marketing/shared/fixture.ts`.
 
 ```powershell
+$env:GOLD_BAND_WB_BASE_URL = Read-Host "WB service origin (scheme, host and optional port only)"
 npm run site:dev
 # Separate terminal, only when needed:
 npm run demo:dev
@@ -25,7 +26,7 @@ Production examples use separate non-root mounts. Choose the final paths before 
 ```powershell
 $env:VITE_SITE_BASE='/product/'
 $env:VITE_DEMO_URL='/nested/demo/'
-$env:VITE_DOWNLOAD_URL='https://github.com/diodeme/Gold-Band/releases'
+$env:GOLD_BAND_WB_BASE_URL = Read-Host "WB service origin (scheme, host and optional port only)"
 npm run site:build
 # Default website output: .codex-temp/site-dist
 $env:VITE_DEMO_BASE='/nested/demo/'
@@ -35,13 +36,22 @@ Remove-Item Env:DEMO_ALLOW_INCOMPLETE_DATASET -ErrorAction SilentlyContinue
 npm run demo:build
 ```
 
-单目录交付使用 npm run website:build。默认输出到 release/website，将官网放在根目录、Demo 放在 demo/ 子目录；设置 WEBSITE_DIST 可指定目标目录。Demo 完整数据门禁仍然生效。
+单目录交付请从仓库根目录运行以下 PowerShell 命令。输入实际 WB 服务的 `http://` 或 `https://` 加主机及可选端口，不要填 `/api/file/download/latest.json`、账号密码或查询参数。只在当前终端设置即可，不要把真实地址提交到仓库。
+
+```powershell
+$env:GOLD_BAND_WB_BASE_URL = Read-Host '输入 WB 服务地址（含协议，不带路径）'
+npm run website:build
+```
+
+`website:build` 自动设置 Demo 挂载路径。默认输出到 `release/website`，将官网放在根目录、Demo 放在 `demo/` 子目录；设置 `WEBSITE_DIST` 可指定目标目录。官网配置错误会提示变量名和所需格式，不打印输入值。官网或 Demo 构建失败不会清除上次交付产物；Demo 完整数据门禁仍然生效。
 
 ### 行内客户端下载清单
 
-构建官网时给 `GOLD_BAND_WB_BASE_URL` 设置 WB 服务的 HTTP(S) origin（不带子路径）；这个值只用于定位 `/api/file/download/latest.json`。官网打开下载菜单时读取该清单，并直接使用已发布的 `platforms.*.url`，不依赖官网构建时的应用版本。之后发版只需先上传安装包，再更新发布清单；无需为版本变化重建官网。
+构建官网时给 `GOLD_BAND_WB_BASE_URL` 设置 WB 服务的 HTTP(S) origin（不带子路径）。下载菜单打开时从 `/api/file/download/latest.json` 读取 `version`，按 `configs/wb-installer-filenames.json` 生成同目录下的 Apple Silicon DMG、Windows x64 安装 EXE、Linux x64 AppImage 链接。`platforms.*.url` 是客户端自动更新地址，不是官网安装包地址。
 
-建议官网与 WB 下载接口同源，并确保清单路径由 WB 接口提供，而不是落入官网的 SPA 页面回退。不同源时，WB 接口需允许官网来源读取清单；HTTPS 页面必须使用 HTTPS 的 WB 地址，并且清单中的包链接也要匹配该 WB 下载 origin。发布服务器应允许浏览器获取更新后的清单，不把 `latest.json` 当作不可变资产缓存。
+发布流程：先把对应版本的三份手动安装包按 Release 原名（包括预发布和构建标识）以及客户端需要的更新文件同步到行内下载目录，确认可下载后，最后替换 `latest.json`。不要发布只有单平台产物的本地清单。之后换版无需重建官网。
+
+建议官网与 WB 下载接口同源，并确保清单路径由 WB 接口提供，而不是落入官网的 SPA 页面回退。跨源部署须允许官网来源读取清单；HTTPS 页面须使用 HTTPS 的 WB 地址。不要将 `latest.json` 作为不可变资产缓存。
 
 ### 子路径部署与 HTTP
 

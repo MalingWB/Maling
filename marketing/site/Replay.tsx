@@ -19,8 +19,12 @@ export function rebrandSceneEvents(data: unknown): eventWithTime[] {
 }
 
 export function createSceneEngine(data: unknown, source: SceneAsset, root: HTMLDivElement) {
-  // Virtual fast-forward drops reused nodes when these scenes return to chat.
-  const replayer = new Replayer(rebrandSceneEvents(data), { root, showWarning: false, showDebug: false, skipInactive: false, mouseTail: false, UNSAFE_replayCanvas: false, useVirtualDom: source.scene !== 'before' && source.scene !== 'personalize',
+  const replayer = new Replayer(rebrandSceneEvents(data), {
+    root, showWarning: false, showDebug: false, skipInactive: false, mouseTail: false, UNSAFE_replayCanvas: false,
+    // Recorded focus belongs to the demo, not to the visitor's active menu or control.
+    triggerFocus: false,
+    // Virtual fast-forward drops reused nodes when these scenes return to chat.
+    useVirtualDom: source.scene !== 'before' && source.scene !== 'personalize',
     insertStyleRules: source.scene === 'before' ? ['html.rrweb-paused :is([data-state="open"], [data-state="delayed-open"], [data-state="instant-open"]), html.rrweb-paused :is([data-state="open"], [data-state="delayed-open"], [data-state="instant-open"]) * { animation: none !important; }']
       : source.scene === 'after' ? ['html.rrweb-paused :is([data-slot="sheet-content"], [data-slot="sheet-overlay"])[data-state="open"] { animation: none !important; }']
       : source.scene === 'personalize' ? ['html.rrweb-paused [data-slot="popover-content"][data-state="open"] { animation: none !important; }'] : [],
@@ -124,7 +128,7 @@ function SceneReplay({ language, chapter, autoPlay, theme = 'dark' }: Props) {
   const playing = view.status === 'playing';
   const label = playing ? (language === 'zh' ? '暂停演示' : 'Pause demo') : t.play;
   return <div ref={host} className="recording scene-recording" data-player-state={view.status}>
-    <div ref={stage} className="replay-stage" aria-hidden="true" />
+    <div ref={stage} className="replay-stage" inert aria-hidden="true" />
     {view.poster && (view.status === 'loading' || view.status === 'error') && <img className="replay-poster" src={view.poster} alt="" />}
     {(view.status === 'loading' || view.status === 'error') ? <div className="media-status" role="status">
       {view.status === 'loading' ? <><Loader2 className="animate-spin" />{t.loading}</> : <><span>{t.error}</span><Button variant="secondary" onClick={() => setRetry(value => value + 1)}><RotateCcw />{t.retry}</Button></>}

@@ -62,6 +62,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Check read-only Demo types
+        run: npm run demo:typecheck
+
       - name: Test macOS installer contract
         run: npm run test:macos-installer
 

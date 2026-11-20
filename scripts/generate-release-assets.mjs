@@ -1,8 +1,10 @@
+import { statSync } from 'node:fs';
 import { access, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readChannelConfig } from './channel-config.mjs';
+import wbInstallerTemplates from '../configs/wb-installer-filenames.json' with { type: 'json' };
 
 const LOCALES = ['zh-CN', 'zh-TW', 'en', 'ja-JP', 'ko-KR', 'pt-BR', 'es'];
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -55,6 +57,18 @@ try {
 } catch (error) {
   console.error(`Invalid release metadata: ${metadataPath}: ${error.message}`);
   process.exit(1);
+}
+
+// A published WB version advertises these manual installers independently of the signed updater archives.
+if (channelConfig.channel === 'wb') {
+  for (const template of Object.values(wbInstallerTemplates)) {
+    const filename = template.replace('{version}', version);
+    const file = statSync(path.join(assetDir, filename), { throwIfNoEntry: false });
+    if (!file?.isFile() || file.size === 0) {
+      console.error(`Missing or empty WB installer: ${filename}`);
+      process.exit(1);
+    }
+  }
 }
 
 await mkdir(outputDir, { recursive: true });

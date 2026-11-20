@@ -79,6 +79,8 @@ for (const [workflow, toolingRoot] of [
       new RegExp(String.raw`^node\s+${toolingRoot}scripts/generate-release-assets\.mjs\s+release-assets\s+release-output\s+--version\s+"\$\{RELEASE_TAG#v\}"\s*$`),
       'generate localized manifests in release-output for the release version',
     );
+    const manifestEnv = { ...config.env, ...job.env, ...job.steps[manifestIndex].env };
+    assert.equal(manifestEnv.GOLD_BAND_RELEASE_CHANNEL, 'wb', `${workflow} must validate the WB manual installers before publishing manifests`);
     const checksumIndex = commandIndex(
       new RegExp(String.raw`^node\s+${toolingRoot}scripts/generate-release-checksums\.mjs\s+release-assets\s*$`),
       'generate checksums for release-assets',
