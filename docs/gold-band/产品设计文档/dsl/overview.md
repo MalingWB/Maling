@@ -20,6 +20,7 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范：外层 wo
 - [Control DSL](control.md)
 - [worker 节点](nodes/worker.md)
 - [AI-DYNAMIC 节点](nodes/ai-dynamic.md)
+- [Forge Spec（工作流铸造）](forge.md)
 
 输出产物不再按内置名称区分；需要 canonical artifact 的 worker 通过 `output.artifact` 自定义产物 key。
 

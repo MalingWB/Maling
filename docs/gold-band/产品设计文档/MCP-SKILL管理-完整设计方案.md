@@ -673,6 +673,7 @@ settings.json
 - [ ] BuiltIn SKILL 支持
 - [ ] File watch 自动刷新
 - [x] AI-DYNAMIC 节点 MCP 覆盖
+- [x] 工作流铸造入口 B：skill 多选"生成工作流"（跨 agent 混合，项目挂靠对话框；详见 [dsl/forge.md](dsl/forge.md)）
 
 ---
 
