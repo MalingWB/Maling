@@ -85,7 +85,7 @@ import type {
 const notificationGroups = [
   {
     key: 'needsAction',
-    items: ['permission', 'elicitation', 'manualCheck'],
+    items: ['permission', 'elicitation', 'manualCheck', 'workflowResume'],
   },
   {
     key: 'results',

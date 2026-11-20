@@ -1,13 +1,18 @@
-import type { ComponentProps } from 'react';
+import { useEffect, useRef, useState, type ComponentProps } from 'react';
 import { Download, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { inlineDownloadFilename, inlineDownloadUrl, type InlineDownloadPlatform, type SiteConfig } from './config';
+import type { SiteConfig } from './config';
+import type { InlineDownloadPlatform, InlineDownloadResult, LoadInlineDownloads } from './inline-downloads';
 
 type DownloadMenuLabels = {
   inline: string;
+  inlineLoading: string;
+  inlineEmpty: string;
+  inlineUnavailable: string;
   external: string;
   mac: string;
+  macArchive: string;
   windows: string;
   linux: string;
   github: string;
@@ -16,6 +21,7 @@ type DownloadMenuLabels = {
 type Props = {
   label: string;
   labels: DownloadMenuLabels;
+  loadInlineDownloads: LoadInlineDownloads;
 };
 
 const APPLE_PATH = 'M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701';
@@ -45,23 +51,46 @@ const INLINE_OPTIONS: Array<{ platform: InlineDownloadPlatform; labelKey: keyof 
 
 const NEW_TAB_ATTRIBUTES = { target: '_blank', rel: 'noreferrer' } as const;
 
-export function DownloadMenu({ config, label, labels }: Props & { config: SiteConfig }) {
-  return <DropdownMenu modal={false}>
+type InlineMenuState = InlineDownloadResult | { status: 'idle' | 'loading' };
+
+export function DownloadMenu({ config, label, labels, loadInlineDownloads }: Props & { config: SiteConfig }) {
+  const [inline, setInline] = useState<InlineMenuState>({ status: 'idle' });
+  const activeRead = useRef<symbol | null>(null);
+  useEffect(() => () => { activeRead.current = null; }, []);
+
+  const handleOpenChange = (open: boolean) => {
+    if (!open) {
+      activeRead.current = null;
+      return;
+    }
+    const read = Symbol();
+    activeRead.current = read;
+    setInline({ status: 'loading' });
+    void loadInlineDownloads().then(result => {
+      if (activeRead.current === read) setInline(result);
+    });
+  };
+
+  return <DropdownMenu modal={false} onOpenChange={handleOpenChange}>
     <DropdownMenuTrigger asChild>
       <Button className="download-trigger" size="lg" aria-haspopup="menu" aria-label={label}><Download />{label}</Button>
     </DropdownMenuTrigger>
     <DropdownMenuContent align="center" sideOffset={12} className="download-menu">
-      <p className="download-menu-section">{labels.inline}</p>
+      <p className="download-menu-section truncate">{labels.inline}{inline.status === 'ready' ? ` · ${inline.version}` : ''}</p>
       <div className="download-menu-options">
-        {INLINE_OPTIONS.map(({ platform, labelKey, icon: Icon }) => {
-          const filename = inlineDownloadFilename(platform, config.appVersion);
+        {inline.status === 'ready' ? INLINE_OPTIONS.map(({ platform, labelKey, icon: Icon }) => {
+          const installer = inline.downloads[platform];
+          if (!installer) return null;
+          const optionLabel = platform === 'mac' && installer.filename.toLowerCase().endsWith('.app.tar.gz') ? labels.macArchive : labels[labelKey];
           return <DropdownMenuItem asChild key={platform} className="download-option">
-            <a href={inlineDownloadUrl(platform, config.appVersion, config.inlineDownloadBaseUrl)} download {...NEW_TAB_ATTRIBUTES} data-platform-icon={platform} data-inline-download-option={platform} data-download-filename={filename} aria-label={`${labels[labelKey]} — ${filename}`}>
+            <a href={installer.url} download {...NEW_TAB_ATTRIBUTES} data-platform-icon={platform} data-inline-download-option={platform} data-download-filename={installer.filename} aria-label={`${optionLabel} — ${installer.filename}`}>
               <span className="download-option-icon-tile" aria-hidden="true"><Icon className="download-option-icon" /></span>
-              <span className="download-option-label">{labels[labelKey]}</span><Download className="download-option-action" />
+              <span className="download-option-label">{optionLabel}</span><Download className="download-option-action" />
             </a>
           </DropdownMenuItem>;
-        })}
+        }) : <p className="download-menu-section" role="status">{
+          inline.status === 'empty' ? labels.inlineEmpty : inline.status === 'error' ? labels.inlineUnavailable : labels.inlineLoading
+        }</p>}
       </div>
       <DropdownMenuSeparator />
       <p className="download-menu-section">{labels.external}</p>

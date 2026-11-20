@@ -1145,6 +1145,22 @@ describe('deriveAcpRuntimeComposerState', () => {
 });
 
 describe('mergeConversationAttemptLifecycle', () => {
+  it('keeps the offer on the authoritative Runtime boundary when a stale ACP snapshot arrives', () => {
+    const offer = {
+      locator: { projectId: 'p', taskId: 't', runId: 'r', roundId: 'round', nodeId: 'node', attemptId: 'attempt' },
+      sourceIdentity: { taskUuid: 'task-instance', runUuid: 'run-instance' },
+      kind: 'continueCurrentAttempt' as const,
+      boundary: { kind: 'runExecution' as const, revision: 12 },
+    };
+    const current = lifecycle({ runtime: { revision: 12 } });
+    current.runtimeResume = { offer, readiness: { kind: 'ready' } };
+    const stale = lifecycle({ runtime: { revision: 11 } });
+    stale.runtimeResume = { offer: { ...offer, boundary: { kind: 'runExecution', revision: 11 } }, readiness: { kind: 'busy', reason: 'promptActive' } };
+    expect(mergeConversationAttemptLifecycle(current, stale).runtimeResume).toBe(current.runtimeResume);
+    const busy = { ...current, runtimeResume: { offer, readiness: { kind: 'busy' as const, reason: 'promptActive' as const } } };
+    expect(mergeConversationAttemptLifecycle(current, busy).runtimeResume).toBe(busy.runtimeResume);
+  });
+
   it('preserves canonical non-blocking runtime-abnormal semantics when replaying a newer ACP facet', () => {
     const canonical = lifecycle({
       runtime: {

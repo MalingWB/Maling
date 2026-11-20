@@ -1,8 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import packageJson from '../../package.json';
-import { GITHUB, PRODUCT_NAME, inlineDownloadUrl, siteConfig } from '../../marketing/site/config';
+import { GITHUB, PRODUCT_NAME, siteConfig } from '../../marketing/site/config';
 import { rebrandSceneEvents } from '../../marketing/site/Replay';
 
 const root = process.cwd();
@@ -38,19 +37,11 @@ describe('marketing brand and download contract', () => {
     expect(JSON.stringify(events)).toContain('Gold Band');
   });
 
-  it('derives inline download package URLs from the branch version and WB origin', () => {
-    expect(packageJson.version).toBe('0.21.0');
-    expect(GITHUB).toBe('https://github.com/MalingWB/Maling');
-    const baseUrl = 'https://example.invalid/api/file/download/';
-    expect(inlineDownloadUrl('windows', packageJson.version, baseUrl)).toBe(`${baseUrl}MALING_0.21.0_x64-setup.exe`);
-    expect(inlineDownloadUrl('mac', packageJson.version, baseUrl)).toBe(`${baseUrl}MALING_0.21.0_aarch64.dmg`);
-    expect(inlineDownloadUrl('linux', packageJson.version, baseUrl)).toBe(`${baseUrl}MALING_0.21.0_amd64.AppImage`);
-  });
-
   it('keeps the concrete WB download origin out of source and delivery docs', () => {
     const files = [
       resolve(siteRoot, 'config.ts'),
       resolve(siteRoot, 'DownloadMenu.tsx'),
+      resolve(siteRoot, 'inline-downloads.ts'),
       resolve(root, 'scripts/build-site-bundle.mjs'),
       resolve(root, 'docs/gold-band/开发计划/官网开发计划.md'),
     ];
@@ -58,11 +49,12 @@ describe('marketing brand and download contract', () => {
   });
   it('exposes inline and external download sources without desktop/mobile segmentation', () => {
     const config = siteConfig({ VITE_DEMO_URL: '/demo/', GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, true);
-    expect(config.inlineDownloadBaseUrl).toBe('https://example.invalid/api/file/download/');
-    expect(config.appVersion).toBe(packageJson.version);
-    expect(config.downloadUrl).toBe('https://github.com/MalingWB/Maling/releases');
+    expect(config.inlineDownloadManifestUrl).toBe('https://example.invalid/api/file/download/latest.json');
+    expect(config).not.toHaveProperty('appVersion');
+    expect(GITHUB).toBe('https://github.com/MalingWB/Maling');
+    expect(config.downloadUrl).toBe(`${GITHUB}/releases`);
     const menu = readFileSync(resolve(siteRoot, 'DownloadMenu.tsx'), 'utf8');
-    expect(menu).toContain('<DropdownMenu modal={false}>');
+    expect(menu).toContain('<DropdownMenu modal={false}');
     expect(menu).toContain('data-platform-icon');
     expect(menu).toContain('download-option-icon-tile');
     expect(menu).toContain('data-inline-download-option');

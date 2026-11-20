@@ -8,10 +8,10 @@ describe('production website entrances', () => {
     expect(siteConfig({ VITE_DEMO_URL: '/demo/', GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, true).demoUrl).toBe('/demo/');
     expect(() => siteConfig({}, false)).toThrow();
     expect(siteConfig({ GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, false).demoUrl).toBe('http://127.0.0.1:1450/');
-    expect(siteConfig({ GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, false).inlineDownloadBaseUrl).toBe('https://example.invalid/api/file/download/');
+    expect(siteConfig({ GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, false).inlineDownloadManifestUrl).toBe('https://example.invalid/api/file/download/latest.json');
   });
   it('requires GOLD_BAND_WB_BASE_URL to be a bare HTTP(S) origin', () => {
-    expect(siteConfig({ VITE_DEMO_URL: '/demo/', GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, true).inlineDownloadBaseUrl).toBe('https://example.invalid/api/file/download/');
+    expect(siteConfig({ VITE_DEMO_URL: '/demo/', GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, true).inlineDownloadManifestUrl).toBe('https://example.invalid/api/file/download/latest.json');
     for (const GOLD_BAND_WB_BASE_URL of ['', 'example.invalid', 'https://example.invalid/path', 'https://example.invalid?x=1', 'https://user:pass@example.invalid']) {
       expect(() => siteConfig({ VITE_DEMO_URL: '/demo/', GOLD_BAND_WB_BASE_URL }, true)).toThrow();
     }

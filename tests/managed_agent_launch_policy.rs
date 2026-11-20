@@ -1,5 +1,7 @@
 use gold_band::app::App;
-use gold_band::config::{RuntimeConfig, SettingsConfig, catalog_agent_default_config};
+use gold_band::config::{
+    CURRENT_SETTINGS_SCHEMA_VERSION, RuntimeConfig, SettingsConfig, catalog_agent_default_config,
+};
 
 #[test]
 fn builtin_launch_config_follows_catalog_and_is_not_persisted() {
@@ -69,7 +71,7 @@ fn in_memory_settings_cannot_override_builtin_launch() {
 #[test]
 fn missing_custom_launch_is_isolated_to_the_execution_boundary() {
     let (settings, migrated) = SettingsConfig::from_json_value_with_migration(serde_json::json!({
-        "settingsSchemaVersion": 13,
+        "settingsSchemaVersion": CURRENT_SETTINGS_SCHEMA_VERSION,
         "agents": {
             "claude-acp": {
                 "adapter": { "displayName": "Claude", "env": {} }

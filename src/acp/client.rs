@@ -113,17 +113,17 @@ fn settle_prompt_event(
     mut event: AcpUiEvent,
     terminal_status: &str,
     ended_seq: u64,
-    failure: Option<&AcpPromptFailure>,
+    failure: Option<(&str, &str)>,
 ) -> AcpUiEvent {
     event.status = Some(terminal_status.to_string());
     event.ended_seq = Some(ended_seq);
     event.ended_at = Some(current_timestamp());
     let raw = event.raw.get_or_insert_with(|| json!({}));
     match failure {
-        Some(failure) => {
+        Some((code, message)) => {
             raw["terminalFailure"] = json!({
-                "code": failure.code,
-                "message": failure.diagnostic(),
+                "code": code,
+                "message": message,
             });
         }
         None => raw["cancelled"] = json!(true),
@@ -1265,6 +1265,28 @@ pub fn request_prompt_cancel(attempt_dir: &Utf8Path) -> bool {
         .unwrap_or(false)
 }
 
+/// A scoped handle to the observed prompt, not a lookup of whichever prompt
+/// later occupies this attempt. Its executor owns transport cancellation and
+/// interaction settlement, so a late cleanup cannot cancel a newer turn.
+pub(crate) struct PromptCancellationTarget(Arc<ProviderControl>);
+
+impl PromptCancellationTarget {
+    pub(crate) fn request_cancel(&self) {
+        self.0.request_prompt_cancel();
+    }
+}
+
+pub(crate) fn capture_prompt_cancellation(
+    attempt_dir: &Utf8Path,
+) -> Option<PromptCancellationTarget> {
+    PROVIDER_CONTROLS
+        .lock()
+        .ok()?
+        .get(&attempt_control_key(attempt_dir))
+        .cloned()
+        .map(PromptCancellationTarget)
+}
+
 pub fn prompt_activity(attempt_dir: &Utf8Path) -> Option<PromptActivity> {
     let key = attempt_control_key(attempt_dir);
     let state = PROVIDER_CONTROLS
@@ -1836,6 +1858,7 @@ pub struct AcpPromptRun {
     pub session_id: String,
     pub adapter_id: String,
     pub adapter_display_name: String,
+    pub turn_outcome: crate::app::AcpTurnOutcome,
     pub stop_reason: Option<String>,
     pub terminal_failure: Option<AcpPromptFailure>,
     pub output: AcpPromptOutput,
@@ -1848,6 +1871,18 @@ pub struct AcpPromptRun {
     pub cached_read_tokens: Option<u64>,
     pub cached_write_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
+}
+
+impl AcpPromptRun {
+    fn cancel(&mut self) {
+        self.turn_outcome = crate::app::AcpTurnOutcome::Cancelled;
+        self.terminal_failure = None;
+    }
+}
+
+struct AcpPromptResponse {
+    result: Value,
+    converged: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1917,6 +1952,30 @@ impl AcpPromptTerminalState {
             });
         }
     }
+}
+
+fn prompt_result_failure(result: &Value) -> Option<AcpPromptFailure> {
+    let error = result.pointer("/_meta/codebuddy.ai~1errorMessage")?;
+    let error = match error {
+        Value::String(text) if !text.trim().is_empty() => {
+            serde_json::from_str::<Value>(text).unwrap_or_else(|_| error.clone())
+        }
+        Value::Object(object) if !object.is_empty() => error.clone(),
+        _ => return None,
+    };
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| error.as_str())
+        .filter(|message| !message.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| error.to_string());
+    Some(AcpPromptFailure {
+        code: "codebuddy.prompt-error".to_string(),
+        message,
+        details: None,
+        raw: result.clone(),
+    })
 }
 
 fn codex_prompt_failure(error: &Value) -> AcpPromptFailure {
@@ -3503,7 +3562,7 @@ fn run_prompt_inner(
     commit_runtime_control_prompt(&runtime.paths.attempt_dir, prompt)?;
     runtime.control.mark_accepted();
     publish_prompt_accepted(prompt_accepted, &prompt_turn.id)?;
-    runtime.write_session("running", restored, None, capabilities.clone())?;
+    runtime.write_session("running", restored, None, capabilities.clone(), None)?;
     if acp_session_title_refresh_enabled {
         runtime.refresh_session_title_and_persist(
             &workspace_dir,
@@ -3533,50 +3592,46 @@ fn run_prompt_inner(
         &capabilities,
         acp_session_title_refresh_enabled,
     );
-    runtime.refresh_provider_freshness_best_effort(&workspace_dir);
-    let cancellation = prompt_cancellation_outcome(
-        runtime.is_prompt_cancel_requested(),
-        prompt_result.as_ref().err(),
-    );
+    let convergence_failed = prompt_result
+        .as_ref()
+        .is_ok_and(|response| !response.converged);
+    if !convergence_failed {
+        runtime.refresh_provider_freshness_best_effort(&workspace_dir);
+    }
+    let cancel_requested =
+        if convergence_failed || runtime.prompt_terminal.terminal_failure.is_some() {
+            runtime.is_explicit_prompt_cancel_requested()
+        } else {
+            runtime.is_prompt_cancel_requested()
+        };
+    let cancellation = prompt_cancellation_outcome(cancel_requested, prompt_result.as_ref().err());
     // Cancellation owns the user-visible terminal state. Otherwise a
     // structured provider terminal failure outranks end_turn and all text or
     // artifact candidates observed during the prompt.
     let terminal_failure = (!cancellation.observed && prompt_result.is_ok())
         .then(|| runtime.prompt_terminal.terminal_failure.clone())
         .flatten();
-    let (status, stop_reason) = match prompt_result {
-        Ok(stop_reason) => {
-            let status = if cancellation.observed {
-                "cancelled"
-            } else if terminal_failure.is_some() {
-                "failed"
-            } else if stop_reason.as_deref().is_some_and(|reason| {
-                matches!(
-                    normalize_stop_code(reason).as_str(),
-                    "cancelled" | "canceled" | "interrupted"
-                )
-            }) {
-                "cancelled"
-            } else {
-                "completed"
-            };
-            if status == "cancelled" {
-                let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
-            }
-            (status, stop_reason)
+    let (cancelled, stop_reason) = match prompt_result {
+        Ok(response) => {
+            let stop_reason = response
+                .result
+                .get("stopReason")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let cancelled = cancellation.observed
+                || (terminal_failure.is_none()
+                    && stop_reason.as_deref().is_some_and(|reason| {
+                        matches!(
+                            normalize_stop_code(reason).as_str(),
+                            "cancelled" | "canceled" | "interrupted"
+                        )
+                    }));
+            (cancelled, stop_reason)
         }
-        Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
-            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
-            ("cancelled", Some("cancelled".to_string()))
+        Err(error) if error.is::<AcpCancelled>() || cancellation.drain_timed_out => {
+            (true, Some("cancelled".to_string()))
         }
-        Err(error) if error.downcast_ref::<AcpCancelDrainTimeout>().is_some() => {
-            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
-            ("cancelled", Some("cancelled".to_string()))
-        }
-        Err(error) if is_transport_interruption(&error) => {
-            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
-            ("cancelled", Some("interrupted".to_string()))
-        }
+        Err(error) if is_transport_interruption(&error) => (true, Some("interrupted".to_string())),
         Err(error) => {
             let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             let _ = runtime.interrupt_active_context_compaction("prompt_failed");
@@ -3623,12 +3678,64 @@ fn run_prompt_inner(
             return Err(error);
         }
     };
-    if let Some(failure) = terminal_failure.as_ref() {
-        runtime.mark_prompt_terminal_failure(&prompt_turn, failure)?;
+    if cancelled {
+        let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
+    }
+    let mut run = AcpPromptRun {
+        session_id,
+        adapter_id: runtime.connection.adapter().adapter_id.clone(),
+        adapter_display_name: runtime.connection.adapter().display_name.clone(),
+        turn_outcome: if cancelled
+            && (cancellation.observed || is_user_cancel_stop_reason(stop_reason.as_deref()))
+        {
+            crate::app::AcpTurnOutcome::Cancelled
+        } else {
+            crate::app::AcpTurnOutcome::Failed
+        },
+        stop_reason: stop_reason.clone(),
+        terminal_failure,
+        output: runtime.prompt_output.output.clone(),
+        restored,
+        used_tokens: runtime.usage.context.confirmed_used,
+        context_window_size: runtime.usage.context.window_size,
+        total_cost_usd: runtime.usage.total_cost_usd,
+        input_tokens: runtime.usage.latest_prompt.input_tokens,
+        output_tokens: runtime.usage.latest_prompt.output_tokens,
+        cached_read_tokens: runtime.usage.latest_prompt.cached_read_tokens,
+        cached_write_tokens: runtime.usage.latest_prompt.cached_write_tokens,
+        total_tokens: runtime.usage.latest_prompt.total_tokens,
+    };
+    let terminal = crate::provider::classify_acp_prompt_run(&run);
+    let status = if cancelled {
+        "cancelled"
+    } else if terminal.status == crate::provider::ProviderRunStatus::Success {
+        run.turn_outcome = crate::app::AcpTurnOutcome::Completed;
+        "completed"
+    } else {
+        "failed"
+    };
+    let turn_error = if status == "failed" {
+        Some(terminal.runtime_error.unwrap_or_else(|| {
+            manual_runtime_error_info(
+                RuntimeErrorDomain::Provider,
+                "acp.turn-execution-failed",
+                format!(
+                    "ACP prompt ended with stop reason `{}`",
+                    stop_reason.as_deref().unwrap_or_default()
+                ),
+                json!({ "stopReason": stop_reason }),
+            )
+        }))
+    } else {
+        None
+    };
+    if let Some(failure) = run.terminal_failure.as_ref() {
+        let diagnostic = failure.diagnostic();
+        runtime.mark_prompt_terminal_failure(&prompt_turn, &failure.code, &diagnostic)?;
         append_diagnostic_best_effort(
             &runtime.paths.diagnostics,
             "error",
-            format!("ACP prompt failed: {}", failure.diagnostic()),
+            format!("ACP prompt failed: {diagnostic}"),
             Some(json!({
                 "code": failure.code,
                 "details": failure.details,
@@ -3637,26 +3744,47 @@ fn run_prompt_inner(
         );
     } else if status == "cancelled" {
         runtime.mark_prompt_cancelled(&prompt_turn)?;
-    } else if status == "completed"
-        && runtime
-            .prompt_retry
-            .as_ref()
-            .is_some_and(|state| state.retry_attempt > 0)
+    } else if runtime
+        .prompt_retry
+        .as_ref()
+        .is_some_and(|state| state.retry_attempt > 0)
     {
-        runtime.mark_prompt_completed(&prompt_turn)?;
+        if let Some(error) = &turn_error {
+            runtime.mark_prompt_terminal_failure(
+                &prompt_turn,
+                error.code_str(),
+                &error.diagnostic,
+            )?;
+        } else {
+            runtime.mark_prompt_completed(&prompt_turn)?;
+        }
     }
+    let settled_stop_reason = if run.turn_outcome == crate::app::AcpTurnOutcome::Cancelled {
+        Some("cancelled".to_string())
+    } else {
+        stop_reason.clone()
+    };
     runtime.write_worker_ref(
         provider_id,
         &workspace_dir,
         session_mode,
         restored,
-        stop_reason.clone(),
+        settled_stop_reason.clone(),
     )?;
-    runtime
-        .interrupt_active_context_compaction(stop_reason.as_deref().unwrap_or("prompt_finished"))?;
+    runtime.interrupt_active_context_compaction(
+        settled_stop_reason.as_deref().unwrap_or("prompt_finished"),
+    )?;
     runtime.control.mark_stopped();
     runtime.settle_foreground_turn_tools();
-    runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
+    if !runtime.write_session(
+        status,
+        restored,
+        settled_stop_reason,
+        capabilities,
+        turn_error,
+    )? {
+        run.cancel();
+    }
     if let Some(session_update) = session_update {
         let _ = session_update();
     }
@@ -3670,24 +3798,7 @@ fn run_prompt_inner(
             Some(json!({ "error": error.to_string(), "turnId": prompt_turn.id })),
         );
     }
-    let run = AcpPromptRun {
-        session_id,
-        adapter_id: runtime.connection.adapter().adapter_id.clone(),
-        adapter_display_name: runtime.connection.adapter().display_name.clone(),
-        stop_reason,
-        terminal_failure,
-        output: runtime.prompt_output.output.clone(),
-        restored,
-        used_tokens: runtime.usage.context.confirmed_used,
-        context_window_size: runtime.usage.context.window_size,
-        total_cost_usd: runtime.usage.total_cost_usd,
-        input_tokens: runtime.usage.latest_prompt.input_tokens,
-        output_tokens: runtime.usage.latest_prompt.output_tokens,
-        cached_read_tokens: runtime.usage.latest_prompt.cached_read_tokens,
-        cached_write_tokens: runtime.usage.latest_prompt.cached_write_tokens,
-        total_tokens: runtime.usage.latest_prompt.total_tokens,
-    };
-    if cancellation.drain_timed_out {
+    if cancellation.drain_timed_out || convergence_failed {
         // The adapter process may host other reusable sessions, so keep the
         // process alive while quarantining only this undrained session.
         runtime.shutdown();
@@ -3722,12 +3833,13 @@ fn finalize_unaccepted_prompt_interruption(
     let runtime_owned_session_route = runtime.session_id.is_some();
     let restored =
         preserve_interrupted_session_identity(&mut runtime.session_id, continued_session_id);
-    let run = runtime.interrupted_run(restored, stop_reason);
+    let mut run = runtime.interrupted_run(restored, stop_reason);
     let snapshot_result = runtime.write_session(
         "cancelled",
         restored,
         Some(stop_reason.to_string()),
         capabilities,
+        None,
     );
     if !runtime_owned_session_route {
         // The continued id above is a durable identity only. This runtime did
@@ -3736,7 +3848,9 @@ fn finalize_unaccepted_prompt_interruption(
         runtime.session_id = None;
     }
     runtime.shutdown();
-    snapshot_result?;
+    if !snapshot_result? {
+        run.cancel();
+    }
     if let Some(session_update) = session_update {
         let _ = session_update();
     }
@@ -4165,6 +4279,13 @@ fn is_cancel_stop_reason(result: &Value) -> bool {
                 "cancelled" | "canceled" | "interrupted"
             )
         })
+}
+
+fn is_user_cancel_stop_reason(reason: Option<&str>) -> bool {
+    reason.is_some_and(|reason| {
+        let reason = reason.trim();
+        reason.eq_ignore_ascii_case("cancelled") || reason.eq_ignore_ascii_case("canceled")
+    })
 }
 
 fn is_runtime_session_active(status: &str) -> bool {
@@ -4760,6 +4881,11 @@ impl<'a> AcpRuntime<'a> {
             }),
             adapter_id: self.connection.adapter().adapter_id.clone(),
             adapter_display_name: self.connection.adapter().display_name.clone(),
+            turn_outcome: if is_user_cancel_stop_reason(Some(stop_reason)) {
+                crate::app::AcpTurnOutcome::Cancelled
+            } else {
+                crate::app::AcpTurnOutcome::Failed
+            },
             stop_reason: Some(stop_reason.to_string()),
             terminal_failure: None,
             output: self.prompt_output.output.clone(),
@@ -5944,7 +6070,7 @@ impl<'a> AcpRuntime<'a> {
         capabilities: &Value,
     ) {
         self.refresh_session_title_best_effort(workspace_dir);
-        let _ = self.write_session(status, restored, stop_reason, capabilities.clone());
+        let _ = self.write_session(status, restored, stop_reason, capabilities.clone(), None);
     }
 
     fn record_user_prompt_event(
@@ -6159,10 +6285,15 @@ impl<'a> AcpRuntime<'a> {
     fn mark_prompt_terminal_failure(
         &mut self,
         prompt_turn: &AcpPromptTurnIdentity,
-        failure: &AcpPromptFailure,
+        code: &str,
+        diagnostic: &str,
     ) -> Result<()> {
-        let event =
-            settle_prompt_event(prompt_turn.event.clone(), "failed", self.seq, Some(failure));
+        let event = settle_prompt_event(
+            prompt_turn.event.clone(),
+            "failed",
+            self.seq,
+            Some((code, diagnostic)),
+        );
         self.timeline_revision = self.timeline_revision.saturating_add(1);
         let revision = self.timeline_revision;
         let durable_watermark = self.persist_timeline_update(event.clone())?;
@@ -6205,7 +6336,7 @@ impl<'a> AcpRuntime<'a> {
         restored: bool,
         capabilities: &Value,
         acp_session_title_refresh_enabled: bool,
-    ) -> Result<Option<String>> {
+    ) -> Result<AcpPromptResponse> {
         self.prompt_output = AcpPromptOutputAccumulator::default();
         self.prompt_terminal.reset();
         let session_id = self
@@ -6226,7 +6357,7 @@ impl<'a> AcpRuntime<'a> {
                 capabilities,
             )),
         )?;
-        if acp_session_title_refresh_enabled {
+        if acp_session_title_refresh_enabled && result.converged {
             self.refresh_session_title_and_persist(
                 workspace_dir,
                 "running",
@@ -6235,10 +6366,7 @@ impl<'a> AcpRuntime<'a> {
                 capabilities,
             );
         }
-        Ok(result
-            .get("stopReason")
-            .and_then(Value::as_str)
-            .map(str::to_string))
+        Ok(result)
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value> {
@@ -6463,7 +6591,7 @@ impl<'a> AcpRuntime<'a> {
         prompt_turn: &AcpPromptTurnIdentity,
         restored: bool,
         title_refresh: Option<(&Utf8Path, &str, bool, Option<String>, &Value)>,
-    ) -> Result<Value> {
+    ) -> Result<AcpPromptResponse> {
         if self.is_prompt_cancel_requested() {
             self.observe_prompt_cancel_request()?;
             return Err(anyhow!(AcpCancelled));
@@ -6560,6 +6688,7 @@ impl<'a> AcpRuntime<'a> {
                         let settlement_authoritative = settlement_usage
                             .as_ref()
                             .is_some_and(AcpPromptTokenUsage::has_positive_tokens);
+                        let response_failure = prompt_result_failure(&result);
                         if let Some(prompt_usage) = settlement_usage
                             .as_ref()
                             .filter(|_| settlement_authoritative)
@@ -6580,33 +6709,35 @@ impl<'a> AcpRuntime<'a> {
                             self.drain_available_inbound_bounded()?;
                         }
                         if value.get("error").is_none() {
-                            let watermark = response.session_route_watermark.ok_or_else(|| {
-                                anyhow!(AcpPromptRouteUnavailable {
-                                    reason:
-                                        "session route was not registered when the response arrived",
-                                })
-                            })?;
-                            if watermark.is_closed() {
-                                return Err(anyhow!(AcpPromptRouteUnavailable {
-                                    reason: "session route closed before terminal convergence",
-                                }));
+                            let converged = self.converge_prompt_terminal(
+                                response.session_route_watermark,
+                                session_id,
+                                cancel_started_at,
+                            );
+                            let has_response_failure = response_failure.is_some();
+                            if let Some(failure) = response_failure {
+                                self.prompt_terminal.terminal_failure = Some(failure);
                             }
-                            let route_timeout = prompt_cancel_terminal_timeout(
-                                cancel_started_at,
-                                self.runtime_policy.prompt_terminal_route_timeout,
-                            )?;
-                            self.drain_inbound_through_route_watermark(watermark, route_timeout)
-                                .map_err(|error| {
-                                    map_prompt_terminal_drain_error(error, cancel_started_at)
-                                })?;
-                            let quiet_timeout = prompt_cancel_terminal_timeout(
-                                cancel_started_at,
-                                self.runtime_policy.prompt_terminal_route_timeout,
-                            )?;
-                            self.drain_prompt_terminal_until_quiet(session_id, quiet_timeout)
-                                .map_err(|error| {
-                                    map_prompt_terminal_drain_error(error, cancel_started_at)
-                                })?;
+                            if let Err(error) = converged {
+                                if !has_response_failure || error.is::<AcpCancelDrainTimeout>() {
+                                    return Err(error);
+                                }
+                                append_structured_diagnostic_best_effort(
+                                    &self.paths.diagnostics,
+                                    "warn",
+                                    "acp.prompt-terminal-convergence-failed",
+                                    Some(json!({
+                                        "error": format!("{error:#}"),
+                                        "turnId": prompt_turn.id,
+                                        "requestId": request.id,
+                                        "sessionId": session_id,
+                                    })),
+                                );
+                                break Ok(AcpPromptResponse {
+                                    result,
+                                    converged: false,
+                                });
+                            }
                         }
                         // 结算通道缺失或未上报（适配器不在 prompt 响应里带有效 usage）时，
                         // 用本 turn 收集的流式样本求和作为该 turn 的用量结算值。放在两类终态
@@ -6629,7 +6760,10 @@ impl<'a> AcpRuntime<'a> {
                         if cancel_started_at.is_some() && !is_cancel_stop_reason(&result) {
                             break Err(anyhow!(AcpCancelled));
                         }
-                        break Ok(result);
+                        break Ok(AcpPromptResponse {
+                            result,
+                            converged: true,
+                        });
                     }
                     Err(RecvTimeoutError::Timeout) => {
                         self.refresh_session_title_if_due(
@@ -6671,11 +6805,15 @@ impl<'a> AcpRuntime<'a> {
                 })),
             );
         }
-        let status = if result.is_ok() { "ok" } else { "error" };
+        let status = if result.as_ref().is_ok_and(|response| response.converged) {
+            "ok"
+        } else {
+            "error"
+        };
         let stop_reason = result
             .as_ref()
             .ok()
-            .and_then(|value| value.get("stopReason"))
+            .and_then(|response| response.result.get("stopReason"))
             .and_then(Value::as_str)
             .map(str::to_string);
         self.append_timing_diagnostic(
@@ -7392,9 +7530,14 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn is_prompt_cancel_requested(&self) -> bool {
+        self.is_explicit_prompt_cancel_requested()
+            || (self.direct.is_some() && self.connection.is_transport_closed())
+    }
+
+    fn is_explicit_prompt_cancel_requested(&self) -> bool {
         self.direct
             .as_ref()
-            .is_some_and(|direct| direct.abort_requested() || self.connection.is_transport_closed())
+            .is_some_and(|direct| direct.abort_requested())
             || self.control.state() == ProviderControlState::CancelRequested
             || self
                 .stop_probe
@@ -7700,6 +7843,31 @@ impl<'a> AcpRuntime<'a> {
         )
     }
 
+    fn converge_prompt_terminal(
+        &mut self,
+        watermark: Option<SessionRouteWatermark>,
+        session_id: &str,
+        cancel_started_at: Option<Instant>,
+    ) -> Result<()> {
+        let watermark = watermark.ok_or_else(|| {
+            anyhow!(AcpPromptRouteUnavailable {
+                reason: "session route was not registered when the response arrived",
+            })
+        })?;
+        if watermark.is_closed() {
+            return Err(anyhow!(AcpPromptRouteUnavailable {
+                reason: "session route closed before terminal convergence",
+            }));
+        }
+        let default_timeout = self.runtime_policy.prompt_terminal_route_timeout;
+        let route_timeout = prompt_cancel_terminal_timeout(cancel_started_at, default_timeout)?;
+        self.drain_inbound_through_route_watermark(watermark, route_timeout)
+            .map_err(|error| map_prompt_terminal_drain_error(error, cancel_started_at))?;
+        let quiet_timeout = prompt_cancel_terminal_timeout(cancel_started_at, default_timeout)?;
+        self.drain_prompt_terminal_until_quiet(session_id, quiet_timeout)
+            .map_err(|error| map_prompt_terminal_drain_error(error, cancel_started_at))
+    }
+
     fn drain_inbound_through_route_watermark(
         &mut self,
         watermark: SessionRouteWatermark,
@@ -8003,21 +8171,23 @@ impl<'a> AcpRuntime<'a> {
         restored: bool,
         stop_reason: Option<String>,
         capabilities: Value,
-    ) -> Result<()> {
+        turn_error: Option<RuntimeErrorInfo>,
+    ) -> Result<bool> {
         self.flush_pending_timeline_patches(None)?;
         self.flush_pending_live_updates()?;
         self.timeline_store.force_checkpoint()?;
         for store in self.branch_timeline_stores.values_mut() {
             store.force_checkpoint()?;
         }
-        let metadata = self.session_metadata(status, restored, stop_reason, capabilities);
+        let mut metadata = self.session_metadata(status, restored, stop_reason, capabilities);
+        metadata.turn_error = turn_error;
         if let Some(owner) = self.lifecycle_owner.as_ref() {
             // Losing the exact claim means this runtime is stale, not that the
             // currently canonical turn failed.
-            let _ = write_session_metadata_owned(&self.paths.snapshot, &metadata, owner)?;
-            Ok(())
+            Ok(write_session_metadata_owned(&self.paths.snapshot, &metadata, owner)?.is_some())
         } else {
-            write_session_metadata(&self.paths.snapshot, &metadata)
+            write_session_metadata(&self.paths.snapshot, &metadata)?;
+            Ok(true)
         }
     }
 
@@ -10169,7 +10339,7 @@ mod tests {
 
     use super::{
         AcpAttemptUsageRecovery, AcpCancelDrainTimeout, AcpCancelled, AcpContextCompactionState,
-        AcpPromptFailure, AcpPromptOutputAccumulator, AcpPromptRetryState,
+        AcpPromptOutputAccumulator, AcpPromptRetryState,
         AcpPromptRouteDrainTimeout, AcpPromptRouteUnavailable, AcpPromptTerminalState,
         AcpPromptTokenUsage, AcpRuntime, AcpRuntimePolicy, AcpStreamUsageSample, AcpUsageState,
         AttachedSessionReusePlan, CancelNotificationPhase, DOCTOR_DIAGNOSTIC_TARGET_SIZE,
@@ -12398,13 +12568,12 @@ mod tests {
         assert_eq!(cancelled.raw.as_ref().unwrap()["retry"]["attempt"], 1);
         assert_eq!(cancelled.raw.as_ref().unwrap()["cancelled"], true);
 
-        let failure = AcpPromptFailure {
-            code: "provider_error".to_string(),
-            message: "provider failed".to_string(),
-            details: None,
-            raw: json!({}),
-        };
-        let failed = settle_prompt_event(prompt_event, "failed", 13, Some(&failure));
+        let failed = settle_prompt_event(
+            prompt_event,
+            "failed",
+            13,
+            Some(("provider_error", "provider failed")),
+        );
         assert_eq!(failed.status.as_deref(), Some("failed"));
         assert_eq!(failed.raw.as_ref().unwrap()["retry"]["attempt"], 1);
         assert_eq!(
@@ -12804,6 +12973,36 @@ mod tests {
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].usage.input_tokens, Some(0));
         runtime.shutdown();
+    }
+
+    #[test]
+    fn prompt_result_error_extension_preserves_structured_and_plain_errors() {
+        for error in [
+            json!({"code":-32003,"message":"Quota exceeded"}),
+            json!("Quota exceeded: incomplete provider JSON {"),
+        ] {
+            let result = json!({
+                "stopReason":"end_turn",
+                "_meta":{"codebuddy.ai/errorMessage": error, "codebuddy.ai/traceId":"trace"}
+            });
+            let failure =
+                super::prompt_result_failure(&result).expect("explicit error extension must fail");
+            assert!(failure.message.starts_with("Quota exceeded"));
+            assert_eq!(failure.raw, result);
+        }
+    }
+
+    #[test]
+    fn prompt_result_without_error_extension_does_not_guess_failure_from_text() {
+        for result in [
+            json!({"stopReason":"end_turn"}),
+            json!({"stopReason":"end_turn", "_meta":{"codebuddy.ai/errorMessage":" "}}),
+            json!({"stopReason":"end_turn", "_meta":{"codebuddy.ai/errorMessage":null}}),
+            json!({"stopReason":"end_turn", "_meta":{"codebuddy.ai/errorMessage":{}}}),
+            json!({"stopReason":"end_turn", "_meta":{"another/errorMessage":"Quota exceeded"}}),
+        ] {
+            assert!(super::prompt_result_failure(&result).is_none());
+        }
     }
 
     #[test]
@@ -15364,6 +15563,59 @@ do {
         assert_upgraded_acp_terminal_recovery("cancel");
     }
 
+    #[test]
+    fn prompt_response_codebuddy_quota_error_is_persisted_and_recoverable() {
+        assert_upgraded_acp_terminal_recovery("codebuddy-quota");
+    }
+
+    #[test]
+    fn prompt_response_codebuddy_quota_survives_terminal_drain_failure() {
+        assert_upgraded_acp_terminal_recovery("codebuddy-quota-drain-timeout");
+    }
+
+    #[test]
+    fn prompt_response_refusal_does_not_override_late_cancel() {
+        assert_upgraded_acp_terminal_recovery("stop-after-refusal");
+    }
+
+    #[test]
+    fn prompt_response_failure_does_not_publish_after_stop_takes_ownership() {
+        assert_upgraded_acp_terminal_recovery("stop-during-terminal-write");
+    }
+
+    #[test]
+    fn prompt_response_limits_and_waits_do_not_publish_completed_turns() {
+        for reason in [
+            "max_tokens",
+            "max_turn_requests",
+            "waiting_for_user_input",
+            "user_input_required",
+            "permission_requested",
+        ] {
+            assert_upgraded_acp_terminal_recovery(reason);
+        }
+    }
+
+    #[test]
+    fn prompt_response_failures_do_not_publish_completed_turns() {
+        for scenario in [
+            "refusal",
+            "error",
+            "failure",
+            "future_reason",
+            "missing-reason",
+        ] {
+            assert_upgraded_acp_terminal_recovery(scenario);
+        }
+    }
+
+    #[test]
+    fn prompt_response_distinguishes_agent_cancel_from_interruption() {
+        for reason in ["cancelled", "canceled", "interrupted"] {
+            assert_upgraded_acp_terminal_recovery(reason);
+        }
+    }
+
     fn assert_upgraded_acp_terminal_recovery(scenario: &str) {
         use crate::acp::events::{
             AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
@@ -15405,14 +15657,54 @@ do {
                 else {
                     panic!("terminal must release turn ownership")
                 };
+                let retried_limit = turn == 1 && scenario == "max_tokens";
+                if retried_limit {
+                    let mut admitted: Value = crate::storage::read_json(&snapshot).unwrap();
+                    admitted["promptRetry"] = json!({ "promptId": turn_id, "retryAttempt": 0 });
+                    crate::storage::write_json(&snapshot, &admitted).unwrap();
+                }
                 let cancellation_requested = std::cell::Cell::new(false);
                 let on_live = |event: &AcpUiEvent, _: crate::provider::AcpLiveTimelinePosition| {
-                    if scenario == "cancel"
-                        && turn == 1
-                        && event.tool_call_id.as_deref() == Some("pending-tool")
+                    let cancel_on_tool = match scenario {
+                        "cancel" => Some("pending-tool"),
+                        "stop-after-refusal" => Some("after-refusal"),
+                        _ => None,
+                    };
+                    if turn == 1
+                        && cancel_on_tool.is_some()
+                        && event.tool_call_id.as_deref() == cancel_on_tool
                         && !cancellation_requested.replace(true)
                     {
                         assert!(super::request_prompt_cancel(&attempt));
+                    }
+                    if turn == 1
+                        && scenario == "stop-during-terminal-write"
+                        && event
+                            .raw
+                            .as_ref()
+                            .is_some_and(|raw| raw.get("terminalFailure").is_some())
+                        && !cancellation_requested.replace(true)
+                    {
+                        let accepted_at = super::current_timestamp();
+                        let stop = super::super::events::request_session_stop_outcome(
+                            &snapshot,
+                            "late-stop",
+                            &accepted_at,
+                        )?
+                        .owner
+                        .expect("stop acquired the exact turn");
+                        assert!(
+                            super::super::events::persist_session_turn_terminal_owned(
+                                &snapshot,
+                                &stop.turn_id,
+                                Some(&stop.operation_id),
+                                stop.revision,
+                                super::AcpLatestTurnStatus::Cancelled,
+                                "cancelled",
+                                &accepted_at,
+                            )?
+                            .is_some()
+                        );
                     }
                     Ok(())
                 };
@@ -15445,7 +15737,17 @@ do {
                     false,
                     1_000_000,
                     500_000,
-                    AcpRuntimePolicy::default(),
+                    AcpRuntimePolicy {
+                        prompt_terminal_route_timeout: if turn == 1
+                            && scenario == "codebuddy-quota-drain-timeout"
+                        {
+                            Duration::ZERO
+                        } else {
+                            AcpRuntimePolicy::default().prompt_terminal_route_timeout
+                        },
+                        external_session_sync_enabled: scenario == "stop-after-refusal",
+                        ..AcpRuntimePolicy::default()
+                    },
                     owner,
                     Some(&on_live),
                     &[],
@@ -15453,12 +15755,21 @@ do {
                     None,
                     None,
                 );
+                use crate::app::AcpTurnOutcome;
+                let cancelled = matches!(
+                    scenario,
+                    "cancel"
+                        | "cancelled"
+                        | "canceled"
+                        | "stop-after-refusal"
+                        | "stop-during-terminal-write"
+                );
                 let expected_status = if turn == 2 {
                     "completed"
-                } else if scenario == "auth" {
-                    "failed"
-                } else {
+                } else if cancelled || scenario == "interrupted" {
                     "cancelled"
+                } else {
+                    "failed"
                 };
                 if turn == 1 && scenario == "auth" {
                     let error = result.err().expect("AuthRequired must fail the turn");
@@ -15470,10 +15781,32 @@ do {
                         "must not loop retrying missing credentials"
                     );
                 } else {
-                    result.unwrap();
+                    let run = result.unwrap();
+                    let expected = if turn == 2 {
+                        AcpTurnOutcome::Completed
+                    } else if cancelled {
+                        AcpTurnOutcome::Cancelled
+                    } else {
+                        AcpTurnOutcome::Failed
+                    };
+                    assert_eq!(run.turn_outcome, expected, "{scenario}");
+                    if turn == 1
+                        && matches!(
+                            scenario,
+                            "stop-after-refusal" | "stop-during-terminal-write"
+                        )
+                    {
+                        assert!(cancellation_requested.get());
+                        assert_eq!(run.stop_reason.as_deref(), Some("refusal"));
+                        assert_eq!(
+                            crate::provider::classify_acp_prompt_run(&run).status,
+                            crate::provider::ProviderRunStatus::Interrupted
+                        );
+                        assert!(run.terminal_failure.is_none());
+                    }
                 }
                 let terminal = crate::storage::read_json::<Value>(&snapshot).unwrap();
-                assert_eq!(terminal["latestTurnStatus"], expected_status);
+                assert_eq!(terminal["latestTurnStatus"], expected_status, "{scenario}");
                 assert_eq!(terminal["liveTurnActivity"], "idle");
                 assert!(
                     published
@@ -15487,8 +15820,66 @@ do {
                         "provider.auth-required"
                     );
                 }
-                if turn == 2 {
+                if turn == 1 && expected_status == "failed" && scenario != "auth" {
+                    assert!(terminal["turnError"].is_object());
+                    if !scenario.starts_with("codebuddy-quota") && scenario != "missing-reason" {
+                        assert_eq!(terminal["stopReason"], scenario);
+                    }
+                    let failed = published.borrow();
+                    let failed: Vec<_> = failed
+                        .iter()
+                        .filter(|value| value["latestTurnStatus"] == "failed")
+                        .collect();
+                    assert!(!failed.is_empty());
+                    assert!(
+                        failed
+                            .iter()
+                            .all(|value| value["turnError"] == terminal["turnError"])
+                    );
+                    assert!(
+                        !published
+                            .borrow()
+                            .iter()
+                            .any(|value| value["latestTurnStatus"] == "completed")
+                    );
+                    if scenario.starts_with("codebuddy-quota") {
+                        assert_eq!(
+                            terminal["turnError"]["code"]["code"],
+                            "provider.quota-insufficient"
+                        );
+                        assert!(
+                            terminal["turnError"]["diagnostic"]
+                                .as_str()
+                                .unwrap()
+                                .contains("Credits Rate Limit exceeded")
+                        );
+                        assert_eq!(terminal["turnError"]["recovery"], "manual");
+                        assert!(terminal["turnError"]["retryPolicy"].is_null());
+                        assert!(
+                            terminal["turnError"]["raw"]
+                                .to_string()
+                                .contains("fixture-trace")
+                        );
+                        if scenario == "codebuddy-quota-drain-timeout" {
+                            let diagnostics =
+                                std::fs::read_to_string(attempt.join("acp.diagnostics.jsonl"))
+                                    .unwrap();
+                            assert!(diagnostics.contains("acp.prompt-terminal-convergence-failed"));
+                        }
+                    }
+                }
+                if turn == 2 || cancelled || scenario == "interrupted" {
                     assert!(terminal["turnError"].is_null());
+                }
+                if retried_limit {
+                    let prompt = load_timeline_items(&attempt.join("acp.timeline.jsonl"))
+                        .unwrap()
+                        .into_iter()
+                        .find(|event| Some(event.id.as_str()) == terminal["promptEventId"].as_str())
+                        .expect("retried prompt remains in the timeline");
+                    let raw = prompt.raw.as_ref().expect("retry metadata");
+                    assert_eq!(raw["retry"]["attempt"], 1);
+                    assert_eq!(prompt.status.as_deref(), Some("failed"));
                 }
             }
             let items = load_timeline_items(&attempt.join("acp.timeline.jsonl")).unwrap();
@@ -15518,7 +15909,7 @@ do {
                     .lines()
                     .filter(|line| *line == "session/cancel")
                     .count(),
-                usize::from(scenario == "cancel")
+                usize::from(matches!(scenario, "cancel" | "stop-after-refusal"))
             );
         }));
         super::AdapterConnectionManager::shared()
@@ -15555,13 +15946,17 @@ do {
                 .unwrap();
             writeln!(trace, "{method}").unwrap();
             if method == "session/cancel" {
+                let Some(prompt_request_id) = pending_prompt.take() else {
+                    assert_eq!(scenario, "stop-after-refusal");
+                    continue;
+                };
                 // Claude terminates unfinished tools before the cancelled prompt response.
                 update(
                     json!({"sessionUpdate":"tool_call_update","toolCallId":"pending-tool","status":"failed","content":[{"type":"content","content":{"type":"text","text":"Tool execution cancelled"}}]}),
                 );
                 println!(
                     "{}",
-                    json!({"jsonrpc":"2.0","id":pending_prompt.take().expect("cancel follows prompt"),"result":{"stopReason":"cancelled"}})
+                    json!({"jsonrpc":"2.0","id":prompt_request_id,"result":{"stopReason":"cancelled"}})
                 );
                 std::io::stdout().flush().unwrap();
                 continue;
@@ -15571,11 +15966,41 @@ do {
                     json!({"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}})
                 }
                 "session/new" | "session/load" => json!({"result":{"sessionId":"upgrade-session"}}),
+                "session/list" if scenario == "stop-after-refusal" => {
+                    if std::path::Path::new("upgrade-first-done").exists() {
+                        update(
+                            json!({"sessionUpdate":"tool_call","toolCallId":"after-refusal","title":"After refusal","kind":"read","status":"in_progress"}),
+                        );
+                    }
+                    json!({"result":{"sessions":[{"sessionId":"upgrade-session"}]}})
+                }
                 "session/prompt" if !std::path::Path::new("upgrade-first-done").exists() => {
                     std::fs::write("upgrade-first-done", "done").unwrap();
                     if scenario == "auth" {
                         // ACP AuthRequired emitted by Claude 0.87.0 and Codex 2.1.1.
                         json!({"error":{"code":-32000,"message":"Authentication required"}})
+                    } else if scenario.starts_with("codebuddy-quota")
+                        || scenario == "stop-during-terminal-write"
+                    {
+                        json!({"result":{
+                            "stopReason":"refusal",
+                            "_meta": {
+                                "codebuddy.ai/traceId":"fixture-trace",
+                                "codebuddy.ai/errorMessage": json!({
+                                    "code":-32003,
+                                    "message":"Quota exceeded: 500 StreamWithSecAPI Stream error, status: 429, resp: Credits Rate Limit exceeded"
+                                }).to_string()
+                            }
+                        }})
+                    } else if scenario != "cancel" {
+                        let result = if scenario == "missing-reason" {
+                            json!({})
+                        } else if scenario == "stop-after-refusal" {
+                            json!({"stopReason":"refusal"})
+                        } else {
+                            json!({"stopReason":scenario})
+                        };
+                        json!({"result": result})
                     } else {
                         pending_prompt = Some(frame["id"].clone());
                         update(

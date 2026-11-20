@@ -2768,6 +2768,7 @@ pub(crate) fn finish_occurrence_for_event(
                     OccurrenceStatus::AttentionRequired,
                     ScheduledErrorCode::UserInputRequired,
                 ),
+                RuntimeInterventionKind::RuntimeResumeRequired => return Ok(None),
                 RuntimeInterventionKind::RuntimeAbnormal
                 | RuntimeInterventionKind::ErrorBlocked
                 | RuntimeInterventionKind::ProcessInterrupted => (
