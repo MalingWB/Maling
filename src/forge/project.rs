@@ -103,11 +103,12 @@ fn stage_from_worker(
         // 无 output 契约的节点（markdown 语义）。
         (StageOutputKind::Markdown, None, None, None)
     };
-    // custom 角色（非内置 profile 引用）：还原 profileId 与职责正文进
+    // custom 角色（非内置 profile 引用）：还原 profileId/显示名/职责正文进
     // Spec——对话中可编辑名称/定义，重编译按 id 原地更新（对话反哺）。
+    // 解析成功时 role 的 profileName 用 profile 显示名（协议语义:名称是人读的,
+    // id 由 profileId 字段承载;混用会把 id 写进角色名,2026-11-20 真机发现）。
     // profile 解析失败时保留节点引用文本作为名称,不阻塞反投影。
-    let role = role_from_profile(worker.profile.as_deref());
-    let (profile_id, role_definition) = match &role {
+    let (role, profile_id, role_definition) = match role_from_profile(worker.profile.as_deref()) {
         StageRole::Custom { .. } => {
             let resolved = worker
                 .profile
@@ -117,11 +118,26 @@ fn stage_from_worker(
                     .flatten()
                 });
             match resolved {
-                Some(entry) => (Some(entry.id), Some(entry.content)),
-                None => (worker.profile.clone(), None),
+                Some(entry) => (
+                    StageRole::Custom {
+                        profile_name: entry.name.clone(),
+                    },
+                    Some(entry.id),
+                    Some(entry.content),
+                ),
+                None => (
+                    StageRole::Custom {
+                        profile_name: worker
+                            .profile
+                            .clone()
+                            .unwrap_or_else(|| "custom".to_string()),
+                    },
+                    worker.profile.clone(),
+                    None,
+                ),
             }
         }
-        _ => (None, None),
+        builtin => (builtin, None, None),
     };
     Ok(ForgeStage {
         id: Some(node_id.to_string()),
@@ -292,13 +308,13 @@ pub fn write_back(base: &WorkflowDsl, revised: &CompiledWorkflow) -> WorkflowDsl
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::forge::compiler::compile;
     use crate::forge::spec::MAX_STAGES_PER_WORKFLOW;
 
     /// 反投影测试的隔离路径(custom 角色的 profile 解析走临时目录)。
-    fn test_paths() -> crate::storage::GoldBandPaths {
+    pub(crate) fn test_paths() -> crate::storage::GoldBandPaths {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.keep();
         crate::storage::GoldBandPaths::new(

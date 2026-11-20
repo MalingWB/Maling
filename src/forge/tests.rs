@@ -271,3 +271,63 @@ fn natural_prefix_goal_elements_pass_validation() {
     let result = crate::forge::compiler::compile(&spec);
     assert!(result.is_ok(), "natural-prefix goal must compile: {:?}", result.err().map(|e| e.to_string()));
 }
+
+#[test]
+fn projection_uses_display_name_for_custom_role() {
+    // 真机回归(2026-11-20):反投影的 role.custom.profileName 必须是 profile
+    // 显示名而非 id——模型会照抄基线,混用会把 id 写进角色名。
+    use crate::dsl::{EdgeDsl, EdgeOutcome, NodeDsl, WorkerNode, WorkflowDsl, END_NODE};
+    let paths = crate::forge::project::tests::test_paths();
+    let input = crate::app::profiles::ProfileInput {
+        name: "代码审查员".to_string(),
+        summary: "审查代码变更".to_string(),
+        content: "你是代码审查员…".to_string(),
+        dynamic_template: false,
+    };
+    let entry = crate::app::profiles::create_profile(&paths, input).unwrap();
+    let workflow = WorkflowDsl {
+        version: "0.1".to_string(),
+        id: "wf".to_string(),
+        entry: "s1".to_string(),
+        control: Default::default(),
+        nodes: vec![NodeDsl::Worker(WorkerNode {
+            id: "s1".to_string(),
+            execution_slot_id: None,
+            provider: None,
+            model: None,
+            profile: Some(entry.id.clone()),
+            goal: Some("<输入>diff\n<产出>报告\n<边界>不改代码\n<验收>覆盖全部文件".to_string()),
+            output: None,
+            success_condition: None,
+            permission_mode: None,
+            auto_accept: false,
+            config_options: Default::default(),
+            manual_check: None,
+            prompt_envelope: Default::default(),
+        })],
+        edges: vec![EdgeDsl {
+            from: "s1".to_string(),
+            to: END_NODE.to_string(),
+            on: EdgeOutcome::Success,
+            session: None,
+            new_round_entry: None,
+        }],
+    };
+    let spec = crate::forge::project::from_dsl(
+        &paths,
+        crate::config::DesktopLanguage::ZhCn,
+        &workflow,
+        "n",
+        "i",
+    )
+    .unwrap();
+    let stage = &spec.workflows[0].stages[0];
+    assert_eq!(
+        stage.role,
+        StageRole::Custom {
+            profile_name: "代码审查员".to_string()
+        }
+    );
+    assert_eq!(stage.profile_id.as_deref(), Some(entry.id.as_str()));
+    assert!(stage.role_definition.as_deref().unwrap_or("").contains("代码审查员"));
+}
