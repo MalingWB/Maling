@@ -2491,6 +2491,8 @@
     "manualCheckSubmitFailed": "Error al enviar el check manual",
     "continueWorkflow": "Continuar flujo de trabajo",
     "continueWorkflowHint": "Continuar ejecutando el flujo de trabajo",
+    "runtimeResumeBusyStarting": "Iniciando, espera un momento",
+    "runtimeResumeBusyPromptActive": "Esta conversación aún se está procesando. Podrás continuar cuando termine.",
     "continueAndSend": "Continuar y enviar",
     "continueAndSendHint": "Enviar el mensaje y continuar el flujo de trabajo",
     "continueWorkflowStarting": "Continuando",
@@ -2831,6 +2833,7 @@
         "permission": "Solicitudes de permiso",
         "elicitation": "Preguntas de seguimiento",
         "manualCheck": "Comprobaciones manuales",
+        "workflowResume": "Solicitud para continuar el flujo",
         "runSuccess": "Run exitoso",
         "runFailure": "Run fallido",
         "acpTurnFinished": "Turno ACP finalizado"
@@ -2873,7 +2876,10 @@
         "IM_STALE_GENERATION": "El estado de la conexión cambió. Reintente desde el estado más reciente.",
         "IM_RUNTIME_UNAVAILABLE": "El runtime de IM no está listo.",
         "IM_CHANNEL_CLEANUP_PENDING": "La configuración fue eliminada. La limpieza local se reintentará en segundo plano.",
-        "IM_OPERATION_FAILED": "La operación falló. Vuelva a intentarlo."
+        "IM_OPERATION_FAILED": "La operación falló. Vuelva a intentarlo.",
+        "IM_ACTION_BUSY": "Temporalmente ocupado. Inténtalo de nuevo en unos instantes.",
+        "IM_ACTION_STATE_CHANGED": "El estado del flujo de trabajo ha cambiado. Esta acción ya no es válida. Inténtalo de nuevo desde la tarjeta más reciente.",
+        "IM_ACTION_RETRYABLE_FAILURE": "La acción no se ha enviado. Inténtalo de nuevo en unos instantes."
       }
     },
     "avatar": {

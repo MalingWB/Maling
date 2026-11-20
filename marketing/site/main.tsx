@@ -8,11 +8,13 @@ import { browserStorage, effectiveTheme, readPreferences, writePreferences, type
 import './style.css';
 import { PRODUCT_NAME, demoHref, siteConfig } from './config';
 import { DownloadMenu } from './DownloadMenu';
+import { createInlineDownloadLoader } from './inline-downloads';
 import { isPlainNavigation } from './navigation';
 import { DemoPage } from './DemoPage';
 import { MOBILE_REPLAY_WIDTH } from './replay-model';
 
 const config = siteConfig(import.meta.env, import.meta.env.PROD);
+const loadInlineDownloads = createInlineDownloadLoader(config.inlineDownloadManifestUrl);
 const href = (language: Language, page: Page, routeDocId: string | null = null) => pageHref(language, page, config.base, routeDocId);
 
 const Replay = lazy(() => import('./Replay'));
@@ -123,9 +125,9 @@ export function App() {
       <Tooltip><TooltipTrigger asChild><Button asChild size="icon" variant="ghost"><a href={GITHUB} aria-label="GitHub"><Code2 /></a></Button></TooltipTrigger><TooltipContent>GitHub</TooltipContent></Tooltip></div>
     </header>
     <main id="main" className={page === 'demo' ? 'site-demo-main' : undefined}>{page === 'home' ? <>
-      <section className="intro"><div className="eyebrow">{t.kicker}</div><h1>{PRODUCT_NAME}</h1><p className="tagline">{t.tagline}</p><p className="intro-copy">{t.intro}</p><div className="intro-actions"><DownloadMenu config={config} label={t.download} labels={t.downloadMenu} /><a className="text-link" href={href(language, 'demo')}>{t.openDemo}<ArrowRight size={16} /></a></div></section>
+      <section className="intro"><div className="eyebrow">{t.kicker}</div><h1>{PRODUCT_NAME}</h1><p className="tagline">{t.tagline}</p><p className="intro-copy">{t.intro}</p><div className="intro-actions"><DownloadMenu config={config} label={t.download} labels={t.downloadMenu} loadInlineDownloads={loadInlineDownloads} /><a className="text-link" href={href(language, 'demo')}>{t.openDemo}<ArrowRight size={16} /></a></div></section>
       <div className="story-heading"><span>{t.story}</span><span>01 / 04</span></div><Story language={language} theme={theme} />
-      <section className="closing"><img src={`${config.base}logo.svg`} alt="" /><h2>{t.foot}</h2><p>{t.footText}</p><DownloadMenu config={config} label={t.download} labels={t.downloadMenu} /></section>
+      <section className="closing"><img src={`${config.base}logo.svg`} alt="" /><h2>{t.foot}</h2><p>{t.footText}</p><DownloadMenu config={config} label={t.download} labels={t.downloadMenu} loadInlineDownloads={loadInlineDownloads} /></section>
     </> : page === 'demo' ? <DemoPage key={language} src={demo} language={language} /> : page === 'documentation' ? <Suspense fallback={<div className="documentation-page"><div className="docs-status" role="status"><Loader2 className="animate-spin" />{t.docs.loading}</div></div>}><DocumentationPage key={`${language}:${docId ?? ''}`} docId={docId} language={language} /></Suspense> : <section className="placeholder-page"><PanelsTopLeft /><p className="eyebrow">{PRODUCT_NAME}</p><h1>{t.missing}</h1><div className="intro-actions"><Button asChild><a href={href(language, 'home')}>{t.back}<ArrowRight /></a></Button></div></section>}</main>
     {page !== 'demo' && <footer><a className="brand" href={href(language, 'home')}><img src={`${config.base}logo.svg`} alt="" /><span>{PRODUCT_NAME}</span></a><span>AGPL-3.0 · Open source</span><a href={GITHUB}>{t.source}<ArrowUpRight size={14} /></a></footer>}
   </div></TooltipProvider>;

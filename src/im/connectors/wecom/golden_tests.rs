@@ -506,6 +506,7 @@ fn inbound_outcome(envelope: &ImInboundEnvelope, delivery: &ImDelivery) -> Value
     let result = service.handle_with_delivery(&envelope, &delivery, 1, |command| {
         *captured.lock().unwrap() = Some(command.action);
         Ok(InterventionCommandResult {
+            runtime_resume: None,
             status: InterventionCommandStatus::Accepted,
             canonical_state: "resolved".into(),
         })

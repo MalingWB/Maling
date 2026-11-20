@@ -1093,7 +1093,7 @@ pub fn feishu_scan_auth_config() -> &'static FeishuScanAuthConfig {
         .feishu_scan_auth
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 13;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 14;
 const USE_LOCAL_CLAUDE: bool = false;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
@@ -1177,6 +1177,24 @@ impl SettingsConfig {
         }
         if version < 13 {
             migrate_codebuddy_display_name(settings);
+            migrated = true;
+        }
+        if version < 14 {
+            if let Some(channels) = settings
+                .get_mut("imIntegrations")
+                .and_then(|im| im.get_mut("channels"))
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for channel in channels {
+                    if let Some(notifications) = channel
+                        .get_mut("notifications")
+                        .and_then(serde_json::Value::as_object_mut)
+                    {
+                        notifications
+                            .insert("workflowResume".into(), serde_json::Value::Bool(true));
+                    }
+                }
+            }
             migrated = true;
         }
         if migrated {
@@ -3488,6 +3506,26 @@ mod tests {
         let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
         assert_eq!(codex.primary_agent_dir.as_deref(), Some(".codex"));
         assert_eq!(codex.compatible_agent_dirs, vec![".agents"]);
+    }
+
+    #[test]
+    fn settings_v13_migrates_workflow_resume_without_changing_other_preferences() {
+        let mut old = serde_json::to_value(SettingsConfig::default()).unwrap();
+        old["settingsSchemaVersion"] = serde_json::json!(13);
+        old["imIntegrations"] = serde_json::json!({ "channels": [{
+            "kind":"weCom", "enabled":false, "publicIdentity":"bot",
+            "notifications": { "permission":false, "elicitation":true, "manualCheck":false, "runSuccess":true, "runFailure":false, "acpTurnFinished":true }
+        }] });
+        let (settings, migrated) = SettingsConfig::from_json_value_with_migration(old).unwrap();
+        assert!(migrated);
+        let value = serde_json::to_value(settings).unwrap();
+        assert_eq!(value["settingsSchemaVersion"], 14);
+        assert_eq!(
+            value["imIntegrations"]["channels"][0]["notifications"],
+            serde_json::json!({
+                "permission":false,"elicitation":true,"manualCheck":false,"workflowResume":true,"runSuccess":true,"runFailure":false,"acpTurnFinished":true
+            })
+        );
     }
 
     #[test]

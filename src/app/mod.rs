@@ -14,6 +14,7 @@ mod orchestrator;
 mod profile_resolver;
 mod profiles;
 mod runtime_recovery;
+pub mod runtime_resume;
 mod server_connections;
 mod ssh_sessions;
 mod state_access;
@@ -57,7 +58,7 @@ use crate::dsl::{
     WorkflowDsl, WorkflowValidationError, validate_authoring_workflow, validate_workflow,
     validate_workflow_snapshot, workflow_contains_ai_dynamic,
 };
-use crate::dynamic::{dynamic_leaf_is_active, write_dynamic_node_state};
+use crate::dynamic::dynamic_leaf_is_active;
 use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
@@ -1074,6 +1075,7 @@ pub struct NodeRuntimeSummary {
 /// Subscribers observe these facts without changing runtime control flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeInterventionKind {
+    RuntimeResumeRequired,
     ManualDecisionRequired,
     ElicitationRequested,
     PermissionRequested,
@@ -1097,6 +1099,7 @@ impl From<PauseReason> for RuntimeInterventionKind {
 impl From<RuntimeInterventionKind> for PauseReason {
     fn from(kind: RuntimeInterventionKind) -> Self {
         match kind {
+            RuntimeInterventionKind::RuntimeResumeRequired => Self::ProcessInterrupted,
             RuntimeInterventionKind::ManualDecisionRequired => Self::WaitingForUserInput,
             RuntimeInterventionKind::ElicitationRequested => Self::WaitingForUserInput,
             RuntimeInterventionKind::PermissionRequested => Self::PermissionRequested,
@@ -1456,6 +1459,12 @@ pub struct App {
 pub(crate) enum AttemptRuntimePauseResult {
     Converged { paused_at: String },
     Superseded,
+}
+
+struct AttemptPauseCleanup {
+    attempt_dir: Utf8PathBuf,
+    prompt: Option<acp_client::PromptCancellationTarget>,
+    lifecycle: Option<crate::acp::events::AcpLifecycleHeader>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2135,13 +2144,34 @@ impl App {
         prompt_id: Option<String>,
         outcome: AcpTurnOutcome,
     ) -> Result<()> {
-        if let Some(callback) = &self.prompt_turn_lifecycle {
+        let offer = self
+            .inspect_runtime_resume(intervention::InterventionLocator {
+                project_id: self.paths.project_id.clone(),
+                task_id: context.task_id.clone(),
+                run_id: context.run_id.clone(),
+                round_id: context.round_id.clone(),
+                node_id: context.node_id.clone(),
+                attempt_id: context.attempt_id.clone(),
+                outer_node_id: context.outer_node_id.clone(),
+                outer_attempt_id: context.outer_attempt_id.clone(),
+            })
+            .ok()
+            .filter(|inspection| {
+                context.task_uuid.as_ref() == Some(&inspection.offer.source_identity.task_uuid)
+            })
+            .map(|inspection| inspection.offer);
+        let result = if let Some(callback) = &self.prompt_turn_lifecycle {
             callback(
                 context,
                 AcpPromptLifecycleEvent::Finished { prompt_id, outcome },
-            )?;
+            )
+        } else {
+            Ok(())
+        };
+        if let Some(offer) = offer {
+            self.publish_runtime_resume_offer(&offer);
         }
-        Ok(())
+        result
     }
 
     pub fn emit_lifecycle_event(&self, mut event: RuntimeLifecycleEvent) {
@@ -2763,6 +2793,7 @@ impl App {
             subject,
         );
         fact.payload.intervention_kind = Some(match event.kind {
+            RuntimeInterventionKind::RuntimeResumeRequired => return,
             RuntimeInterventionKind::PermissionRequested => {
                 observability::MetricsInterventionKind::Permission
             }
@@ -5444,33 +5475,57 @@ impl App {
         run_id: &str,
         run: &RunState,
         reason: PauseReason,
+        cleanup: Option<AttemptPauseCleanup>,
     ) {
         let (Some(round_id), Some(node_id), Some(attempt_id)) =
             (&run.current_round, &run.current_node, &run.current_attempt)
         else {
             return;
         };
-        self.interrupt_attempt_artifacts_best_effort(
-            task_id, run_id, round_id, node_id, attempt_id,
-        );
-        self.update_dynamic_descendants_best_effort(
-            task_id, run_id, round_id, node_id, attempt_id, reason,
-        );
+        let mut offers = self.publish_committed_attempt_resume_requests(run);
+        offers.extend(self.update_dynamic_descendants_best_effort(
+            task_id, run_id, round_id, node_id, attempt_id, reason, run,
+        ));
+        #[cfg(test)]
+        let _ = orchestrator::pause_cleanup_test_hook();
+        if let Some(cleanup) = cleanup {
+            self.settle_attempt_pause_cleanup_best_effort(cleanup);
+        }
+        self.publish_runtime_resume_offers(&offers);
     }
 
-    fn interrupt_attempt_artifacts_best_effort(
+    fn capture_attempt_pause_cleanup(
         &self,
-        task_id: &str,
-        run_id: &str,
-        round_id: &str,
-        node_id: &str,
-        attempt_id: &str,
-    ) {
-        let attempt_dir = self
-            .paths
-            .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
-        self.request_attempt_prompt_cancel_best_effort(&attempt_dir);
-        self.persist_cancelled_session_snapshot_best_effort(&attempt_dir);
+        attempt_dir: Utf8PathBuf,
+    ) -> Option<AttemptPauseCleanup> {
+        match crate::acp::events::read_lifecycle_header_snapshot(
+            &attempt_dir.join("acp.snapshot.json"),
+        ) {
+            Ok(lifecycle) => Some(AttemptPauseCleanup {
+                prompt: acp_client::capture_prompt_cancellation(&attempt_dir),
+                attempt_dir,
+                lifecycle,
+            }),
+            Err(error) => {
+                tracing::warn!(code = "ACP_PAUSE_CLEANUP_CAPTURE_FAILED", error = %error, attempt_dir = %attempt_dir, "paused attempt cleanup target unavailable");
+                None
+            }
+        }
+    }
+
+    fn settle_attempt_pause_cleanup_best_effort(&self, cleanup: AttemptPauseCleanup) {
+        if let Some(prompt) = cleanup.prompt {
+            prompt.request_cancel();
+        }
+        if let Err(error) = crate::acp::events::persist_session_terminal_if_current(
+            &cleanup.attempt_dir.join("acp.snapshot.json"),
+            cleanup.lifecycle.as_ref(),
+            crate::acp::events::AcpLatestTurnStatus::Cancelled,
+            "cancelled",
+            &crate::acp::events::current_timestamp(),
+        ) {
+            tracing::warn!(code = "ACP_CANCELLED_SNAPSHOT_FAILED", error = %error, attempt_dir = %cleanup.attempt_dir, "paused attempt snapshot cleanup failed");
+        }
     }
 
     fn update_dynamic_descendants_best_effort(
@@ -5481,7 +5536,8 @@ impl App {
         node_id: &str,
         attempt_id: &str,
         pause_reason: PauseReason,
-    ) {
+        run: &RunState,
+    ) -> Vec<runtime_resume::RuntimeResumeOffer> {
         let graph_path = self
             .paths
             .dynamic_graph_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -5493,75 +5549,66 @@ impl App {
             node_id,
             attempt_id,
         ) else {
-            return;
+            return Vec::new();
         };
         let _guard = state_lock.lock();
+        if !self.run_status(task_id, run_id).is_ok_and(|current| {
+            current.status == RunStatus::Paused
+                && current.execution == run.execution
+                && current.uuid == run.uuid
+                && current.task_uuid == run.task_uuid
+        }) {
+            return Vec::new();
+        }
         let Ok(mut graph) = load_dynamic_graph(&graph_path, &self.paths.repo_root) else {
-            return;
+            return Vec::new();
         };
         let interrupted_nodes = graph
             .nodes
             .iter()
             .map(|dynamic_node| {
-                (
-                    dynamic_node.id.clone(),
-                    dynamic_leaf_is_active(dynamic_node.status),
-                    dynamic_node.child_run_id.clone(),
-                )
+                let cleanup = dynamic_leaf_is_active(dynamic_node.status)
+                    .then(|| {
+                        self.capture_attempt_pause_cleanup(self.paths.dynamic_node_attempt_dir(
+                            task_id,
+                            run_id,
+                            round_id,
+                            node_id,
+                            attempt_id,
+                            &dynamic_node.id,
+                            &orchestrator::dynamic_attempt_id(dynamic_node),
+                        ))
+                    })
+                    .flatten();
+                (cleanup, dynamic_node.child_run_id.clone())
             })
             .collect::<Vec<_>>();
 
         orchestrator::pause_dynamic_graph_runtime_state(&mut graph, pause_reason);
-        let _ = write_json(&graph_path, &graph);
-        let _ = write_json(
-            &self
-                .paths
-                .dynamic_run_file(task_id, run_id, round_id, node_id, attempt_id),
-            &graph.run,
-        );
-        for dynamic_node in &graph.nodes {
-            let _ = write_dynamic_node_state(
-                &self.paths.dynamic_node_file(
-                    task_id,
-                    run_id,
-                    round_id,
-                    node_id,
-                    attempt_id,
-                    &dynamic_node.id,
-                ),
-                dynamic_node,
-            );
+        if let Err(error) = write_json(&graph_path, &graph) {
+            tracing::warn!(error = %error, project_id = %self.paths.project_id, task_id, run_id, node_id, attempt_id, "dynamic pause commit failed");
+            return Vec::new();
         }
         drop(_guard);
+        let offers = self.publish_committed_attempt_resume_requests(run);
+        orchestrator::project_current_dynamic_pause_best_effort(
+            self, task_id, run_id, round_id, node_id, attempt_id,
+        );
 
-        for (dynamic_node_id, was_active, child_run_id) in interrupted_nodes {
-            if was_active {
-                let dynamic_node_dir = self.paths.dynamic_node_dir(
-                    task_id,
-                    run_id,
-                    round_id,
-                    node_id,
-                    attempt_id,
-                    &dynamic_node_id,
-                );
-                if let Ok(entries) = fs::read_dir(dynamic_node_dir.as_std_path()) {
-                    for entry in entries.flatten() {
-                        let attempt_path = entry.path();
-                        if !attempt_path.is_dir() {
-                            continue;
-                        }
-                        let Ok(attempt_dir) = Utf8PathBuf::from_path_buf(attempt_path) else {
-                            continue;
-                        };
-                        self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
-                        self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
-                    }
-                }
+        #[cfg(test)]
+        let _ = orchestrator::pause_cleanup_test_hook();
+
+        for (cleanup, child_run_id) in interrupted_nodes {
+            if let Some(cleanup) = cleanup {
+                self.settle_attempt_pause_cleanup_best_effort(cleanup);
             }
             if let Some(child_run_id) = child_run_id {
-                let _ = self.run_pause(task_id, &child_run_id, pause_reason);
+                if let Err(error) = self.run_pause(task_id, &child_run_id, pause_reason) {
+                    tracing::warn!(error = %error, task_id, run_id, child_run_id, "dynamic child pause cleanup failed");
+                }
             }
         }
+        offers
     }
 
     pub fn run_pause(&self, task_id: &str, run_id: &str, reason: PauseReason) -> Result<RunState> {
@@ -5626,6 +5673,17 @@ impl App {
                 continue;
             }
 
+            let cleanup = interrupt_descendants
+                .then(|| {
+                    self.capture_attempt_pause_cleanup(self.paths.attempt_dir(
+                        task_id,
+                        run_id,
+                        &round_id,
+                        &node_id,
+                        &attempt_id,
+                    ))
+                })
+                .flatten();
             let now = now_rfc3339_like();
             run.status = RunStatus::Paused;
             run.outcome = None;
@@ -5658,10 +5716,12 @@ impl App {
             }
             drop(guard);
 
+            self.publish_committed_run_pause(&run);
             if interrupt_descendants {
-                self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
+                self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason, cleanup);
+            } else {
+                self.publish_committed_attempt_resume_requests(&run);
             }
-            self.publish_committed_attempt_pause(&run);
             self.finish_runtime_candidate_best_effort(
                 task_id,
                 run_id,
@@ -5881,10 +5941,19 @@ impl App {
     }
 
     fn publish_committed_attempt_pause(&self, run: &RunState) {
+        self.publish_committed_run_pause(run);
+        self.publish_committed_attempt_resume_requests(run);
+    }
+
+    fn publish_committed_run_pause(&self, run: &RunState) {
         let Ok(current) = self.run_status(&run.task_id, &run.id) else {
             return;
         };
-        if current.status != RunStatus::Paused || current.execution != run.execution {
+        if current.status != RunStatus::Paused
+            || current.execution != run.execution
+            || current.uuid != run.uuid
+            || current.task_uuid != run.task_uuid
+        {
             return;
         }
         let (Some(round_id), Some(node_id), Some(attempt_id), Some(pause_reason)) = (
@@ -5914,6 +5983,67 @@ impl App {
             pause_reason,
             task_title: None,
         });
+    }
+
+    fn publish_committed_attempt_resume_requests(
+        &self,
+        run: &RunState,
+    ) -> Vec<runtime_resume::RuntimeResumeOffer> {
+        if !self.run_status(&run.task_id, &run.id).is_ok_and(|current| {
+            current.status == RunStatus::Paused
+                && current.execution == run.execution
+                && current.uuid == run.uuid
+                && current.task_uuid == run.task_uuid
+        }) {
+            return Vec::new();
+        }
+        let (Some(round_id), Some(node_id), Some(attempt_id)) = (
+            run.current_round.as_ref(),
+            run.current_node.as_ref(),
+            run.current_attempt.as_ref(),
+        ) else {
+            return Vec::new();
+        };
+        let owner: NodeState = match read_json(&self.paths.node_file(
+            &run.task_id,
+            &run.id,
+            round_id,
+            node_id,
+            attempt_id,
+        )) {
+            Ok(node) => node,
+            Err(_) => return Vec::new(),
+        };
+        if owner.node_type == crate::domain::NodeType::AiDynamic {
+            // Read the committed graph once for the whole pause, including startup
+            // recovery where no old prompt remains to publish individual leaves.
+            let Ok(graph) = load_dynamic_graph(
+                &self.paths.dynamic_graph_file(
+                    &run.task_id,
+                    &run.id,
+                    round_id,
+                    node_id,
+                    attempt_id,
+                ),
+                &self.paths.repo_root,
+            ) else {
+                return Vec::new();
+            };
+            let node_ids = graph
+                .nodes
+                .iter()
+                .filter(|node| {
+                    node.status == crate::dynamic::DynamicNodeStatus::Paused
+                        && node.outcome.is_none()
+                })
+                .map(|node| node.id.clone())
+                .collect::<Vec<_>>();
+            return self.publish_dynamic_runtime_resume_requests(run, &graph, &node_ids);
+        } else if let Some(offer) = self.runtime_resume_offer_for_run(run) {
+            self.publish_runtime_resume_offer(&offer);
+            return vec![offer];
+        }
+        Vec::new()
     }
 
     pub fn pause_dynamic_attempt_runtime_state(
@@ -5989,7 +6119,9 @@ impl App {
     }
 
     pub fn request_attempt_prompt_cancel_best_effort(&self, attempt_dir: &Utf8Path) {
-        let _ = acp_client::cancel_attempt_prompt(attempt_dir);
+        if let Err(error) = acp_client::cancel_attempt_prompt(attempt_dir) {
+            tracing::warn!(code = "ACP_PROMPT_CANCEL_FAILED", error = %error, attempt_dir = %attempt_dir, "paused attempt prompt cleanup failed");
+        }
     }
 
     pub fn kill_provider_pid_file_best_effort(&self, pid_path: &Utf8Path) {
@@ -6004,7 +6136,9 @@ impl App {
     }
 
     pub fn persist_cancelled_session_snapshot_best_effort(&self, attempt_dir: &Utf8Path) {
-        let _ = self.persist_cancelled_session_snapshot(attempt_dir);
+        if let Err(error) = self.persist_cancelled_session_snapshot(attempt_dir) {
+            tracing::warn!(code = "ACP_CANCELLED_SNAPSHOT_FAILED", error = %error, attempt_dir = %attempt_dir, "paused attempt snapshot cleanup failed");
+        }
     }
 
     pub fn persist_cancelled_session_snapshot(&self, attempt_dir: &Utf8Path) -> Result<()> {
@@ -7162,6 +7296,835 @@ mod tests {
         assert!(
             matches!(&events[0], RuntimeLifecycleEvent::RunPaused { task_id, run_id, node_id, pause_reason: PauseReason::ProcessInterrupted, .. } if task_id == "task-001" && run_id == "run-001" && node_id == "worker")
         );
+    }
+
+    #[test]
+    fn runtime_resume_attempt_pause_publishes_while_prompt_is_cancelling() {
+        use super::intervention::InterventionErrorCode;
+        use super::runtime_resume::{RuntimeResumeBusyReason, RuntimeResumeReadiness};
+
+        let temp = tempdir().unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap())
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                captured.lock().unwrap().push(event);
+            }));
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        bind_resume_test_identity(&app);
+        let locator = super::intervention::InterventionLocator {
+            project_id: app.paths.project_id.clone(),
+            ..resume_test_locator()
+        };
+        let dir = app.runtime_resume_attempt_dir(&locator);
+        write_json(
+            &dir.join("acp.snapshot.json"),
+            &serde_json::json!({"promptRetry": {"promptId": "turn-1", "retryAttempt": 0}}),
+        )
+        .unwrap();
+        let activity = crate::acp::client::register_test_prompt_activity(
+            dir,
+            crate::acp::client::PromptActivity::CancelRequested,
+        );
+        let error = app.inspect_runtime_resume(locator.clone()).unwrap_err();
+        assert_eq!(error.details.get("reason").unwrap(), "run-not-resumable");
+        app.pause_attempt_runtime_state(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+            PauseReason::ProcessInterrupted,
+        )
+        .unwrap();
+        assert_eq!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    RuntimeLifecycleEvent::InterventionRequested { .. }
+                ))
+                .count(),
+            1,
+            "a committed resumable pause must publish before the old prompt finishes cancelling"
+        );
+        let busy = app.inspect_runtime_resume(locator.clone()).unwrap();
+        assert_eq!(
+            busy.readiness,
+            RuntimeResumeReadiness::Busy {
+                reason: RuntimeResumeBusyReason::PromptActive,
+            }
+        );
+        let error = app
+            .execute_runtime_resume(busy.offer.clone(), Default::default())
+            .unwrap_err();
+        assert_eq!(error.code, InterventionErrorCode::InterventionBusy);
+        drop(activity);
+        let ready = app.inspect_runtime_resume(locator).unwrap();
+        assert_eq!(ready.readiness, RuntimeResumeReadiness::Ready);
+        assert_eq!(ready.offer, busy.offer);
+    }
+
+    fn bind_resume_test_identity(app: &App) {
+        write_json(
+            &app.paths.task_file("task-001"),
+            &TaskState {
+                version: VERSION.into(),
+                id: "task-001".into(),
+                title: None,
+                description: None,
+                uuid: Some("task-instance-a".into()),
+            },
+        )
+        .unwrap();
+        let mut run = app.run_status("task-001", "run-001").unwrap();
+        run.task_uuid = Some("task-instance-a".into());
+        run.uuid = Some("run-instance-a".into());
+        write_json(&app.paths.run_file("task-001", "run-001"), &run).unwrap();
+        write_json(
+            &app.paths
+                .task_dir("task-001")
+                .join("authoring/conversation.json"),
+            &serde_json::json!({"runMode":"workflow"}),
+        )
+        .unwrap();
+    }
+
+    fn resume_test_locator() -> super::intervention::InterventionLocator {
+        super::intervention::InterventionLocator {
+            project_id: String::new(),
+            task_id: "task-001".into(),
+            run_id: "run-001".into(),
+            round_id: "round-001".into(),
+            node_id: "worker".into(),
+            attempt_id: "attempt-001".into(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        }
+    }
+
+    fn resume_test_app(
+        temp: &tempfile::TempDir,
+    ) -> (App, super::intervention::InterventionLocator) {
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(
+            &app,
+            RunStatus::Paused,
+            Some(PauseReason::ProcessInterrupted),
+            None,
+        );
+        bind_resume_test_identity(&app);
+        let mut locator = resume_test_locator();
+        locator.project_id = app.paths.project_id.clone();
+        (app, locator)
+    }
+
+    #[test]
+    fn runtime_resume_busy_preserves_identity_fingerprint_and_pending_settlement() {
+        use super::intervention::*;
+        use super::runtime_resume::*;
+        let temp = tempdir().unwrap();
+        let (app, locator) = resume_test_app(&temp);
+        let offer = app.inspect_runtime_resume(locator.clone()).unwrap().offer;
+        let service = InterventionCommandService::new(&app);
+        let before = service.inspect(locator.clone(), offer.request()).unwrap();
+        assert_eq!(before.pause_reason, Some(PauseReason::ProcessInterrupted));
+        // A corrupt, arbitrarily large historical stream must never be read.
+        let dir = app.runtime_resume_attempt_dir(&locator);
+        std::fs::write(
+            dir.join("acp.timeline.jsonl"),
+            "invalid history\n".repeat(100_000),
+        )
+        .unwrap();
+        let activity = crate::acp::client::register_test_prompt_activity(
+            dir,
+            crate::acp::client::PromptActivity::Running,
+        );
+        let busy = app.inspect_runtime_resume(locator.clone()).unwrap();
+        assert!(matches!(
+            busy.readiness,
+            RuntimeResumeReadiness::Busy { .. }
+        ));
+        assert_eq!(busy.offer, offer);
+        assert_eq!(
+            service
+                .inspect(locator.clone(), offer.request())
+                .unwrap()
+                .expected_state,
+            before.expected_state
+        );
+        assert_eq!(
+            service.settlement(&locator, &offer.request()).unwrap(),
+            InterventionSettlement::Pending
+        );
+        assert_eq!(
+            app.execute_runtime_resume(offer.clone(), RuntimeResumeInput::default())
+                .unwrap_err()
+                .code,
+            InterventionErrorCode::InterventionBusy
+        );
+        drop(activity);
+        assert_eq!(
+            app.inspect_runtime_resume(locator).unwrap().readiness,
+            RuntimeResumeReadiness::Ready
+        );
+        assert_eq!(
+            app.run_status("task-001", "run-001")
+                .unwrap()
+                .execution
+                .revision,
+            1
+        );
+    }
+
+    #[test]
+    fn runtime_resume_checks_only_current_interaction_files_without_history_hydration() {
+        for permission in [true, false] {
+            let temp = tempdir().unwrap();
+            let (app, locator) = resume_test_app(&temp);
+            let dir = app.runtime_resume_attempt_dir(&locator);
+            let field = if permission {
+                "pendingPermissionIds"
+            } else {
+                "pendingElicitationIds"
+            };
+            write_json(
+                &dir.join("acp.snapshot.json"),
+                &serde_json::json!({"timing":{"stateSnapshot":{field:["current-request"]}}}),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("acp.timeline.jsonl"),
+                "invalid history\n".repeat(100_000),
+            )
+            .unwrap();
+            let offer = app.inspect_runtime_resume(locator.clone()).unwrap().offer;
+            let (pending, response) = if permission {
+                (
+                    crate::acp::permission::pending_permission_file(&dir, "current-request"),
+                    crate::acp::permission::permission_response_file(&dir, "current-request"),
+                )
+            } else {
+                (
+                    crate::acp::elicitation::pending_elicitation_file(&dir, "current-request"),
+                    crate::acp::elicitation::elicitation_response_file(&dir, "current-request"),
+                )
+            };
+            write_json(&pending, &serde_json::json!({})).unwrap();
+            assert!(app.inspect_runtime_resume(locator.clone()).is_err());
+            write_json(&response, &serde_json::json!({"requestId":"current-request", "elicitationId":"current-request", "action":"cancel", "cancelled":true, "decidedAt":"2026-11-17T00:00:00Z"})).unwrap();
+            assert_eq!(app.inspect_runtime_resume(locator).unwrap().offer, offer);
+        }
+    }
+
+    #[test]
+    fn runtime_resume_prompt_cleanup_rechecks_the_original_source_and_boundary() {
+        for change in ["none", "task-uuid", "boundary"] {
+            let temp = tempdir().unwrap();
+            let (app, locator) = resume_test_app(&temp);
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let captured = events.clone();
+            let run_path = app.paths.run_file(&locator.task_id, &locator.run_id);
+            let app = app
+                .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                    captured.lock().unwrap().push(event)
+                }))
+                .with_prompt_turn_lifecycle(Arc::new(move |_, _| {
+                    if change == "boundary" {
+                        let mut run: RunState = read_json(&run_path)?;
+                        run.execution.revision += 1;
+                        write_json(&run_path, &run)?;
+                    }
+                    Ok(())
+                }));
+            app.notify_prompt_turn_finished(
+                AcpLiveEventContext {
+                    task_id: locator.task_id,
+                    task_uuid: Some(
+                        if change == "task-uuid" {
+                            "stale-task"
+                        } else {
+                            "task-instance-a"
+                        }
+                        .into(),
+                    ),
+                    run_id: locator.run_id,
+                    round_id: locator.round_id,
+                    node_id: locator.node_id,
+                    attempt_id: locator.attempt_id,
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                },
+                None,
+                AcpTurnOutcome::Cancelled,
+            )
+            .unwrap();
+            assert_eq!(
+                events.lock().unwrap().len(),
+                usize::from(change == "none"),
+                "{change}"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_resume_storage_failure_does_not_settle_the_source() {
+        use super::intervention::*;
+        let temp = tempdir().unwrap();
+        let (app, locator) = resume_test_app(&temp);
+        let offer = app.inspect_runtime_resume(locator.clone()).unwrap().offer;
+        let path = app.paths.task_file(&locator.task_id);
+        let original = std::fs::read(&path).unwrap();
+        std::fs::write(&path, "incomplete JSON").unwrap();
+        let error = InterventionCommandService::new(&app)
+            .settlement(&locator, &offer.request())
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            InterventionErrorCode::InterventionStorageUnavailable
+        );
+        assert!(error.retryable);
+        std::fs::write(&path, original).unwrap();
+        assert_eq!(app.inspect_runtime_resume(locator).unwrap().offer, offer);
+    }
+
+    #[test]
+    fn runtime_resume_excludes_direct_manual_blocked_and_missing_source_identity() {
+        for case in [
+            "direct",
+            "manual",
+            "blocked",
+            "waiting-for-input",
+            "permission",
+            "task-missing",
+            "run-missing",
+            "task-mismatch",
+        ] {
+            let temp = tempdir().unwrap();
+            let (app, locator) = resume_test_app(&temp);
+            let path = app.paths.run_file("task-001", "run-001");
+            let mut run: RunState = read_json(&path).unwrap();
+            match case {
+                "direct" => write_json(
+                    &app.paths
+                        .task_dir("task-001")
+                        .join("authoring/conversation.json"),
+                    &serde_json::json!({"runMode":"direct"}),
+                )
+                .unwrap(),
+                "manual" => {
+                    let path = app.paths.node_file(
+                        "task-001",
+                        "run-001",
+                        "round-001",
+                        "worker",
+                        "attempt-001",
+                    );
+                    let mut node: NodeState = read_json(&path).unwrap();
+                    node.manual_check_pending = true;
+                    write_json(&path, &node).unwrap();
+                }
+                "blocked" => run.pause_reason = Some(PauseReason::ErrorBlocked),
+                "waiting-for-input" => run.pause_reason = Some(PauseReason::WaitingForUserInput),
+                "permission" => run.pause_reason = Some(PauseReason::PermissionRequested),
+                "task-missing" => {
+                    let mut task: TaskState = read_json(&app.paths.task_file("task-001")).unwrap();
+                    task.uuid = None;
+                    write_json(&app.paths.task_file("task-001"), &task).unwrap();
+                }
+                "run-missing" => run.uuid = None,
+                "task-mismatch" => run.task_uuid = Some("other-task-instance".into()),
+                _ => unreachable!(),
+            }
+            write_json(&path, &run).unwrap();
+            let before = std::fs::read(&path).unwrap();
+            assert!(app.inspect_runtime_resume(locator).is_err(), "{case}");
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                before,
+                "inspection must be read only: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_resume_commit_rejects_replaced_uuid_or_boundary_without_writes() {
+        use super::runtime_resume::*;
+        for change in ["task-uuid", "run-uuid", "revision"] {
+            let temp = tempdir().unwrap();
+            let (app, locator) = resume_test_app(&temp);
+            let offer = app.inspect_runtime_resume(locator).unwrap().offer;
+            let admission = RuntimeResumeAdmission::new(offer);
+            let run_path = app.paths.run_file("task-001", "run-001");
+            let mut run: RunState = read_json(&run_path).unwrap();
+            if change == "task-uuid" {
+                let mut task: TaskState = read_json(&app.paths.task_file("task-001")).unwrap();
+                task.uuid = Some("replacement".into());
+                run.task_uuid = task.uuid.clone();
+                write_json(&app.paths.task_file("task-001"), &task).unwrap();
+            } else if change == "run-uuid" {
+                run.uuid = Some("replacement".into());
+            } else {
+                run.execution.revision += 1;
+            }
+            write_json(&run_path, &run).unwrap();
+            let round: RoundState =
+                read_json(&app.paths.round_file("task-001", "run-001", "round-001")).unwrap();
+            let node_path =
+                app.paths
+                    .node_file("task-001", "run-001", "round-001", "worker", "attempt-001");
+            let mut node: NodeState = read_json(&node_path).unwrap();
+            let before_run = std::fs::read(&run_path).unwrap();
+            let before_node = std::fs::read(&node_path).unwrap();
+            assert!(
+                super::orchestrator::commit_fixed_run_continue(
+                    &app,
+                    "task-001",
+                    "run-001",
+                    &round,
+                    &mut node,
+                    "rejected-execution",
+                    Some(&admission)
+                )
+                .is_err(),
+                "{change}"
+            );
+            assert_eq!(std::fs::read(&run_path).unwrap(), before_run);
+            assert_eq!(std::fs::read(&node_path).unwrap(), before_node);
+            assert_eq!(admission.committed_revision(), None);
+        }
+    }
+
+    #[test]
+    fn runtime_resume_dynamic_leaf_notifies_while_sibling_runs_and_ignores_sibling_revision() {
+        let temp = tempdir().unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let app = dynamic_pause_test_app(&temp).with_inline_lifecycle_subscriber(Arc::new(
+            move |event| captured.lock().unwrap().push(event),
+        ));
+        write_dynamic_pause_fixture(
+            &app,
+            vec![
+                dynamic_pause_node("leaf-a", DynamicNodeStatus::Running),
+                dynamic_pause_node("leaf-b", DynamicNodeStatus::Running),
+            ],
+        );
+        bind_resume_test_identity(&app);
+        let locator = super::intervention::InterventionLocator {
+            project_id: app.paths.project_id.clone(),
+            node_id: "leaf-a".into(),
+            outer_node_id: Some("ai-dynamic".into()),
+            outer_attempt_id: Some("attempt-001".into()),
+            ..resume_test_locator()
+        };
+        write_json(
+            &app.runtime_resume_attempt_dir(&locator)
+                .join("acp.snapshot.json"),
+            &serde_json::json!({"latestTurnStatus":"cancelled", "stopReason":"cancelled"}),
+        )
+        .unwrap();
+        let error = app.inspect_runtime_resume(locator.clone()).unwrap_err();
+        assert_eq!(error.details.get("reason").unwrap(), "leaf-not-resumable");
+        app.pause_dynamic_attempt_runtime_state(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "leaf-a",
+            "attempt-001",
+            PauseReason::ProcessInterrupted,
+        )
+        .unwrap();
+        assert_eq!(
+            app.run_status("task-001", "run-001").unwrap().status,
+            RunStatus::Running
+        );
+        let inspected = app.inspect_runtime_resume(locator.clone()).unwrap();
+        assert_eq!(
+            inspected.pause_reason,
+            Some(PauseReason::ProcessInterrupted)
+        );
+        let offer = inspected.offer;
+        let mut emitted = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                RuntimeLifecycleEvent::InterventionRequested {
+                    request, node_id, ..
+                } if node_id == "leaf-a" => Some(request.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(emitted.len(), 2, "cleanup rechecks the same request");
+        emitted.dedup();
+        assert_eq!(emitted, vec![offer.request()]);
+        app.pause_dynamic_attempt_runtime_state(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "leaf-b",
+            "attempt-001",
+            PauseReason::ProcessInterrupted,
+        )
+        .unwrap();
+        assert_eq!(app.inspect_runtime_resume(locator).unwrap().offer, offer);
+    }
+
+    #[test]
+    fn runtime_resume_whole_dynamic_pause_publishes_each_actionable_leaf_once() {
+        for reason in [PauseReason::ProcessInterrupted, PauseReason::ErrorBlocked] {
+            let temp = tempdir().unwrap();
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let captured = events.clone();
+            let app = dynamic_pause_test_app(&temp).with_inline_lifecycle_subscriber(Arc::new(
+                move |event| captured.lock().unwrap().push(event),
+            ));
+            let mut completed = dynamic_pause_node("leaf-done", DynamicNodeStatus::Completed);
+            completed.outcome = Some(crate::domain::NodeOutcome::Success);
+            write_dynamic_pause_fixture(
+                &app,
+                vec![
+                    dynamic_pause_node("leaf-a", DynamicNodeStatus::Running),
+                    dynamic_pause_node("leaf-b", DynamicNodeStatus::Running),
+                    completed,
+                ],
+            );
+            bind_resume_test_identity(&app);
+
+            app.run_pause("task-001", "run-001", reason).unwrap();
+            // Re-observing the same stopped Run must not create another request.
+            app.run_pause("task-001", "run-001", reason).unwrap();
+            let mut emitted = events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|event| match event {
+                    RuntimeLifecycleEvent::InterventionRequested {
+                        node_id, request, ..
+                    } => Some((node_id.clone(), request.clone())),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if reason == PauseReason::ErrorBlocked {
+                assert!(
+                    emitted.is_empty(),
+                    "blocked pauses have no generic resume action"
+                );
+                continue;
+            }
+            let expected = ["leaf-a", "leaf-b"]
+                .into_iter()
+                .map(|node_id| {
+                    let locator = super::intervention::InterventionLocator {
+                        project_id: app.paths.project_id.clone(),
+                        node_id: node_id.into(),
+                        outer_node_id: Some("ai-dynamic".into()),
+                        outer_attempt_id: Some("attempt-001".into()),
+                        ..resume_test_locator()
+                    };
+                    let offer = app.inspect_runtime_resume(locator).unwrap().offer;
+                    (node_id.to_string(), offer.request())
+                })
+                .collect::<Vec<_>>();
+            emitted.sort_by(|left, right| left.0.cmp(&right.0));
+            emitted.dedup();
+            assert_eq!(
+                emitted, expected,
+                "every committed resumable leaf needs its own request"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_resume_pause_publication_precedes_cleanup() {
+        for dynamic in [false, true] {
+            let temp = tempdir().unwrap();
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let captured = events.clone();
+            let app = dynamic_pause_test_app(&temp).with_inline_lifecycle_subscriber(Arc::new(
+                move |event| captured.lock().unwrap().push(event),
+            ));
+            if dynamic {
+                write_dynamic_pause_fixture(
+                    &app,
+                    vec![dynamic_pause_node("leaf-a", DynamicNodeStatus::Running)],
+                );
+            } else {
+                write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+            }
+            bind_resume_test_identity(&app);
+            let (at_cleanup, observed_cleanup) = std::sync::mpsc::channel();
+            let release = Arc::new(std::sync::Barrier::new(2));
+            let release_cleanup = release.clone();
+            let at_cleanup_events = events.clone();
+            let before_cleanup = std::thread::scope(|scope| {
+                let worker = scope.spawn(|| {
+                    super::orchestrator::PAUSE_CLEANUP_TEST_HOOK.with(|slot| {
+                        *slot.borrow_mut() = Some(Box::new(move || {
+                            at_cleanup
+                                .send(at_cleanup_events.lock().unwrap().clone())
+                                .unwrap();
+                            release_cleanup.wait();
+                            Ok(())
+                        }));
+                    });
+                    app.run_pause("task-001", "run-001", PauseReason::ProcessInterrupted)
+                });
+                let snapshot = observed_cleanup.recv().unwrap();
+                release.wait();
+                worker.join().unwrap().unwrap();
+                snapshot
+            });
+            assert!(
+                before_cleanup
+                    .iter()
+                    .any(|event| matches!(event, RuntimeLifecycleEvent::RunPaused { .. })),
+                "RunPaused must precede cleanup (dynamic={dynamic})"
+            );
+            assert!(
+                before_cleanup.iter().any(|event| matches!(
+                    event,
+                    RuntimeLifecycleEvent::InterventionRequested { .. }
+                )),
+                "resume request must precede cleanup (dynamic={dynamic})"
+            );
+            assert_eq!(
+                events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|event| matches!(event, RuntimeLifecycleEvent::RunPaused { .. }))
+                    .count(),
+                1
+            );
+            let repository = Arc::new(crate::im::ImRepository::new(
+                Utf8PathBuf::from_path_buf(temp.path().join("outbox.db")).unwrap(),
+            ));
+            let projector = crate::im::ImLifecycleProjector::new(repository);
+            let targets =
+                crate::im::ImChannelKind::ALL.map(|channel| crate::im::ImProjectionTarget {
+                    channel,
+                    enabled: true,
+                    credential_available: true,
+                    capabilities: match channel {
+                        crate::im::ImChannelKind::WeCom => {
+                            crate::im::connectors::wecom::WECOM_CHANNEL_CAPABILITIES
+                        }
+                        crate::im::ImChannelKind::Feishu => {
+                            crate::im::connectors::feishu::FEISHU_CHANNEL_CAPABILITIES
+                        }
+                    },
+                    destination: Some(crate::im::ImDestination {
+                        destination_id: format!("{channel:?}-user"),
+                        conversation_id: format!("{channel:?}-chat"),
+                        authorized_actor_id: format!("{channel:?}-actor"),
+                    }),
+                    notifications: Default::default(),
+                });
+            let mut inserted = 0;
+            let mut duplicates = 0;
+            for event in events.lock().unwrap().iter().filter(|event| {
+                matches!(event, RuntimeLifecycleEvent::InterventionRequested { .. })
+            }) {
+                let result = projector.project_event(&app, event, &targets, 100).unwrap();
+                inserted += result.inserted;
+                duplicates += result.duplicates;
+            }
+            assert_eq!(
+                inserted, 2,
+                "one delivery per channel for a committed pause"
+            );
+            assert_eq!(
+                duplicates, 2,
+                "post-cleanup replay must deduplicate in the existing outbox"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_resume_pause_cleanup_preserves_a_new_prompt_generation() {
+        use crate::acp::{client, events::*};
+        let temp = tempdir().unwrap();
+        let app = dynamic_pause_test_app(&temp);
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        bind_resume_test_identity(&app);
+        let dir =
+            app.paths
+                .attempt_dir("task-001", "run-001", "round-001", "worker", "attempt-001");
+        let snapshot = dir.join("acp.snapshot.json");
+        let old = serde_json::json!({"sessionId":"session-a", "availability":"established", "acpRevision":1, "turnId":"turn-old", "lifecycleOperationId":"operation-old", "liveTurnActivity":"running", "latestTurnStatus":"none"});
+        write_json(&snapshot, &old).unwrap();
+        let new = serde_json::json!({"sessionId":"session-a", "availability":"established", "acpRevision":3, "turnId":"turn-new", "lifecycleOperationId":"operation-new", "liveTurnActivity":"running", "latestTurnStatus":"none"});
+        let new_in_cleanup = new.clone();
+        let snapshot_in_cleanup = snapshot.clone();
+        let registration = Arc::new(Mutex::new(None));
+        let register_in_cleanup = registration.clone();
+        let resumed_app = app.clone_for_background();
+        let resumed_dir = dir.clone();
+        super::orchestrator::PAUSE_CLEANUP_TEST_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                let mut run = resumed_app.run_status("task-001", "run-001")?;
+                run.status = RunStatus::Running;
+                run.pause_reason = None;
+                run.transition_current_execution(
+                    RuntimeExecutionPhase::StartingNode,
+                    "2026-11-17T00:00:01Z",
+                )?;
+                write_json(&resumed_app.paths.run_file("task-001", "run-001"), &run)?;
+                write_json(&snapshot_in_cleanup, &new_in_cleanup)?;
+                *register_in_cleanup.lock().unwrap() = Some(client::register_test_prompt_activity(
+                    resumed_dir,
+                    client::PromptActivity::Running,
+                ));
+                Ok(())
+            }));
+        });
+        app.run_pause("task-001", "run-001", PauseReason::ProcessInterrupted)
+            .unwrap();
+        assert_eq!(
+            client::prompt_activity(&dir),
+            Some(client::PromptActivity::Running),
+            "late pause cleanup must not cancel the new provider control"
+        );
+        assert_eq!(
+            read_lifecycle_header_snapshot(&snapshot)
+                .unwrap()
+                .unwrap()
+                .turn_id
+                .as_deref(),
+            Some("turn-new")
+        );
+        assert_eq!(
+            read_json::<serde_json::Value>(&snapshot).unwrap(),
+            new,
+            "late pause cleanup must not settle the new ACP turn"
+        );
+    }
+
+    #[test]
+    fn runtime_resume_leaf_auxiliary_projection_failure_does_not_hide_committed_pause() {
+        let temp = tempdir().unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let app = dynamic_pause_test_app(&temp).with_inline_lifecycle_subscriber(Arc::new(
+            move |event| captured.lock().unwrap().push(event),
+        ));
+        write_dynamic_pause_fixture(
+            &app,
+            vec![
+                dynamic_pause_node("leaf-a", DynamicNodeStatus::Running),
+                dynamic_pause_node("leaf-b", DynamicNodeStatus::Running),
+            ],
+        );
+        bind_resume_test_identity(&app);
+        let projection = app.paths.dynamic_coordination_snapshot_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        std::fs::create_dir_all(projection.as_std_path()).unwrap();
+        let result = app.pause_dynamic_attempt_runtime_state(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "leaf-a",
+            "attempt-001",
+            PauseReason::ProcessInterrupted,
+        );
+        let graph = crate::dynamic_store::load_dynamic_graph(
+            &app.paths.dynamic_graph_file(
+                "task-001",
+                "run-001",
+                "round-001",
+                "ai-dynamic",
+                "attempt-001",
+            ),
+            &app.paths.repo_root,
+        )
+        .unwrap();
+        assert_eq!(
+            graph.nodes[0].status,
+            DynamicNodeStatus::Paused,
+            "fixture must fail only after canonical graph commit"
+        );
+        assert!(
+            result.is_ok(),
+            "auxiliary projection cannot reject an already committed pause: {result:?}"
+        );
+        assert!(events.lock().unwrap().iter().any(|event| matches!(event, RuntimeLifecycleEvent::InterventionRequested { node_id, .. } if node_id == "leaf-a")), "committed leaf must publish before auxiliary projections");
+    }
+
+    #[test]
+    fn runtime_resume_leaf_cleanup_failure_preserves_committed_pause_and_publication() {
+        for sibling_active in [true, false] {
+            let temp = tempdir().unwrap();
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let captured = events.clone();
+            let app = dynamic_pause_test_app(&temp).with_inline_lifecycle_subscriber(Arc::new(
+                move |event| captured.lock().unwrap().push(event),
+            ));
+            let mut nodes = vec![dynamic_pause_node("leaf-a", DynamicNodeStatus::Running)];
+            if sibling_active {
+                nodes.push(dynamic_pause_node("leaf-b", DynamicNodeStatus::Running));
+            }
+            write_dynamic_pause_fixture(&app, nodes);
+            bind_resume_test_identity(&app);
+            super::orchestrator::PAUSE_CLEANUP_TEST_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(|| {
+                    Err(anyhow::anyhow!("injected dynamic lease cleanup failure"))
+                }));
+            });
+            let paused = app.pause_dynamic_attempt_runtime_state(
+                "task-001",
+                "run-001",
+                "round-001",
+                "ai-dynamic",
+                "attempt-001",
+                "leaf-a",
+                "attempt-001",
+                PauseReason::ProcessInterrupted,
+            );
+            let graph = crate::dynamic_store::load_dynamic_graph(
+                &app.paths.dynamic_graph_file(
+                    "task-001",
+                    "run-001",
+                    "round-001",
+                    "ai-dynamic",
+                    "attempt-001",
+                ),
+                &app.paths.repo_root,
+            )
+            .unwrap();
+            assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+            assert!(
+                paused.is_ok(),
+                "cleanup failure must not reject committed pause: {paused:?}"
+            );
+            assert!(events.lock().unwrap().iter().any(|event| matches!(event, RuntimeLifecycleEvent::InterventionRequested { node_id, .. } if node_id == "leaf-a")), "committed leaf must publish despite cleanup failure");
+        }
+    }
+
+    #[test]
+    fn runtime_resume_preflight_failure_preserves_original_request() {
+        let temp = tempdir().unwrap();
+        let (app, locator) = resume_test_app(&temp);
+        let offer = app.inspect_runtime_resume(locator.clone()).unwrap().offer;
+        let error = app
+            .execute_runtime_resume(offer.clone(), Default::default())
+            .unwrap_err();
+        assert!(error.retryable);
+        assert_eq!(app.inspect_runtime_resume(locator).unwrap().offer, offer);
     }
 
     #[test]

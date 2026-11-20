@@ -3276,8 +3276,42 @@ pub fn persist_session_terminal(
     stop_reason: &str,
     decided_at: &str,
 ) -> Result<AcpLifecycleHeader> {
+    persist_session_terminal_matching(path, latest_turn_status, stop_reason, decided_at, |_| true)
+        .map(|header| header.expect("unconditional terminal persistence matches"))
+}
+
+/// Compare and settle under the metadata lock. Captured absence also fences
+/// cleanup: a newly admitted first turn must not be cancelled by an old stop.
+pub(crate) fn persist_session_terminal_if_current(
+    path: &Utf8Path,
+    expected: Option<&AcpLifecycleHeader>,
+    latest_turn_status: AcpLatestTurnStatus,
+    stop_reason: &str,
+    decided_at: &str,
+) -> Result<Option<AcpLifecycleHeader>> {
+    persist_session_terminal_matching(
+        path,
+        latest_turn_status,
+        stop_reason,
+        decided_at,
+        |current| current == expected,
+    )
+}
+
+fn persist_session_terminal_matching(
+    path: &Utf8Path,
+    latest_turn_status: AcpLatestTurnStatus,
+    stop_reason: &str,
+    decided_at: &str,
+    matches: impl FnOnce(Option<&AcpLifecycleHeader>) -> bool,
+) -> Result<Option<AcpLifecycleHeader>> {
     let _guard = session_metadata_lock(path).lock().unwrap();
-    let mut value = if let Some(value) = admission_metadata_base(path)? {
+    let persisted = admission_metadata_base(path)?;
+    let observed = persisted.as_ref().map(lifecycle_header_from_value);
+    if !matches(observed.as_ref()) {
+        return Ok(None);
+    }
+    let mut value = if let Some(value) = persisted {
         value
     } else {
         serde_json::json!({
@@ -3288,7 +3322,7 @@ pub fn persist_session_terminal(
     };
     let current = lifecycle_header_from_value(&value);
     if lifecycle_is_terminal(&current) {
-        return Ok(current);
+        return Ok(Some(current));
     }
     let terminal = reduce_lifecycle_header(
         &value,
@@ -3302,7 +3336,7 @@ pub fn persist_session_terminal(
     value["updatedAt"] = Value::String(decided_at.to_string());
     write_json(path, &value)?;
     clear_session_turn_active(path, terminal.turn_id.as_deref());
-    Ok(terminal)
+    Ok(Some(terminal))
 }
 
 pub fn read_lifecycle_header(path: &Utf8Path) -> Result<Option<AcpLifecycleHeader>> {

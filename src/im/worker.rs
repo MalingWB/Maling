@@ -18,6 +18,7 @@ pub const DEFAULT_IM_RETRY_DELAY: Duration = Duration::from_secs(5);
 enum DeliveryAttempt {
     Sent(ImDeliveryReceipt),
     AwaitingSource,
+    StaleSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +30,11 @@ pub fn im_worker_channel() -> (mpsc::Sender<ImWorkerSignal>, mpsc::Receiver<ImWo
     mpsc::channel(IM_LIFECYCLE_QUEUE_CAPACITY)
 }
 
+type SourceValidator =
+    Arc<dyn Fn(&super::InterventionRef) -> Result<bool, ImIntegrationError> + Send + Sync>;
+
 pub struct ImDeliveryWorker {
+    source_validator: Option<SourceValidator>,
     channel: ImChannelKind,
     repository: Arc<ImRepository>,
     connector: Arc<dyn ImConnector>,
@@ -44,12 +49,18 @@ impl ImDeliveryWorker {
         connector: Arc<dyn ImConnector>,
     ) -> Self {
         Self {
+            source_validator: None,
             channel,
             repository,
             connector,
             concurrency: DEFAULT_IM_SEND_CONCURRENCY,
             lease_duration: DEFAULT_IM_LEASE_DURATION,
         }
+    }
+
+    pub fn with_source_validator(mut self, validator: SourceValidator) -> Self {
+        self.source_validator = Some(validator);
+        self
     }
 
     #[cfg(test)]
@@ -115,6 +126,7 @@ impl ImDeliveryWorker {
                 Arc::clone(&self.connector),
                 Arc::clone(&self.repository),
                 claimed,
+                self.source_validator.clone(),
             );
         }
         while let Some(result) = sends.join_next().await {
@@ -127,6 +139,7 @@ impl ImDeliveryWorker {
                     Arc::clone(&self.connector),
                     Arc::clone(&self.repository),
                     claimed,
+                    self.source_validator.clone(),
                 );
             }
         }
@@ -143,6 +156,17 @@ impl ImDeliveryWorker {
         let delivery = claimed.delivery;
         let expected_attempt_count = claimed.attempt_count;
         match result {
+            Ok(DeliveryAttempt::StaleSource) => {
+                tokio::task::spawn_blocking(move || {
+                    repository.expire_stale_source(
+                        &delivery.delivery_id,
+                        expected_attempt_count,
+                        now_ms,
+                    )
+                })
+                .await
+                .map_err(|_| ImRepositoryError::LockUnavailable)??;
+            }
             Ok(DeliveryAttempt::AwaitingSource) => {
                 tokio::task::spawn_blocking(move || {
                     repository.defer_delivery(
@@ -211,9 +235,33 @@ fn spawn_send(
     connector: Arc<dyn ImConnector>,
     repository: Arc<ImRepository>,
     claimed: super::ClaimedImDelivery,
+    validator: Option<SourceValidator>,
 ) {
     sends.spawn(async move {
-        let result = deliver(connector.as_ref(), repository, claimed.delivery.clone()).await;
+        let source = match &claimed.delivery.payload {
+            ImDeliveryPayload::Intervention { reference, .. }
+                if claimed.delivery.notification_kind
+                    == super::ImNotificationKind::WorkflowResume =>
+            {
+                Some(reference.clone())
+            }
+            _ => None,
+        };
+        let result = if let (Some(validator), Some(source)) = (validator, source) {
+            match tokio::task::spawn_blocking(move || validator(&source)).await {
+                Ok(Ok(true)) => {
+                    deliver(connector.as_ref(), repository, claimed.delivery.clone()).await
+                }
+                Ok(Ok(false)) => Ok(DeliveryAttempt::StaleSource),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err(ImIntegrationError::retryable(
+                    ImErrorCode::StorageUnavailable,
+                    None,
+                )),
+            }
+        } else {
+            deliver(connector.as_ref(), repository, claimed.delivery.clone()).await
+        };
         (claimed, result)
     });
 }
@@ -416,8 +464,10 @@ mod tests {
             &self,
             _context: ImActionResponseContext,
             _response: ImActionResponse,
-        ) -> Result<(), ImIntegrationError> {
-            Ok(())
+        ) -> Result<crate::im::ImActionResponseReceipt, ImIntegrationError> {
+            Ok(crate::im::ImActionResponseReceipt::Unconfirmed {
+                reason: crate::im::ImActionUnconfirmedReason::Unknown,
+            })
         }
 
         async fn update_message(
@@ -475,8 +525,10 @@ mod tests {
             &self,
             _context: ImActionResponseContext,
             _response: ImActionResponse,
-        ) -> Result<(), ImIntegrationError> {
-            Ok(())
+        ) -> Result<crate::im::ImActionResponseReceipt, ImIntegrationError> {
+            Ok(crate::im::ImActionResponseReceipt::Unconfirmed {
+                reason: crate::im::ImActionUnconfirmedReason::Unknown,
+            })
         }
 
         async fn update_message(
@@ -942,6 +994,80 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(delivery.canonical_event_id, "event-1");
+    }
+
+    #[tokio::test]
+    async fn runtime_resume_worker_rechecks_source_and_retries_unavailable_storage() {
+        for state in ["ready-or-busy", "stale", "storage"] {
+            let temp = tempfile::tempdir().unwrap();
+            let repository = Arc::new(ImRepository::new(
+                Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+            ));
+            let mut source = permission_source();
+            source.notification_kind = ImNotificationKind::WorkflowResume;
+            source.refresh_id();
+            if let ImDeliveryPayload::Intervention { reference, .. } = &mut source.payload {
+                reference.request =
+                    crate::app::intervention::InterventionRequestIdentity::RuntimeResume {
+                        source_identity: crate::app::runtime_resume::RuntimeResumeSourceIdentity {
+                            task_uuid: "task-uuid".into(),
+                            run_uuid: "run-uuid".into(),
+                        },
+                        resume_kind:
+                            crate::app::runtime_resume::RuntimeResumeKind::ContinueCurrentAttempt,
+                        boundary: crate::app::runtime_resume::RuntimeResumeBoundary::RunExecution {
+                            revision: 4,
+                        },
+                    };
+                reference.allowed_actions = vec![
+                    crate::app::intervention::InterventionAllowedAction::RuntimeResume {
+                        resume_kind:
+                            crate::app::runtime_resume::RuntimeResumeKind::ContinueCurrentAttempt,
+                    },
+                ];
+            }
+            repository.enqueue(&source, 100).unwrap();
+            let connector = Arc::new(FakeConnector::new(ImMessageUpdateMode::CallbackOnly));
+            let checks = Arc::new(AtomicUsize::new(0));
+            let seen = checks.clone();
+            let worker = ImDeliveryWorker::new(
+                source.channel,
+                repository.clone(),
+                connector.clone(),
+            )
+            .with_source_validator(Arc::new(move |reference| {
+                assert!(matches!(
+                    reference.request,
+                    crate::app::intervention::InterventionRequestIdentity::RuntimeResume { .. }
+                ));
+                let check = seen.fetch_add(1, Ordering::SeqCst);
+                match state {
+                    "stale" => Ok(false),
+                    "storage" if check == 0 => Err(ImIntegrationError::retryable(
+                        ImErrorCode::StorageUnavailable,
+                        None,
+                    )),
+                    _ => Ok(true),
+                }
+            }));
+            assert_eq!(worker.dispatch_once(100).await.unwrap(), 1);
+            assert_eq!(
+                connector.sends.load(Ordering::SeqCst),
+                usize::from(state == "ready-or-busy")
+            );
+            assert_eq!(
+                worker.dispatch_once(10_000).await.unwrap(),
+                usize::from(state == "storage")
+            );
+            assert_eq!(
+                connector.sends.load(Ordering::SeqCst),
+                usize::from(state != "stale")
+            );
+            assert_eq!(
+                checks.load(Ordering::SeqCst),
+                if state == "storage" { 2 } else { 1 }
+            );
+        }
     }
 
     #[tokio::test]

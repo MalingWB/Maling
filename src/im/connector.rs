@@ -177,6 +177,9 @@ pub enum ImErrorCode {
     DeliveryNotFound,
     WorkspaceUnavailable,
     ActionProcessingFailed,
+    ActionBusy,
+    ActionRetryableFailure,
+    ActionStateChanged,
 }
 
 impl ImErrorCode {
@@ -211,6 +214,9 @@ impl ImErrorCode {
             Self::DeliveryNotFound => "IM_DELIVERY_NOT_FOUND",
             Self::WorkspaceUnavailable => "IM_WORKSPACE_UNAVAILABLE",
             Self::ActionProcessingFailed => "IM_ACTION_PROCESSING_FAILED",
+            Self::ActionBusy => "IM_ACTION_BUSY",
+            Self::ActionRetryableFailure => "IM_ACTION_RETRYABLE_FAILURE",
+            Self::ActionStateChanged => "IM_ACTION_STATE_CHANGED",
         }
     }
 
@@ -218,7 +224,7 @@ impl ImErrorCode {
         Self::ALL.into_iter().find(|code| code.as_str() == value)
     }
 
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 32] = [
         Self::ConfigInvalid,
         Self::CredentialUnavailable,
         Self::AuthenticationRequired,
@@ -248,6 +254,9 @@ impl ImErrorCode {
         Self::DeliveryNotFound,
         Self::WorkspaceUnavailable,
         Self::ActionProcessingFailed,
+        Self::ActionBusy,
+        Self::ActionRetryableFailure,
+        Self::ActionStateChanged,
     ];
 }
 
@@ -380,6 +389,7 @@ impl std::fmt::Debug for ImActionResponseContext {
 pub enum ImActionResponseState {
     Handled,
     AlreadyHandled,
+    Processing,
     Rejected(ImErrorCode),
 }
 
@@ -388,6 +398,7 @@ impl ImActionResponseState {
     pub const fn message_state(self) -> ImMessageState {
         match self {
             Self::Handled | Self::AlreadyHandled => ImMessageState::Handled,
+            Self::Processing => ImMessageState::Failed,
             Self::Rejected(ImErrorCode::ActionExpired) => ImMessageState::Expired,
             Self::Rejected(_) => ImMessageState::Failed,
         }
@@ -417,6 +428,33 @@ impl ImConnectorEvent {
     }
 }
 
+/// Actual transport evidence, not inferred from connector capabilities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImActionResponseReceipt {
+    FinalCardUpdated {
+        source_delivery_id: String,
+        action_id: String,
+        generation: u64,
+    },
+    FeedbackOnly {
+        kind: ImActionFeedbackKind,
+    },
+    Unconfirmed {
+        reason: ImActionUnconfirmedReason,
+    },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImActionFeedbackKind {
+    Processing,
+    RetryableFailure,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImActionUnconfirmedReason {
+    Expired,
+    Failed,
+    Unknown,
+}
+
 #[async_trait]
 pub trait ImConnector: Send + Sync {
     fn kind(&self) -> ImChannelKind;
@@ -437,11 +475,19 @@ pub trait ImConnector: Send + Sync {
         source: Option<&ImDelivery>,
     ) -> Result<ImDeliveryReceipt, ImIntegrationError>;
 
+    /// Connector-owned arrival deadline includes event queue and domain latency.
+    fn action_response_deadline(
+        &self,
+        _context: &ImActionResponseContext,
+    ) -> Option<tokio::time::Instant> {
+        None
+    }
+
     async fn respond_to_action(
         &self,
         context: ImActionResponseContext,
         response: ImActionResponse,
-    ) -> Result<(), ImIntegrationError>;
+    ) -> Result<ImActionResponseReceipt, ImIntegrationError>;
 
     /// Updates an already delivered message. Only called for `Anytime` channels.
     async fn update_message(

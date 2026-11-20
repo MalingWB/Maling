@@ -2091,6 +2091,24 @@ fn ai_dynamic_inner_resume_does_not_leak_into_new_round() {
     write_dynamic_workflow_with_new_round_feedback(&app, task_id);
     let paused = app.run_start(task_id, None).unwrap();
     assert_eq!(paused.pause_reason, Some(PauseReason::ProcessInterrupted));
+    let (settled_tx, settled) = std::sync::mpsc::sync_channel(1);
+    let app = app.with_inline_lifecycle_subscriber(Arc::new(move |event| {
+        if let gold_band::app::RuntimeLifecycleEvent::RunCompleted {
+            task_id: settled_task,
+            run_id,
+            ..
+        }
+        | gold_band::app::RuntimeLifecycleEvent::RunPaused {
+            task_id: settled_task,
+            run_id,
+            ..
+        } = event
+            && settled_task == task_id
+            && run_id == "run-001"
+        {
+            let _ = settled_tx.try_send(());
+        }
+    }));
     let run = {
         app.run_continue_dynamic_inner_background(
             task_id,
@@ -2107,18 +2125,11 @@ fn ai_dynamic_inner_resume_does_not_leak_into_new_round() {
             None,
         )
         .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        loop {
-            let run = app.run_status(task_id, "run-001").unwrap();
-            if run.status != RunStatus::Running {
-                break run;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "resume driver did not finish"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        // This checks prompt scoping across rounds, not a wall-clock completion SLA.
+        settled
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("resume driver did not finish");
+        app.run_status(task_id, "run-001").unwrap()
     };
     let events = std::fs::read_to_string(app.paths.run_events_file(task_id, "run-001")).unwrap();
     assert_eq!(

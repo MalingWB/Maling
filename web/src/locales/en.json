@@ -2491,6 +2491,8 @@
     "manualCheckSubmitFailed": "Manual check submission failed",
     "continueWorkflow": "Continue workflow",
     "continueWorkflowHint": "Continue running the workflow",
+    "runtimeResumeBusyStarting": "Starting, please wait",
+    "runtimeResumeBusyPromptActive": "This conversation is still processing. You can continue when it finishes.",
     "continueAndSend": "Continue and send",
     "continueAndSendHint": "Send the message and continue the workflow",
     "continueWorkflowStarting": "Continuing",
@@ -2831,6 +2833,7 @@
         "permission": "Permission requests",
         "elicitation": "Follow-up questions",
         "manualCheck": "Manual checks",
+        "workflowResume": "Workflow continuation request",
         "runSuccess": "Run succeeded",
         "runFailure": "Run failed",
         "acpTurnFinished": "ACP turn finished"
@@ -2873,7 +2876,10 @@
         "IM_STALE_GENERATION": "The connection state changed. Retry from the latest state.",
         "IM_RUNTIME_UNAVAILABLE": "The IM runtime is not ready.",
         "IM_CHANNEL_CLEANUP_PENDING": "The configuration was deleted. Local cleanup will retry in the background.",
-        "IM_OPERATION_FAILED": "The operation failed. Try again."
+        "IM_OPERATION_FAILED": "The operation failed. Try again.",
+        "IM_ACTION_BUSY": "Temporarily busy. Try again shortly.",
+        "IM_ACTION_STATE_CHANGED": "The workflow state has changed. This action is no longer valid. Try again using the latest card.",
+        "IM_ACTION_RETRYABLE_FAILURE": "The action was not submitted. Try again shortly."
       }
     },
     "avatar": {

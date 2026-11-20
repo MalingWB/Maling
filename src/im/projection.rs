@@ -34,14 +34,23 @@ pub struct ImProjectionTarget {
 }
 
 impl ImProjectionTarget {
-    fn eligible(&self, kind: ImNotificationKind) -> bool {
-        self.enabled
-            && self.credential_available
-            && self.capabilities.proactive_delivery
-            && self.capabilities.private_chat
-            && (!kind.is_intervention() || self.capabilities.card_actions)
-            && self.destination.is_some()
-            && self.notifications.enabled(kind)
+    fn skip_reason(&self, kind: ImNotificationKind) -> Option<&'static str> {
+        if !self.enabled {
+            Some("channel-disabled")
+        } else if !self.credential_available {
+            Some("credential-unavailable")
+        } else if !self.capabilities.proactive_delivery
+            || !self.capabilities.private_chat
+            || (kind.is_intervention() && !self.capabilities.card_actions)
+        {
+            Some("capability-unavailable")
+        } else if self.destination.is_none() {
+            Some("binding-unavailable")
+        } else if !self.notifications.enabled(kind) {
+            Some("preference-disabled")
+        } else {
+            None
+        }
     }
 }
 
@@ -246,8 +255,9 @@ impl ImLifecycleProjector {
                     outer_node_id: outer_node_id.clone(),
                     outer_attempt_id: outer_attempt_id.clone(),
                 };
-                let snapshot =
-                    InterventionCommandService::new(app).inspect(locator, request.clone())?;
+                let snapshot = InterventionCommandService::new(app).inspect(locator, request.clone()).inspect_err(|error| {
+                    tracing::debug!(phase = "eligibility", canonical_event_id = %event_id, project_id = %project_id, task_id = %task_id, run_id = %run_id, node_id = %node_id, error_code = error.code.as_str(), reason_code = error.details.get("reason").map(String::as_str), retryable = error.retryable, "IM intervention projection unavailable");
+                })?;
                 if notification_kind == ImNotificationKind::Elicitation
                     && !snapshot.allowed_actions.iter().any(|action| {
                         matches!(
@@ -402,6 +412,26 @@ impl ImLifecycleProjector {
                 let expires_at_ms = snapshot.expires_at_ms.unwrap_or_else(|| {
                     chrono::Utc::now().timestamp_millis() + 24 * 60 * 60 * 1_000
                 });
+                let (title_key, summary_key) = match &snapshot.request {
+                    crate::app::intervention::InterventionRequestIdentity::RuntimeResume {
+                        resume_kind:
+                            crate::app::runtime_resume::RuntimeResumeKind::RecoverCompletedAttempt,
+                        ..
+                    } => (
+                        "im.notification.workflowResume.recoverTitle",
+                        runtime_resume_summary_key(true, snapshot.pause_reason),
+                    ),
+                    crate::app::intervention::InterventionRequestIdentity::RuntimeResume {
+                        ..
+                    } => (
+                        intervention_title_key(notification_kind),
+                        runtime_resume_summary_key(false, snapshot.pause_reason),
+                    ),
+                    _ => (
+                        intervention_title_key(notification_kind),
+                        intervention_summary_key(notification_kind),
+                    ),
+                };
                 Some(DeliveryDraft {
                     notification_kind,
                     canonical_event_id: event_id.clone(),
@@ -415,8 +445,8 @@ impl ImLifecycleProjector {
                             expires_at_ms: snapshot.expires_at_ms,
                         },
                         presentation: InterventionPresentation {
-                            title_key: intervention_title_key(notification_kind).into(),
-                            summary_key: intervention_summary_key(notification_kind).into(),
+                            title_key: title_key.into(),
+                            summary_key: summary_key.into(),
                             title: permission_presentation_title,
                             summary: permission_presentation_summary,
                             body: presentation_body,
@@ -496,7 +526,8 @@ impl ImLifecycleProjector {
     ) -> Result<ImProjectionResult, ImRepositoryError> {
         let mut result = ImProjectionResult::default();
         for target in targets {
-            if !target.eligible(draft.notification_kind) {
+            if let Some(reason) = target.skip_reason(draft.notification_kind) {
+                tracing::debug!(phase = "projection", canonical_event_id = %draft.canonical_event_id, channel = target.channel.as_str(), reason_code = reason, "IM notification target skipped");
                 result.skipped += 1;
                 continue;
             }
@@ -505,6 +536,7 @@ impl ImLifecycleProjector {
                 &draft.payload,
                 &target.capabilities.interaction,
             ) else {
+                tracing::debug!(phase = "projection", canonical_event_id = %draft.canonical_event_id, channel = target.channel.as_str(), reason_code = "action-unsupported", "IM notification target skipped");
                 result.skipped += 1;
                 continue;
             };
@@ -705,6 +737,7 @@ fn event_canonical_id(event: &RuntimeLifecycleEvent) -> &str {
 fn intervention_notification_kind(kind: RuntimeInterventionKind) -> Option<ImNotificationKind> {
     match kind {
         RuntimeInterventionKind::PermissionRequested => Some(ImNotificationKind::Permission),
+        RuntimeInterventionKind::RuntimeResumeRequired => Some(ImNotificationKind::WorkflowResume),
         RuntimeInterventionKind::ElicitationRequested => Some(ImNotificationKind::Elicitation),
         RuntimeInterventionKind::ManualDecisionRequired => Some(ImNotificationKind::ManualCheck),
         RuntimeInterventionKind::RuntimeAbnormal
@@ -713,11 +746,35 @@ fn intervention_notification_kind(kind: RuntimeInterventionKind) -> Option<ImNot
     }
 }
 
+fn runtime_resume_summary_key(
+    recovery: bool,
+    reason: Option<crate::domain::PauseReason>,
+) -> &'static str {
+    use crate::domain::PauseReason;
+    match (recovery, reason) {
+        (false, Some(PauseReason::ProcessInterrupted)) => {
+            "im.notification.workflowResume.interruptedSummary"
+        }
+        (false, Some(PauseReason::RuntimeAbnormal)) => {
+            "im.notification.workflowResume.abnormalSummary"
+        }
+        (true, Some(PauseReason::ProcessInterrupted)) => {
+            "im.notification.workflowResume.recoverInterruptedSummary"
+        }
+        (true, Some(PauseReason::RuntimeAbnormal)) => {
+            "im.notification.workflowResume.recoverAbnormalSummary"
+        }
+        (true, _) => "im.notification.workflowResume.recoverSummary",
+        (false, _) => "im.notification.workflowResume.summary",
+    }
+}
+
 fn intervention_title_key(kind: ImNotificationKind) -> &'static str {
     match kind {
         ImNotificationKind::Permission => "im.notification.permission.title",
         ImNotificationKind::Elicitation => "im.notification.elicitation.title",
         ImNotificationKind::ManualCheck => "im.notification.manualCheck.title",
+        ImNotificationKind::WorkflowResume => "im.notification.workflowResume.title",
         _ => unreachable!("only intervention kinds have action titles"),
     }
 }
@@ -727,6 +784,7 @@ fn intervention_summary_key(kind: ImNotificationKind) -> &'static str {
         ImNotificationKind::Permission => "im.notification.permission.summary",
         ImNotificationKind::Elicitation => "im.notification.elicitation.summary",
         ImNotificationKind::ManualCheck => "im.notification.manualCheck.summary",
+        ImNotificationKind::WorkflowResume => "im.notification.workflowResume.summary",
         _ => unreachable!("only intervention kinds have action summaries"),
     }
 }
@@ -1316,6 +1374,253 @@ mod tests {
         assert_eq!(result.skipped, 1);
         assert_eq!(result.inserted, 0);
         assert_eq!(result.duplicates, 0);
+    }
+
+    #[test]
+    fn runtime_resume_card_uses_canonical_pause_reason_and_distinguishes_recovery() {
+        use crate::app::runtime_resume::RuntimeResumeKind;
+        use crate::domain::{NodeOutcome, PauseReason, RunStatus};
+        for (recovery, reason, expected_title, expected_summary) in [
+            (
+                false,
+                PauseReason::ProcessInterrupted,
+                "工作流已暂停",
+                "执行进程中断，等待你确认继续工作流。",
+            ),
+            (
+                false,
+                PauseReason::RuntimeAbnormal,
+                "工作流已暂停",
+                "运行异常，等待你确认继续工作流。",
+            ),
+            (
+                true,
+                PauseReason::ProcessInterrupted,
+                "工作流等待恢复",
+                "执行进程中断，当前节点已完成，等待你确认恢复流程。",
+            ),
+            (
+                true,
+                PauseReason::RuntimeAbnormal,
+                "工作流等待恢复",
+                "运行异常，当前节点已完成，等待你确认恢复流程。",
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+            write_permission_projection_fixture(&app);
+            let path = app.paths.run_file("task-1", "run-1");
+            let mut run: crate::runtime::RunState = crate::storage::read_json(&path).unwrap();
+            run.pause_reason = Some(reason);
+            run.task_uuid = Some("task-uuid".into());
+            run.uuid = Some("run-uuid".into());
+            crate::storage::write_json(&path, &run).unwrap();
+            crate::storage::write_json(
+                &app.paths.task_file("task-1"),
+                &crate::runtime::TaskState {
+                    version: crate::domain::VERSION.into(),
+                    id: "task-1".into(),
+                    title: None,
+                    description: None,
+                    uuid: run.task_uuid.clone(),
+                },
+            )
+            .unwrap();
+            crate::storage::write_json(
+                &app.paths
+                    .task_dir("task-1")
+                    .join("authoring/conversation.json"),
+                &serde_json::json!({"runMode":"workflow"}),
+            )
+            .unwrap();
+            let node_path =
+                app.paths
+                    .node_file("task-1", "run-1", "round-1", "node-1", "attempt-1");
+            let mut node: crate::runtime::NodeState =
+                crate::storage::read_json(&node_path).unwrap();
+            if recovery {
+                node.status = RunStatus::Completed;
+                node.outcome = Some(NodeOutcome::Success);
+                crate::storage::write_json(&node_path, &node).unwrap();
+            }
+            let locator = InterventionLocator {
+                project_id: app.paths.project_id.clone(),
+                task_id: "task-1".into(),
+                run_id: "run-1".into(),
+                round_id: "round-1".into(),
+                node_id: "node-1".into(),
+                attempt_id: "attempt-1".into(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            };
+            let inspected = app.inspect_runtime_resume(locator).unwrap();
+            assert_eq!(inspected.pause_reason, Some(reason));
+            let mut event = permission_event(&app.paths.project_id, "unused");
+            if let RuntimeLifecycleEvent::InterventionRequested {
+                request,
+                event_id,
+                kind,
+                ..
+            } = &mut event
+            {
+                *request = inspected.offer.request();
+                *event_id = inspected.offer.canonical_event_id();
+                *kind = RuntimeInterventionKind::RuntimeResumeRequired;
+            }
+            let projector = ImLifecycleProjector::new(Arc::new(ImRepository::new(
+                Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+            )));
+            let draft = projector
+                .draft_for_event(&app, &event, Some("Workspace"))
+                .unwrap()
+                .unwrap();
+            let ImDeliveryPayload::Intervention {
+                presentation,
+                reference,
+                ..
+            } = draft.payload
+            else {
+                panic!("actionable card required")
+            };
+            let expected_kind = if recovery {
+                RuntimeResumeKind::RecoverCompletedAttempt
+            } else {
+                RuntimeResumeKind::ContinueCurrentAttempt
+            };
+            assert_eq!(
+                reference.allowed_actions,
+                vec![InterventionAllowedAction::RuntimeResume {
+                    resume_kind: expected_kind
+                }]
+            );
+            use crate::im::connectors::localized;
+            assert_eq!(
+                localized(crate::im::ImLocale::ZhCn, &presentation.title_key),
+                expected_title
+            );
+            assert_eq!(
+                localized(crate::im::ImLocale::ZhCn, &presentation.summary_key),
+                expected_summary
+            );
+            for locale in crate::im::ImLocale::ALL {
+                assert_ne!(
+                    localized(locale, &presentation.summary_key),
+                    presentation.summary_key
+                );
+            }
+        }
+        assert_eq!(
+            runtime_resume_summary_key(false, None),
+            "im.notification.workflowResume.summary"
+        );
+        assert_eq!(
+            runtime_resume_summary_key(true, None),
+            "im.notification.workflowResume.recoverSummary"
+        );
+    }
+
+    #[test]
+    fn runtime_resume_busy_is_projected_once_per_channel_and_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_permission_projection_fixture(&app);
+        let path = app.paths.run_file("task-1", "run-1");
+        let mut run: crate::runtime::RunState = crate::storage::read_json(&path).unwrap();
+        run.pause_reason = Some(crate::domain::PauseReason::ProcessInterrupted);
+        run.task_uuid = Some("task-uuid".into());
+        run.uuid = Some("run-uuid".into());
+        crate::storage::write_json(&path, &run).unwrap();
+        crate::storage::write_json(
+            &app.paths.task_file("task-1"),
+            &crate::runtime::TaskState {
+                version: crate::domain::VERSION.into(),
+                id: "task-1".into(),
+                title: None,
+                description: None,
+                uuid: run.task_uuid.clone(),
+            },
+        )
+        .unwrap();
+        crate::storage::write_json(
+            &app.paths
+                .task_dir("task-1")
+                .join("authoring/conversation.json"),
+            &serde_json::json!({"runMode":"workflow"}),
+        )
+        .unwrap();
+        let mut event = permission_event(&app.paths.project_id, "unused");
+        let RuntimeLifecycleEvent::InterventionRequested {
+            request,
+            event_id,
+            kind,
+            ..
+        } = &mut event
+        else {
+            unreachable!()
+        };
+        let locator = InterventionLocator {
+            project_id: app.paths.project_id.clone(),
+            task_id: "task-1".into(),
+            run_id: "run-1".into(),
+            round_id: "round-1".into(),
+            node_id: "node-1".into(),
+            attempt_id: "attempt-1".into(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        };
+        let offer = app.inspect_runtime_resume(locator.clone()).unwrap().offer;
+        *request = offer.request();
+        *event_id = offer.canonical_event_id();
+        *kind = RuntimeInterventionKind::RuntimeResumeRequired;
+        let dir = app.runtime_resume_attempt_dir(&locator);
+        crate::storage::write_json(
+            &dir.join("acp.snapshot.json"),
+            &serde_json::json!({"promptRetry": {"promptId": "turn-1", "retryAttempt": 0}}),
+        )
+        .unwrap();
+        let activity = crate::acp::client::register_test_prompt_activity(
+            dir,
+            crate::acp::client::PromptActivity::CancelRequested,
+        );
+        let repository = Arc::new(ImRepository::new(
+            Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap(),
+        ));
+        let projector = ImLifecycleProjector::new(repository);
+        let targets = [target(ImChannelKind::WeCom), target(ImChannelKind::Feishu)];
+        assert_eq!(
+            projector
+                .project_event(&app, &event, &targets, 100)
+                .unwrap()
+                .inserted,
+            2
+        );
+        drop(activity);
+        assert_eq!(
+            projector
+                .project_event(&app, &event, &targets, 101)
+                .unwrap()
+                .duplicates,
+            2
+        );
+        run.execution.revision += 1;
+        crate::storage::write_json(&path, &run).unwrap();
+        let next = app.inspect_runtime_resume(locator).unwrap().offer;
+        if let RuntimeLifecycleEvent::InterventionRequested {
+            request, event_id, ..
+        } = &mut event
+        {
+            *request = next.request();
+            *event_id = next.canonical_event_id();
+        }
+        let mut disabled = targets.clone();
+        disabled[1].notifications.workflow_resume = false;
+        assert_eq!(
+            projector
+                .project_event(&app, &event, &disabled, 102)
+                .unwrap()
+                .inserted,
+            1
+        );
     }
 
     #[test]

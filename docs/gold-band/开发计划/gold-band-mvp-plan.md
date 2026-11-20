@@ -1,5 +1,29 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-11-19 ACP 错误保全与停止竞态修复
+
+- 根因：响应错误依赖尾部排空成功才解析，导致已收到的额度错误被传输异常替代。桌面事件独立按原始 `stopReason` 归约，导致取消快照与失败事件冲突。
+- 实现：在匹配响应边界提取错误，尾部排空故障单独记录并隔离会话路由。ACP 计算 `AcpTurnOutcome` 并以既有所有权条件落盘，桌面直接使用回合结果。用户停止优先于并发响应，终态写入失去执行权后也不发布迟到的成功或失败结果。
+- 红绿证据：协议回归先得到 `runtime.transport-interrupted` 而非额度错误，停止竞态回归先得到 `Failure` 而非 `Interrupted`。回归覆盖主错误与 trace 保留、取消确认、停止接管写入、成功追问，以及普通取消和传输中断的区别。
+- 验收：ACP client、生命周期、Provider 和队列测试 456 项通过、6 项按设计忽略。桌面停止、终态事件和队列测试 6 项通过。前端定向 DOM 测试 2 项及生产构建通过，内置浏览器用既有失败会话夹具验证默认宽度、720px 和恢复宽度的失败横幅与继续入口。两处竞态通过可控协议夹具验证。
+- 评审：复用已有状态、错误归约和快照写入条件。每轮匹配响应至多一次解析，仅异常路径增加一条诊断。不增加持久字段、依赖、网络请求或历史扫描。
+
+## 2026-11-19 ACP 上限与等待终态误报修复
+
+- 根因：ACP snapshot 和桌面结果虽然读取了 Provider 归约，但仍把若干非失败且非取消的结果默认归为完成。上限和等待交互因此可能触发 Direct 成功通知和后续队列派发。
+- 实现：两处均只把明确的 `Success` 投影为完成。上限和等待保留原始 `stopReason`，通过现有 ACP 未完成错误和 Direct 队列暂停机制处理。Workflow 使用原有的中断与交互等待暂停语义。已重试的消息复用本轮错误结算，保留重试次数。
+- 红绿证据：协议和桌面回归分别观察到 `max_tokens` 被误判为 `completed` 和 `Completed`。补充以同一 prompt 身份重试的用例后，观察到消息停在 `processing`。修复后同一用例覆盖两类上限、三种等待结束原因、失败状态与错误同轮发布、重试结算和下一轮成功清除错误。
+- 验收：ACP client、Provider 和队列测试 327 项通过、6 项按设计忽略，桌面终态和队列 5 项通过，前端相关回归 142 项通过。生产构建通过，内置浏览器使用既有失败会话夹具检查普通宽度、720px 和恢复宽度的失败提示及继续入口。上限原因使用协议与 DOM 夹具验证。
+- 评审：复用既有 Provider 归约、snapshot 和队列保护。只调整每轮结束时的常数级分支，不增加持久字段、依赖、队列、历史读取或刷新范围。
+
+## 2026-11-18 CodeBuddy 错误扩展与 ACP 失败终态修复
+
+- 根因：CodeBuddy 将额度错误放在 prompt result 的 `codebuddy.ai/errorMessage` 扩展内并返回 `refusal`；ACP 只提取 stopReason，且成功收到协议响应就可能发布 completed，与 Provider 的失败归约不一致。
+- 实现：按显式扩展字段接入既有 terminal failure，保留原始错误和 trace；ACP snapshot 和桌面命令的完成事件、通知与队列派发均复用 Provider 终态归约，在同一次持久化中提交 failed 与 turnError，再通知 UI。普通 refusal 保留业务失败语义，不改为 Provider runtime error；成功追问仍清除旧错误。
+- 红绿证据：两个协议回归在修复前均失败于 snapshot 实际为 completed、期望 failed；桌面完成事件回归在修复前失败于缺失 stopReason 被判为 Completed。修复后相同测试转绿，固定错误详情与失败状态原子发布、显式追问恢复、error/failure/未知或缺失 stopReason、原始 trace 保留，以及普通 refusal 不被误当成 Provider runtime error。扩展对象、非 JSON 文本、空扩展和不相关元数据亦有回归。
+- 验收：`cargo test -p gold-band --lib -j 1 -- acp::client::tests provider::tests` 278 项通过、6 项按设计忽略；`cargo test -p gold-band-desktop --bin gold-band-desktop commands::tests::acp_turn_ -j 1` 3 项通过；`npx vitest run --config web/vitest.config.ts web/tests/acp-runtime-continue-submit.test.tsx web/tests/acp-chat-events.test.ts` 141 项通过；`npm run web:build`、`cargo fmt --all -- --check` 与 `git diff --check` 通过。Windows 附件测试使用规范长路径 TEMP/TMP，避免 8.3 短路径夹具差异。内置浏览器在生产构建的既有失败会话 fixture 验证普通宽度、720px 窄窗口和恢复宽度的错误横幅，以及成功追问后清除旧错误；额度原文由 DOM 回归验证。测试页面和本轮测试进程已清理；未连接真实 CodeBuddy 额度服务或启动 EXE 手工验收。
+- 过度设计与性能评审：复用现有错误类型、生命周期身份、原子 snapshot 和 UI 横幅，不新增依赖、持久字段、缓存、队列或并发机制。每轮只解析显式错误扩展一次，不扫描历史或增加网络请求，刷新范围仍为所属会话。
+
 ## 2026-11-16 ACP 认证错误与缺失环境变量修复
 
 - 根因：`authenticate` 返回的任何错误都被改写成 `provider.auth-required`，导致超时、取消和 transport 中断丢失原始结构化原因；认证方法选择忽略 ACP `AuthEnvVar.optional`；前端未消费 `methods/missingEnv`，用户看不到需要配置的具体变量。

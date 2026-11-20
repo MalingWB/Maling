@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiMocks = vi.hoisted(() => ({
   continueConversationRuntime: vi.fn(),
+  recoverConversationRuntime: vi.fn(),
   getAcpSession: vi.fn(),
   submitConversationPrompt: vi.fn(),
   stopActiveSession: vi.fn(),
@@ -278,6 +279,16 @@ async function renderPausedDialog(options: {
     nextSession: AcpSessionVm = session,
     locator = session,
   ) => act(async () => {
+    if (lifecycle.continueKind && !lifecycle.runtimeResume) {
+      lifecycle = { ...lifecycle, runtimeResume: {
+        offer: {
+          locator: { projectId: `project-${id}`, taskId: `task-${id}`, runId: `run-${id}`, roundId: locator.roundId, nodeId: locator.nodeId, attemptId: locator.attemptId },
+          sourceIdentity: { taskUuid: `task-uuid-${id}`, runUuid: `run-uuid-${id}` },
+          kind: lifecycle.continueKind === 'recover-completed-attempt' ? 'recoverCompletedAttempt' : 'continueCurrentAttempt',
+          boundary: { kind: 'runExecution', revision: lifecycle.runtime.revision ?? 1 },
+        }, readiness: { kind: 'ready' },
+      } };
+    }
     apiMocks.getAcpSession.mockResolvedValue(nextSession);
     root.render(
       <TestProviders>
@@ -445,6 +456,7 @@ beforeEach(() => {
   apiMocks.releaseConversationQueuedPromptEdit.mockReset().mockResolvedValue({ lifecycle: null });
   apiMocks.deleteConversationQueuedPrompt.mockReset();
   apiMocks.continueConversationRuntime.mockReset();
+  apiMocks.recoverConversationRuntime.mockReset();
   apiMocks.getAcpSession.mockReset().mockResolvedValue(null);
   apiMocks.submitConversationPrompt.mockReset().mockResolvedValue({
     kind: 'rejected',
@@ -689,7 +701,7 @@ describe('ACP runtime continue submission', () => {
       const calls = command === 'Enter' ? apiMocks.submitConversationPrompt : apiMocks.continueConversationRuntime;
       expect(calls).toHaveBeenCalledTimes(1);
       const args = calls.mock.calls[0];
-      expect(args[command === 'Enter' ? 6 : 8]).toEqual({
+      expect(args[command === 'Enter' ? 6 : 9]).toEqual({
         displayText: 'history text',
         quotes: [],
         workspaceFiles: [],
@@ -1376,6 +1388,7 @@ describe('ACP runtime continue submission', () => {
         session.roundId,
         session.nodeId,
         session.attemptId,
+        expect.objectContaining({ sourceIdentity: { taskUuid: `task-uuid-${id}`, runUuid: `run-uuid-${id}` } }),
         undefined,
         undefined,
         { displayText: '继续并补充测试', quotes: [], workspaceFiles: [] },
@@ -1392,8 +1405,55 @@ describe('ACP runtime continue submission', () => {
     }
   });
 
-  it('restores the detached draft when runtime continue fails', async () => {
-    apiMocks.continueConversationRuntime.mockRejectedValue(new Error('continue failed'));
+  it.each([
+    ['starting', 'continue-current-attempt', '正在启动，请稍候'],
+    ['promptActive', 'continue-current-attempt', '当前对话仍在处理，结束后可继续'],
+    ['starting', 'recover-completed-attempt', '正在启动，请稍候'],
+    ['promptActive', 'recover-completed-attempt', '当前对话仍在处理，结束后可继续'],
+  ] as const)('keeps the %s %s action visible and disabled until ready', async (reason, kind, busyCopy) => {
+    const lifecycle = { ...pausedLifecycle(), continueKind: kind };
+    lifecycle.runtime = { ...lifecycle.runtime, revision: 1 };
+    const { container, root, render, id, session } = await renderPausedDialog({ initialLifecycle: lifecycle });
+    const inspection = {
+      offer: {
+        locator: { projectId: `project-${id}`, taskId: `task-${id}`, runId: `run-${id}`, roundId: session.roundId, nodeId: session.nodeId, attemptId: session.attemptId },
+        sourceIdentity: { taskUuid: `task-uuid-${id}`, runUuid: `run-uuid-${id}` },
+        kind: kind === 'recover-completed-attempt' ? 'recoverCompletedAttempt' as const : 'continueCurrentAttempt' as const,
+        boundary: { kind: 'runExecution' as const, revision: 1 },
+      },
+      readiness: { kind: 'busy' as const, reason },
+    };
+    try {
+      await render({ ...lifecycle, runtimeResume: inspection });
+      const button = container.querySelector<HTMLButtonElement>('[data-acp-continue-workflow="true"]');
+      expect(button, 'Busy must keep the action discoverable').not.toBeNull();
+      expect(button!.disabled).toBe(true);
+      expect(button!.textContent).toContain(kind === 'recover-completed-attempt' ? '恢复工作流' : '继续工作流');
+      expect(container.textContent).toContain(busyCopy);
+      expect(button!.hasAttribute('title')).toBe(false);
+      await flushInteraction(() => button!.click());
+      expect(apiMocks.continueConversationRuntime).not.toHaveBeenCalled();
+      expect(apiMocks.recoverConversationRuntime).not.toHaveBeenCalled();
+
+      await render({ ...lifecycle, runtimeResume: { ...inspection, readiness: { kind: 'ready' } } });
+      const ready = container.querySelector<HTMLButtonElement>('[data-acp-continue-workflow="true"]');
+      expect(ready).toBe(button);
+      expect(ready!.disabled).toBe(false);
+      expect(container.textContent).not.toContain(busyCopy);
+      const operation = kind === 'recover-completed-attempt' ? apiMocks.recoverConversationRuntime : apiMocks.continueConversationRuntime;
+      operation.mockResolvedValue({ kind: 'runtime-continue-started', session: null, run: null, lifecycle: runningLifecycle() });
+      await flushInteraction(() => ready!.click());
+      expect(operation).toHaveBeenCalledTimes(1);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it.each([
+    [new Error('continue failed'), 'continue failed'],
+    [{ code: 'runtime.continue-already-active', params: {} }, '工作流正在恢复，请稍候。'],
+  ])('restores the detached draft when runtime continue fails (%s)', async (failure, message) => {
+    apiMocks.continueConversationRuntime.mockRejectedValue(failure);
     const { container, root } = await renderPausedDialog();
     try {
       const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
@@ -1406,11 +1466,52 @@ describe('ACP runtime continue submission', () => {
 
       expect(apiMocks.continueConversationRuntime).toHaveBeenCalledTimes(1);
       expect(textarea?.value).toBe('失败后保留');
-      expect(container.textContent).toContain('continue failed');
+      expect(container.textContent).toContain(message);
     } finally {
       await unmount(root);
     }
   });
+
+  it.each(['continue', 'continue-with-draft', 'recover'] as const)(
+    'shows a launch failure and allows another attempt (%s)',
+    async (action) => {
+      const failure = {
+        code: 'runtime.continue-launch-failed',
+        params: { runtimeResume: { outcome: 'launchFailed', revision: 2 } },
+      };
+      const operation = action === 'recover'
+        ? apiMocks.recoverConversationRuntime
+        : apiMocks.continueConversationRuntime;
+      operation.mockRejectedValue(failure);
+      const lifecycle = pausedLifecycle();
+      if (action === 'recover') {
+        lifecycle.continueKind = 'recover-completed-attempt';
+        lifecycle.runtime.revision = 1;
+      }
+      const { container, root } = await renderPausedDialog({ initialLifecycle: lifecycle });
+      try {
+        const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!;
+        if (action === 'continue-with-draft') {
+          await setTextareaValue(textarea, '启动失败后仍可重试的内容');
+        }
+        const continueButton = () => container.querySelector<HTMLButtonElement>(
+          '[data-acp-continue-workflow="true"]',
+        )!;
+        await flushInteraction(() => continueButton().click());
+        expect(operation).toHaveBeenCalledTimes(1);
+        expect(container.textContent).toContain('工作流恢复失败，请检查当前状态后重试。');
+        expect(continueButton().disabled).toBe(false);
+        expect(continueButton().textContent).toContain(action === 'recover' ? '恢复工作流' : '继续');
+        if (action === 'continue-with-draft') {
+          expect(textarea.value).toBe('启动失败后仍可重试的内容');
+        }
+        await flushInteraction(() => continueButton().click());
+        expect(operation).toHaveBeenCalledTimes(2);
+      } finally {
+        await unmount(root);
+      }
+    },
+  );
 });
 
 describe('ACP error banner ownership', () => {
@@ -1470,6 +1571,36 @@ describe('ACP error banner ownership', () => {
     try {
       expect(result.container.textContent).toContain('Current follow-up failed');
       expect(result.container.textContent).not.toContain('old Workflow provider failure');
+    } finally {
+      await unmount(result.root);
+    }
+  });
+
+  it.each([
+    {
+      code: { domain: 'provider', code: 'provider.quota-insufficient' },
+      domain: 'provider', recovery: 'manual' as const, params: {},
+      diagnostic: 'Quota exceeded: Credits Rate Limit exceeded',
+      raw: { stopReason: 'refusal', _meta: { 'codebuddy.ai/traceId': 'fixture-trace' } },
+    },
+    {
+      code: { domain: 'provider', code: 'acp.turn-execution-failed' },
+      domain: 'provider', recovery: 'manual' as const, params: { stopReason: 'max_tokens' },
+      diagnostic: 'ACP prompt ended with stop reason `max_tokens`',
+    },
+  ])('shows the current failure ($diagnostic) until a successful follow-up', async (error) => {
+    const lifecycle = runtimeAbnormalLifecycle();
+    lifecycle.acp = { ...lifecycle.acp, turnId: 'failed-turn', operationId: 'failed-operation', turnError: error };
+    const result = await renderPausedDialog({
+      initialLifecycle: lifecycle, sessionStatus: 'failed', session: readySessionHistory(),
+    });
+    try {
+      expect(result.container.textContent).toContain(error.diagnostic);
+      await result.render({
+        ...lifecycle,
+        acp: { ...lifecycle.acp, revision: 2, turnId: 'recovered-turn', operationId: 'recovered-operation', latestTurnStatus: 'completed', turnError: null },
+      }, { ...result.session, status: 'completed', turnError: null });
+      expect(result.container.textContent).not.toContain(error.diagnostic);
     } finally {
       await unmount(result.root);
     }

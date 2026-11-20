@@ -2617,7 +2617,7 @@ dependencies = [
 
 [[package]]
 name = "gold-band"
-version = "0.21.1"
+version = "0.22.0"
 dependencies = [
  "agent-client-protocol-schema",
  "anyhow",
@@ -2693,10 +2693,11 @@ dependencies = [
 
 [[package]]
 name = "gold-band-desktop"
-version = "0.21.1"
+version = "0.22.0"
 dependencies = [
  "anyhow",
  "arboard",
+ "async-trait",
  "base64 0.22.1",
  "blake3",
  "camino",

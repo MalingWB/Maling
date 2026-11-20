@@ -207,7 +207,8 @@ impl InterventionNotification {
                 InterventionType::ErrorBlocked,
                 None,
             ),
-            RuntimeInterventionKind::ProcessInterrupted => (
+            RuntimeInterventionKind::ProcessInterrupted
+            | RuntimeInterventionKind::RuntimeResumeRequired => (
                 "进程中断",
                 "进程异常中断",
                 InterventionType::ErrorBlocked,

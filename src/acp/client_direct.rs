@@ -1094,8 +1094,7 @@ mod tests {
     #[test]
     fn known_tools_protect_and_completion_starts_a_fresh_window() {
         let direct = state();
-        let old = Instant::now() - Duration::from_secs(30000);
-        *direct.last_activity.lock().unwrap() = old;
+        let old = *direct.last_activity.lock().unwrap();
         let running = json!({"sessionUpdate":"tool_call","toolCallId":"bg","status":"in_progress"});
         direct.observe_update(&running, false);
         assert!(direct.protected());

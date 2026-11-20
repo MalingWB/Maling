@@ -769,6 +769,7 @@ pub struct ConversationSessionLeafVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationAttemptLifecycleVm {
+    pub runtime_resume: Option<gold_band::app::runtime_resume::RuntimeResumeInspection>,
     pub execution_error: Option<gold_band::acp::events::AcpExecutionError>,
     pub runtime: ConversationRuntimeFacetVm,
     pub control: ConversationControlFacetVm,
@@ -3088,6 +3089,7 @@ fn derive_conversation_attempt_lifecycle_with_facets(
     };
 
     ConversationAttemptLifecycleVm {
+        runtime_resume: None,
         execution_error: None,
         runtime: ConversationRuntimeFacetVm {
             status: runtime_status.to_string(),
@@ -3187,6 +3189,50 @@ fn derive_conversation_attempt_lifecycle(
         None,
         session_status.is_some(),
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn attach_runtime_resume(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<&str>,
+    outer_attempt_id: Option<&str>,
+    run: &gold_band::runtime::RunState,
+    graph: Option<&gold_band::dynamic::DynamicGraphState>,
+    lifecycle: &mut ConversationAttemptLifecycleVm,
+) {
+    if lifecycle.continue_kind.is_none() {
+        return;
+    }
+    let locator = gold_band::app::intervention::InterventionLocator {
+        project_id: app.paths.project_id.clone(),
+        task_id: task_id.into(),
+        run_id: run_id.into(),
+        round_id: round_id.into(),
+        node_id: node_id.into(),
+        attempt_id: attempt_id.into(),
+        outer_node_id: outer_node_id.map(str::to_string),
+        outer_attempt_id: outer_attempt_id.map(str::to_string),
+    };
+    lifecycle.runtime_resume = app
+        .inspect_runtime_resume_with_state(locator, run, graph)
+        .ok();
+    lifecycle.continue_kind = lifecycle
+        .runtime_resume
+        .as_ref()
+        .map(|inspection| match inspection.offer.kind {
+            gold_band::app::runtime_resume::RuntimeResumeKind::ContinueCurrentAttempt => {
+                "continue-current-attempt".into()
+            }
+            gold_band::app::runtime_resume::RuntimeResumeKind::RecoverCompletedAttempt => {
+                "recover-completed-attempt".into()
+            }
+        });
+    lifecycle.runtime.continuable = lifecycle.runtime_resume.is_some();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3311,6 +3357,19 @@ pub fn conversation_attempt_lifecycle_vm(
         attach_acp_lifecycle_header(&attempt_dir, &mut lifecycle);
         attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
         apply_dynamic_workspace_transition_composer(&dynamic_graph, dynamic_node, &mut lifecycle);
+        attach_runtime_resume(
+            app,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            Some(outer_node_id),
+            Some(outer_attempt_id),
+            &run,
+            Some(&dynamic_graph),
+            &mut lifecycle,
+        );
         return Ok(lifecycle);
     }
 
@@ -3366,6 +3425,19 @@ pub fn conversation_attempt_lifecycle_vm(
     );
     attach_acp_lifecycle_header(&attempt_dir, &mut lifecycle);
     attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
+    attach_runtime_resume(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        None,
+        None,
+        &run,
+        None,
+        &mut lifecycle,
+    );
     Ok(lifecycle)
 }
 
@@ -4173,6 +4245,19 @@ pub fn conversation_run_vm(
                                     dyn_node,
                                     &mut lifecycle,
                                 );
+                                attach_runtime_resume(
+                                    app,
+                                    task_id,
+                                    run_id,
+                                    &round.id,
+                                    &dyn_node.id,
+                                    dyn_attempt_id,
+                                    Some(&node.node_id),
+                                    Some(&latest_attempt.attempt_id),
+                                    &run,
+                                    Some(&dynamic_graph),
+                                    &mut lifecycle,
+                                );
                                 let dyn_status = lifecycle.display_status.clone();
                                 let dyn_runtime_display = lifecycle.runtime_display.clone();
                                 let is_active = lifecycle_is_active(&lifecycle, false);
@@ -4332,6 +4417,19 @@ pub fn conversation_run_vm(
                         control.mode,
                         control.transition_cause,
                         session_presence.established,
+                    );
+                    attach_runtime_resume(
+                        app,
+                        task_id,
+                        run_id,
+                        &round.id,
+                        &node.node_id,
+                        &attempt.attempt_id,
+                        None,
+                        None,
+                        &run,
+                        None,
+                        &mut lifecycle,
                     );
                     attach_acp_lifecycle_header(&attempt_dir, &mut lifecycle);
                     attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
@@ -6337,11 +6435,25 @@ mod tests {
         let current_node_id = "test";
         let attempt_id = "attempt-001";
         gold_band::storage::write_json(
+            &app.paths.task_file(task_id),
+            &json!({"version":gold_band::domain::VERSION,"id":task_id,"uuid":"task-current-uuid"}),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &app.paths
+                .task_dir(task_id)
+                .join("authoring/conversation.json"),
+            &json!({"runMode":"workflow"}),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
             &app.paths.run_file(task_id, run_id),
             &json!({
                 "version": gold_band::domain::VERSION,
                 "id": run_id,
                 "task_id": task_id,
+                "task_uuid": "task-current-uuid",
+                "uuid": "run-current-uuid",
                 "status": "paused",
                 "outcome": null,
                 "started_at": "2026-08-22T00:00:00Z",
@@ -6424,6 +6536,9 @@ mod tests {
             Some("continue-current-attempt")
         );
         assert!(current.runtime.continuable);
+        let offer = &current.runtime_resume.unwrap().offer;
+        assert_eq!(offer.source_identity.task_uuid, "task-current-uuid");
+        assert_eq!(offer.source_identity.run_uuid, "run-current-uuid");
     }
 
     #[test]
@@ -6610,7 +6725,7 @@ mod tests {
     }
 
     #[test]
-    fn paused_parent_stale_cancelled_dynamic_leaf_is_runtime_continue() {
+    fn paused_parent_stale_cancelled_dynamic_leaf_requires_canonical_pause_for_continue() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
         write_dynamic_lifecycle_fixture_with_cancelled_session(
@@ -6639,10 +6754,8 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("process-interrupted")
         );
-        assert_eq!(
-            lifecycle.continue_kind.as_deref(),
-            Some("continue-current-attempt")
-        );
+        assert_eq!(lifecycle.continue_kind, None);
+        assert!(lifecycle.runtime_resume.is_none());
         assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
     }
 
@@ -6673,10 +6786,8 @@ mod tests {
         assert_eq!(lifecycle.runtime.status, "paused");
         assert_eq!(lifecycle.runtime.phase, "paused");
         assert_eq!(lifecycle.composer.processing_kind, "processing");
-        assert_eq!(
-            lifecycle.continue_kind.as_deref(),
-            Some("continue-current-attempt")
-        );
+        assert_eq!(lifecycle.continue_kind, None);
+        assert!(lifecycle.runtime_resume.is_none());
     }
 
     #[test]
@@ -9356,10 +9467,18 @@ mod tests {
         let outer_attempt_id = "attempt-001";
         let dynamic_node_id = "good-morning";
         gold_band::storage::write_json(
+            &app.paths
+                .task_dir(task_id)
+                .join("authoring/conversation.json"),
+            &json!({"runMode":"workflow"}),
+        )
+        .unwrap();
+        gold_band::storage::write_json(
             &app.paths.task_file(task_id),
             &json!({
                 "version": gold_band::domain::VERSION,
                 "id": task_id,
+                "uuid": "task-dynamic-uuid",
                 "title": "Dynamic lifecycle",
                 "description": null
             }),
@@ -9371,6 +9490,8 @@ mod tests {
                 "version": gold_band::domain::VERSION,
                 "id": run_id,
                 "task_id": task_id,
+                "task_uuid": "task-dynamic-uuid",
+                "uuid": "run-dynamic-uuid",
                 "status": run_status,
                 "outcome": null,
                 "started_at": "2026-06-15T00:00:00Z",
@@ -9443,6 +9564,7 @@ mod tests {
             "parentNodeId": outer_node_id,
             "parentAttemptId": outer_attempt_id,
             "status": run_status,
+            "phase": "executing",
             "outcome": null,
             "pauseReason": run_pause_reason.clone(),
             "startedAt": "2026-06-15T00:00:00Z",
@@ -9459,6 +9581,13 @@ mod tests {
             "title": "Good morning",
             "task": "Say good morning",
             "status": dynamic_node_status,
+            "pauseReason": if dynamic_node_status == "paused" && !run_pause_reason.is_null() {
+                run_pause_reason.clone()
+            } else if dynamic_node_status == "paused" && cancelled_session {
+                json!("process-interrupted")
+            } else {
+                json!(null)
+            },
             "outcome": if dynamic_node_status == "completed" { json!("success") } else { json!(null) },
             "runtimeExecutionId": if run_status == "running" && dynamic_node_status == "running" { json!("execution-good-morning") } else { json!(null) },
             "runtimeExecutionPhase": match dynamic_node_status {

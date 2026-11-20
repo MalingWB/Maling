@@ -16,7 +16,6 @@ import {
   checkUpdateManual,
   startUpdateInstall,
   chooseWorkspace,
-  continueRun,
   createConversationRun,
   createScheduledTask,
   createTask,
@@ -3639,7 +3638,6 @@ export function App() {
           })}
           onRefresh={() => void refresh('manual')}
           onStartRun={(taskId) => runAction(() => startRun(taskId))}
-          onContinueRun={(taskId, runId) => void runAction(() => continueRun(undefined, taskId, runId))}
           onStopRun={onStopRun}
           onSaveWorkflow={onSaveTaskWorkflow}
           onOpenProfileManagement={openProfileManagement}

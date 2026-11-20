@@ -2936,6 +2936,7 @@ export function ACPChatDialog(
   const showRuntimeContinueAction = Boolean(
     (runtimeComposerContext?.isOrchestrated ?? true)
       && localLifecycle?.continueKind
+      && localLifecycle.runtimeResume
       && (localLifecycle.continueKind !== 'recover-completed-attempt' || localLifecycle.runtime.revision != null)
       && localLifecycle.runtime.continuable
       && !localLifecycle.runtime.active
@@ -6147,6 +6148,8 @@ export function ACPChatDialog(
     );
     let submissionAccepted = false;
     try {
+      const resumeOffer = localLifecycle?.runtimeResume?.offer;
+      if (target === "runtime-continue" && !resumeOffer) throw new Error("runtime.continue-not-available");
       const result = target === "runtime-continue"
         ? await continueConversationRuntime(
             projectId,
@@ -6155,6 +6158,7 @@ export function ACPChatDialog(
             roundId,
             nodeId,
             attemptId,
+            resumeOffer!,
             outerNodeId,
             outerAttemptId,
             submission,
@@ -6747,7 +6751,7 @@ export function ACPChatDialog(
   };
 
   const continueRuntime = async (historyText?: string) => {
-    if (!showRuntimeContinueAction || runtimeContinueSubmitting) return;
+    if (!showRuntimeContinueAction || runtimeContinueSubmitting || localLifecycle?.runtimeResume?.readiness.kind !== 'ready') return;
     setRuntimeContinueError(null);
     setRuntimeContinueSubmitting(true);
     try {
@@ -6770,10 +6774,10 @@ export function ACPChatDialog(
         onSessionStopped?.();
         return;
       }
-      const recoveryRevision = localLifecycle?.runtime.revision;
+      const resumeOffer = localLifecycle?.runtimeResume?.offer;
+      if (!resumeOffer) return;
       let result: ConversationPromptSubmitVm;
       if (localLifecycle?.continueKind === 'recover-completed-attempt') {
-        if (recoveryRevision == null) return;
         result = await recoverConversationRuntime(
             projectId,
             taskId,
@@ -6781,7 +6785,7 @@ export function ACPChatDialog(
             roundId,
             nodeId,
             attemptId,
-            recoveryRevision,
+            resumeOffer,
           );
       } else {
         result = await continueConversationRuntime(
@@ -6791,6 +6795,7 @@ export function ACPChatDialog(
             roundId,
             nodeId,
             attemptId,
+            resumeOffer,
             outerNodeId,
             outerAttemptId,
           );
@@ -7535,6 +7540,7 @@ export function ACPChatDialog(
                 sendButtonBusy={composerState.submitTarget === "queue-prompt" ? queueSubmitPending : sendButtonBusy}
                 showRuntimeContinue={showRuntimeContinueAction}
                 runtimeContinueKind={localLifecycle?.continueKind ?? null}
+                runtimeContinueReadiness={localLifecycle?.runtimeResume?.readiness}
                 runtimeContinueSubmitting={runtimeContinueSubmitting}
                 onRuntimeContinue={continueRuntime}
                 configBar={(

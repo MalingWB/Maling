@@ -697,13 +697,15 @@ impl ImConnector for FeishuConnector {
         &self,
         context: ImActionResponseContext,
         action_response: ImActionResponse,
-    ) -> Result<(), ImIntegrationError> {
+    ) -> Result<crate::im::ImActionResponseReceipt, ImIntegrationError> {
         let Some(handle) = context.downcast_ref::<FeishuResponseHandle>() else {
             return Err(ImIntegrationError::permanent(ImErrorCode::ProtocolInvalid));
         };
         let response = action_reply(&action_response, handle.locale, &self.token_codec);
         if self.send_action_response(handle.generation, &handle.request_id, response) {
-            return Ok(());
+            return Ok(crate::im::ImActionResponseReceipt::Unconfirmed {
+                reason: crate::im::ImActionUnconfirmedReason::Unknown,
+            });
         }
         // The platform deadline or connection generation expired first and the
         // user saw "Processing". An accepted or settled result reaches the card
@@ -712,8 +714,15 @@ impl ImConnector for FeishuConnector {
         let (ImActionResponseState::Rejected(code), Some(delivery)) =
             (action_response.state, &action_response.delivery)
         else {
-            return Ok(());
+            return Ok(crate::im::ImActionResponseReceipt::Unconfirmed {
+                reason: crate::im::ImActionUnconfirmedReason::Unknown,
+            });
         };
+        if delivery.notification_kind == crate::im::ImNotificationKind::WorkflowResume {
+            return Ok(crate::im::ImActionResponseReceipt::Unconfirmed {
+                reason: crate::im::ImActionUnconfirmedReason::Expired,
+            });
+        }
         let active = self.active_api()?;
         let content = late_rejection_card_content(delivery, code, handle.locale);
         active
@@ -725,7 +734,9 @@ impl ImConnector for FeishuConnector {
                 &format!("{}:rejected:{}", delivery.delivery_id, handle.request_id),
             ))
             .await
-            .map(|_| ())
+            .map(|_| crate::im::ImActionResponseReceipt::Unconfirmed {
+                reason: crate::im::ImActionUnconfirmedReason::Unknown,
+            })
     }
 
     async fn update_message(

@@ -1,5 +1,9 @@
 use std::collections::BTreeMap;
 
+use super::runtime_resume::{
+    RuntimeResumeBoundary, RuntimeResumeInput, RuntimeResumeKind, RuntimeResumeOffer,
+    RuntimeResumeResult, RuntimeResumeSourceIdentity,
+};
 use blake3::Hasher;
 use camino::Utf8PathBuf;
 use chrono::Utc;
@@ -84,9 +88,18 @@ pub struct InterventionLocator {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum InterventionRequestIdentity {
-    Permission { request_id: String },
-    Elicitation { elicitation_id: String },
+    Permission {
+        request_id: String,
+    },
+    Elicitation {
+        elicitation_id: String,
+    },
     ManualCheck,
+    RuntimeResume {
+        source_identity: RuntimeResumeSourceIdentity,
+        resume_kind: RuntimeResumeKind,
+        boundary: RuntimeResumeBoundary,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +129,9 @@ pub const REMOTE_CUSTOM_ANSWER_OPTION: &str = "other";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum InterventionAllowedAction {
+    RuntimeResume {
+        resume_kind: RuntimeResumeKind,
+    },
     PermissionOption {
         option_id: String,
         name: String,
@@ -142,6 +158,11 @@ impl InterventionAllowedAction {
 
 pub fn intervention_action_for_allowed(action: &InterventionAllowedAction) -> InterventionAction {
     match action {
+        InterventionAllowedAction::RuntimeResume { resume_kind } => {
+            InterventionAction::RuntimeResume {
+                resume_kind: *resume_kind,
+            }
+        }
         InterventionAllowedAction::PermissionOption { option_id, .. } => {
             InterventionAction::PermissionOption {
                 option_id: option_id.clone(),
@@ -278,6 +299,9 @@ pub struct InterventionPrompt {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum InterventionAction {
+    RuntimeResume {
+        resume_kind: RuntimeResumeKind,
+    },
     PermissionOption {
         option_id: String,
     },
@@ -300,6 +324,8 @@ pub struct InterventionSnapshot {
     pub allowed_actions: Vec<InterventionAllowedAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<InterventionPrompt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<crate::domain::PauseReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<i64>,
 }
@@ -327,6 +353,8 @@ pub enum InterventionCommandStatus {
 pub struct InterventionCommandResult {
     pub status: InterventionCommandStatus,
     pub canonical_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_resume: Option<RuntimeResumeResult>,
 }
 
 /// Canonical lifecycle of one intervention request, independent of which
@@ -353,6 +381,7 @@ impl From<AcpInteractionSettlement> for InterventionSettlement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum InterventionErrorCode {
+    InterventionBusy,
     InterventionLocatorInvalid,
     InterventionProjectMismatch,
     InterventionRequestNotFound,
@@ -369,6 +398,7 @@ pub enum InterventionErrorCode {
 impl InterventionErrorCode {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::InterventionBusy => "INTERVENTION_BUSY",
             Self::InterventionLocatorInvalid => "INTERVENTION_LOCATOR_INVALID",
             Self::InterventionProjectMismatch => "INTERVENTION_PROJECT_MISMATCH",
             Self::InterventionRequestNotFound => "INTERVENTION_REQUEST_NOT_FOUND",
@@ -394,7 +424,7 @@ pub struct InterventionError {
 }
 
 impl InterventionError {
-    fn new(code: InterventionErrorCode) -> Self {
+    pub(crate) fn new(code: InterventionErrorCode) -> Self {
         Self {
             code,
             retryable: false,
@@ -402,9 +432,16 @@ impl InterventionError {
         }
     }
 
-    fn with_detail(mut self, key: &str, value: impl Into<String>) -> Self {
+    pub(crate) fn with_detail(mut self, key: &str, value: impl Into<String>) -> Self {
         self.details.insert(key.to_string(), value.into());
         self
+    }
+
+    pub(crate) fn busy() -> Self {
+        Self {
+            retryable: true,
+            ..Self::new(InterventionErrorCode::InterventionBusy)
+        }
     }
 
     /// Bridges a desktop command-layer failure into the shared intervention
@@ -447,6 +484,40 @@ impl<'a> InterventionCommandService<'a> {
     ) -> Result<InterventionSnapshot, InterventionError> {
         self.validate_locator(&locator)?;
         match request.clone() {
+            InterventionRequestIdentity::RuntimeResume {
+                source_identity,
+                resume_kind,
+                boundary,
+            } => {
+                let inspected = self.app.inspect_runtime_resume(locator.clone())?;
+                let offer = RuntimeResumeOffer {
+                    locator: locator.clone(),
+                    source_identity,
+                    kind: resume_kind,
+                    boundary,
+                };
+                if inspected.offer.source_identity != offer.source_identity {
+                    return Err(InterventionError::new(
+                        InterventionErrorCode::InterventionRuntimeStateMismatch,
+                    )
+                    .with_detail("reason", "source-identity-changed"));
+                }
+                if inspected.offer != offer {
+                    return Err(InterventionError::new(
+                        InterventionErrorCode::InterventionRevisionConflict,
+                    )
+                    .with_detail("reason", "stale-boundary"));
+                }
+                Ok(InterventionSnapshot {
+                    locator,
+                    request,
+                    expected_state: offer.canonical_event_id(),
+                    allowed_actions: vec![InterventionAllowedAction::RuntimeResume { resume_kind }],
+                    prompt: None,
+                    pause_reason: inspected.pause_reason,
+                    expires_at_ms: None,
+                })
+            }
             InterventionRequestIdentity::Permission { request_id } => {
                 self.validate_owner(&locator, true)?;
                 self.inspect_permission(locator, request, &request_id)
@@ -486,6 +557,13 @@ impl<'a> InterventionCommandService<'a> {
         let storage_unavailable =
             |_| InterventionError::new(InterventionErrorCode::InterventionStorageUnavailable);
         let settlement = match request {
+            InterventionRequestIdentity::RuntimeResume { .. } => {
+                Some(match self.inspect(locator.clone(), request.clone()) {
+                    Ok(_) => InterventionSettlement::Pending,
+                    Err(error) if error.retryable => return Err(error),
+                    Err(_) => InterventionSettlement::Cancelled,
+                })
+            }
             InterventionRequestIdentity::Permission { request_id } => {
                 permission_request_settlement(&attempt_dir, request_id)
                     .map_err(storage_unavailable)?
@@ -560,6 +638,38 @@ impl<'a> InterventionCommandService<'a> {
     ) -> Result<InterventionCommandResult, InterventionError> {
         self.validate_expiry(command.expires_at_ms)?;
         match &command.action {
+            InterventionAction::RuntimeResume { resume_kind } => {
+                self.inspect_for_command(&command)?;
+                let InterventionRequestIdentity::RuntimeResume {
+                    source_identity,
+                    resume_kind: expected_kind,
+                    boundary,
+                } = &command.request
+                else {
+                    return Err(InterventionError::new(
+                        InterventionErrorCode::InterventionActionInvalid,
+                    ));
+                };
+                if expected_kind != resume_kind {
+                    return Err(InterventionError::new(
+                        InterventionErrorCode::InterventionActionInvalid,
+                    ));
+                }
+                let offer = RuntimeResumeOffer {
+                    locator: command.locator.clone(),
+                    source_identity: source_identity.clone(),
+                    kind: *resume_kind,
+                    boundary: *boundary,
+                };
+                let (result, run) = self
+                    .app
+                    .execute_runtime_resume(offer, RuntimeResumeInput::default())?;
+                Ok(InterventionCommandResult {
+                    status: InterventionCommandStatus::Accepted,
+                    canonical_state: format!("runtime:{}:{}", run.id, result.revision),
+                    runtime_resume: Some(result),
+                })
+            }
             InterventionAction::PermissionOption { option_id } => {
                 self.execute_permission(&command, option_id)
             }
@@ -636,6 +746,7 @@ impl<'a> InterventionCommandService<'a> {
             })?;
         Ok((
             InterventionCommandResult {
+                runtime_resume: None,
                 status: InterventionCommandStatus::Accepted,
                 canonical_state: manual_result_state(&run),
             },
@@ -670,6 +781,7 @@ impl<'a> InterventionCommandService<'a> {
             expected_state,
             allowed_actions,
             prompt: Some(prompt),
+            pause_reason: None,
             expires_at_ms: None,
         })
     }
@@ -711,6 +823,7 @@ impl<'a> InterventionCommandService<'a> {
             expected_state,
             allowed_actions,
             prompt: Some(prompt),
+            pause_reason: None,
             expires_at_ms: None,
         })
     }
@@ -793,6 +906,7 @@ impl<'a> InterventionCommandService<'a> {
                 questions: Vec::new(),
                 requires_desktop: false,
             }),
+            pause_reason: None,
             expires_at_ms: None,
         })
     }
@@ -815,6 +929,7 @@ impl<'a> InterventionCommandService<'a> {
             })?;
             return if response.option_id.as_deref() == Some(option_id) && !response.cancelled {
                 Ok(InterventionCommandResult {
+                    runtime_resume: None,
                     status: InterventionCommandStatus::AlreadyApplied,
                     canonical_state: state_fingerprint(&response)?,
                 })
@@ -857,6 +972,7 @@ impl<'a> InterventionCommandService<'a> {
             InterventionError::new(InterventionErrorCode::InterventionStorageUnavailable)
         })? {
             return Ok(InterventionCommandResult {
+                runtime_resume: None,
                 status: InterventionCommandStatus::Accepted,
                 canonical_state: state_fingerprint(&response)?,
             });
@@ -867,6 +983,7 @@ impl<'a> InterventionCommandService<'a> {
             })?;
         if response.option_id.as_deref() == Some(option_id) && !response.cancelled {
             Ok(InterventionCommandResult {
+                runtime_resume: None,
                 status: InterventionCommandStatus::AlreadyApplied,
                 canonical_state: state_fingerprint(&response)?,
             })
@@ -896,6 +1013,7 @@ impl<'a> InterventionCommandService<'a> {
             })?;
             return if response.action == action && response.content == content {
                 Ok(InterventionCommandResult {
+                    runtime_resume: None,
                     status: InterventionCommandStatus::AlreadyApplied,
                     canonical_state: state_fingerprint(&response)?,
                 })
@@ -946,6 +1064,7 @@ impl<'a> InterventionCommandService<'a> {
             InterventionError::new(InterventionErrorCode::InterventionStorageUnavailable)
         })? {
             Ok(InterventionCommandResult {
+                runtime_resume: None,
                 status: InterventionCommandStatus::Accepted,
                 canonical_state: state_fingerprint(&response)?,
             })
@@ -1973,6 +2092,14 @@ pub fn intervention_action_is_allowed(
     allowed_actions
         .iter()
         .any(|allowed| match (allowed, action) {
+            (
+                InterventionAllowedAction::RuntimeResume {
+                    resume_kind: allowed,
+                },
+                InterventionAction::RuntimeResume {
+                    resume_kind: actual,
+                },
+            ) => allowed == actual,
             (
                 InterventionAllowedAction::PermissionOption {
                     option_id: allowed, ..
