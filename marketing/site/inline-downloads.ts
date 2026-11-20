@@ -1,20 +1,18 @@
+import installerTemplates from '../../configs/wb-installer-filenames.json';
+
 const MANIFEST_TIMEOUT_MS = 5_000;
 const MAX_MANIFEST_BYTES = 128 * 1024;
 
-const installerPlatforms = {
-  mac: { key: 'darwin-aarch64', extension: /\.(?:dmg|app\.tar\.gz)$/i },
-  windows: { key: 'windows-x86_64', extension: /\.(?:exe|msi)$/i },
-  linux: { key: 'linux-x86_64', extension: /\.appimage$/i },
-} as const;
+// Match a release version as a single filename component; preserve prerelease and build identifiers verbatim.
+const RELEASE_VERSION = /^(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2}(?:-[\da-zA-Z-]+(?:\.[\da-zA-Z-]+)*)?(?:\+[\da-zA-Z-]+(?:\.[\da-zA-Z-]+)*)?$/;
 
-export type InlineDownloadPlatform = keyof typeof installerPlatforms;
+export type InlineDownloadPlatform = keyof typeof installerTemplates;
 interface InlineDownload {
   url: string;
   filename: string;
 }
 export type InlineDownloadResult =
-  | { status: 'ready'; version: string; downloads: Partial<Record<InlineDownloadPlatform, InlineDownload>> }
-  | { status: 'empty' }
+  | { status: 'ready'; version: string; downloads: Record<InlineDownloadPlatform, InlineDownload> }
   | { status: 'error'; code: 'manifest-unavailable' | 'manifest-invalid' };
 export type LoadInlineDownloads = () => Promise<InlineDownloadResult>;
 
@@ -22,34 +20,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function trustedInstaller(raw: unknown, directory: URL, extension: RegExp): InlineDownload | null {
-  if (!isRecord(raw) || typeof raw.url !== 'string') return null;
-  try {
-    const url = new URL(raw.url);
-    if (url.protocol !== directory.protocol || url.origin !== directory.origin || url.username || url.password
-      || url.search || url.hash || !url.pathname.startsWith(directory.pathname)) return null;
-    const filename = decodeURIComponent(url.pathname.slice(directory.pathname.length));
-    if (!/^[\w.+-]+$/.test(filename) || !extension.test(filename)) return null;
-    return { url: url.href, filename };
-  } catch {
-    return null;
-  }
-}
-
 function projectInstallers(manifest: unknown, directory: URL): InlineDownloadResult {
-  if (!isRecord(manifest) || !isRecord(manifest.platforms) || typeof manifest.version !== 'string'
-    || !manifest.version.trim() || manifest.version.length > 128) return { status: 'error', code: 'manifest-invalid' };
-  const downloads: Partial<Record<InlineDownloadPlatform, InlineDownload>> = {};
-  let invalid = false;
-  for (const platform of Object.keys(installerPlatforms) as InlineDownloadPlatform[]) {
-    const { key, extension } = installerPlatforms[platform];
-    if (!Object.hasOwn(manifest.platforms, key)) continue;
-    const installer = trustedInstaller(manifest.platforms[key], directory, extension);
-    if (installer) downloads[platform] = installer;
-    else invalid = true;
+  const version = isRecord(manifest) ? manifest.version : undefined;
+  if (typeof version !== 'string' || version.length > 128 || !RELEASE_VERSION.test(version)) {
+    return { status: 'error', code: 'manifest-invalid' };
   }
-  if (Object.keys(downloads).length) return { status: 'ready', version: manifest.version, downloads };
-  return invalid ? { status: 'error', code: 'manifest-invalid' } : { status: 'empty' };
+  const installer = (template: string): InlineDownload => {
+    const filename = template.replace('{version}', version);
+    return { filename, url: new URL(encodeURIComponent(filename), directory).href };
+  };
+  return { status: 'ready', version, downloads: {
+    mac: installer(installerTemplates.mac),
+    windows: installer(installerTemplates.windows),
+    linux: installer(installerTemplates.linux),
+  } };
 }
 
 async function readManifest(response: Response): Promise<unknown> {

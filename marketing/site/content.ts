@@ -46,8 +46,8 @@ export const copy = {
     dark: '深色', light: '浅色', system: '跟随系统', appearance: '外观', openDemo: '打开 Demo', font: '字体', defaultFont: '默认', monoFont: '等宽', reset: '重置预览',
     demoText: '更多示例正在准备中。可以打开 Demo 查看会话。',
     downloadMenu: {
-      inline: '行内', inlineLoading: '正在获取行内安装包…', inlineEmpty: '暂无行内安装包', inlineUnavailable: '暂时无法获取行内安装包',
-      external: '行外', mac: 'Mac（Apple 芯片）', macArchive: 'Mac（Apple 芯片压缩包）', windows: 'Windows x64', linux: 'Linux x64', github: 'GitHub Releases',
+      inline: '行内', inlineLoading: '正在获取行内安装包…', inlineUnavailable: '暂时无法获取行内安装包',
+      external: '行外', mac: 'Mac（Apple 芯片）', windows: 'Windows x64', linux: 'Linux x64', github: 'GitHub Releases',
     },
     docs: {
       overview: '知识库总览',
@@ -76,8 +76,8 @@ export const copy = {
     dark: 'Dark', light: 'Light', system: 'System', appearance: 'Appearance', openDemo: 'Open Demo', font: 'Font', defaultFont: 'Default', monoFont: 'Monospace', reset: 'Reset preview',
     demoText: 'More examples are on the way. Open the demo to look at a session.',
     downloadMenu: {
-      inline: 'Inline', inlineLoading: 'Fetching internal downloads…', inlineEmpty: 'No internal downloads available', inlineUnavailable: 'Could not load internal downloads',
-      external: 'External', mac: 'Mac (Apple silicon)', macArchive: 'Mac (Apple silicon archive)', windows: 'Windows x64', linux: 'Linux x64', github: 'GitHub Releases',
+      inline: 'Inline', inlineLoading: 'Fetching internal downloads…', inlineUnavailable: 'Could not load internal downloads',
+      external: 'External', mac: 'Mac (Apple silicon)', windows: 'Windows x64', linux: 'Linux x64', github: 'GitHub Releases',
     },
     docs: {
       overview: 'Overview',

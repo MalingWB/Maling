@@ -8,11 +8,9 @@ import type { InlineDownloadPlatform, InlineDownloadResult, LoadInlineDownloads 
 type DownloadMenuLabels = {
   inline: string;
   inlineLoading: string;
-  inlineEmpty: string;
   inlineUnavailable: string;
   external: string;
   mac: string;
-  macArchive: string;
   windows: string;
   linux: string;
   github: string;
@@ -43,10 +41,10 @@ function LinuxIcon(props: IconProps) {
   return <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" {...props}><path fill="currentColor" d={LINUX_PATH} /></svg>;
 }
 
-const INLINE_OPTIONS: Array<{ platform: InlineDownloadPlatform; labelKey: keyof DownloadMenuLabels; icon: PlatformIcon }> = [
-  { platform: 'mac', labelKey: 'mac', icon: AppleIcon },
-  { platform: 'windows', labelKey: 'windows', icon: WindowsIcon },
-  { platform: 'linux', labelKey: 'linux', icon: LinuxIcon },
+const INLINE_OPTIONS: Array<{ platform: InlineDownloadPlatform; icon: PlatformIcon }> = [
+  { platform: 'mac', icon: AppleIcon },
+  { platform: 'windows', icon: WindowsIcon },
+  { platform: 'linux', icon: LinuxIcon },
 ];
 
 const NEW_TAB_ATTRIBUTES = { target: '_blank', rel: 'noreferrer' } as const;
@@ -78,10 +76,9 @@ export function DownloadMenu({ config, label, labels, loadInlineDownloads }: Pro
     <DropdownMenuContent align="center" sideOffset={12} className="download-menu">
       <p className="download-menu-section truncate">{labels.inline}{inline.status === 'ready' ? ` · ${inline.version}` : ''}</p>
       <div className="download-menu-options">
-        {inline.status === 'ready' ? INLINE_OPTIONS.map(({ platform, labelKey, icon: Icon }) => {
+        {inline.status === 'ready' ? INLINE_OPTIONS.map(({ platform, icon: Icon }) => {
           const installer = inline.downloads[platform];
-          if (!installer) return null;
-          const optionLabel = platform === 'mac' && installer.filename.toLowerCase().endsWith('.app.tar.gz') ? labels.macArchive : labels[labelKey];
+          const optionLabel = labels[platform];
           return <DropdownMenuItem asChild key={platform} className="download-option">
             <a href={installer.url} download {...NEW_TAB_ATTRIBUTES} data-platform-icon={platform} data-inline-download-option={platform} data-download-filename={installer.filename} aria-label={`${optionLabel} — ${installer.filename}`}>
               <span className="download-option-icon-tile" aria-hidden="true"><Icon className="download-option-icon" /></span>
@@ -89,7 +86,7 @@ export function DownloadMenu({ config, label, labels, loadInlineDownloads }: Pro
             </a>
           </DropdownMenuItem>;
         }) : <p className="download-menu-section" role="status">{
-          inline.status === 'empty' ? labels.inlineEmpty : inline.status === 'error' ? labels.inlineUnavailable : labels.inlineLoading
+          inline.status === 'error' ? labels.inlineUnavailable : labels.inlineLoading
         }</p>}
       </div>
       <DropdownMenuSeparator />
