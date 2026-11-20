@@ -14,6 +14,7 @@ Use the repository lockfile (`npm ci`) and Node 22.18+ (recording scripts import
 - Shared client UI: `web/src`; read-only injection: `marketing/demo/runtime.ts`, `api.ts`, `dataset.ts`; fixtures: `marketing/shared/fixture.ts`.
 
 ```powershell
+$env:GOLD_BAND_WB_BASE_URL = Read-Host "WB service origin (scheme, host and optional port only)"
 npm run site:dev
 # Separate terminal, only when needed:
 npm run demo:dev
@@ -25,7 +26,7 @@ Production examples use separate non-root mounts. Choose the final paths before 
 ```powershell
 $env:VITE_SITE_BASE='/product/'
 $env:VITE_DEMO_URL='/nested/demo/'
-$env:VITE_DOWNLOAD_URL='https://github.com/diodeme/Gold-Band/releases'
+$env:GOLD_BAND_WB_BASE_URL = Read-Host "WB service origin (scheme, host and optional port only)"
 npm run site:build
 # Default website output: .codex-temp/site-dist
 $env:VITE_DEMO_BASE='/nested/demo/'
@@ -35,7 +36,14 @@ Remove-Item Env:DEMO_ALLOW_INCOMPLETE_DATASET -ErrorAction SilentlyContinue
 npm run demo:build
 ```
 
-单目录交付使用 npm run website:build。默认输出到 release/website，将官网放在根目录、Demo 放在 demo/ 子目录；设置 WEBSITE_DIST 可指定目标目录。Demo 完整数据门禁仍然生效。
+单目录交付请从仓库根目录运行以下 PowerShell 命令。输入实际 WB 服务的 `http://` 或 `https://` 加主机及可选端口，不要填 `/api/file/download/latest.json`、账号密码或查询参数。只在当前终端设置即可，不要把真实地址提交到仓库。
+
+```powershell
+$env:GOLD_BAND_WB_BASE_URL = Read-Host '输入 WB 服务地址（含协议，不带路径）'
+npm run website:build
+```
+
+`website:build` 自动设置 Demo 挂载路径。默认输出到 `release/website`，将官网放在根目录、Demo 放在 `demo/` 子目录；设置 `WEBSITE_DIST` 可指定目标目录。官网配置错误会提示变量名和所需格式，不打印输入值。官网或 Demo 构建失败不会清除上次交付产物；Demo 完整数据门禁仍然生效。
 
 ### 行内客户端下载清单
 
