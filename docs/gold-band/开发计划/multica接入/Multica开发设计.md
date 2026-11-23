@@ -3244,6 +3244,24 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.97 改动九十五：需求管理看板卡片标题悬停全文（2026-11-23）
+
+**背景**：需求管理看板任务卡片标题单行 `truncate`，长任务名尾部被省略号截断，同前缀任务难以区分，用户要求悬停卡片可看到任务全名。纯前端展示改动，multica 协议、后端命令与持久化零变化。
+
+**实现**：
+
+- ① **复用共享溢出检测**（`web/src/hooks/useOverflowTooltip.ts`，不新造截断判定）：`valueRef` 挂在卡片标题 div（`data-remote-task-title="true"` 供测试定位），Tooltip 受控 `open={titleTooltipOpen}` + `onOpenChange={handleTitleTooltipOpenChange}`——仅在 Radix 请求打开时按 `isOverflowing`（`scrollWidth > clientWidth + 1`）判定，短标题不弹无意义气泡；焦点经 `handleTooltipFocus` 过滤非 `:focus-visible`，`onBlur` / `onPointerLeave` 立即收起。
+- ② **trigger = 整块卡片主体**（ui-interaction §9「截断全文类 Tooltip 的 trigger 必须是整颗控件」）：可点终态行 = 原有整颗 `<button>`（点击回看会话语义不变）；非可点行 = 同内容 `<div>`。标题、类型/状态/DPMS/就绪/rerun/issue 状态徽标与时间戳都在命中区内；执行/取消/重新执行/移出按钮在 trigger 之外，各自 Tooltip 与点击不变。嵌套徽标 Tooltip 依赖 Radix 全局 `TOOLTIP_OPEN`（新 tooltip 打开即关旧），指针从外部直接进入徽标时可能短暂并存，可接受。
+- ③ **气泡内容 = `task.title`**（`max-w-[360px]` + `whitespace-pre-wrap break-words`），无新增文案与 i18n key（标题本身即内容，7 语言无需改动）。
+
+**方案自评审**：过度设计——复用既有共享 hook 与 `AppProviders` 已挂载的全局 `TooltipProvider`，零新增抽象/状态字段/依赖/缓存，无持久化。性能——每次悬停请求打开时一次 `scrollWidth/clientWidth` 同步读取（每板卡片数量级为十，无 ResizeObserver / IntersectionObserver / 轮询），关闭即重置；无全量扫描、无新 I/O。
+
+**验证结果**：新增 `web/tests/remote-task-board-title-tooltip.test.tsx` 4 例（真实 Radix Tooltip + jsdom 假度量）：① 截断时悬停显示全名；② 未截断不弹；③ trigger 覆盖标题 + 状态徽标且不含执行按钮；④ 可点终态行 trigger 仍为整颗按钮且点击仍走 `onSelectRun`。该文件 + 既有 `remote-task-board.test.tsx` **42 passed / 0 failed**；`tsc -p web/tsconfig.build.json` 零错误；`npm run web:build` 生产构建通过。`npm run web:test` 全量 **3635 passed / 8 skipped / 4 failed**，4 个失败文件（`conversation-composer-autosize`、`gold-themed-scrollbar`、`native-title-tooltip-contract`——违规位置为 `ComposerResizeHandle.tsx:20`、`theme-preference-api`）均与本次改动文件无关（本次未触及 Composer / 主题目录 / 外观默认值），为分支既有失败。真实浏览器（Chrome + `web:dev`，临时浏览器桩播种 3 张卡片、验后已 revert）：长标题实测 `scrollWidth=468` / `clientWidth=178`（终态卡片 208）→ 悬停显示全名；短标题 `sw==cw` 悬停无气泡；可点终态卡片悬停同样显示全名；窄视口（480px，标题 `cw=348`）与拉宽回 1440px（`cw=181`）下溢出判定及展示一致；浅色与深色主题气泡均正常（语义 token `bg-popover`/`text-popover-foreground`）。
+
+**文件**：`web/src/components/conversation/RemoteTaskBoard.tsx`、`web/tests/remote-task-board-title-tooltip.test.tsx`；文档 `接入方案.md`（卡片 UI 条目）、本条。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）
