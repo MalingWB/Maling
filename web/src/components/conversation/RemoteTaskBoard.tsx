@@ -5,6 +5,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
 import type { RemoteTaskVm } from '../../types';
@@ -23,6 +24,8 @@ import type { RemoteTaskVm } from '../../types';
  * - completed/failed（带本地 run 链接）→ 点击回看会话(onSelectRun)；对账后 issue 状态允许时
  *   渲染「重新执行」(rerun，canRerunRemoteTask 判定) 与 issue 状态标记（回退待办场景）
  * - 全状态   → 移出列表(remove)：终态行真删除本地历史，pending/running 行刷新即恢复（服务端不动）
+ * - 全状态   → 卡片主体（标题 + 徽标区）悬停显示被截断的全名：仅真实溢出时弹出（ui-interaction §9），
+ *   操作按钮在命中区之外
  */
 
 /// 看板列定义：4 canonical status，与 `RemoteTaskVm.status` 1:1
@@ -264,9 +267,31 @@ function RemoteTaskCard({
   const { projectId, localTaskId, runId } = task;
   const clickable = !!(projectId && localTaskId && runId);
 
+  // 标题截断全文（ui-interaction §9）：长任务名在卡片上被省略号截断后难以区分，悬停卡片主体
+  // 显示全名。trigger 覆盖整块卡片主体（终态卡片即整颗可点按钮），共享 hook 只在 Radix 请求
+  // 打开时按真实溢出判定——未被截断的短标题不弹无意义气泡。
+  const {
+    valueRef: titleValueRef,
+    tooltipOpen: titleTooltipOpen,
+    handleTooltipFocus: handleTitleTooltipFocus,
+    hideTooltip: hideTitleTooltip,
+    handleTooltipOpenChange: handleTitleTooltipOpenChange,
+  } = useOverflowTooltip<HTMLDivElement>();
+  const titleTooltipTriggerEvents = {
+    onFocus: handleTitleTooltipFocus,
+    onBlur: hideTitleTooltip,
+    onPointerLeave: hideTitleTooltip,
+  };
+
   const content = (
     <div className="space-y-1.5">
-      <div className="truncate text-[13px] font-medium leading-snug text-foreground">{task.title}</div>
+      <div
+        ref={titleValueRef}
+        data-remote-task-title="true"
+        className="truncate text-[13px] font-medium leading-snug text-foreground"
+      >
+        {task.title}
+      </div>
       <div className="flex items-center gap-1.5">
         {issueKind && (
           <Badge
@@ -350,17 +375,31 @@ function RemoteTaskCard({
       <CardContent className="px-3">
         <div className="flex items-center gap-1.5">
           <div className="min-w-0 flex-1">
-            {clickable && projectId && localTaskId && runId ? (
-              <button
-                type="button"
-                className="block w-full cursor-pointer text-left"
-                onClick={() => onSelectRun(projectId, localTaskId, runId)}
+            <Tooltip open={titleTooltipOpen} onOpenChange={handleTitleTooltipOpenChange}>
+              <TooltipTrigger asChild>
+                {clickable && projectId && localTaskId && runId ? (
+                  <button
+                    type="button"
+                    className="block w-full cursor-pointer text-left"
+                    onClick={() => onSelectRun(projectId, localTaskId, runId)}
+                    {...titleTooltipTriggerEvents}
+                  >
+                    {content}
+                  </button>
+                ) : (
+                  <div className="block w-full text-left" {...titleTooltipTriggerEvents}>
+                    {content}
+                  </div>
+                )}
+              </TooltipTrigger>
+              <TooltipContent
+                side="top"
+                sideOffset={6}
+                className="max-w-[360px] whitespace-pre-wrap break-words text-xs"
               >
-                {content}
-              </button>
-            ) : (
-              content
-            )}
+                {task.title}
+              </TooltipContent>
+            </Tooltip>
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
             {queued && (

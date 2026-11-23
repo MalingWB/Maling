@@ -437,6 +437,7 @@ multica.session-resume-failed   // 保留在码表但 M4-d 起不 emit（resume 
 - **任务名搜索（M5-cs）**：底部工具条类型过滤旁增加搜索输入框（Search 图标 + i18n 占位符「搜索任务名…」，7 语言同步）。**大小写不敏感子串匹配任务标题**，跨四列全量过滤，与类型过滤可组合（交集）、与「移出列表」视图过滤叠加；trim 后空查询 = 不过滤。纯客户端过滤已加载列表（任务量增长后不动服务端契约），搜索态是瞬时 UI 状态、不持久化；门控同类型过滤（已连接且有工作空间）。
 - **移出列表（M5-bm §12.52 → M5-bo §12.54 按行数据源分派）**：任务卡片（四列全状态，含待办与已完成）带「移出列表」按钮（Trash2）。**语义按行数据源分派（M5-bo 修正）**：**终态行**（completed/failed）的唯一数据源是本地 `remote_completed_tasks` 历史（服务端不回传终态）——移出即**真删除本地历史条目**（`remove_remote_completed_task` 命令，幂等），刷新不再「复活」，Tooltip「移出并删除本地完成记录，刷新不再显示」；删除的是列表回看索引，**不删本地会话本体**。**pending/running 行**每次刷新从服务端/内存重建——纯本页内存态视图过滤即全部语义，不调删除接口，Tooltip「仅从码灵侧列表移除，刷新后恢复」，服务端侧删除后自然消失（服务端是 active 行的唯一事实源）。均不弹确认框（ui-interaction §1 的删除确认针对破坏性删除；hint 如实说明各行语义）。
 - **multica 平台快捷跳转（M5-ck）**：底部工具条右侧组（账号标识与手动刷新之间）增加 `ExternalLink` ghost 图标按钮，点击经系统浏览器打开 multica 平台 Web（地址 = settings VM 的 `multicaAppUrl`，渠道编译期默认或运行期地址覆盖产生；桌面端走 tauri opener 插件）。门控继承 footer 的 `source === 'multica' && connected`——非 multica 来源、未连接不出现；`multicaAppUrl` 未配置（null）时不渲染。Tooltip 与 aria-label 同文案 `remote.taskManagement.openPlatform`「打开 {{source}} 平台」，来源名经注册表名片插值，不散写品牌名。跳转目标为平台根地址，不做 workspace/issue 深链（multica Web 路由结构无本仓可验证真源）。
+- **卡片标题悬停全文（开发设计 §12.97）**：任务卡片标题单行截断，长任务名尾部被省略导致同前缀任务难以区分——悬停**卡片主体**（标题 + 全部徽标区；可点终态行即整颗回看按钮）经 Tooltip 显示任务全名。**仅当标题真实溢出**（`scrollWidth > clientWidth`）时弹出，短标题悬停无气泡（复用 `useOverflowTooltip`，ui-interaction §9：trigger 为整颗控件、不用原生 title）；操作按钮（执行/取消/重新执行/移出）在 trigger 之外，各自 Tooltip 与点击语义不变。纯前端展示，协议/后端/持久化零变化。
 
 
 **PAT 串号防护**：换机器/换账号重连时强制重新走浏览器登录 + mint PAT、不复用前任 PAT。
