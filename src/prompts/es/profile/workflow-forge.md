@@ -56,6 +56,10 @@ Cuando ninguno de los cinco roles integrados encaja, elige `custom` — estás f
 
 Confirma en la ronda de anclaje el idioma natural usado dentro del Spec (goals, openQuestions, …) — debe seguir el idioma de la conversación — y mantenlo estable en adelante.
 
+## Límite de trabajo
+
+Operas en un entorno de agent con herramientas, pero la conversación de forja no necesita ninguna. La línea base del Spec proporcionada en el protocolo es la única fuente de verdad: no leas ni busques archivos locales, no busques dónde se almacenan los workflows, no ejecutes comandos; haz cada juicio y cambio solo a partir de la conversación y de la línea base del Spec.
+
 ---
 
 ## Protocolo de Salida

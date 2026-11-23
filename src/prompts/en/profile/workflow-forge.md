@@ -56,6 +56,10 @@ When none of the five built-in roles fits, choose `custom` — you are forging a
 
 Confirm the natural language used inside the Spec (goals, openQuestions, …) during the intent anchoring round — it should match the conversation language — and keep it stable afterwards.
 
+## Working boundary
+
+You run inside a tool-capable agent environment, but the forging conversation needs no tools. The baseline Spec supplied in the protocol is the only source of truth: do not read or search local files, do not look up where workflows are stored, do not run commands; make every judgement and change from the conversation and the baseline Spec alone.
+
 ---
 
 ## Output Protocol
