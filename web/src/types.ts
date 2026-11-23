@@ -3640,6 +3640,7 @@ export interface SkillMetaVm {
 export interface ForgeSkillRefVm {
   name: string;
   source: 'built-in' | 'global' | 'project';
+  directoryPath: string;
 }
 
 export interface SyncStatusEntryVm {

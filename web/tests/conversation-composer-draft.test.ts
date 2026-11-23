@@ -102,8 +102,8 @@ describe('ConversationComposer draft cross-page retention', () => {
       content: '基于以下选中的 skill 铸造工作流',
       forge: {
         sourceSkills: [
-          { name: 'code-review', source: 'global' },
-          { name: 'write-tests', source: 'project' },
+          { name: 'code-review', source: 'global', directoryPath: '/home/u/.claude/skills/code-review' },
+          { name: 'write-tests', source: 'project', directoryPath: '/repo/.gold-band/skills/write-tests' },
         ],
         sourceProjectId: 'project-a',
         title: '从 2 个 skill 铸造工作流',

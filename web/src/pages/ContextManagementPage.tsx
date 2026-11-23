@@ -222,7 +222,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
     const pool = skillTab === 'global' ? (skillList?.global ?? []) : projectSkills;
     return pool
       .filter((skill) => selectedForgeSkills.has(`${skill.source}:${skill.name}`))
-      .map((skill) => ({ name: skill.name, source: skill.source }));
+      .map((skill) => ({ name: skill.name, source: skill.source, directoryPath: skill.directoryPath }));
   };
 
   // 选择 workspace 时加载该项目 SKILL

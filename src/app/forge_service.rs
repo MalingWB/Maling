@@ -369,8 +369,9 @@ impl App {
         })
     }
 
-    /// 逐个解析 skill 全文;Project 源在当前 app 的项目 skill 域下寻址
-    /// （入口 B 的挂靠项目即 composer 当前项目,由前端在发送前切换）。
+    /// 逐个解析 skill 全文：以 skill 列表给出的目录路径为准——skill 可能来自
+/// Gold Band 自身目录，也可能来自各 agent 目录（如 `.claude/skills`），按名称
+/// 回查会漏掉后者。
     fn read_forge_skills(
         &self,
         skills: &[ForgeSkillRef],
@@ -382,7 +383,12 @@ impl App {
         let mut contents = Vec::new();
         for skill in skills {
             let content = manager
-                .read(&skill.name, skill.source)
+                .read_by_path(
+                    &camino::Utf8PathBuf::from(skill.directory_path.clone()),
+                    &skill.name,
+                    skill.source,
+                    "forge",
+                )
                 .with_context(|| format!("skill `{}` ({:?}) not readable", skill.name, skill.source))?;
             contents.push(content);
         }
@@ -569,12 +575,15 @@ pub struct ForgeSourceDigest {
     pub markdown: String,
 }
 
-/// 入口 B 的 skill 引用：`(name, source)` 在挂靠项目的 skill 域内寻址
-/// （Project 源在该项目 workspace 下解析；Global/BuiltIn 全局可读）。
+/// 入口 B 的 skill 引用：以 skill 列表给出的目录路径为身份。skill 可能来自
+/// Gold Band 自身目录，也可能来自各 agent 目录（如 `.claude/skills`），
+/// 名称无法跨目录唯一定位；`name`/`source` 仅用于材料标注。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ForgeSkillRef {
     pub name: String,
     pub source: crate::config::SkillSource,
+    pub directory_path: String,
 }
 
 /// 内置 workflow-forge profile id（`DEFAULT_PROFILE_SEEDS`）。
@@ -1112,6 +1121,33 @@ pub(crate) mod tests {
                 "slot {slot} must have a default binding"
             );
         }
+    }
+
+    #[test]
+    fn forge_skills_material_reads_agent_directory_skills() {
+        let (app, _temp, _guard) = forge_test_app();
+        // agent 目录(如 .claude/skills)下的 skill 不在 Gold Band 自己的 skills
+        // 目录内:按列表给出的目录路径读取,而不是按名称回查 Gold Band 目录。
+        let skill_dir = app
+            .paths
+            .repo_root
+            .join(".claude")
+            .join("skills")
+            .join("forge-agent-dir-probe");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: forge-agent-dir-probe\ndescription: agent 目录内的探测 skill\n---\n审查正文:逐文件核对变更与风险。",
+        )
+        .unwrap();
+        let material = app
+            .forge_skills_material(&[ForgeSkillRef {
+                name: "forge-agent-dir-probe".to_string(),
+                source: crate::config::SkillSource::Global,
+                directory_path: skill_dir.to_string(),
+            }])
+            .unwrap();
+        assert!(material.content.contains("审查正文:逐文件核对变更与风险"));
     }
 
     fn acp_ui_event(

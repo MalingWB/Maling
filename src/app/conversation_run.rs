@@ -787,6 +787,7 @@ mod tests {
         command.forge_source_skills = Some(vec![crate::app::forge_service::ForgeSkillRef {
             name: "code-review".to_string(),
             source: crate::config::SkillSource::Project,
+            directory_path: skill_dir.to_string(),
         }]);
 
         let prepared = app.prepare_conversation_task(&command).unwrap();
@@ -817,6 +818,7 @@ mod tests {
         missing.forge_source_skills = Some(vec![crate::app::forge_service::ForgeSkillRef {
             name: "no-such-skill".to_string(),
             source: crate::config::SkillSource::Project,
+            directory_path: app.paths.project_skills_dir().join("no-such-skill").to_string(),
         }]);
         assert!(app.prepare_conversation_task(&missing).is_err());
     }
@@ -877,6 +879,7 @@ mod tests {
         conflicting.forge_source_skills = Some(vec![crate::app::forge_service::ForgeSkillRef {
             name: "x".to_string(),
             source: crate::config::SkillSource::Global,
+            directory_path: app.paths.project_skills_dir().join("x").to_string(),
         }]);
         assert!(app.prepare_conversation_task(&conflicting).is_err());
     }
