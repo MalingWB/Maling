@@ -6559,6 +6559,7 @@ pub(crate) fn acp_session_update_emitter(
     app: gold_band::app::App,
     project_id: Option<String>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync> {
+    let project_id = resolve_acp_event_project_id(project_id, Some(&app), None);
     Arc::new(move |context| {
         let attempt_dir = resolve_acp_attempt_dir(
             &app,
@@ -6688,6 +6689,22 @@ fn acp_timeline_position_fields(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// 实时更新载荷的 `projectId`:前端路由以它作为 attempt 监听器的分发键之一。
+///
+/// attempt 的项目归属以 app 实例为权威来源。运行期启动路径(start_run 等)
+/// 不携带项目 id,缺省时必须由 attempt 所属的 app 实例补齐,否则对话页的
+/// attempt 监听器收不到任何实时更新(流式正文、工具调用、权限请求)。
+fn resolve_acp_event_project_id(
+    project_id: Option<String>,
+    app: Option<&App>,
+    control_app: Option<&App>,
+) -> Option<String> {
+    project_id.or_else(|| {
+        app.or(control_app)
+            .map(|app| app.paths.project_id.clone())
+    })
+}
+
 fn emit_acp_update(
     app_handle: &AppHandle,
     app: Option<&App>,
@@ -6772,6 +6789,7 @@ fn emit_acp_update(
             session_config.as_ref(),
         );
     }
+    let project_id = resolve_acp_event_project_id(project_id, app, control_app);
     let _ = app_handle.emit(
         ACP_SESSION_EVENT,
         AcpSessionUpdatedEventVm {
@@ -18909,5 +18927,36 @@ mod tests {
         assert_eq!(*unit_kind, gold_band::app::observability::UnitKind::Worker);
         drop(facts);
         let _ = std::fs::remove_dir_all(temp);
+    }
+}
+
+#[cfg(test)]
+mod acp_event_project_tests {
+    use super::resolve_acp_event_project_id;
+    use gold_band::app::App;
+
+    #[test]
+    fn acp_event_project_id_falls_back_to_the_attempt_owner_app() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-acp-event-project-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(
+            camino::Utf8PathBuf::from_path_buf(root.join("repo")).unwrap(),
+        );
+        // 运行期启动路径(start_run 等)不携带项目 id:载荷必须由 attempt 所属
+        // 的 app 实例补齐,否则前端路由按 projectId 分发的 attempt 监听器收不到
+        // 任何实时更新(流式正文、工具调用、权限请求)。
+        assert_eq!(
+            resolve_acp_event_project_id(None, Some(&app), None).as_deref(),
+            Some(app.paths.project_id.as_str())
+        );
+        // 显式携带时保持调用方给出的值;没有可用 app 时保持缺省。
+        assert_eq!(
+            resolve_acp_event_project_id(Some("explicit".to_string()), Some(&app), None)
+                .as_deref(),
+            Some("explicit")
+        );
+        assert_eq!(resolve_acp_event_project_id(None, None, None), None);
     }
 }
