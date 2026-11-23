@@ -4,12 +4,12 @@
     "officialRegistry": {
       "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
       "registryVersion": "1.0.0",
-      "fetchedAt": "2026-11-18T13:00:03.190Z"
+      "fetchedAt": "2026-11-20T07:07:12.216Z"
     },
     "localSupplement": {
       "path": "resources/acp-registry-local.json",
       "sha256": "a6ee69655e357d2867a7c38b1433e9abb0c196f5cae5608e03903a297603c757",
-      "fetchedAt": "2026-11-18T13:00:03.190Z"
+      "fetchedAt": "2026-11-20T07:07:12.216Z"
     }
   },
   "agents": [
@@ -282,7 +282,7 @@
     {
       "id": "cursor",
       "label": "Cursor",
-      "version": "2026.11.13",
+      "version": "2026.11.19",
       "provenance": {
         "sourceKind": "official-registry",
         "integrationOrigin": "official",
@@ -312,7 +312,7 @@
     {
       "id": "gemini",
       "label": "Gemini",
-      "version": "0.68.0",
+      "version": "0.70.0",
       "provenance": {
         "sourceKind": "official-registry",
         "integrationOrigin": "official",
@@ -326,7 +326,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@google/gemini-cli@0.68.0",
+        "@google/gemini-cli@0.70.0",
         "--acp"
       ],
       "localLaunch": {
