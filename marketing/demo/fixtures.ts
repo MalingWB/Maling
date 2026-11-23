@@ -62,7 +62,8 @@ export function demoRun(base: ConversationRunVm, taskId: string, language: Deskt
     run.workflowGraph = {
       nodes: round.nodes.map((node) => ({ id: node.nodeId, nodeId: node.nodeId, label: node.label,
         nodeType: node.nodeType, status: 'completed', outcome: 'success', runtimeDisplay: node.runtimeDisplay,
-        attemptId: node.attempts[0].attemptId, artifactCount: 0, attachmentCount: node.nodeId === 'dev-test' ? demoDevelopmentFiles.attachments.length : 0, current: false })),
+        attemptId: node.attempts[0].attemptId, artifactCount: 0, attachmentCount: node.nodeId === 'dev-test' ? demoDevelopmentFiles.attachments.length : 0,
+        current: false, retryable: false })),
       edges: template.workflow.edges.filter((edge) => !edge.to.startsWith('$')).map((edge) => ({ from: edge.from, to: edge.to, label: edge.on })),
       groups: [],
     };
