@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.23.0](https://github.com/MalingWB/Maling/compare/v0.22.0...v0.23.0) (2026-11-23)
+
+
+### Features
+
+* **website:** generate download links from the published release version ([b2614f0](https://github.com/MalingWB/Maling/commit/b2614f05cae32897f259b7990655b4f8353315ae))
+* **website:** generate installer links from the published version ([dd2d5b5](https://github.com/MalingWB/Maling/commit/dd2d5b56f0c0e22c014afdac2f002bcee0c9095e))
+
+
+### Bug Fixes
+
+* **build:** preserve the last website bundle on build failure ([914a1d4](https://github.com/MalingWB/Maling/commit/914a1d4496bd5dbab6f4bda624c68da4755719a7))
+* **demo:** align read-only views with desktop contracts ([caa15a5](https://github.com/MalingWB/Maling/commit/caa15a51419c8989be50cb49e82485860fe88c81))
+* **website:** keep replay from stealing download menu focus ([f19c69f](https://github.com/MalingWB/Maling/commit/f19c69fc23cc6e9f296033c1c933a7594a8ecaf3))
+
 ## [0.22.0](https://github.com/MalingWB/Maling/compare/v0.21.1...v0.22.0) (2026-11-19)
 
 
