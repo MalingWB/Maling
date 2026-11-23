@@ -1,0 +1,5 @@
+{
+  "mac": "MALING_{version}_aarch64.dmg",
+  "windows": "MALING_{version}_x64-setup.exe",
+  "linux": "MALING_{version}_amd64.AppImage"
+}

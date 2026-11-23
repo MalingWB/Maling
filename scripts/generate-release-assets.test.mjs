@@ -62,6 +62,7 @@ async function writeWbPackages(assets) {
     await writeFile(path.join(assets, filename), 'installer');
     await writeFile(path.join(assets, `${filename}.sig`), `signature-${platform}`);
   }
+  await writeFile(path.join(assets, 'MALING_1.2.3_aarch64.dmg'), 'manual installer');
   return packages;
 }
 
@@ -89,6 +90,30 @@ for (const [scenario, env] of [
     }
   });
 }
+
+for (const installer of ['MALING_1.2.3_aarch64.dmg', 'MALING_1.2.3_x64-setup.exe', 'MALING_1.2.3_amd64.AppImage']) {
+  test(`WB release cannot advertise 1.2.3 without the manual installer ${installer}`, async t => {
+    const { assets, output, run } = await fixture(t, 'wb');
+    await writeWbPackages(assets);
+    await rm(path.join(assets, installer));
+    await writeFile(path.join(assets, installer.replace('1.2.3', '1.2.2')), 'previous release');
+    const result = run();
+    assert.notEqual(result.status, 0);
+    assert.ok(result.stderr.includes(installer), result.stderr);
+    await assert.rejects(readdir(output), { code: 'ENOENT' });
+  });
+}
+
+test('WB release rejects an empty manual installer before generating manifests', async t => {
+  const { assets, output, run } = await fixture(t, 'wb');
+  await writeWbPackages(assets);
+  const filename = 'MALING_1.2.3_aarch64.dmg';
+  await writeFile(path.join(assets, filename), '');
+  const result = run();
+  assert.notEqual(result.status, 0);
+  assert.ok(result.stderr.includes(filename), result.stderr);
+  await assert.rejects(readdir(output), { code: 'ENOENT' });
+});
 
 test('custom download URLs retain unversioned macOS archives alongside versioned installers', async (t) => {
   const { assets, output } = await fixture(t, 'wb');

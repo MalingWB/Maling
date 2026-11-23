@@ -10,6 +10,22 @@ describe('production website entrances', () => {
     expect(siteConfig({ GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, false).demoUrl).toBe('http://127.0.0.1:1450/');
     expect(siteConfig({ GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, false).inlineDownloadManifestUrl).toBe('https://example.invalid/api/file/download/latest.json');
   });
+  it.each([
+    ['GOLD_BAND_WB_BASE_URL', undefined, /HTTP\(S\) origin/i],
+    ['GOLD_BAND_WB_BASE_URL', 'https://do-not-echo.example.invalid/private', /HTTP\(S\) origin/i],
+    ['VITE_SITE_BASE', '/do-not-echo', /path/i],
+    ['VITE_DEMO_URL', 'https://user:do-not-echo@example.invalid', /URL/i],
+    ['VITE_DOWNLOAD_URL', 'https://user:do-not-echo@example.invalid', /URL/i],
+  ] as const)('reports %s with a printable, value-free build diagnostic', (field, value, hint) => {
+    const env = { VITE_DEMO_URL: '/demo/', GOLD_BAND_WB_BASE_URL: 'https://example.invalid', [field]: value };
+    const build = () => siteConfig(env, true);
+    expect(build).toThrowError(Error);
+    expect(build).toThrowError(expect.objectContaining({
+      code: 'site.config-invalid', params: { field },
+      message: expect.stringMatching(hint), stack: expect.stringContaining(field),
+    }));
+    expect(build).not.toThrowError(/do-not-echo/);
+  });
   it('requires GOLD_BAND_WB_BASE_URL to be a bare HTTP(S) origin', () => {
     expect(siteConfig({ VITE_DEMO_URL: '/demo/', GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, true).inlineDownloadManifestUrl).toBe('https://example.invalid/api/file/download/latest.json');
     for (const GOLD_BAND_WB_BASE_URL of ['', 'example.invalid', 'https://example.invalid/path', 'https://example.invalid?x=1', 'https://user:pass@example.invalid']) {
@@ -18,9 +34,9 @@ describe('production website entrances', () => {
   });
   it('rejects executable, malformed and loopback URLs', () => {
     for (const VITE_DEMO_URL of ['javascript:alert(1)', '//example.com', 'https://user:pass@example.com', 'https://127.0.0.1', 'https://localhost', 'http://example.com', 'https://[::1]', 'https://[::ffff:127.0.0.1]', 'https://localhost.', 'https://2130706433', 'https://example.com\\@localhost']) {
-      expect(() => siteConfig({ VITE_DEMO_URL }, true)).toThrow();
+      expect(() => siteConfig({ VITE_DEMO_URL, GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, true)).toThrow();
     }
-    expect(() => siteConfig({ VITE_DEMO_URL: '/demo/', VITE_SITE_BASE: '/site/../' }, true)).toThrow();
+    expect(() => siteConfig({ VITE_DEMO_URL: '/demo/', VITE_SITE_BASE: '/site/../', GOLD_BAND_WB_BASE_URL: 'https://example.invalid' }, true)).toThrow();
   });
   it('preserves demo hash and supplies explicit language through the URL API', () => {
     expect(demoHref('/demo/#/session/one', 'en', 'https://example.com')).toBe('https://example.com/demo/?language=en#/session/one');

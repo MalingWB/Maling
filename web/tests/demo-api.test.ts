@@ -47,6 +47,14 @@ describe('public demo runtime', () => {
     expect(contents.size).toBe(12);
     await expect(api.getAcpSession('default', 'demo-review', 'run-051', 'round-003', 'accept', 'attempt-001')).rejects.toMatchObject({ code: 'demo.resource-not-found' });
   });
+  it('never advertises node retries in the read-only workflow graph', async () => {
+    const api = createDemoApi();
+    const run = await api.getConversationRun('default', 'demo-review', DEMO_RUN_ID);
+    const nodes = run.workflowGraph?.nodes ?? [];
+    expect(nodes.length).toBeGreaterThan(0);
+    for (const node of nodes) expect(node.retryable, node.id).toBe(false);
+  });
+
   it('provides the Direct Agent icon identity', async () => {
     const row = demoSidebar('zh-cn').tasksByWorkspace.default[0];
     const run = await createDemoApi().getConversationRun('default', row.taskId, DEMO_RUN_ID);
