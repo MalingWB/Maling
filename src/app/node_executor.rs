@@ -28,7 +28,7 @@ use crate::storage::sqlite::{AttemptIndexContext, index_attempt_with_retry};
 use crate::storage::{read_json, write_json};
 
 use super::ids::now_rfc3339_like;
-use super::{AcpLiveEventContext, App};
+use super::{AcpLiveEventContext, App, ConnectionRunLocator};
 
 fn worker_task_instruction(worker: &WorkerNode) -> Option<String> {
     worker
@@ -764,8 +764,15 @@ pub(crate) fn build_worker_invocation(
     // 绑定状态注入，会话中途绑定连接永远无法生效（现场事故：先开会话后附连接，
     // agent 的 `open_connection` 报 No such tool available）。工具作用域由 URL 里
     // 的 runId 按请求现读（未绑定时 list 返回空、open 拒绝），无条件注入无害。
+    // T02: each injection signs a fresh run-scoped token; the endpoint rejects
+    // URLs whose token does not authorize the exact (projectId, taskId, runId).
     if let Some(port) = app.connection_mcp_endpoint_port() {
-        let url = super::connection_mcp_url(port, &app.paths.project_id, task_id, run_id);
+        let token = app.connection_mcp_authorizer().grant(ConnectionRunLocator {
+            project_id: app.paths.project_id.clone(),
+            task_id: task_id.to_string(),
+            run_id: run_id.to_string(),
+        });
+        let url = super::connection_mcp_url(port, &app.paths.project_id, task_id, run_id, &token);
         mcp_servers.push(super::connection_mcp_server_config(&url));
     }
     info!(

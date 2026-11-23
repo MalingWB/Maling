@@ -2719,10 +2719,31 @@ export interface TerminalSessionVm {
 
 /** Event payload pushed over the pty output / exit / auth channels. */
 export type TerminalEventVm =
-  | { event: 'output'; sessionId: string; base64: string }
+  | {
+      event: 'output';
+      sessionId: string;
+      base64: string;
+      /** T14: absolute stream cursor through this chunk (bytes ever produced). */
+      endOffset: number;
+    }
   | { event: 'exited'; sessionId: string; exitCode: number; status: TerminalSessionStatus }
   | { event: 'authPrompt'; sessionId: string; message: string; origin?: ConnectionRunLocatorVm | null }
   | { event: 'failed'; sessionId: string; code: string; params: Record<string, unknown> };
+
+/**
+ * T14: a terminal-history snapshot with its ABSOLUTE stream cursors.
+ * `base64` spans `base..end` in the session's total output stream. The view
+ * joins its live event stream on `end`: live chunks are appended after the
+ * snapshot with no gap or duplication, and `trimmed` marks output the backend
+ * no longer retains (the snapshot is not contiguous with what the view may
+ * already have seen).
+ */
+export interface TerminalHistorySnapshotVm {
+  base64: string;
+  base: number;
+  end: number;
+  trimmed: boolean;
+}
 
 export interface ScheduledTaskVm {
   id: string;

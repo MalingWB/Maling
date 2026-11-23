@@ -2413,7 +2413,12 @@ export const browserApi: RuntimeApi = {
       });
     }
     const banner = `Gold Band browser preview shell\r\n$ `;
-    emitBrowserTerminalEvent({ event: 'output', sessionId, base64: btoa(banner) });
+    emitBrowserTerminalEvent({
+      event: 'output',
+      sessionId,
+      base64: btoa(banner),
+      endOffset: banner.length,
+    });
     return Promise.resolve(session);
   },
   openRemoteTerminal(connectionId: string) {
@@ -2425,7 +2430,13 @@ export const browserApi: RuntimeApi = {
     const session: TerminalSessionVm = { sessionId, kind: 'remote', label, status: 'Connected' };
     browserTerminalSessions.push(session);
     browserTerminalSessionMap.set(sessionId, session);
-    emitBrowserTerminalEvent({ event: 'output', sessionId, base64: btoa(`${label}\r\nConnected (browser preview)\r\n$ `) });
+    const banner = `${label}\r\nConnected (browser preview)\r\n$ `;
+    emitBrowserTerminalEvent({
+      event: 'output',
+      sessionId,
+      base64: btoa(banner),
+      endOffset: banner.length,
+    });
     return Promise.resolve(session);
   },
   provideTerminalAuth(_sessionId: string, _answer: string) {
@@ -2442,8 +2453,8 @@ export const browserApi: RuntimeApi = {
   listDetachedWindows() {
     return Promise.resolve([]);
   },
-  getTerminalHistory(_sessionId: string) {
-    return Promise.resolve('');
+  getTerminalHistory(_sessionId: string, _from?: number | null) {
+    return Promise.resolve({ base64: '', base: 0, end: 0, trimmed: false });
   },
   subscribeDetachedWindowClosed() {
     return Promise.resolve(() => {});

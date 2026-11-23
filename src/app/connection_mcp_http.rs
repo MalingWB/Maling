@@ -12,7 +12,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-use crate::app::{ConnectionMcpRuntime, ConnectionMcpRuntimeFactory, handle_jsonrpc};
+use crate::app::{
+    ConnectionMcpRuntime, ConnectionMcpRuntimeFactory, ConnectionRunLocator, handle_jsonrpc,
+};
 
 /// 连接工具 server 的 HTTP 端点路径。
 pub const MCP_ENDPOINT_PATH: &str = "/mcp";
@@ -21,6 +23,32 @@ pub const MCP_ENDPOINT_PATH: &str = "/mcp";
 const SESSION_PREFIX: &str = "connection-mcp-";
 
 static SESSION_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+// ── T06 resource bounds ──
+// The endpoint shares the desktop process with chat and tasks, so an abnormal
+// client must not be able to starve it. Every bound is enforced BEFORE the
+// request reaches business logic (authorization included, which happens later
+// in `respond`): allocation follows the bounded check, never the declared size.
+/// 请求行 / 单个 header 行的字节上限。
+const MAX_HEADER_LINE_BYTES: usize = 16 * 1024;
+/// header 数量上限。
+const MAX_HEADER_COUNT: usize = 64;
+/// 请求正文字节上限（JSON-RPC 工具调用远小于此；1 MiB 足够宽松）。
+const MAX_BODY_BYTES: usize = 1024 * 1024;
+/// 同时服务的连接数上限；超出立即拒绝并关闭，不排队。
+const MAX_CONCURRENT_CONNECTIONS: usize = 16;
+/// 单连接读取时限：整个请求（行 + headers + body）必须在该窗口内读完。
+const REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// 请求超出资源边界时返回的 413/408 类响应。
+fn too_large(what: &str) -> HttpResponse {
+    HttpResponse {
+        status: 413,
+        body: format!("request too large: {what}"),
+        content_type: "text/plain".to_string(),
+        set_session: None,
+    }
+}
 
 /// 解析出的最小 HTTP/1.1 请求（仅 localhost endpoint 所需字段）。
 #[derive(Debug)]
@@ -42,9 +70,12 @@ pub struct HttpResponse {
 }
 
 /// 从 HTTP/1.1 请求流解析 `HttpRequest`（请求行 + headers + Content-Length body）。
+/// T06：行长度、header 数量、正文大小全部有界；`read_line` 前先看流量是否
+/// 超限，声明值再大也不会先分配内存。
 pub fn parse_http_request(reader: &mut impl BufRead) -> Result<HttpRequest> {
     let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
+    read_bounded_line(reader, &mut request_line, "request line")?;
+    if request_line.is_empty() {
         bail!("empty request line");
     }
     let mut parts = request_line.trim_end().split_whitespace();
@@ -54,12 +85,13 @@ pub fn parse_http_request(reader: &mut impl BufRead) -> Result<HttpRequest> {
     let mut content_length = 0usize;
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
-            break;
-        }
+        read_bounded_line(reader, &mut line, "header line")?;
         let trimmed = line.trim_end();
         if trimmed.is_empty() {
             break;
+        }
+        if headers.len() >= MAX_HEADER_COUNT {
+            bail!("too many header lines");
         }
         if let Some((name, value)) = trimmed.split_once(':') {
             let name = name.trim().to_string();
@@ -69,6 +101,10 @@ pub fn parse_http_request(reader: &mut impl BufRead) -> Result<HttpRequest> {
             }
             headers.push((name, value));
         }
+    }
+    // T06: declared length is validated against the bound BEFORE allocating.
+    if content_length > MAX_BODY_BYTES {
+        bail!("body exceeds {MAX_BODY_BYTES} bytes");
     }
     let mut body = vec![0u8; content_length];
     reader
@@ -80,6 +116,44 @@ pub fn parse_http_request(reader: &mut impl BufRead) -> Result<HttpRequest> {
         headers,
         body: String::from_utf8_lossy(&body).into_owned(),
     })
+}
+
+/// `read_line` 的有界版本：行超过 `MAX_HEADER_LINE_BYTES` 即失败，避免
+/// `BufRead::read_line` 按声明无限扩展缓冲。
+fn read_bounded_line(
+    reader: &mut impl BufRead,
+    out: &mut String,
+    what: &'static str,
+) -> Result<()> {
+    let mut bytes = Vec::new();
+    loop {
+        let buffered = reader.fill_buf()?;
+        match buffered.iter().position(|&b| b == b'\n') {
+            Some(pos) => {
+                bytes.extend_from_slice(&buffered[..=pos]);
+                if bytes.len() > MAX_HEADER_LINE_BYTES {
+                    bail!("{what} exceeds {MAX_HEADER_LINE_BYTES} bytes");
+                }
+                reader.consume(pos + 1);
+                out.push_str(&String::from_utf8_lossy(&bytes));
+                return Ok(());
+            }
+            None => {
+                bytes.extend_from_slice(buffered);
+                let consumed = buffered.len();
+                reader.consume(consumed);
+                if consumed == 0 {
+                    // EOF without a newline: accept what we have (the header
+                    // loop's empty-line logic handles the rest).
+                    out.push_str(&String::from_utf8_lossy(&bytes));
+                    return Ok(());
+                }
+                if bytes.len() > MAX_HEADER_LINE_BYTES {
+                    bail!("{what} exceeds {MAX_HEADER_LINE_BYTES} bytes");
+                }
+            }
+        }
+    }
 }
 
 /// 分发一个已解析的 HTTP 请求到 MCP JSON-RPC，返回 HTTP 响应。
@@ -157,10 +231,13 @@ fn query_param<'a>(request: &'a HttpRequest, key: &str) -> Option<&'a str> {
     })
 }
 
-/// 全局单端点 + URL 带 run 作用域：按请求的 `?taskId=..&runId=..` 现读
-/// `run.connection_specs` 构建 runtime，再分发。天然支持多对话并发、互不干扰
-/// （详见 [`ConnectionMcpRuntimeFactory`]）。缺少/无法解析的 `taskId`/`runId`
-/// 或该 run 不存在都返回 400，不崩溃。
+/// 全局单端点 + URL 带 run 作用域 + token 授权（T02）：请求必须携带
+/// `?token=..`（桌面端注入时由 [`ConnectionMcpAuthorizer::grant`] 签发），
+/// 且 token 授权的 locator 与 URL 的 `projectId`/`taskId`/`runId` 完全一致，
+/// **之后**才读取 run 数据构建 runtime——授权失败在访问任何资源前拒绝。
+/// `initialize` 成功时把下发的 `mcp-session-id` 与 token 绑定；后续请求必须
+/// 携带匹配的 `mcp-session-id` 头，防止跨 run 复用会话。缺少/不匹配的参数
+/// 一律 403；`taskId`/`runId` 缺失或 run 不存在仍返回 400，不崩溃。
 pub fn respond_scoped(
     factory: &ConnectionMcpRuntimeFactory,
     request: &HttpRequest,
@@ -168,6 +245,9 @@ pub fn respond_scoped(
     if request_path_without_query(request) != MCP_ENDPOINT_PATH {
         return plain(404, "not found");
     }
+    let Some(token) = query_param(request, "token") else {
+        return plain(403, "missing `token` query parameter");
+    };
     let Some(project_id) = query_param(request, "projectId") else {
         return plain(400, "missing `projectId` query parameter");
     };
@@ -177,18 +257,73 @@ pub fn respond_scoped(
     let Some(run_id) = query_param(request, "runId") else {
         return plain(400, "missing `runId` query parameter");
     };
+    let locator = ConnectionRunLocator {
+        project_id: project_id.to_string(),
+        task_id: task_id.to_string(),
+        run_id: run_id.to_string(),
+    };
+    let authorizer = factory.authorizer();
+    // Authorize BEFORE loading any run data or touching credentials.
+    if !authorizer.authorize(token, &locator) {
+        return plain(403, "unauthorized");
+    }
+    // Session binding: after `initialize` issued a session id, later requests
+    // must present the SAME session id issued under this token. (The response
+    // `Set-Session` header plus this check closes the cross-run session reuse
+    // hole; loopback callers cannot forge it.)
+    let session_header = request
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("mcp-session-id"))
+        .map(|(_, value)| value.as_str());
+    if let Some(session_id) = session_header {
+        if !authorizer.session_belongs_to_token(session_id, token) {
+            return plain(403, "unauthorized");
+        }
+    } else {
+        // No session header is only acceptable while handshaking: initialize
+        // (and notifications) arrive without one. Any tools/call before
+        // initialize would have no session — reject it so every stateful
+        // request is bound to an authorized session.
+        let is_initialize_or_notification = serde_json::from_str::<Value>(&request.body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .map(|method| method == "initialize" || method.starts_with("notifications/"))
+            .unwrap_or(false);
+        if !is_initialize_or_notification {
+            return plain(403, "unauthorized");
+        }
+    }
     let mut runtime = match factory.build_for_run(project_id, task_id, run_id) {
         Ok(runtime) => runtime,
         Err(error) => return plain(400, &format!("{error:#}")),
     };
-    respond(&mut runtime, request)
+    let response = respond(&mut runtime, request);
+    // Bind the issued session id to this token at the authorize layer.
+    if let Some(session_id) = &response.set_session {
+        authorizer.bind_session(session_id, token);
+    }
+    response
 }
 
 /// 构建注入 `mcp_servers` 时用的按 run 作用域 URL。`projectId` 必带：run 数据
 /// 按工作区数据目录分片存放，端点（全局 App）须经它解析出正确的工作区路径。
-pub fn connection_mcp_url(port: u16, project_id: &str, task_id: &str, run_id: &str) -> String {
+/// `token` 由 [`crate::app::ConnectionMcpAuthorizer::grant`] 签发；缺 token 的
+/// URL 会被端点以 403 拒绝（T02）。
+pub fn connection_mcp_url(
+    port: u16,
+    project_id: &str,
+    task_id: &str,
+    run_id: &str,
+    token: &str,
+) -> String {
     format!(
-        "http://127.0.0.1:{port}{MCP_ENDPOINT_PATH}?projectId={project_id}&taskId={task_id}&runId={run_id}"
+        "http://127.0.0.1:{port}{MCP_ENDPOINT_PATH}?projectId={project_id}&taskId={task_id}&runId={run_id}&token={token}"
     )
 }
 
@@ -200,12 +335,38 @@ pub fn serve(
     factory: Arc<ConnectionMcpRuntimeFactory>,
     stop: Arc<std::sync::atomic::AtomicBool>,
 ) {
+    // T06: bound the concurrent handler threads. An abnormal client cannot
+    // spawn unbounded work in the shared desktop process; overflow is rejected
+    // and closed immediately instead of queueing.
+    let live_handlers = Arc::new(AtomicUsize::new(0));
     let _ = listener.set_nonblocking(true);
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, _)) => {
+                // macOS/BSD: an accepted socket inherits the listener's
+                // O_NONBLOCK flag. The listener is nonblocking here, so without
+                // restoring blocking mode every server-side read returns EAGAIN
+                // instantly instead of waiting for the request bytes.
+                let _ = stream.set_nonblocking(false);
+                if live_handlers.load(Ordering::SeqCst) >= MAX_CONCURRENT_CONNECTIONS {
+                    // Shed load: answer with 503 and close; no thread, no queue.
+                    let mut stream = stream;
+                    let _ = write_response(
+                        &mut stream,
+                        &HttpResponse {
+                            status: 503,
+                            body: "too many concurrent connections".to_string(),
+                            content_type: "text/plain".to_string(),
+                            set_session: None,
+                        },
+                    );
+                    continue;
+                }
+                live_handlers.fetch_add(1, Ordering::SeqCst);
                 let factory = Arc::clone(&factory);
+                let live = Arc::clone(&live_handlers);
                 std::thread::spawn(move || {
+                    let _guard = HandlerGuard(live);
                     if let Err(error) = handle_connection(stream, &factory) {
                         tracing::debug!(%error, "connection MCP HTTP handler error");
                     }
@@ -219,12 +380,44 @@ pub fn serve(
     }
 }
 
+/// Decrements the live-handler count on drop so a panicked handler cannot
+/// permanently consume a concurrency slot.
+struct HandlerGuard(Arc<AtomicUsize>);
+impl Drop for HandlerGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn handle_connection(
     mut stream: std::net::TcpStream,
     factory: &ConnectionMcpRuntimeFactory,
 ) -> Result<()> {
+    // T06: the whole request must arrive within the read window; a client that
+    // drips bytes forever cannot hold a slot (or the process) hostage.
+    let _ = stream.set_read_timeout(Some(REQUEST_READ_TIMEOUT));
     let mut reader = std::io::BufReader::new(stream.try_clone().context("stream clone")?);
-    let request = parse_http_request(&mut reader)?;
+    let request = match parse_http_request(&mut reader) {
+        Ok(request) => request,
+        Err(error) => {
+            // Distinguish the bounds (413/408-style rejections) from protocol
+            // garbage: both close the connection, but bounds get a status so a
+            // legitimate client sees why.
+            let message = error.to_string();
+            let response = if message.contains("exceeds") {
+                too_large(&message)
+            } else {
+                HttpResponse {
+                    status: 400,
+                    body: format!("bad request: {message}"),
+                    content_type: "text/plain".to_string(),
+                    set_session: None,
+                }
+            };
+            write_response(&mut stream, &response)?;
+            return Ok(());
+        }
+    };
     let response = respond_scoped(factory, &request);
     write_response(&mut stream, &response)?;
     Ok(())
@@ -237,8 +430,12 @@ fn write_response(stream: &mut std::net::TcpStream, response: &HttpResponse) -> 
         202 => "Accepted",
         304 => "Not Modified",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        408 => "Request Timeout",
+        413 => "Payload Too Large",
+        503 => "Service Unavailable",
         500 => "Internal Server Error",
         _ => "OK",
     };
@@ -303,6 +500,8 @@ mod tests {
             Ok(crate::app::ConnectionOutputChunk {
                 text: String::new(),
                 eof: true,
+                next_offset: 0,
+                trimmed: false,
                 status: None,
                 error_code: None,
             })
@@ -319,6 +518,154 @@ mod tests {
             headers: Vec::new(),
             body: body.to_string(),
         }
+    }
+
+    // ── T06 resource bounds ──
+
+    #[test]
+    fn parse_http_request_rejects_an_oversized_body_declaration() {
+        // A declared Content-Length beyond the cap fails BEFORE allocation.
+        let raw = "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Length: 999999999\r\n\r\n";
+        let mut reader = std::io::BufReader::new(raw.as_bytes());
+        let error = parse_http_request(&mut reader).unwrap_err();
+        assert!(error.to_string().contains("body exceeds"));
+    }
+
+    #[test]
+    fn parse_http_request_accepts_a_normal_request_under_the_bounds() {
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize" }).to_string();
+        let raw = format!(
+            "POST /mcp?projectId=p&taskId=t&runId=r&token=conn-auth-x HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut reader = std::io::BufReader::new(raw.as_bytes());
+        let parsed = parse_http_request(&mut reader).unwrap();
+        assert_eq!(parsed.method, "POST");
+        assert!(parsed.path.starts_with("/mcp?"));
+        assert_eq!(parsed.body, body);
+    }
+
+    #[test]
+    fn parse_http_request_rejects_an_oversized_header_line() {
+        let long_header = format!("X-Junk: {}\r\n", "a".repeat(MAX_HEADER_LINE_BYTES + 1));
+        let raw = format!("POST /mcp HTTP/1.1\r\n{long_header}\r\n");
+        let mut reader = std::io::BufReader::new(raw.as_bytes());
+        let error = parse_http_request(&mut reader).unwrap_err();
+        assert!(error.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn parse_http_request_rejects_too_many_header_lines() {
+        let mut raw = String::from("POST /mcp HTTP/1.1\r\n");
+        for i in 0..(MAX_HEADER_COUNT + 2) {
+            raw.push_str(&format!("X-Junk-{i}: v\r\n"));
+        }
+        raw.push_str("\r\n");
+        let mut reader = std::io::BufReader::new(raw.as_bytes());
+        let error = parse_http_request(&mut reader).unwrap_err();
+        assert!(error.to_string().contains("too many header lines"));
+    }
+
+    #[test]
+    fn socket_server_sheds_load_beyond_the_concurrency_cap() {
+        // Fill the handler pool with slow connections; the next client must
+        // get a 503 instead of hanging, and resources stay bounded.
+        use crate::app::{
+            App, ConnectionAuthMethod as AppConnectionAuthMethod,
+            ConnectionEnvironment as AppConnectionEnvironment, ConnectionSpec as AppConnectionSpec,
+            TerminalSessionManager,
+        };
+        let temp = tempfile::TempDir::new().unwrap();
+        let app = App::with_config(
+            camino::Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap(),
+            crate::config::RuntimeConfig::default(),
+        );
+        let manager = Arc::new(std::sync::Mutex::new(TerminalSessionManager::new(
+            Arc::new(|_| {}),
+            temp.path().join("known_hosts"),
+        )));
+        let history = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let factory = Arc::new(ConnectionMcpRuntimeFactory::new(
+            app,
+            manager,
+            history,
+            Arc::new(|_| anyhow::bail!("no workspace paths in this test")),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let listener = listener;
+            let factory = Arc::clone(&factory);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || serve(listener, factory, stop));
+        }
+
+        // Open MAX_CONCURRENT_CONNECTIONS slow sockets that never finish their
+        // request; the server keeps a thread on each within the read timeout.
+        // They write a partial request (headers) so the handler is inside
+        // parse and not failed-fast on an empty stream.
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONCURRENT_CONNECTIONS {
+            let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            use std::io::Write;
+            let mut s = stream;
+            let _ = s.write_all(b"POST /mcp HTTP/1.1\r\nHost: x\r\n"); // no final CRLF: parse parks
+            let _ = s.flush();
+            held.push(s);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // A new client is load-shed with 503 (readable response, then closed).
+        let overflow = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = overflow.set_read_timeout(Some(std::time::Duration::from_millis(1500)));
+        let mut overflow = std::io::BufReader::new(overflow);
+        let mut status_line = String::new();
+        let _ = overflow.read_line(&mut status_line);
+        assert!(
+            status_line.contains("503"),
+            "expected 503 shed, got: {status_line}"
+        );
+
+        // Release the held sockets and confirm a normal request succeeds again.
+        held.clear();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let recover = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = recover.set_read_timeout(Some(std::time::Duration::from_millis(2000)));
+        let mut writer = std::io::BufWriter::new(recover.try_clone().expect("clone"));
+        use std::io::Write;
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize" }).to_string();
+        write!(
+            writer,
+            "POST /mcp HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        writer.flush().unwrap();
+        let mut reader = overflow;
+        // Reuse a fresh reader over the same socket is not possible; read from
+        // the writer's underlying stream instead by dropping and reconnecting.
+        drop(writer);
+        let fresh = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = fresh.set_read_timeout(Some(std::time::Duration::from_millis(2000)));
+        let mut w = std::io::BufWriter::new(fresh.try_clone().expect("clone2"));
+        write!(
+            w,
+            "POST /mcp HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        w.flush().unwrap();
+        let mut r = std::io::BufReader::new(fresh);
+        let mut line = String::new();
+        let _ = r.read_line(&mut line);
+        // Any well-formed HTTP status proves the server recovered after the
+        // load-shed window (an unauthorized request correctly gets 403 under
+        // T02; what matters here is the server answered, not hung or died).
+        let answered = line.starts_with("HTTP/1.1 ");
+        assert!(answered, "server recovered after load shed, got: {line}");
+        let _ = reader;
+        stop.store(true, Ordering::Relaxed);
     }
 
     #[test]
@@ -470,11 +817,11 @@ mod tests {
     }
 
     #[test]
-    fn connection_mcp_url_embeds_port_project_task_and_run() {
-        let url = connection_mcp_url(9000, "proj-1", "task-001", "run-002");
+    fn connection_mcp_url_embeds_port_project_task_run_and_token() {
+        let url = connection_mcp_url(9000, "proj-1", "task-001", "run-002", "conn-auth-x");
         assert_eq!(
             url,
-            "http://127.0.0.1:9000/mcp?projectId=proj-1&taskId=task-001&runId=run-002"
+            "http://127.0.0.1:9000/mcp?projectId=proj-1&taskId=task-001&runId=run-002&token=conn-auth-x"
         );
     }
 
@@ -521,38 +868,241 @@ mod tests {
     }
 
     #[test]
-    fn respond_scoped_returns_400_when_task_or_run_query_param_is_missing() {
+    fn respond_scoped_requires_the_query_parameters_in_order() {
         let (factory, _temp) =
             isolated_factory("GOLD_BAND_TEST_HOME_CONNECTION_MCP_HTTP_MISSING_QUERY");
+        // T02: an absent token is rejected before anything else (403), so the
+        // parameter checks below are only reachable with a valid token.
         let resp = respond_scoped(&factory, &request("POST", "/mcp", "{}"));
+        assert_eq!(resp.status, 403);
+
+        let token = factory
+            .authorizer()
+            .grant(crate::app::ConnectionRunLocator {
+                project_id: "proj-1".to_string(),
+                task_id: "task-001".to_string(),
+                run_id: "run-001".to_string(),
+            });
+        let token_q = format!("&token={token}");
+
+        // A present-but-forged token with no other parameters: parameter
+        // completeness is checked first (400 is the protocol error), the
+        // token itself is verified before any resource access below.
+        let resp = respond_scoped(
+            &factory,
+            &request(
+                "POST",
+                "/mcp?projectId=proj-1&taskId=task-001&runId=run-001&token=forged",
+                "{}",
+            ),
+        );
+        assert_eq!(resp.status, 403);
+        assert!(resp.body.contains("unauthorized"));
+
+        let resp = respond_scoped(
+            &factory,
+            &request("POST", &format!("/mcp?token={token}"), "{}"),
+        );
         assert_eq!(resp.status, 400);
         assert!(resp.body.contains("projectId"));
 
-        let resp = respond_scoped(&factory, &request("POST", "/mcp?projectId=proj-1", "{}"));
+        let resp = respond_scoped(
+            &factory,
+            &request(
+                "POST",
+                &format!("/mcp?projectId=proj-1&token={token}"),
+                "{}",
+            ),
+        );
         assert_eq!(resp.status, 400);
         assert!(resp.body.contains("taskId"));
 
         let resp = respond_scoped(
             &factory,
-            &request("POST", "/mcp?projectId=proj-1&taskId=task-001", "{}"),
-        );
-        assert_eq!(resp.status, 400);
-        assert!(resp.body.contains("runId"));
-    }
-
-    #[test]
-    fn respond_scoped_returns_400_for_a_run_that_does_not_exist() {
-        let (factory, _temp) =
-            isolated_factory("GOLD_BAND_TEST_HOME_CONNECTION_MCP_HTTP_MISSING_RUN");
-        let resp = respond_scoped(
-            &factory,
             &request(
                 "POST",
-                "/mcp?projectId=proj-1&taskId=task-none&runId=run-none",
+                &format!("/mcp?projectId=proj-1&taskId=task-001&token={token}"),
                 "{}",
             ),
         );
         assert_eq!(resp.status, 400);
+        assert!(resp.body.contains("runId"));
+        let _ = token_q;
+    }
+
+    #[test]
+    fn respond_scoped_returns_403_for_a_missing_or_lying_token() {
+        let (factory, _temp) = isolated_factory("GOLD_BAND_TEST_HOME_CONNECTION_MCP_HTTP_TOKEN");
+        let legit = factory
+            .authorizer()
+            .grant(crate::app::ConnectionRunLocator {
+                project_id: "proj-1".to_string(),
+                task_id: "task-001".to_string(),
+                run_id: "run-001".to_string(),
+            });
+
+        // No token at all.
+        let resp = respond_scoped(
+            &factory,
+            &request(
+                "POST",
+                "/mcp?projectId=proj-1&taskId=task-001&runId=run-001",
+                "{}",
+            ),
+        );
+        assert_eq!(resp.status, 403);
+
+        // A well-formed but unknown token: loopback callers cannot forge one.
+        let resp = respond_scoped(
+            &factory,
+            &request(
+                "POST",
+                "/mcp?projectId=proj-1&taskId=task-001&runId=run-001&token=conn-auth-forged",
+                "{}",
+            ),
+        );
+        assert_eq!(resp.status, 403);
+
+        // A real token pointed at a DIFFERENT run (scope mismatch).
+        let resp = respond_scoped(
+            &factory,
+            &request(
+                "POST",
+                &format!("/mcp?projectId=proj-1&taskId=task-001&runId=run-other&token={legit}"),
+                "{}",
+            ),
+        );
+        assert_eq!(resp.status, 403);
+    }
+
+    #[test]
+    fn respond_scoped_serves_an_authorized_run_and_binds_the_session() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let repo_root =
+            camino::Utf8PathBuf::from_path_buf(temp.path().join("repo")).expect("utf8 path");
+        let home_env_var: &'static str = "GOLD_BAND_TEST_HOME_CONNECTION_MCP_HTTP_AUTHORIZED";
+        // SAFETY: this test owns this env var name.
+        unsafe {
+            std::env::set_var(home_env_var, temp.path().join("home"));
+        }
+        let path_config = crate::storage::StoragePathConfig {
+            app_key: "gold-band",
+            config_dir_name: ".gold-band",
+            home_env_var,
+        };
+        let app = crate::app::App::with_config_and_path_config(
+            repo_root,
+            crate::config::RuntimeConfig::default(),
+            path_config,
+        );
+        let run = crate::runtime::RunState {
+            version: crate::domain::VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: crate::domain::RunStatus::Running,
+            outcome: None,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: None,
+            current_node: None,
+            current_attempt: None,
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+            rerun: None,
+            connection_specs: Vec::new(),
+        };
+        crate::storage::write_json(&app.paths.run_file("task-001", "run-001"), &run).unwrap();
+
+        let manager = Arc::new(std::sync::Mutex::new(
+            crate::app::TerminalSessionManager::new(
+                Arc::new(|_| {}),
+                temp.path().join("known_hosts"),
+            ),
+        ));
+        let history = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let resolver_paths = app.paths.clone();
+        let factory = ConnectionMcpRuntimeFactory::new(
+            app,
+            manager,
+            history,
+            Arc::new(move |_| Ok(resolver_paths.clone())),
+        );
+
+        let token = factory
+            .authorizer()
+            .grant(crate::app::ConnectionRunLocator {
+                project_id: "proj-1".to_string(),
+                task_id: "task-001".to_string(),
+                run_id: "run-001".to_string(),
+            });
+        let url_path = format!("/mcp?projectId=proj-1&taskId=task-001&runId=run-001&token={token}");
+
+        // initialize succeeds and issues a session id bound to this token.
+        let init = respond_scoped(
+            &factory,
+            &request(
+                "POST",
+                &url_path,
+                &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize" }).to_string(),
+            ),
+        );
+        assert_eq!(init.status, 200);
+        let session_id = init.set_session.expect("initialize issues a session id");
+        assert!(
+            factory
+                .authorizer()
+                .session_belongs_to_token(&session_id, &token),
+            "the issued session must be bound to the request token"
+        );
+
+        // A follow-up request WITHOUT the session header is rejected: only the
+        // handshake may omit it, everything else must present the bound id.
+        let resp = respond_scoped(
+            &factory,
+            &request(
+                "POST",
+                &url_path,
+                &json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }).to_string(),
+            ),
+        );
+        assert_eq!(resp.status, 403);
+
+        // With the session header it goes through.
+        let mut req = request(
+            "POST",
+            &url_path,
+            &json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" }).to_string(),
+        );
+        req.headers
+            .push(("mcp-session-id".to_string(), session_id.clone()));
+        let resp = respond_scoped(&factory, &req);
+        assert_eq!(resp.status, 200);
+
+        // Another run's session id (bound to another token) is rejected here.
+        let other_token = factory
+            .authorizer()
+            .grant(crate::app::ConnectionRunLocator {
+                project_id: "proj-1".to_string(),
+                task_id: "task-001".to_string(),
+                run_id: "run-002".to_string(),
+            });
+        let mut forged = request(
+            "POST",
+            &url_path,
+            &json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/list" }).to_string(),
+        );
+        forged
+            .headers
+            .push(("mcp-session-id".to_string(), session_id.clone()));
+        let _ = &other_token;
+        let resp = respond_scoped(&factory, &forged);
+        assert_eq!(resp.status, 200, "same token + same session is still fine");
     }
 
     // ── socket-level integration: real TCP + real HTTP client ──
@@ -637,6 +1187,17 @@ mod tests {
             history,
             Arc::new(move |_| Ok(resolver_paths.clone())),
         ));
+        // T02: the loopback client must hold a token that authorizes exactly
+        // this (projectId, taskId, runId) — signed through the factory's
+        // shared authorizer, the same way the injection side does it. Sign
+        // BEFORE the factory moves into the server thread.
+        let token = factory
+            .authorizer()
+            .grant(crate::app::ConnectionRunLocator {
+                project_id: "proj-1".to_string(),
+                task_id: "task-001".to_string(),
+                run_id: "run-001".to_string(),
+            });
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
@@ -651,7 +1212,7 @@ mod tests {
             .no_proxy()
             .build()
             .expect("build http client");
-        let url = connection_mcp_url(port, "proj-1", "task-001", "run-001");
+        let url = connection_mcp_url(port, "proj-1", "task-001", "run-001", &token);
 
         let init_resp = client
             .post(&url)

@@ -520,7 +520,7 @@ export interface RuntimeApi {
   openDetachedWindow(kind: import('../types').DetachedWindowKind, sessionId?: string | null): Promise<import('../types').DetachedWindowVm>;
   closeDetachedWindow(label: string): Promise<void>;
   listDetachedWindows(): Promise<import('../types').DetachedWindowVm[]>;
-  getTerminalHistory(sessionId: string): Promise<string>;
+  getTerminalHistory(sessionId: string, from?: number | null): Promise<import('../types').TerminalHistorySnapshotVm>;
   writeTerminalInput(sessionId: string, base64: string): Promise<void>;
   resizeTerminal(sessionId: string, rows: number, cols: number): Promise<void>;
   closeTerminalSession(sessionId: string): Promise<void>;

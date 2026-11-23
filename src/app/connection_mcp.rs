@@ -13,9 +13,10 @@ use anyhow::{Context, Result, anyhow};
 use base64::Engine as _;
 use serde_json::{Value, json};
 
+use crate::app::ids::generate_uuid;
 use crate::app::{
-    App, ConnectionRunLocator, ConnectionSpec, TerminalSessionManager, TerminalSessionStatus,
-    TerminalSessionView,
+    App, BoundedTerminalHistory, ConnectionRunLocator, ConnectionSpec, TerminalSessionManager,
+    TerminalSessionStatus, TerminalSessionView,
 };
 
 /// 注入 `WorkerInvocation.mcp_servers` 时 server name。
@@ -23,6 +24,71 @@ pub const CONNECTION_MCP_SERVER_NAME: &str = "gold-band-connections";
 pub const CONNECTION_MCP_SERVER_VERSION: &str = "0.1.0";
 /// 与 `mcp/mod.rs` 的 MCP 协议版本一致。
 pub const CONNECTION_MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// ── Run 级授权（T02）────────────────────────────────────────────────────
+///
+/// 回环监听不等于调用方授权：本机上任何进程都能向端点伪造 `?taskId=..&runId=..`
+/// 的 URL。因此桌面端在注入 `mcp_servers` 时为该 run 签发一个一次性随机 token，
+/// 端点在**读取 run 数据或访问任何连接资源之前**先校验 token，再校验 token
+/// 对应的 locator 与 URL 三元组一致，最后把下发的 `mcp-session-id` 与该 token
+/// 绑定（后续请求须携带匹配的 session id），防止跨 run 复用会话。
+///
+/// Token 只活在注入方与端点共享的进程内存中：不落盘、不进日志、不进 run 数据。
+/// 端点与注入方同进程（桌面端起端点、桌面端组装 invocation），注册表天然可用。
+#[derive(Default)]
+pub struct ConnectionMcpAuthorizer {
+    /// token → 该 token 被授权的 run 定位。注入时登记，进程生命周期内有效。
+    grants: Mutex<HashMap<String, ConnectionRunLocator>>,
+    /// `mcp-session-id` → 签发它的 token。`initialize` 成功时登记；
+    /// 后续请求必须携带与 token 匹配的 session id。
+    sessions: Mutex<HashMap<String, String>>,
+}
+
+impl ConnectionMcpAuthorizer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 桌面端注入路径：为一次 run 级注入签发 token 并登记授权。返回追加到
+    /// MCP URL 的 `token` 查询参数值。
+    pub fn grant(&self, locator: ConnectionRunLocator) -> String {
+        let token = format!("conn-auth-{}", generate_uuid());
+        self.grants
+            .lock()
+            .expect("authorizer grants lock poisoned")
+            .insert(token.clone(), locator);
+        token
+    }
+
+    /// 端点请求路径：校验 URL 里的 token 是否授权了该 locator。
+    /// 任何不匹配（未知 token / locator 不一致）一律拒绝；不区分原因避免
+    /// 给伪造者提供探测信息。
+    pub fn authorize(&self, token: &str, locator: &ConnectionRunLocator) -> bool {
+        self.grants
+            .lock()
+            .expect("authorizer grants lock poisoned")
+            .get(token)
+            .is_some_and(|granted| granted == locator)
+    }
+
+    /// `initialize` 成功后把下发的 session id 与其 token 绑定。
+    pub fn bind_session(&self, session_id: &str, token: &str) {
+        self.sessions
+            .lock()
+            .expect("authorizer sessions lock poisoned")
+            .insert(session_id.to_string(), token.to_string());
+    }
+
+    /// 后续请求路径：校验请求携带的 `mcp-session-id` 确实是由该 token 的
+    /// `initialize` 签发的。未带 session id 或不匹配均拒绝。
+    pub fn session_belongs_to_token(&self, session_id: &str, token: &str) -> bool {
+        self.sessions
+            .lock()
+            .expect("authorizer sessions lock poisoned")
+            .get(session_id)
+            .is_some_and(|bound| bound == token)
+    }
+}
 
 /// Agent 需运行连接工具的运行时。每个操作支撑一个 `tools/call`。
 /// 由桌面层基于 `ServerConnectionStore` + `TerminalSessionManager`/`SshSessionManager`
@@ -50,6 +116,13 @@ pub trait ConnectionMcpRuntime: Send {
 pub struct ConnectionOutputChunk {
     pub text: String,
     pub eof: bool,
+    /// T13: 本帧结束后的绝对流游标（连续轮询的接续点）。把它作为下一次
+    /// `read_output` 的 `fromOffset` 传回即可只读新输出；该游标基于总输出
+    /// 字节数，后端缓冲裁剪（超 512KiB）不影响其正确性。
+    pub next_offset: u64,
+    /// T13: 请求的 `fromOffset` 已早于保留窗口起点（输出被裁剪）——本帧与
+    /// 上一次读取之间存在缺口，agent 不应假设输出连续。
+    pub trimmed: bool,
     /// 会话已终止时的结构化失败码（如 `terminal.auth-required` / `terminal.ssh-auth-failed`）。
     /// 会话失败后 entry 会被移除、输出历史被清空，若不在此带出原因，agent 只能看到
     /// `eof=true` 而无法区分「OTP 超时」与「连接被拒」。`None` 表示会话仍在或正常结束。
@@ -185,7 +258,7 @@ pub fn connection_tools_schema() -> Vec<Value> {
         ),
         tool(
             "read_output",
-            "读取会话自 fromOffset 起的新输出（有界帧），附带会话状态（connecting/awaiting-auth/connected）。awaiting-auth 表示正在等待用户输入动态口令（Gold Band 已向用户给出输入框）。",
+            "读取会话自 fromOffset（绝对字节游标）起的新输出（有界帧），返回 nextOffset 作为下一次轮询的接续点；trimmed=true 表示请求游标早于保留窗口、存在缺口。附带会话状态（connecting/awaiting-auth/connected）。awaiting-auth 表示正在等待用户输入动态口令（Gold Band 已向用户给出输入框）。",
             json!({
                 "type": "object",
                 "properties": {
@@ -367,7 +440,7 @@ pub struct AppConnectionMcpRuntime {
     /// 绑定到该对话的连接（`RunState.connection_specs`）；只有它们可被打开。
     bound_specs: Vec<ConnectionSpec>,
     manager: Arc<Mutex<TerminalSessionManager>>,
-    history: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    history: Arc<Mutex<HashMap<String, BoundedTerminalHistory>>>,
     /// 发起本次调用的对话 run。打开会话时写入会话条目，口令提示据此把输入界面
     /// 路由回该对话（会话内输入框），而不是终端面板弹窗。
     origin: ConnectionRunLocator,
@@ -378,7 +451,7 @@ impl AppConnectionMcpRuntime {
         app: App,
         bound_specs: Vec<ConnectionSpec>,
         manager: Arc<Mutex<TerminalSessionManager>>,
-        history: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+        history: Arc<Mutex<HashMap<String, BoundedTerminalHistory>>>,
         origin: ConnectionRunLocator,
     ) -> Self {
         Self {
@@ -401,6 +474,37 @@ impl AppConnectionMcpRuntime {
             })
             .unwrap_or(false)
     }
+
+    /// T03 ownership check: a connection-tool session is only operable by the
+    /// run that opened it. The session view's `origin` records the opening
+    /// run; user-manually-opened terminals carry `origin: None` and are never
+    /// reachable from the tools. Anything else is a structured rejection —
+    /// cross-run access, takeover of user sessions, and dangling session ids
+    /// all fail the same way so callers cannot probe which ids exist.
+    fn ensure_session_owned(&self, session_id: &str) -> Result<()> {
+        let manager = self
+            .manager
+            .lock()
+            .map_err(|_| anyhow!("terminal lock poisoned"))?;
+        let live_owned = manager.list().iter().any(|view| {
+            view.session_id == session_id
+                && view
+                    .origin
+                    .as_ref()
+                    .is_some_and(|origin| origin == &self.origin)
+        });
+        // A closed / failed session has left the live map, but its final output
+        // and failure code are exactly what the opening run still needs to
+        // read — ownership recorded at open time outlives the entry.
+        let owned = live_owned || manager.ended_session_origin_matches(session_id, &self.origin);
+        if owned {
+            Ok(())
+        } else {
+            // Deliberately the same error as an unknown session: do not leak
+            // whether the id exists but belongs to someone else.
+            Err(anyhow!("terminal.session-not-owned: {session_id}"))
+        }
+    }
 }
 
 /// 每次 HTTP 请求按 `(taskId, runId)` 现读 `run.connection_specs` 并构建一个新的
@@ -412,7 +516,11 @@ impl AppConnectionMcpRuntime {
 pub struct ConnectionMcpRuntimeFactory {
     app: App,
     manager: Arc<Mutex<TerminalSessionManager>>,
-    history: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    history: Arc<Mutex<HashMap<String, BoundedTerminalHistory>>>,
+    /// Run-level authorization grants (T02). The injection side calls `grant`
+    /// when building the MCP URL; the endpoint side calls `authorize` /
+    /// `bind_session` per request. Shared so both halves see the same grants.
+    authorizer: Arc<ConnectionMcpAuthorizer>,
     /// Resolves a URL `projectId` to the workspace-scoped paths that own the
     /// run's data. Runs live under per-workspace data dirs
     /// (`~/<data>/projects/<workspace-project-id>/…`), so the endpoint — built
@@ -427,17 +535,30 @@ impl ConnectionMcpRuntimeFactory {
     pub fn new(
         app: App,
         manager: Arc<Mutex<TerminalSessionManager>>,
-        history: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+        history: Arc<Mutex<HashMap<String, BoundedTerminalHistory>>>,
         workspace_paths_resolver: Arc<
             dyn Fn(&str) -> Result<crate::storage::GoldBandPaths> + Send + Sync,
         >,
     ) -> Self {
+        // T02: use the App's SHARED authorizer — the injection side grants
+        // tokens through `app.connection_mcp_authorizer()`, so a factory that
+        // minted its own would reject every legitimately granted token (the
+        // desktop test caught exactly that: tools/call answered 403).
+        let authorizer = Arc::clone(app.connection_mcp_authorizer());
         Self {
             app,
             manager,
             history,
+            authorizer,
             workspace_paths_resolver,
         }
+    }
+
+    /// The shared run-level authorization registry (T02). The desktop builds
+    /// the worker invocation with `grant(locator) -> token`, appends it to the
+    /// MCP URL, and the endpoint verifies every request against it.
+    pub fn authorizer(&self) -> &Arc<ConnectionMcpAuthorizer> {
+        &self.authorizer
     }
 
     /// 现读 `run.connection_specs`，构建该 run 作用域的 runtime。连接解析走基础
@@ -476,12 +597,44 @@ impl ConnectionMcpRuntime for AppConnectionMcpRuntime {
     fn open_connection(
         &mut self,
         connection_id: &str,
-        cols: Option<u16>,
-        rows: Option<u16>,
+        _cols: Option<u16>,
+        _rows: Option<u16>,
     ) -> Result<TerminalSessionView> {
         // 会话级作用域：只能打开绑定到该对话的连接。
-        if !self.bound_specs.iter().any(|spec| spec.id == connection_id) {
+        let Some(bound) = self
+            .bound_specs
+            .iter()
+            .find(|spec| spec.id == connection_id)
+            .cloned()
+        else {
             return Err(anyhow!("connection.not-found: {connection_id}"));
+        };
+        // T04 snapshot consistency: the binding recorded what the conversation
+        // was shown; the live store may have changed host/port/user/jump since.
+        // Never silently dial the new target — reject with a structured error
+        // so the agent tells the user to re-confirm or re-attach the
+        // connection (display must match the dialed target).
+        let current = self
+            .app
+            .get_server_connection(connection_id)
+            .context("connection lookup failed")?
+            .spec();
+        if current != bound {
+            let jump =
+                |spec: &ConnectionSpec| spec.jump_ref.clone().unwrap_or_else(|| "-".to_string());
+            return Err(anyhow!(
+                "connection.config-changed: bound `{}` ({}:{} user={} via-jump={}) differs from the current configuration `{}` ({}:{} user={} via-jump={}); re-attach the connection to this conversation before opening",
+                bound.name,
+                bound.host,
+                bound.port,
+                bound.username,
+                jump(&bound),
+                current.name,
+                current.host,
+                current.port,
+                current.username,
+                jump(&current),
+            ));
         }
         let request = self
             .app
@@ -512,13 +665,15 @@ impl ConnectionMcpRuntime for AppConnectionMcpRuntime {
     }
 
     fn send_input(&self, session_id: &str, input: &str) -> Result<()> {
+        // T03: only the opening run may write to a session.
+        self.ensure_session_owned(session_id)?;
         let encoded =
             base64::engine::general_purpose::STANDARD.encode(with_exec_newline(input).as_bytes());
         let mut guard = self
             .manager
             .lock()
             .map_err(|_| anyhow!("terminal lock poisoned"))?;
-        if let Err(error) = guard.write(session_id, &encoded) {
+        if guard.write(session_id, &encoded).is_err() {
             // 会话消失时带出此前的结构化失败码（如 terminal.auth-required），
             // agent 据此自动重试 open_connection，而不是拿到裸 session-not-found。
             let reason = guard
@@ -536,17 +691,35 @@ impl ConnectionMcpRuntime for AppConnectionMcpRuntime {
         session_id: &str,
         from_offset: Option<u64>,
     ) -> Result<ConnectionOutputChunk> {
-        let text = {
+        // T03: only the opening run may read a session's output.
+        self.ensure_session_owned(session_id)?;
+        // T13: `fromOffset` is an ABSOLUTE stream cursor, not a buffer index —
+        // the buffer is bounded and trims from the front, so buffer indices
+        // drift while the absolute cursor stays stable across the session's
+        // whole lifetime.
+        let (text, next_offset, trimmed) = {
             let history = self
                 .history
                 .lock()
                 .map_err(|_| anyhow!("history lock poisoned"))?;
-            let buffer = history.get(session_id).cloned().unwrap_or_default();
-            let offset = from_offset.unwrap_or(0) as usize;
-            if offset <= buffer.len() {
-                String::from_utf8_lossy(&buffer[offset..]).into_owned()
-            } else {
-                String::new()
+            match history.get(session_id) {
+                Some(history) => {
+                    let from = from_offset.unwrap_or(0);
+                    // Omitted cursor = fresh consumer from stream position 0.
+                    // Anything before the retained base is a gap the consumer
+                    // cannot recover from this snapshot.
+                    let trimmed = from < history.base;
+                    match history.slice_from(from) {
+                        Some(bytes) => {
+                            let text = String::from_utf8_lossy(bytes).into_owned();
+                            (text, history.end(), trimmed)
+                        }
+                        // Consumer ahead of the buffer: its live stream is the
+                        // fresher source. Empty frame, cursor unchanged.
+                        None => (String::new(), from, false),
+                    }
+                }
+                None => (String::new(), from_offset.unwrap_or(0), false),
             }
         };
         let open = self.session_is_open(session_id);
@@ -580,12 +753,16 @@ impl ConnectionMcpRuntime for AppConnectionMcpRuntime {
         Ok(ConnectionOutputChunk {
             text,
             eof: !open,
+            next_offset,
+            trimmed,
             status,
             error_code,
         })
     }
 
     fn close_connection(&self, session_id: &str) -> Result<()> {
+        // T03: only the opening run may close a session.
+        self.ensure_session_owned(session_id)?;
         let mut guard = self
             .manager
             .lock()
@@ -692,6 +869,8 @@ mod tests {
                 .unwrap_or(ConnectionOutputChunk {
                     text: String::new(),
                     eof: true,
+                    next_offset: 0,
+                    trimmed: false,
                     status: None,
                     error_code: None,
                 }))
@@ -794,6 +973,8 @@ mod tests {
             ConnectionOutputChunk {
                 text: "ok".to_string(),
                 eof: true,
+                next_offset: 2,
+                trimmed: false,
                 status: None,
                 error_code: None,
             },
@@ -1074,6 +1255,14 @@ mod tests {
     fn send_input_on_a_dead_session_surfaces_the_structured_failure_code() {
         // 阻断点 B 的回归：agent 需要知道会话死于 auth-required 才会自动重试。
         let (runtime, _id, _temp) = runtime_harness();
+        // T03: the dead session must carry this run's origin for the ownership
+        // check to pass and the failure reason to surface.
+        runtime
+            .manager
+            .lock()
+            .unwrap()
+            .register_session_with_origin("sess-dead", "wb", Some(runtime.origin.clone()))
+            .unwrap();
         runtime
             .manager
             .lock()
@@ -1092,16 +1281,27 @@ mod tests {
     #[test]
     fn read_output_for_an_ended_session_reports_status_none_and_failure_code() {
         let (runtime, _id, _temp) = runtime_harness();
+        runtime.history.lock().unwrap().insert(
+            "sess-dead2".to_string(),
+            BoundedTerminalHistory {
+                base: 0,
+                buffer: b"partial".to_vec(),
+            },
+        );
         runtime
-            .history
+            .manager
             .lock()
             .unwrap()
-            .insert("sess-dead2".to_string(), b"partial".to_vec());
+            .register_session_with_origin("sess-dead2", "wb", Some(runtime.origin.clone()))
+            .unwrap();
         runtime
             .manager
             .lock()
             .unwrap()
             .record_terminal_failure("sess-dead2", "terminal.auth-required");
+        // End the session like the connect flow does: entry removed, failure
+        // code retained, history left behind for the dead-session read path.
+        runtime.manager.lock().unwrap().close("sess-dead2").unwrap();
 
         let chunk = runtime.read_output("sess-dead2", None).unwrap();
         assert_eq!(chunk.text, "partial");
@@ -1140,14 +1340,81 @@ mod tests {
     #[test]
     fn runtime_read_output_returns_history_chunk_and_eof_for_closed_session() {
         let (runtime, _id, _temp) = runtime_harness();
+        runtime.history.lock().unwrap().insert(
+            "sess-x".to_string(),
+            BoundedTerminalHistory {
+                base: 0,
+                buffer: b"hello world".to_vec(),
+            },
+        );
         runtime
-            .history
+            .manager
             .lock()
             .unwrap()
-            .insert("sess-x".to_string(), b"hello world".to_vec());
+            .register_session_with_origin("sess-x", "wb", Some(runtime.origin.clone()))
+            .unwrap();
+        // The fake entry is live (Connected); close it so the read observes the
+        // dead-session path (eof) through the real close plumbing — which also
+        // exercises the ended-session ownership retention the dead read needs.
+        runtime.manager.lock().unwrap().close("sess-x").unwrap();
+        // T13: `fromOffset` is an absolute cursor — 6 lands mid-buffer.
         let chunk = runtime.read_output("sess-x", Some(6)).unwrap();
         assert_eq!(chunk.text, "world");
+        assert_eq!(chunk.next_offset, 11, "absolute cursor after the frame");
+        assert!(!chunk.trimmed);
         assert!(chunk.eof, "session not open, so output is exhausted");
+    }
+
+    #[test]
+    fn runtime_read_output_tracks_the_absolute_cursor_across_trimming() {
+        // T13: with more output than the bounded buffer retains, buffer indices
+        // drift but the absolute cursor must keep counting trimmed bytes so a
+        // poller chaining `nextOffset` never re-reads or skips output. (The
+        // trim mechanics themselves are covered in `terminal_history` tests;
+        // this exercises the read_output mapping around a trimmed buffer.)
+        let (runtime, _id, _temp) = runtime_harness();
+        runtime
+            .manager
+            .lock()
+            .unwrap()
+            .register_session_with_origin("sess-trim", "wb", Some(runtime.origin.clone()))
+            .unwrap();
+        // Simulate a long-lived session whose buffer already trimmed its
+        // front: 100 bytes were dropped (base=100), 500 still retained.
+        runtime.history.lock().unwrap().insert(
+            "sess-trim".to_string(),
+            BoundedTerminalHistory {
+                base: 100,
+                buffer: vec![b'a'; 500],
+            },
+        );
+        // A poller whose cursor predates the retained window: replays what is
+        // retained and is told there was a gap.
+        let chunk = runtime.read_output("sess-trim", Some(0)).unwrap();
+        assert_eq!(chunk.text.len(), 500);
+        assert!(chunk.trimmed, "requested cursor 0 predates base 100");
+        assert_eq!(chunk.next_offset, 600);
+
+        // Chain the returned cursor: only genuinely new bytes are answered and
+        // no gap is reported.
+        {
+            let mut map = runtime.history.lock().unwrap();
+            let entry = map.get_mut("sess-trim").unwrap();
+            entry.append(b"more");
+        }
+        let chunk = runtime
+            .read_output("sess-trim", Some(chunk.next_offset))
+            .unwrap();
+        assert_eq!(chunk.text, "more");
+        assert!(!chunk.trimmed);
+        assert_eq!(chunk.next_offset, 604);
+
+        // A consumer ahead of the buffer (its live stream is fresher): empty
+        // frame, cursor preserved, no error.
+        let chunk = runtime.read_output("sess-trim", Some(9_999)).unwrap();
+        assert_eq!(chunk.text, "");
+        assert_eq!(chunk.next_offset, 9_999);
+        assert!(!chunk.trimmed);
     }
 
     #[test]
@@ -1166,7 +1433,14 @@ mod tests {
             .manager
             .lock()
             .unwrap()
+            .register_session_with_origin("sess-dead", "wb", Some(runtime.origin.clone()))
+            .unwrap();
+        runtime
+            .manager
+            .lock()
+            .unwrap()
             .record_terminal_failure("sess-dead", "terminal.auth-required");
+        runtime.manager.lock().unwrap().close("sess-dead").unwrap();
 
         let chunk = runtime.read_output("sess-dead", None).unwrap();
         assert!(chunk.eof, "a dead session has no further output");
@@ -1178,13 +1452,153 @@ mod tests {
         // Simulate a live session through the settle-independent path: output
         // history present, failure code absent — read_output must not attach one.
         let (runtime, _id, _temp) = runtime_harness();
+        runtime.history.lock().unwrap().insert(
+            "sess-live".to_string(),
+            BoundedTerminalHistory {
+                base: 0,
+                buffer: b"boot ok".to_vec(),
+            },
+        );
         runtime
-            .history
+            .manager
             .lock()
             .unwrap()
-            .insert("sess-live".to_string(), b"boot ok".to_vec());
+            .register_session_with_origin("sess-live", "wb", Some(runtime.origin.clone()))
+            .unwrap();
         let chunk = runtime.read_output("sess-live", None).unwrap();
         assert_eq!(chunk.text, "boot ok");
         assert!(chunk.error_code.is_none());
+    }
+
+    // ── T03 session ownership ──
+
+    #[test]
+    fn tool_sessions_reject_sessions_opened_by_another_run() {
+        // Another run's agent session must not be readable, writable or
+        // closable by this run's tools — and the rejection must not reveal
+        // whether the id exists (same error as an unknown session).
+        let (runtime, _id, _temp) = runtime_harness();
+        let other_run = ConnectionRunLocator {
+            project_id: "project-a".to_string(),
+            task_id: "task-1".to_string(),
+            run_id: "run-other".to_string(),
+        };
+        runtime
+            .manager
+            .lock()
+            .unwrap()
+            .register_session_with_origin("sess-other-run", "wb", Some(other_run))
+            .unwrap();
+        runtime.history.lock().unwrap().insert(
+            "sess-other-run".to_string(),
+            BoundedTerminalHistory {
+                base: 0,
+                buffer: b"secret output".to_vec(),
+            },
+        );
+
+        let error = runtime.read_output("sess-other-run", None).unwrap_err();
+        assert!(
+            error.to_string().contains("terminal.session-not-owned"),
+            "cross-run read is rejected: {error}"
+        );
+        assert!(runtime.send_input("sess-other-run", "ls").is_err());
+        assert!(runtime.close_connection("sess-other-run").is_err());
+    }
+
+    #[test]
+    fn tool_sessions_reject_user_manual_terminals() {
+        // A user-opened terminal carries `origin: None`: the agent must never
+        // reach it, even though it is live and visible in the UI.
+        let (runtime, _id, _temp) = runtime_harness();
+        runtime
+            .manager
+            .lock()
+            .unwrap()
+            .register_session_with_origin("sess-manual", "local shell", None)
+            .unwrap();
+        runtime.history.lock().unwrap().insert(
+            "sess-manual".to_string(),
+            BoundedTerminalHistory {
+                base: 0,
+                buffer: b"user typed here".to_vec(),
+            },
+        );
+
+        let error = runtime.read_output("sess-manual", None).unwrap_err();
+        assert!(
+            error.to_string().contains("terminal.session-not-owned"),
+            "manual-terminal read is rejected: {error}"
+        );
+        assert!(runtime.send_input("sess-manual", "ls").is_err());
+        assert!(runtime.close_connection("sess-manual").is_err());
+    }
+
+    #[test]
+    fn tool_sessions_allow_the_owning_run_to_read_and_close() {
+        let (runtime, _id, _temp) = runtime_harness();
+        runtime.history.lock().unwrap().insert(
+            "sess-own".to_string(),
+            BoundedTerminalHistory {
+                base: 0,
+                buffer: b"hello".to_vec(),
+            },
+        );
+        runtime
+            .manager
+            .lock()
+            .unwrap()
+            .register_session_with_origin("sess-own", "wb", Some(runtime.origin.clone()))
+            .unwrap();
+
+        let chunk = runtime.read_output("sess-own", None).unwrap();
+        assert_eq!(chunk.text, "hello");
+        // A registered fake session has no channel writer behind it, so
+        // send_input reaches the ownership check but fails downstream with
+        // session-not-found — ownership itself passed (the error is NOT
+        // `terminal.session-not-owned`).
+        let send_error = runtime.send_input("sess-own", "ls").unwrap_err();
+        assert!(
+            !send_error
+                .to_string()
+                .contains("terminal.session-not-owned"),
+            "owning run passes the ownership check: {send_error}"
+        );
+        runtime.close_connection("sess-own").unwrap();
+    }
+
+    // ── T04 binding snapshot consistency ──
+
+    #[test]
+    fn open_connection_rejects_when_the_live_config_differs_from_the_binding() {
+        // The conversation bound host A; the user later repointed the same
+        // connection at host B. Opening must refuse rather than silently dial
+        // the new target (T04).
+        let (mut runtime, id, _temp) = runtime_harness();
+        // Repoint the connection at a different host through the real store.
+        let updated = crate::app::ServerConnectionInput {
+            name: "wb".to_string(),
+            host: "10.9.9.9".to_string(),
+            port: 2222,
+            username: "ops".to_string(),
+            auth_method: ConnectionAuthMethod::Password,
+            key_path: None,
+            jump_ref: None,
+            env: ConnectionEnvironment::Prod,
+            secret: Some("s3cret".to_string()),
+            clear_secret: false,
+        };
+        runtime.app.update_server_connection(&id, updated).unwrap();
+
+        let error = runtime.open_connection(&id, None, None).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("connection.config-changed"),
+            "snapshot mismatch is a structured rejection: {message}"
+        );
+        assert!(
+            message.contains("10.9.9.9"),
+            "the error names the new target so the user can decide: {message}"
+        );
     }
 }

@@ -22,10 +22,10 @@ Object.assign(globalThis, {
 
 const h = vi.hoisted(() => {
   const terms: { writesAfterDispose: number; writes: string[]; disposed: boolean }[] = [];
-  const listeners: Set<(event: { event: string; sessionId: string; base64?: string }) => void> = new Set();
+  const listeners: Set<(event: Record<string, unknown>) => void> = new Set();
   type Deferred = { resolve: (unlisten: () => void) => void; unlisten: () => void };
   const deferreds: Deferred[] = [];
-  const history: Record<string, string> = {};
+  const history: Record<string, { base64: string; base: number; end: number; trimmed: boolean }> = {};
   const emit = (event: Parameters<Set<unknown>['add']>[0]) => {
     for (const listener of Array.from(listeners)) listener(event as never);
   };
@@ -66,7 +66,10 @@ vi.mock('@/api', () => ({
     }),
   writeTerminalInput: () => Promise.resolve(),
   resizeTerminal: () => Promise.resolve(),
-  getTerminalHistory: (sessionId: string) => Promise.resolve(h.history[sessionId] ?? ''),
+  getTerminalHistory: (sessionId: string) =>
+    Promise.resolve(
+      h.history[sessionId] ?? { base64: '', base: 0, end: 0, trimmed: false },
+    ),
 }));
 
 describe('TerminalView event subscription lifecycle', () => {
@@ -134,8 +137,9 @@ describe('TerminalView event subscription lifecycle', () => {
   it('replays a session\'s backend history when the terminal mounts (detach reattach)', async () => {
     // The backend (shared by every window) holds a session's output; on mount we
     // fetch and replay it so a detach-to-pop-out-window + return still shows the
-    // full scrollback, not a fresh terminal.
-    h.history['sess-replay'] = btoa('HISTORY_TEXT\r\n$ ');
+    // full scrollback, not a fresh terminal. The snapshot carries the absolute
+    // stream cursors (T14) the view joins the live stream against.
+    h.history['sess-replay'] = { base64: btoa('HISTORY_TEXT\r\n$ '), base: 0, end: 16, trimmed: false };
     const host = document.createElement('div');
     document.body.appendChild(host);
     let root: Root = createRoot(host);
@@ -148,5 +152,49 @@ describe('TerminalView event subscription lifecycle', () => {
     expect(term.writes.join('')).toContain('HISTORY_TEXT');
 
     delete h.history['sess-replay'];
+  });
+
+  it('drops live chunks the snapshot already replayed and writes only the tail (T14 cursor join)', async () => {
+    // The snapshot resolves while live chunks are still buffered: bytes the
+    // snapshot covers must be written exactly once, later chunks as-is.
+    h.history['sess-join'] = { base64: btoa('SNAPSHOT\r\n'), base: 0, end: 10, trimmed: false };
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    let root: Root = createRoot(host);
+    await act(async () => { root.render(<TerminalView sessionId="sess-join" />); });
+    const term = h.terms[0];
+
+    // Live chunks arriving BEFORE the snapshot promise resolves get buffered:
+    // one fully covered by the snapshot (skipped), one straddling/past it.
+    const resolved = h.history['sess-join'];
+    await act(async () => {
+      h.emit({ event: 'output', sessionId: 'sess-join', base64: btoa('SNAP'), endOffset: 4 });
+      h.emit({ event: 'output', sessionId: 'sess-join', base64: btoa('NEW STUFF'), endOffset: 19 });
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const joined = term.writes.join('');
+    // The snapshot replay is present exactly once...
+    expect(joined.split('SNAPSHOT').length - 1).toBe(1);
+    // ...the buffered chunk fully inside the snapshot was dropped...
+    expect(joined).not.toContain('SNAPNEW');
+    // ...and the chunk past the snapshot end was written after it.
+    expect(joined.indexOf('SNAPSHOT')).toBeLessThan(joined.indexOf('NEW STUFF'));
+    expect(resolved).toBeDefined();
+
+    // A later live chunk ending at/below `writtenTo` (19) is deduped.
+    await act(async () => {
+      h.emit({ event: 'output', sessionId: 'sess-join', base64: btoa('OLD'), endOffset: 19 });
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(term.writes.join('')).not.toContain('OLD');
+
+    // A genuinely new chunk is written.
+    await act(async () => {
+      h.emit({ event: 'output', sessionId: 'sess-join', base64: btoa('FRESH'), endOffset: 24 });
+    });
+    expect(term.writes.join('')).toContain('FRESH');
+
+    delete h.history['sess-join'];
   });
 });

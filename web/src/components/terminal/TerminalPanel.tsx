@@ -136,6 +136,10 @@ export function TerminalPanel(
         setSessions((current) => current.filter((session) => session.sessionId !== event.sessionId));
         setActiveSessionId((current) => current === event.sessionId ? null : current);
         setAuthPrompt((current) => current?.sessionId === event.sessionId ? null : current);
+        // T11: a session whose detached window was natively closed (or that
+        // ended while popped out) may still sit in `detachedIds` and silently
+        // hide whatever remains of it. Re-sync the window registry on exit.
+        void refreshDetached();
       }
     }).then((fn) => {
       if (disposed) fn();

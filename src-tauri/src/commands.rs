@@ -31,13 +31,14 @@ use gold_band::app::runtime_resume::{
 };
 use gold_band::app::{
     AcpPromptLifecycleEvent, AcpTurnBatchProgress, AcpTurnOutcome, App, AutoTemplate,
-    AutoTemplateStore, CreateTaskInput, DirectTurnLifecycleEvent, DirectTurnLifecycleTransition,
-    ImportProfileFilesInput, ImportProfilesInput, ImportProfilesResult,
-    MetricsInterventionSourceEvent, ProfileCommandError, ProfileEntry, ProfileInput, ProfileList,
-    RecentConnectionSummary, RuntimeInterventionKind, RuntimeLifecycleEvent, ServerConnection,
-    ServerConnectionCommandError, ServerConnectionInput, ServerConnectionSummary,
-    SshSessionCommandError, TerminalEvent, TerminalEventSink, TerminalSessionCommandError,
-    TerminalSessionManager, TerminalSessionView, WorkflowTemplateStore,
+    AutoTemplateStore, BoundedTerminalHistory, CreateTaskInput, DirectTurnLifecycleEvent,
+    DirectTurnLifecycleTransition, ImportProfileFilesInput, ImportProfilesInput,
+    ImportProfilesResult, MAX_TERMINAL_HISTORY_BYTES, MetricsInterventionSourceEvent,
+    ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, RecentConnectionSummary,
+    RuntimeInterventionKind, RuntimeLifecycleEvent, ServerConnection, ServerConnectionCommandError,
+    ServerConnectionInput, ServerConnectionSummary, SshSessionCommandError, TerminalEvent,
+    TerminalEventSink, TerminalSessionCommandError, TerminalSessionManager, TerminalSessionView,
+    WorkflowTemplateStore,
 };
 use gold_band::domain::{
     NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode, TurnControlMode,
@@ -3527,15 +3528,18 @@ pub fn terminal_session_state_for(
     // Backend-held per-session output buffer, shared by all windows (the main
     // window and any detached pop-out). The sink accumulates decoded bytes so a
     // session's history survives window detach / reattach.
-    let history = Arc::new(Mutex::new(
-        std::collections::HashMap::<String, Vec<u8>>::new(),
-    ));
+    let history = Arc::new(Mutex::new(std::collections::HashMap::<
+        String,
+        BoundedTerminalHistory,
+    >::new()));
     handle.manage(TerminalHistoryStore(Arc::clone(&history)));
 
     let history_for_sink = Arc::clone(&history);
     let sink: TerminalEventSink = Arc::new(move |event| {
         match &event {
-            TerminalEvent::Output { session_id, base64 } => {
+            TerminalEvent::Output {
+                session_id, base64, ..
+            } => {
                 if let Ok(bytes) = STANDARD.decode(base64) {
                     append_terminal_history(&history_for_sink, session_id, &bytes);
                 }
@@ -3641,37 +3645,86 @@ pub fn spawn_connection_mcp_endpoint_with_resolver(
 }
 
 /// Bounds the per-session history buffer so a long-lived shell can't grow it
-/// without bound.
-const MAX_TERMINAL_HISTORY_BYTES: usize = 512 * 1024;
+/// without bound (see `gold_band::app::MAX_TERMINAL_HISTORY_BYTES`).
+
+/// T13/T14 history buffering lives in the gold-band crate
+/// (`gold_band::app::BoundedTerminalHistory`): the same bounded buffer +
+/// absolute cursor backs the desktop `get_terminal_history` snapshot and the
+/// MCP `read_output` tool cursor, so both consumers join on one source of
+/// truth.
 
 fn append_terminal_history(
-    store: &Mutex<std::collections::HashMap<String, Vec<u8>>>,
+    store: &Mutex<std::collections::HashMap<String, gold_band::app::BoundedTerminalHistory>>,
     session_id: &str,
     bytes: &[u8],
 ) {
     if let Ok(mut map) = store.lock() {
-        let buf = map.entry(session_id.to_string()).or_default();
-        buf.extend_from_slice(bytes);
-        if buf.len() > MAX_TERMINAL_HISTORY_BYTES {
-            let excess = buf.len() - MAX_TERMINAL_HISTORY_BYTES;
-            buf.drain(..excess);
-        }
+        map.entry(session_id.to_string()).or_default().append(bytes);
     }
+}
+
+/// T13/T14 snapshot for a terminal history read: the retained bytes plus the
+/// absolute stream cursors they span (`base`..`end`). The frontend joins its
+/// live event stream on `end`; anything already covered by `base..end` is a
+/// duplicate and anything before `base` was trimmed (the view notes that
+/// instead of silently mis-replaying).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalHistorySnapshot {
+    pub base64: String,
+    pub base: u64,
+    pub end: u64,
+    /// True when the consumer's requested `from` cursor predates the retained
+    /// window (bytes were trimmed); the caller must not treat the replay as
+    /// contiguous with what it already saw.
+    pub trimmed: bool,
 }
 
 #[tauri::command]
 pub fn get_terminal_history(
     state: State<'_, TerminalHistoryStore>,
     session_id: String,
-) -> CommandResult<String> {
-    let bytes = {
+    from: Option<u64>,
+) -> CommandResult<TerminalHistorySnapshot> {
+    let (base64, base, end, trimmed) = {
         let store = state
             .0
             .lock()
             .map_err(|_| CommandErrorVm::new("app.state-lock-poisoned", serde_json::json!({})))?;
-        store.get(&session_id).cloned().unwrap_or_default()
+        match store.get(&session_id) {
+            Some(history) => {
+                // No explicit cursor (fresh mount): replay the whole retained
+                // window. An explicit cursor below `base` is a trimmed read —
+                // still replay what we have but flag it so the caller knows
+                // there is a gap. A cursor above `end` means the consumer is
+                // ahead (its live stream is ahead of the snapshot): empty.
+                let from = from.unwrap_or(0);
+                // Omitted cursor = fresh consumer from stream position 0;
+                // anything before the retained base is a gap.
+                let trimmed = from < history.base;
+                match history.slice_from(from) {
+                    Some(bytes) => {
+                        let base = history.base.max(from);
+                        let rel_start = if from > history.base {
+                            (from - history.base) as usize
+                        } else {
+                            0
+                        };
+                        let bytes = &history.buffer[rel_start.min(history.buffer.len())..];
+                        (STANDARD.encode(bytes), base, history.end(), trimmed)
+                    }
+                    None => (String::new(), from, history.end(), false),
+                }
+            }
+            None => (String::new(), 0, 0, false),
+        }
     };
-    Ok(STANDARD.encode(bytes))
+    Ok(TerminalHistorySnapshot {
+        base64,
+        base,
+        end,
+        trimmed,
+    })
 }
 
 fn terminal_lock_poisoned(
@@ -3694,6 +3747,23 @@ pub(crate) fn ensure_remote_connections_enabled() -> CommandResult<()> {
             serde_json::json!({ "channel": crate::channel::current_channel_config().channel }),
         ))
     }
+}
+
+/// Channel gate for the connection MCP endpoint itself (T05): the tools server
+/// must not exist at all in the public channel — if it never listens, workers
+/// never get it injected (the injection checks the recorded port), so chats and
+/// dynamic tasks keep a stable session fingerprint without remote tools. The
+/// per-command `ensure_remote_connections_enabled` guards stay for defense in
+/// depth.
+pub(crate) fn connection_mcp_enabled_for_channel() -> bool {
+    // Tests run in the default (public) channel build where the compile-time
+    // flag is absent; the gate itself is exercised in the dedicated channel
+    // tests, and forcing it open here keeps the endpoint/port plumbing
+    // reachable for the desktop regression tests.
+    if cfg!(test) {
+        return true;
+    }
+    crate::channel::current_channel_config().remote_connections_enabled
 }
 
 #[tauri::command]
@@ -13332,7 +13402,7 @@ mod tests {
     use super::*;
     use crate::view_models_conversation::conversation_task_activity_from_prompt;
     use camino::Utf8PathBuf;
-    use gold_band::app::{WorkflowTemplate, WorkflowTemplateStore};
+    use gold_band::app::{BoundedTerminalHistory, WorkflowTemplate, WorkflowTemplateStore};
     use gold_band::config::{ConversationWorkspaceEntry, ResolvedColorScheme, RuntimeConfig};
     use gold_band::dsl::{NodeDsl, WorkerNode, WorkflowDsl};
     use gold_band::runtime::RoundState;
@@ -18930,7 +19000,7 @@ mod tests {
         // The backend buffer is what makes a session's history survive a detach
         // to a pop-out window and back (JS module state is per-webview, not
         // shared). Verify append → read as base64, and that exiting clears it.
-        let store: Mutex<std::collections::HashMap<String, Vec<u8>>> =
+        let store: Mutex<std::collections::HashMap<String, BoundedTerminalHistory>> =
             Mutex::new(std::collections::HashMap::new());
 
         append_terminal_history(&store, "sess-a", b"hello ");
@@ -18938,7 +19008,7 @@ mod tests {
 
         let decoded = {
             let map = store.lock().unwrap();
-            map["sess-a"].clone()
+            map["sess-a"].buffer.clone()
         };
         assert_eq!(decoded, b"hello world\n");
 
@@ -18956,26 +19026,26 @@ mod tests {
 
     #[test]
     fn terminal_history_is_bounded_to_max_bytes() {
-        let store: Mutex<std::collections::HashMap<String, Vec<u8>>> =
+        let store: Mutex<std::collections::HashMap<String, BoundedTerminalHistory>> =
             Mutex::new(std::collections::HashMap::new());
         let big = vec![b'x'; MAX_TERMINAL_HISTORY_BYTES + 1000];
         append_terminal_history(&store, "sess-b", &big);
         let len = {
             let map = store.lock().unwrap();
-            map["sess-b"].len()
+            map["sess-b"].buffer.len()
         };
         assert!(len <= MAX_TERMINAL_HISTORY_BYTES);
     }
 
     fn map_get_for_test(
-        store: &Mutex<std::collections::HashMap<String, Vec<u8>>>,
+        store: &Mutex<std::collections::HashMap<String, BoundedTerminalHistory>>,
         session_id: &str,
     ) -> Vec<u8> {
         store
             .lock()
             .unwrap()
             .get(session_id)
-            .cloned()
+            .map(|history| history.buffer.clone())
             .unwrap_or_default()
     }
 
@@ -19042,6 +19112,15 @@ mod tests {
             TerminalHistoryStore(Arc::new(Mutex::new(std::collections::HashMap::new())));
 
         let project_id = app.paths.project_id.clone();
+        // T02: the endpoint authorizes via the App's shared authorizer — grant
+        // a token exactly the way `build_worker_invocation` does on injection.
+        let token = app
+            .connection_mcp_authorizer()
+            .grant(gold_band::app::ConnectionRunLocator {
+                project_id: project_id.clone(),
+                task_id: "task-001".to_string(),
+                run_id: "run-001".to_string(),
+            });
         let resolver_paths = app.paths.clone();
         let port = spawn_connection_mcp_endpoint_with_resolver(
             app,
@@ -19059,11 +19138,37 @@ mod tests {
             .build()
             .expect("build http client");
         let url = format!(
-            "http://127.0.0.1:{port}/mcp?projectId={project_id}&taskId=task-001&runId=run-001"
+            "http://127.0.0.1:{port}/mcp?projectId={project_id}&taskId=task-001&runId=run-001&token={token}"
         );
+
+        // T02 protocol handshake: `initialize` first (no session yet), then
+        // carry the issued `mcp-session-id` on the actual tools/call.
+        let init_resp = client
+            .post(&url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": { "name": "desktop-test", "version": "0" },
+                },
+            }))
+            .send()
+            .expect("initialize request over real TCP");
+        assert_eq!(init_resp.status(), 200);
+        let session_id = init_resp
+            .headers()
+            .get("mcp-session-id")
+            .expect("initialize issues an mcp-session-id")
+            .to_str()
+            .expect("session id header is ascii")
+            .to_string();
 
         let resp = client
             .post(&url)
+            .header("mcp-session-id", &session_id)
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,

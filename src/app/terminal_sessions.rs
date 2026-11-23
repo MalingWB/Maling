@@ -48,8 +48,13 @@ pub enum TerminalSessionKind {
     Remote,
 }
 
+/// Wire values MUST stay PascalCase (`Connecting` / `AwaitingAuth` /
+/// `Connected` / `Closed`): the frontend `TerminalSessionStatus` type and the
+/// OTP reconcile bus (`web/src/lib/terminal-otp-bus.ts`) compare against these
+/// exact spellings. A mismatch silently breaks the missed-event recovery
+/// (T08): a reloaded webview would never re-show the OTP input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "PascalCase")]
 pub enum TerminalSessionStatus {
     Connecting,
     AwaitingAuth,
@@ -95,8 +100,15 @@ pub struct TerminalSessionView {
     rename_all_fields = "camelCase"
 )]
 pub enum TerminalEvent {
-    /// Base64-encoded pty output chunk for `session_id`.
-    Output { session_id: String, base64: String },
+    /// Base64-encoded pty output chunk for `session_id`. `end_offset` is the
+    /// ABSOLUTE stream cursor through this chunk (total bytes ever produced,
+    /// counting front-trimmed history), so every window — and the history
+    /// snapshot read — joins on the same stable cursor (T13/T14).
+    Output {
+        session_id: String,
+        base64: String,
+        end_offset: u64,
+    },
     /// `status` is a terminal state (Closed) once the process ends.
     Exited {
         session_id: String,
@@ -294,14 +306,20 @@ impl TerminalSessionManager {
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buf = vec![0u8; READ_BUF_SIZE];
+            // T14: absolute stream cursor through everything this session has
+            // produced (single producer thread, so plain local counting is
+            // exact and race-free).
+            let mut end_offset: u64 = 0;
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(count) => {
+                        end_offset += count as u64;
                         let base64 = STANDARD.encode(&buf[..count]);
                         (sink)(TerminalEvent::Output {
                             session_id: reader_session_id.clone(),
                             base64,
+                            end_offset,
                         });
                     }
                     Err(error) => {
@@ -382,7 +400,10 @@ impl TerminalSessionManager {
                 })?;
             return Ok(());
         }
-        self.remote.resize(session_id, rows, cols)
+        // SshSessionManager::resize takes `(cols, rows)` (ssh window-change
+        // order); swapping these sends the remote a mirrored pty and breaks
+        // fullscreen apps. Local PTY resize above takes `(rows, cols)`.
+        self.remote.resize(session_id, cols, rows)
     }
 
     /// Closes a session: terminates the child process group and removes the
@@ -435,8 +456,35 @@ impl TerminalSessionManager {
     /// Records a terminal failure for `session_id`. Production records via the
     /// connect flow's failure path (`fail_session`); exposed within the crate so
     /// a consumer's failure-reporting can be exercised without a live SSH target.
+    #[cfg(test)]
     pub(crate) fn record_terminal_failure(&self, session_id: &str, code: &str) {
         self.remote.record_terminal_failure(session_id, code);
+    }
+
+    /// Registers a fake remote session entry (no SSH connection behind it) for
+    /// tests: ownership and read/write/close plumbing are exercised without a
+    /// live target. Production never calls this.
+    #[cfg(test)]
+    pub(crate) fn register_session_with_origin(
+        &self,
+        session_id: &str,
+        connection_name: &str,
+        origin: Option<ConnectionRunLocator>,
+    ) -> Result<()> {
+        self.remote
+            .register_session_with_origin(session_id, connection_name, origin)
+    }
+
+    /// T03 ownership lookup for sessions that have left the live map (closed,
+    /// failed or naturally exited): true when the dead session was opened by
+    /// `origin`. The opening run keeps read access to the dead session's final
+    /// output and failure code.
+    pub(crate) fn ended_session_origin_matches(
+        &self,
+        session_id: &str,
+        origin: &ConnectionRunLocator,
+    ) -> bool {
+        self.remote.ended_session_origin_matches(session_id, origin)
     }
 }
 
@@ -541,6 +589,41 @@ mod tests {
         acc.contains(needle)
     }
 
+    /// T08 regression: the serialized status spellings are the frontend IPC
+    /// contract. `web/src/types.ts` and the OTP reconcile bus compare against
+    /// exactly these PascalCase strings; any drift silently breaks the
+    /// missed-authPrompt recovery. This test pins the real serde output.
+    #[test]
+    fn session_status_serializes_with_the_frontend_contract_spellings() {
+        assert_eq!(
+            serde_json::to_value(TerminalSessionStatus::Connecting).unwrap(),
+            "Connecting"
+        );
+        assert_eq!(
+            serde_json::to_value(TerminalSessionStatus::AwaitingAuth).unwrap(),
+            "AwaitingAuth"
+        );
+        assert_eq!(
+            serde_json::to_value(TerminalSessionStatus::Connected).unwrap(),
+            "Connected"
+        );
+        assert_eq!(
+            serde_json::to_value(TerminalSessionStatus::Closed).unwrap(),
+            "Closed"
+        );
+        // Pin the view-model serialization the frontend actually receives.
+        let view = TerminalSessionView {
+            session_id: "sess-x".to_string(),
+            kind: TerminalSessionKind::Remote,
+            cwd: None,
+            label: None,
+            status: TerminalSessionStatus::AwaitingAuth,
+            origin: None,
+        };
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(json["status"], "AwaitingAuth");
+    }
+
     #[test]
     fn open_local_spawns_shell_and_streams_echo_output() {
         let (sink, rx) = channel_sink();
@@ -627,10 +710,12 @@ mod tests {
         let output = serde_json::to_value(TerminalEvent::Output {
             session_id: "sess-abc".to_string(),
             base64: "aGk=".to_string(),
+            end_offset: 2,
         })
         .unwrap();
         assert_eq!(output["event"], "output");
         assert_eq!(output["sessionId"], "sess-abc");
+        assert_eq!(output["endOffset"], 2, "T14 absolute cursor is camelCase");
         assert!(output.get("session_id").is_none());
 
         let exited = serde_json::to_value(TerminalEvent::Exited {

@@ -348,7 +348,9 @@ pub struct TerminalSessionState(pub Arc<Mutex<TerminalSessionManager>>);
 /// This backend store is the single source of truth. Every output chunk the sink
 /// sees is appended here (decoded), and any window replays it on `TerminalView`
 /// mount — so a session's history survives window detach/reattach.
-pub struct TerminalHistoryStore(pub Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>);
+pub struct TerminalHistoryStore(
+    pub Arc<Mutex<std::collections::HashMap<String, gold_band::app::BoundedTerminalHistory>>>,
+);
 
 pub struct DesktopState {
     pub(crate) setup_active: AtomicBool,
@@ -844,6 +846,18 @@ impl DesktopState {
     /// can inject `mcp_servers`. Mutates the guarded context in place: `context()`
     /// hands out a clone, so writing through it would be silently discarded.
     pub fn set_connection_mcp_endpoint_port(&self, port: u16) -> Result<()> {
+        // T05 defense in depth: the recorded port is the only gate the worker
+        // injection paths read (`connection_mcp_endpoint_port()`), so a
+        // channel without remote connections must never record one. The
+        // endpoint spawn site already checks the same flag; this keeps the
+        // injection gate closed even if a future caller spawns the endpoint
+        // unconditionally.
+        if !crate::commands::connection_mcp_enabled_for_channel() {
+            anyhow::bail!(
+                "connection MCP endpoint unavailable: remote connections disabled for channel `{}`",
+                crate::channel::current_channel_config().channel
+            );
+        }
         let mut context = self
             .context
             .lock()

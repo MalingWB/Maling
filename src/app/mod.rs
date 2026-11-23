@@ -19,6 +19,7 @@ mod server_connections;
 mod ssh_sessions;
 mod state_access;
 mod state_factory;
+mod terminal_history;
 mod terminal_sessions;
 mod transition_context;
 pub mod upstream;
@@ -184,9 +185,9 @@ const STATE_CONFIG_LOCK_SHARDS: usize = 32;
 static STATE_CONFIG_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 pub use self::connection_mcp::{
     AppConnectionMcpRuntime, CONNECTION_MCP_PROTOCOL_VERSION, CONNECTION_MCP_SERVER_NAME,
-    CONNECTION_MCP_SERVER_VERSION, ConnectionMcpRuntime, ConnectionMcpRuntimeFactory,
-    ConnectionOutputChunk, ConnectionToolError, connection_mcp_server_config,
-    connection_tools_schema, handle_jsonrpc,
+    CONNECTION_MCP_SERVER_VERSION, ConnectionMcpAuthorizer, ConnectionMcpRuntime,
+    ConnectionMcpRuntimeFactory, ConnectionOutputChunk, ConnectionToolError,
+    connection_mcp_server_config, connection_tools_schema, handle_jsonrpc,
 };
 pub use self::connection_mcp_http::{
     HttpRequest, HttpResponse, MCP_ENDPOINT_PATH, connection_mcp_url, parse_http_request, respond,
@@ -204,6 +205,7 @@ pub use self::server_connections::{
     ServerConnectionSummary,
 };
 pub use self::ssh_sessions::{SshAuth, SshOpenRequest, SshSessionCommandError};
+pub use self::terminal_history::{BoundedTerminalHistory, MAX_TERMINAL_HISTORY_BYTES};
 pub use self::terminal_sessions::{
     ConnectionRunLocator, MAX_TERMINAL_SESSIONS, TerminalEvent, TerminalEventSink,
     TerminalSessionCommandError, TerminalSessionKind, TerminalSessionManager,
@@ -1453,6 +1455,10 @@ pub struct App {
     /// localhost 端口，供应用内连接 MCP 工具 server（连接→对话 阶段4）监听。
     /// `None` 时不注入 `mcp_servers`（无绑定连接、或桌面层尚未起监听）。
     connection_mcp_endpoint_port: Option<u16>,
+    /// 连接 MCP 的 run 级授权注册表（T02）：注入侧 `grant(locator) -> token`
+    /// 签发授权，端点侧 `authorize` 逐请求校验。App 克隆（含后台克隆）共享
+    /// 同一注册表，保证注入与端点看到同一份事实。
+    connection_mcp_authorizer: Arc<ConnectionMcpAuthorizer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1766,6 +1772,7 @@ impl App {
             scheduled_task_context: self.scheduled_task_context.clone(),
             runtime_recovery: self.runtime_recovery.clone(),
             connection_mcp_endpoint_port: self.connection_mcp_endpoint_port,
+            connection_mcp_authorizer: Arc::clone(&self.connection_mcp_authorizer),
         }
     }
 
@@ -1786,6 +1793,13 @@ impl App {
 
     pub fn connection_mcp_endpoint_port(&self) -> Option<u16> {
         self.connection_mcp_endpoint_port
+    }
+
+    /// 连接 MCP 的 run 级授权注册表（T02）。注入侧（`build_worker_invocation` /
+    /// 动态 worker）用它签发 token，端点侧（`ConnectionMcpRuntimeFactory`）用它
+    /// 校验请求。App 克隆共享同一 `Arc`，两侧看到同一份授权事实。
+    pub fn connection_mcp_authorizer(&self) -> &Arc<ConnectionMcpAuthorizer> {
+        &self.connection_mcp_authorizer
     }
 
     pub fn with_provider_diagnostics_source(
@@ -1852,6 +1866,7 @@ impl App {
             scheduled_task_context: self.scheduled_task_context.clone(),
             runtime_recovery: self.runtime_recovery.clone(),
             connection_mcp_endpoint_port: self.connection_mcp_endpoint_port,
+            connection_mcp_authorizer: Arc::clone(&self.connection_mcp_authorizer),
         }
     }
 
@@ -4807,6 +4822,9 @@ impl App {
             scheduled_task_context: None,
             runtime_recovery: None,
             connection_mcp_endpoint_port: None,
+            connection_mcp_authorizer: Arc::new(
+                self::connection_mcp::ConnectionMcpAuthorizer::new(),
+            ),
         }
     }
 

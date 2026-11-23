@@ -14363,12 +14363,22 @@ fn build_dynamic_worker_invocation(
     // 连接→对话 阶段4：与 `build_worker_invocation` 同规则——桌面层已起监听即注入
     // 连接 MCP 工具 server，不以绑定状态为条件（MCP 工具集在会话创建时固化，
     // 会话中途绑定连接也要能生效）；工具作用域由 URL 里的 runId 按请求现读。
+    // T02: same run-scoped token discipline as the ordinary worker path.
     if let Some(port) = ctx.app.connection_mcp_endpoint_port() {
+        let token = ctx
+            .app
+            .connection_mcp_authorizer()
+            .grant(crate::app::ConnectionRunLocator {
+                project_id: ctx.app.paths.project_id.clone(),
+                task_id: ctx.task_id.to_string(),
+                run_id: ctx.run_id.to_string(),
+            });
         let url = crate::app::connection_mcp_url(
             port,
             &ctx.app.paths.project_id,
-            ctx.task_id,
-            ctx.run_id,
+            &ctx.task_id,
+            &ctx.run_id,
+            &token,
         );
         mcp_servers.push(crate::app::connection_mcp_server_config(&url));
     }
@@ -24918,8 +24928,10 @@ mod tests {
             url.starts_with("http://127.0.0.1:9124/mcp?projectId="),
             "url: {url}"
         );
+        // T02: the injected URL carries a run-scoped auth token after the
+        // locator — the endpoint rejects requests without a matching grant.
         assert!(
-            url.ends_with("&taskId=task-006&runId=run-001"),
+            url.contains("&taskId=task-006&runId=run-001&token=conn-auth-"),
             "url: {url}"
         );
     }
@@ -25022,7 +25034,7 @@ mod tests {
             "url: {url}"
         );
         assert!(
-            url.ends_with("&taskId=task-006&runId=run-001"),
+            url.contains("&taskId=task-006&runId=run-001&token=conn-auth-"),
             "url: {url}"
         );
     }

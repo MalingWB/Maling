@@ -263,6 +263,13 @@ pub struct SshSessionManager {
     /// `RECENT_FAILURE_CAPACITY` entries — a session is only looked up right
     /// after it dies, so a small ring is sufficient and cannot grow unbounded.
     recent_failures: Mutex<std::collections::VecDeque<(String, String)>>,
+    /// Ownership records for sessions that have left the live map (`close` /
+    /// `fail_session` / natural exit remove the entry). The connection tools'
+    /// ownership check (T03) must keep accepting the opening run's reads on a
+    /// dead session — its final output and failure code are exactly what the
+    /// agent still needs — so the origin outlives the live entry. Same bounded
+    /// ring semantics as `recent_failures`.
+    ended_origins: Mutex<std::collections::VecDeque<(String, Option<ConnectionRunLocator>)>>,
     /// pty 层保活间隔（生产 60s；测试注入短间隔）。`with_pty_keepalive_interval`。
     pty_keepalive_interval: std::time::Duration,
 }
@@ -283,11 +290,13 @@ impl SshSessionManager {
             auth_prompt_timeout: AUTH_PROMPT_TIMEOUT,
             pty_keepalive_interval: PTY_KEEPALIVE_INTERVAL,
             recent_failures: Mutex::new(std::collections::VecDeque::new()),
+            ended_origins: Mutex::new(std::collections::VecDeque::new()),
         }
     }
 
     /// Overrides the pty keepalive interval (tests use a short one to observe
     /// the injected bytes through the echo server).
+    #[cfg(test)]
     pub fn with_pty_keepalive_interval(mut self, interval: std::time::Duration) -> Self {
         self.pty_keepalive_interval = interval;
         self
@@ -316,7 +325,37 @@ impl SshSessionManager {
         }
     }
 
+    /// Retains the origin of a session that is about to leave the live map so
+    /// the opening run can still read its final output / failure code (T03).
+    fn record_ended_origin(&self, session_id: &str, origin: Option<&ConnectionRunLocator>) {
+        let Ok(mut ended) = self.ended_origins.lock() else {
+            return;
+        };
+        ended.push_back((session_id.to_string(), origin.cloned()));
+        while ended.len() > RECENT_FAILURE_CAPACITY {
+            ended.pop_front();
+        }
+    }
+
+    /// T03 ownership lookup for sessions that are no longer in the live map:
+    /// true when the dead session was opened by `origin`. The live map is
+    /// checked first by the caller (`list`); this only covers ended sessions.
+    pub(crate) fn ended_session_origin_matches(
+        &self,
+        session_id: &str,
+        origin: &ConnectionRunLocator,
+    ) -> bool {
+        let Ok(ended) = self.ended_origins.lock() else {
+            return false;
+        };
+        ended
+            .iter()
+            .rev()
+            .any(|(id, ended_origin)| id == session_id && ended_origin.as_ref() == Some(origin))
+    }
+
     /// Overrides the keyboard-interactive prompt timeout (tests use a short one).
+    #[cfg(test)]
     pub fn with_auth_prompt_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.auth_prompt_timeout = timeout;
         self
@@ -392,7 +431,6 @@ impl SshSessionManager {
                 manager.fail_session(&sid, error);
             }
         });
-
         Ok(TerminalSessionView {
             session_id,
             kind: TerminalSessionKind::Remote,
@@ -401,6 +439,38 @@ impl SshSessionManager {
             status: TerminalSessionStatus::Connecting,
             origin: request_origin,
         })
+    }
+
+    /// Registers a fake remote session entry (no SSH connection behind it) for
+    /// tests: ownership, read/write/close plumbing and the desktop sink paths
+    /// are exercised without a live target. Production never calls this.
+    #[cfg(test)]
+    pub(crate) fn register_session_with_origin(
+        &self,
+        session_id: &str,
+        connection_name: &str,
+        origin: Option<ConnectionRunLocator>,
+    ) -> Result<()> {
+        if !try_reserve_session_slot(&self.session_count) {
+            return Err(SshSessionCommandError::SessionLimit.into());
+        }
+        let entry = SshSessionEntry {
+            session_id: session_id.to_string(),
+            connection_name: connection_name.to_string(),
+            host: "registered-test-host".to_string(),
+            port: 0,
+            status: TerminalSessionStatus::Connected,
+            origin,
+            writer: Arc::new(tokio::sync::Mutex::new(None)),
+            auth_tx: None,
+            reader_task: None,
+            handle: None,
+            gateway_handle: None,
+            slot_held: true,
+        };
+        let mut inner = self.inner.lock().map_err(poisoned)?;
+        inner.insert(session_id.to_string(), entry);
+        Ok(())
     }
 
     /// Hands an OTP / keyboard-interactive answer back to the connecting flow.
@@ -473,6 +543,7 @@ impl SshSessionManager {
         let Some(mut entry) = entry else {
             return Err(SshSessionCommandError::SessionNotFound.into());
         };
+        self.record_ended_origin(&entry.session_id, entry.origin.as_ref());
         if let Some(task) = entry.reader_task.take() {
             task.abort();
         }
@@ -511,6 +582,7 @@ impl SshSessionManager {
             let Some(entry) = inner.as_mut().and_then(|inner| inner.get_mut(session_id)) else {
                 return;
             };
+            self.record_ended_origin(session_id, entry.origin.as_ref());
             if entry.slot_held {
                 entry.slot_held = false;
                 release_session_slot(&self.session_count);
@@ -538,6 +610,7 @@ impl SshSessionManager {
         let Some(mut entry) = entry else {
             return;
         };
+        self.record_ended_origin(&entry.session_id, entry.origin.as_ref());
         if let Some(task) = entry.reader_task.take() {
             task.abort();
         }
@@ -914,13 +987,18 @@ async fn serve_reader(
     manager: Arc<SshSessionManager>,
     mut read_half: ChannelReadHalf,
 ) {
+    // T14: absolute stream cursor through everything this channel has
+    // produced (single producer task, so local counting is exact).
+    let mut end_offset: u64 = 0;
     loop {
         match read_half.wait().await {
             Some(ChannelMsg::Data { data }) => {
+                end_offset += data.len() as u64;
                 let base64 = STANDARD.encode(data.as_ref());
                 (sink)(TerminalEvent::Output {
                     session_id: session_id.clone(),
                     base64,
+                    end_offset,
                 });
             }
             Some(ChannelMsg::Eof) => continue,
@@ -1155,7 +1233,9 @@ mod tests {
                     auth_rejection_time_initial: Some(std::time::Duration::ZERO),
                     ..Default::default()
                 });
-                let mut echo = EchoServer;
+                let mut echo = EchoServer {
+                    window_changes: Arc::new(Mutex::new(Vec::new())),
+                };
                 echo.run_on_socket(config, &listener)
                     .await
                     .expect("target run");
@@ -1189,6 +1269,60 @@ mod tests {
         );
         manager.close(&view.session_id).unwrap();
         assert_eq!(manager.len(), 0);
+    }
+
+    #[test]
+    fn resize_sends_cols_before_rows_on_the_wire() {
+        // T15 regression: `TerminalSessionManager::resize` passes `(rows, cols)`
+        // from the frontend, and `SshSessionManager::resize` must convert to the
+        // SSH `window-change` order `(cols, rows)` (RFC 4254: first u32 is
+        // columns). A non-square 24 rows × 80 cols pty makes any swap visible:
+        // the server must observe (80, 24), not (24, 80).
+        let window_changes = Arc::new(Mutex::new(Vec::new()));
+        let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+        let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let config = Arc::new(server::Config {
+            keys: vec![host_key],
+            auth_rejection_time: std::time::Duration::ZERO,
+            auth_rejection_time_initial: Some(std::time::Duration::ZERO),
+            ..Default::default()
+        });
+        let server_sink = Arc::clone(&window_changes);
+        let _server_thread = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().expect("server runtime");
+            runtime.block_on(async move {
+                let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+                let port = listener.local_addr().expect("local addr").port();
+                let _ = port_tx.send(port);
+                let mut echo = EchoServer {
+                    window_changes: server_sink,
+                };
+                echo.run_on_socket(config, &listener)
+                    .await
+                    .expect("server run");
+            });
+        });
+        let port = port_rx.recv().expect("server reported a port");
+
+        let (sink, rx) = channel_sink();
+        let mut manager = terminal_manager(sink);
+        let view = manager
+            .open_remote(request("127.0.0.1", port, None))
+            .unwrap();
+        assert!(
+            session_output_contains(&rx, "HELLO_SSH"),
+            "expected the server's shell output before resizing"
+        );
+
+        manager.resize(&view.session_id, 24, 80).unwrap();
+
+        let observed = EchoHandler::observed_window_changes(&window_changes);
+        assert_eq!(
+            observed,
+            vec![(80, 24)],
+            "window-change must carry (cols=80, rows=24) in wire order"
+        );
+        manager.close(&view.session_id).unwrap();
     }
 
     #[test]
@@ -1259,6 +1393,17 @@ mod tests {
     }
 
     #[test]
+    fn resize_to_unknown_session_is_not_found() {
+        let (sink, _rx) = channel_sink();
+        let (manager, _count) = ssh_manager(sink);
+        let error = manager.resize("sess-missing", 80, 24).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<SshSessionCommandError>(),
+            Some(SshSessionCommandError::SessionNotFound)
+        ));
+    }
+
+    #[test]
     fn provide_auth_with_unknown_session_is_not_found() {
         let (sink, _rx) = channel_sink();
         let (manager, _count) = ssh_manager(sink);
@@ -1291,7 +1436,6 @@ mod tests {
     // ---- in-process SSH server end-to-end ----------------------------------
 
     #[test]
-    #[test]
     fn pty_keepalive_injects_activity_that_the_bastion_echoes() {
         // 保活回归：短间隔 keepalive 向 pty 注入 space+backspace；echo 服务器把
         // 它回显回来——证明字节真实到达了远端（即堡垒机会将其计入活动计时）。
@@ -1308,7 +1452,9 @@ mod tests {
                     auth_rejection_time_initial: Some(std::time::Duration::ZERO),
                     ..Default::default()
                 });
-                let mut echo = EchoServer;
+                let mut echo = EchoServer {
+                    window_changes: Arc::new(Mutex::new(Vec::new())),
+                };
                 echo.run_on_socket(config, &listener)
                     .await
                     .expect("server run");
@@ -1360,7 +1506,9 @@ mod tests {
                 let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
                 let port = listener.local_addr().expect("local addr").port();
                 let _ = port_tx.send(port);
-                let mut echo = EchoServer;
+                let mut echo = EchoServer {
+                    window_changes: Arc::new(Mutex::new(Vec::new())),
+                };
                 echo.run_on_socket(config, &listener)
                     .await
                     .expect("server run");
@@ -1617,17 +1765,46 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct EchoServer;
+    struct EchoServer {
+        /// Shared sink that every client handler appends its observed
+        /// `window-change` payloads to, so tests can assert the wire order.
+        window_changes: Arc<Mutex<Vec<(u32, u32)>>>,
+    }
 
     impl server::Server for EchoServer {
         type Handler = EchoHandler;
 
         fn new_client(&mut self, _peer: Option<std::net::SocketAddr>) -> Self::Handler {
-            EchoHandler
+            EchoHandler {
+                window_changes: Arc::clone(&self.window_changes),
+            }
         }
     }
 
-    struct EchoHandler;
+    struct EchoHandler {
+        /// Observed `window-change` payloads as `(cols, rows)` per RFC 4254
+        /// (the first u32 on the wire is columns). Shared with the test thread
+        /// via the server's sink.
+        window_changes: Arc<Mutex<Vec<(u32, u32)>>>,
+    }
+
+    impl EchoHandler {
+        /// Polls briefly until at least one window-change has arrived.
+        fn observed_window_changes(sink: &Arc<Mutex<Vec<(u32, u32)>>>) -> Vec<(u32, u32)> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if let Ok(guard) = sink.lock() {
+                    if !guard.is_empty() {
+                        return guard.clone();
+                    }
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Vec::new();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
 
     impl server::Handler for EchoHandler {
         type Error = russh::Error;
@@ -1687,6 +1864,21 @@ mod tests {
         ) -> Result<(), Self::Error> {
             // Echo the client's input so a write round-trip can be observed.
             session.data(channel, data.to_vec())?;
+            Ok(())
+        }
+
+        async fn window_change_request(
+            &mut self,
+            _channel: ChannelId,
+            col_width: u32,
+            row_height: u32,
+            _pw: u32,
+            _ph: u32,
+            _session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            if let Ok(mut guard) = self.window_changes.lock() {
+                guard.push((col_width, row_height));
+            }
             Ok(())
         }
     }

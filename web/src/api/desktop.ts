@@ -483,8 +483,8 @@ export const desktopApi: RuntimeApi = {
   listDetachedWindows() {
     return invokeCommand('list_detached_windows');
   },
-  getTerminalHistory(sessionId: string) {
-    return invokeCommand('get_terminal_history', { sessionId });
+  getTerminalHistory(sessionId: string, from?: number | null) {
+    return invokeCommand('get_terminal_history', { sessionId, from: from ?? null });
   },
   writeTerminalInput(sessionId: string, base64: string) {
     return invokeCommand('write_terminal_input', { sessionId, base64 });

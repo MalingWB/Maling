@@ -3,7 +3,7 @@ export function resolveRightWorkspaceFileTarget(source: import('./types').Prompt
 export function revealRightWorkspaceFile(source: import('./types').PromptWorkspaceFileRef) { return getRuntimeApi().revealRightWorkspaceFile(source); }
 import { AGENT_MODEL_CONFIG_UPDATED_EVENT } from './lib/agent-diagnostic-update';
 import type { RuntimeApi } from './api/client';
-import type { CreateWorkspaceEntryInput, DetachedWindowKind, DetachedWindowVm, FeishuScanMode, RecentConnectionVm, ResolvedColorScheme, RuntimeAssetInstalledEventVm, RuntimeAssetUninstalledEventVm, ServerConnectionInput, ServerConnectionVm, TerminalEventVm, TerminalSessionVm, WorkspaceRootRef } from './types';
+import type { CreateWorkspaceEntryInput, DetachedWindowKind, DetachedWindowVm, FeishuScanMode, RecentConnectionVm, ResolvedColorScheme, RuntimeAssetInstalledEventVm, RuntimeAssetUninstalledEventVm, ServerConnectionInput, ServerConnectionVm, TerminalEventVm, TerminalHistorySnapshotVm, TerminalSessionVm, WorkspaceRootRef } from './types';
 
 export { isTauriRuntime } from './api/shared';
 export function readProjectMemory(projectId: string) { return getRuntimeApi().readProjectMemory(projectId); }
@@ -951,8 +951,11 @@ export function subscribeDetachedWindowClosed(listener: () => void): Promise<() 
   return getRuntimeApi().subscribeDetachedWindowClosed?.(listener) ?? Promise.resolve(() => {});
 }
 
-export function getTerminalHistory(sessionId: string): Promise<string> {
-  return getRuntimeApi().getTerminalHistory(sessionId);
+export function getTerminalHistory(
+  sessionId: string,
+  from?: number | null,
+): Promise<TerminalHistorySnapshotVm> {
+  return getRuntimeApi().getTerminalHistory(sessionId, from ?? null);
 }
 
 export function pickDirectory(): Promise<string | null> {

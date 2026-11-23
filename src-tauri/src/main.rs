@@ -470,29 +470,38 @@ fn run() -> anyhow::Result<()> {
             // 必须在 `init_tracing` 之后：启动成功/失败的日志在 tracing 初始化前
             // 会被静默丢弃（现场排查事故时踩过这个观测盲区）。
             // 启动失败不阻塞应用其余功能——只是这次进程内没有连接工具可用。
-            match state.app() {
-                Ok(runtime_app) => {
-                    let terminal_state = app.state::<TerminalSessionState>();
-                    let history_state = app.state::<TerminalHistoryStore>();
-                    match commands::spawn_connection_mcp_endpoint(
-                        app.handle(),
-                        runtime_app,
-                        &terminal_state,
-                        &history_state,
-                    ) {
-                        Ok(port) => {
-                            if let Err(error) = state.set_connection_mcp_endpoint_port(port) {
-                                warn!(%error, "failed to record connection MCP endpoint port");
+            // T05: the remote-connection tool server is intranet-channel-only.
+            // The public channel must not listen at all so workers never see the
+            // tools and session fingerprints stay free of remote endpoints.
+            if commands::connection_mcp_enabled_for_channel() {
+                match state.app() {
+                    Ok(runtime_app) => {
+                        let terminal_state = app.state::<TerminalSessionState>();
+                        let history_state = app.state::<TerminalHistoryStore>();
+                        match commands::spawn_connection_mcp_endpoint(
+                            app.handle(),
+                            runtime_app,
+                            &terminal_state,
+                            &history_state,
+                        ) {
+                            Ok(port) => {
+                                if let Err(error) = state.set_connection_mcp_endpoint_port(port) {
+                                    warn!(%error, "failed to record connection MCP endpoint port");
+                                }
+                            }
+                            Err(error) => {
+                                warn!(%error, "failed to start connection MCP endpoint");
                             }
                         }
-                        Err(error) => {
-                            warn!(%error, "failed to start connection MCP endpoint");
-                        }
+                    }
+                    Err(error) => {
+                        warn!(%error, "failed to build App for connection MCP endpoint startup");
                     }
                 }
-                Err(error) => {
-                    warn!(%error, "failed to build App for connection MCP endpoint startup");
-                }
+            } else {
+                debug!(
+                    "connection MCP endpoint not started: remote connections disabled for this channel"
+                );
             }
             let handle = app.handle().clone();
             let command_handle = handle.clone();

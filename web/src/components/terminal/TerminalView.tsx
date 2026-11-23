@@ -11,8 +11,11 @@ const decode = (base64: string) => {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
+  return bytes;
 };
+
+/** Decodes base64 output bytes to text for a single xterm write. */
+const decodeText = (base64: string) => new TextDecoder().decode(decode(base64));
 
 const encode = (input: string) => {
   const bytes = new TextEncoder().encode(input);
@@ -29,6 +32,13 @@ const encode = (input: string) => {
  * base64-encoded on the way up; pty output chunks arrive base64-encoded over the
  * terminal event channel and are decoded here. Window resize drives a pty resize
  * after the fit addon recomputes the geometry.
+ *
+ * T14 cursor handoff: the backend history snapshot reports the ABSOLUTE stream
+ * cursors (`base..end`) its bytes span, and every live output chunk carries the
+ * same cursor (`endOffset`). Chunks fully covered by what was already written
+ * are dropped; `trimmed` snapshots replay their retained suffix with an inline
+ * note. The result: history replay and the live stream join with no gap and no
+ * duplication, whatever order they resolve in.
  */
 export function TerminalView({
   sessionId,
@@ -67,13 +77,57 @@ export function TerminalView({
 
     // Restore this session's history from the backend (the single source of
     // truth shared by every window), so a terminal's scrollback survives any
-    // remount — including detachment to a pop-out window and back. Live output
-    // may arrive before this resolves; that's fine (history is a replay of what
-    // already happened, and later live chunks are distinct).
-    void getTerminalHistory(sessionId).then((base64) => {
-      if (disposed) return;
-      if (base64) term.write(decode(base64));
-    }).catch(() => {});
+    // remount — including detachment to a pop-out window and back.
+    //
+    // T14: both sides speak the SAME absolute stream cursor. The snapshot
+    // reports the window it replays (`base..end`); every live output chunk
+    // carries the cursor through its last byte (`endOffset`). Joining is
+    // therefore exact regardless of which arrives first: while the snapshot is
+    // in flight, live chunks are buffered with their cursors; once it lands,
+    // everything through the snapshot's `end` (snapshot or buffered live
+    // bytes) is written once and later chunks are deduped against `writtenTo`.
+    let joined = false; // snapshot request settled (success or failure)
+    let writtenTo = 0; // absolute cursor through everything written so far
+    let pendingLive: Array<{ base64: string; end: number }> = [];
+
+    const writeBase64 = (base64: string) => {
+      term.write(decodeText(base64));
+    };
+
+    const drainPendingLive = () => {
+      // Flush buffered live chunks in arrival order, skipping the part the
+      // snapshot already replayed.
+      for (const pending of pendingLive) {
+        if (pending.end <= writtenTo) continue;
+        writeBase64(pending.base64);
+        writtenTo = Math.max(writtenTo, pending.end);
+      }
+      pendingLive = [];
+    };
+
+    void getTerminalHistory(sessionId)
+      .then((snapshot) => {
+        if (disposed) return;
+        joined = true;
+        if (snapshot.trimmed) {
+          // Front-trimmed: the retained window starts at `base`, not 0. Note
+          // it in the scrollback instead of pretending nothing is missing.
+          term.write('\x1b[90m[older output trimmed]\x1b[0m\r\n');
+        }
+        if (snapshot.base64) {
+          writeBase64(snapshot.base64);
+        }
+        writtenTo = Math.max(writtenTo, snapshot.end);
+        drainPendingLive();
+      })
+      .catch(() => {
+        if (disposed) return;
+        // No snapshot available: the live stream is the only source. Chunks
+        // buffered so far carry absolute cursors starting from the session
+        // origin, so replay them as-is.
+        joined = true;
+        drainPendingLive();
+      });
 
     const dataDisposable = term.onData((data) => {
       // Surface an input write failure inline rather than silently dropping it
@@ -103,7 +157,19 @@ export function TerminalView({
       if (disposed) return;
       if (event.sessionId !== sessionId) return;
       if (event.event === 'output') {
-        term.write(decode(event.base64));
+        const { base64, endOffset } = event;
+        if (!joined) {
+          // Snapshot still in flight: buffer with its absolute cursor, flush
+          // after the join (same-cursor duplicates are dropped there).
+          pendingLive.push({ base64, end: endOffset });
+          return;
+        }
+        // `writtenTo` is where this view has actually written up to; a chunk
+        // ending at/below it was already rendered by the snapshot or an
+        // earlier live chunk, so replaying it would duplicate output.
+        if (endOffset <= writtenTo) return;
+        writeBase64(base64);
+        writtenTo = Math.max(writtenTo, endOffset);
       } else if (event.event === 'exited') {
         term.write('\r\n\x1b[90m[process exited]\x1b[0m\r\n');
       }
