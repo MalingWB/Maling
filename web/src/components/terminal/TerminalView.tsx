@@ -57,6 +57,15 @@ export function TerminalView({
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const [selectedText, setSelectedText] = useState<string | null>(null);
+  // Mirror of the `active` prop for the mount-scoped observer closure below:
+  // the panel hides inactive tabs by flipping a wrapper's `hidden` class, and
+  // that collapse fires the host ResizeObserver. Fitting a hidden terminal
+  // reads a 0×0 box and corrupts the geometry (see the observer comment), so
+  // the observer consults this ref instead of the stale mount-time prop.
+  const activeRef = useRef(active);
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -193,8 +202,19 @@ export function TerminalView({
     });
 
     // Refit and sync the pty size whenever the host box resizes.
+    // TAB-SWITCH GEOMETRY GUARD: the panel keeps every session mounted and
+    // hides inactive ones via a wrapper's `hidden` class. The browser fires
+    // this observer when the box collapses to 0 on that flip; FitAddon then
+    // reads 0×0 computed sizes and floors to the MINIMUM geometry (cols 2 /
+    // rows 1) — the terminal buffer reflows at 2 columns AND the pty is
+    // resized (SIGWINCH → the shell repaints), and switching back refits to
+    // the real size but the reflow round-trip is lossy (wrapped lines
+    // mis-align). The panel toggles `hidden` and `active` together, so
+    // observer events on an inactive (hidden) tab are skipped wholesale; the
+    // active-tab effect below refits when the tab becomes visible again.
     const observer = new ResizeObserver(() => {
       if (disposed) return;
+      if (!activeRef.current) return;
       fit.fit();
     });
     observer.observe(host);
@@ -230,7 +250,10 @@ export function TerminalView({
   // Refit + focus only while this terminal is the active tab. Every session stays
   // mounted (switching tabs toggles visibility, not remount), so a terminal that
   // was hidden while it kept buffering output must be refit (its host just went
-  // from display:none to a real size) and focused again when shown.
+  // from display:none to a real size) and focused again when shown. The panel
+  // only marks a tab active when its wrapper is visible, so fitting here always
+  // sees the real box; the mount-scoped observer above suppresses fit events
+  // for inactive tabs (their collapsed 0×0 box would corrupt the geometry).
   useEffect(() => {
     if (!active) return;
     const term = termRef.current;

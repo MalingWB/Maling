@@ -19,12 +19,20 @@
 // (clipboard / scrollLines / selection model writes) they produce.
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
-import { act } from 'react';
+import { act, useState } from 'react';
 import { TerminalView } from '@/components/terminal/TerminalView';
 
 Object.assign(globalThis, {
   IS_REACT_ACT_ENVIRONMENT: true,
+  // jsdom has no ResizeObserver. The mock records callbacks so tests can
+  // fire them (the browser fires them after observe() and on every observed
+  // box change — including the collapse to 0 that a display:none flip
+  // produces). Entries are not auto-fired: real behavior is under test.
   ResizeObserver: class {
+    static callbacks: Array<() => void> = [];
+    constructor(cb: () => void) {
+      ResizeObserver.callbacks.push(cb);
+    }
     observe() {}
     unobserve() {}
     disconnect() {}
@@ -49,6 +57,9 @@ Object.defineProperty(navigator, 'clipboard', {
 });
 
 const h = vi.hoisted(() => {
+  // Module-level fit telemetry shared with the FitAddon mock (hoisted state
+  // survives the vi.mock factory closure).
+  const fitLog: string[] = [];
   class MockTerminal {
     writes: string[] = [];
     disposed = false;
@@ -65,17 +76,34 @@ const h = vi.hoisted(() => {
     hasSelectionFlag = false;
     selectAllCalled = 0;
     selectionChangeCb: (() => void) | null = null;
+    resizeCalls: Array<{ cols: number; rows: number }> = [];
 
     constructor() {
       hTerms.push(this);
     }
-    loadAddon() {}
-    open() {}
+    // Mirrors xterm's real loadAddon contract: the addon's activate hook
+    // receives the terminal instance (FitAddon stores it there).
+    loadAddon(addon: { loadAddon?: (term: unknown) => void } | undefined) {
+      addon?.loadAddon?.(this);
+    }
+    // Mirrors xterm's real open(): the terminal element is created and
+    // attached to the host immediately, so fit() can always read a parent.
+    open(host: HTMLElement) {
+      this.element = document.createElement('div');
+      host.appendChild(this.element);
+    }
     onData() {
       return { dispose() {} };
     }
-    onResize() {
+    onResize(cb: (dims: { cols: number; rows: number }) => void) {
+      this.resizeCb = cb;
       return { dispose() {} };
+    }
+    resize(cols: number, rows: number) {
+      this.cols = cols;
+      this.rows = rows;
+      this.resizeCalls.push({ cols, rows });
+      this.resizeCb?.({ cols, rows });
     }
     onSelectionChange(cb: () => void) {
       this.selectionChangeCb = cb;
@@ -115,6 +143,7 @@ const h = vi.hoisted(() => {
     scrollLines(rows: number) {
       this.scrollLinesCalls.push(rows);
     }
+    resizeCb: ((dims: { cols: number; rows: number }) => void) | null = null;
     buffer = {
       active: {
         viewportY: 0,
@@ -139,13 +168,53 @@ const h = vi.hoisted(() => {
   // Hoisted store referenced from the class body before `h` itself exists.
   const hTerms: MockTerminal[] = [];
   const listeners: Set<(event: Record<string, unknown>) => void> = new Set();
-  return { terms: hTerms, listeners, MockTerminal };
+  return { terms: hTerms, listeners, MockTerminal, fitLog };
 });
 
 const MockTerminal = h.MockTerminal;
 
 vi.mock('@xterm/xterm', () => ({ Terminal: h.MockTerminal }));
-vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { loadAddon() {} fit() {} } }));
+// FitAddon mock mirrors the REAL FitAddon contract that matters for the
+// tab-switch regression: when the host is invisible (display:none →
+// offsetParent null → computed sizes 0), proposeDimensions falls through to
+// the MINIMUM geometry (2×1) instead of bailing out, and fit() resizes the
+// terminal to it — exactly the corruption source being fixed. When visible,
+// it reports the host's size via the element's clientWidth/Height.
+vi.mock('@xterm/addon-fit', () => ({
+  FitAddon: class {
+    terminal: { cols: number; rows: number; element: HTMLElement | null } | null = null;
+    fitCalls = 0;
+    fitCallsWhileHidden = 0;
+    loadAddon(term: unknown) {
+      this.terminal = term as never;
+    }
+    fit() {
+      this.fitCalls += 1;
+      const term = this.terminal;
+      if (!term) {
+        h.fitLog.push('no-term');
+        return;
+      }
+      const host = term.element?.parentElement as HTMLElement | null;
+      h.fitLog.push(
+        `host=${!!host} closestHidden=${host ? String(host.closest('.hidden') !== null) : 'n/a'} cw=${host?.clientWidth ?? 'n/a'} ch=${host?.clientHeight ?? 'n/a'}`,
+      );
+      // Invisible host → real FitAddon reads 0×0 computed sizes → minimums.
+      // jsdom has no layout (offsetParent is always null, clientWidth 0), so
+      // the test's visibility source of truth is the panel's `hidden` class
+      // — the same class the real browser CSS resolves to display:none.
+      if (!host || host.closest('.hidden') !== null) {
+        this.fitCallsWhileHidden += 1;
+        if (term.cols !== 2 || term.rows !== 1) term.resize(2, 1);
+        return;
+      }
+      // Visible: derive geometry from the host box (24 px rows, 8 px cols).
+      const cols = Math.max(2, Math.floor(host.clientWidth / 8));
+      const rows = Math.max(1, Math.floor(host.clientHeight / 24));
+      if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
+    }
+  },
+}));
 
 vi.mock('@/api', () => ({
   subscribeTerminalEvents: (listener: (event: unknown) => void) => {
@@ -254,9 +323,13 @@ async function openContextMenu(trigger: Element): Promise<void> {
 beforeEach(() => {
   h.terms.length = 0;
   h.listeners.clear();
+  h.fitLog.length = 0;
   clipboardWrites.length = 0;
   clipboardReadResult = 'pasted-text';
   document.body.replaceChildren();
+  (globalThis.ResizeObserver as unknown as {
+    callbacks: Array<() => void>;
+  }).callbacks.length = 0;
 });
 
 describe('terminal clipboard keyboard contract', () => {
@@ -405,6 +478,137 @@ describe('terminal quote-to-conversation flow', () => {
     expect(document.querySelector('[data-terminal-selection-quote]')).toBeNull();
     expect(document.querySelector('[data-terminal-menu-quote]')).toBeNull();
     await act(async () => root.unmount());
+  });
+});
+
+describe('terminal tab-switch geometry contract', () => {
+  // The panel keeps every TerminalView mounted and toggles a wrapper's
+  // `hidden` class. REAL FitAddon behavior when the host goes display:none:
+  // ResizeObserver fires (content box → 0), fit() reads 0×0 computed sizes,
+  // proposeDimensions floors to the MINIMUM geometry (cols 2 / rows 1), and
+  // the terminal — plus the pty behind it, via onResize — is resized to 2×1.
+  // Buffer reflow at 2 columns and a SIGWINCH-driven repaint by the shell
+  // corrupt the layout; switching back refits to the real size but the
+  // reflow round-trip is lossy (wrapped lines mis-align). The fix contract:
+  // fit() must be a NO-OP while the terminal's host is not visible.
+
+  /** Panel-accurate tab-switch harness. TerminalPanel toggles the wrapper's
+   * `hidden` class AND the `active` prop in the SAME render commit
+   * (TerminalPanel.tsx: `className={active ? 'h-full' : 'hidden'}`), so the
+   * harness re-renders TerminalView with the matching prop — the fix's
+   * activeRef guard reads exactly that prop. The wrapper class is derived
+   * from the same state, keeping the two coupled like the panel. */
+  function TabSwitchHarness(props: { ctrl: { flip: (hidden: boolean) => void } }) {
+    const [active, setActive] = useState(true);
+    props.ctrl.flip = (hidden: boolean) => setActive(!hidden);
+    return (
+      <div className={active ? 'h-full' : 'hidden'}>
+        <TerminalView sessionId="sess-x" active={active} />
+      </div>
+    );
+  }
+
+  /** Flips the harness the way TerminalPanel's commit does (hidden class +
+   * active prop together), then fires every registered ResizeObserver
+   * callback (the browser fires them when the observed box changes —
+   * including collapsing to 0 on display:none). */
+  async function flipAndFire(
+    ctrl: { flip: (hidden: boolean) => void },
+    hidden: boolean,
+  ): Promise<void> {
+    await act(async () => {
+      ctrl.flip(hidden);
+    });
+    const callbacks = (globalThis.ResizeObserver as unknown as {
+      callbacks: Array<() => void>;
+    }).callbacks;
+    await act(async () => {
+      for (const fire of callbacks) fire();
+    });
+  }
+
+  it('does NOT resize the terminal (nor the pty) while its host is hidden', async () => {
+    // Mount through the panel-accurate harness: hidden class + active prop
+    // toggle together, exactly as TerminalPanel commits them.
+    const wrapper = document.createElement('div');
+    document.body.appendChild(wrapper);
+    const root = createRoot(wrapper);
+    const ctrl: { flip: (hidden: boolean) => void } = { flip: () => {} };
+    await act(async () => root.render(<TabSwitchHarness ctrl={ctrl} />));
+    const term = h.terms[0];
+    const termHost = wrapper.querySelector<HTMLElement>('[data-terminal-host]')!;
+    // jsdom has no layout; pin the host box the fit mock reads when visible.
+    // (The mock xterm open() already attached term.element under the host.)
+    Object.defineProperty(termHost, 'clientWidth', { configurable: true, value: 800 });
+    Object.defineProperty(termHost, 'clientHeight', { configurable: true, value: 600 });
+
+    // Initial visible fit: ResizeObserver fires after observe() with the
+    // current box — geometry converges to the real 100×25 size. (jsdom may
+    // interleave the mount-time effect fit before the sizes are pinned; that
+    // artifact is pre-baselined, the assertions below watch only deltas.)
+    await flipAndFire(ctrl, false);
+    expect(term.cols).toBe(100);
+    expect(term.rows).toBe(25);
+    const baselineLength = term.resizeCalls.length;
+
+    // Tab switch AWAY: the wrapper goes display:none and active flips to
+    // false in the same commit; the browser collapses the box and fires the
+    // observer. BEFORE the fix this resized the terminal (and the pty) to
+    // the 2×1 minimum; the contract is a no-op.
+    await flipAndFire(ctrl, true);
+    expect(term.cols).toBe(100);
+    expect(term.rows).toBe(25);
+    expect(term.resizeCalls.length).toBe(baselineLength);
+
+    // Tab switch BACK: active flips true (the active-effect refits via its
+    // own setTimeout — pre-baselined, idempotent at the same size), the box
+    // is restored and the observer fires again — geometry must resolve to
+    // the same real size (no 2×1 round-trip residue).
+    await flipAndFire(ctrl, false);
+    expect(term.cols).toBe(100);
+    expect(term.rows).toBe(25);
+    // Exactly ONE real resize happened in the whole cycle: the initial fit.
+    // (An idempotent fit must not re-issue resize for an unchanged size.)
+    expect(term.resizeCalls.length).toBe(baselineLength);
+
+    await act(async () => root.unmount());
+    wrapper.remove();
+  });
+
+  it('still refits when the host becomes visible again after a REAL size change', async () => {
+    // Hiding must not permanently freeze the geometry: if the panel itself
+    // was resized while the tab was hidden (e.g. the dock was dragged), the
+    // show path must fit to the NEW box, not skip forever.
+    const wrapper = document.createElement('div');
+    document.body.appendChild(wrapper);
+    const root = createRoot(wrapper);
+    const ctrl: { flip: (hidden: boolean) => void } = { flip: () => {} };
+    await act(async () => root.render(<TabSwitchHarness ctrl={ctrl} />));
+    const term = h.terms[0];
+    const termHost = wrapper.querySelector<HTMLElement>('[data-terminal-host]')!;
+    Object.defineProperty(termHost, 'clientWidth', { configurable: true, value: 800 });
+    Object.defineProperty(termHost, 'clientHeight', { configurable: true, value: 600 });
+
+    await flipAndFire(ctrl, false);
+    expect(term.cols).toBe(100);
+    expect(term.rows).toBe(25);
+    const baselineLength = term.resizeCalls.length;
+
+    await flipAndFire(ctrl, true);
+    // The dock was resized while hidden (browser: box change on the parent;
+    // jsdom: adjust the pinned size directly).
+    Object.defineProperty(termHost, 'clientWidth', { configurable: true, value: 640 });
+    Object.defineProperty(termHost, 'clientHeight', { configurable: true, value: 480 });
+
+    await flipAndFire(ctrl, false);
+    // The show path refits to the new box: 640/8 = 80 cols, 480/24 = 20 rows.
+    expect(term.cols).toBe(80);
+    expect(term.rows).toBe(20);
+    // One real resize during the whole cycle: the show-path refit.
+    expect(term.resizeCalls.length).toBe(baselineLength + 1);
+
+    await act(async () => root.unmount());
+    wrapper.remove();
   });
 });
 
