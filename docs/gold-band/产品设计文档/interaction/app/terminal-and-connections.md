@@ -388,3 +388,12 @@ Gold Band 是 EXE 桌面产品，主路径保持任务编排 / 会话心智，�
 - **`terminal-interaction.test.tsx`（新建，9 项）**：Ctrl+C 有选区复制且取消按键（不触发 SIGINT）/ 无选区放行 ETX；Ctrl+V 走 `term.paste`；剪贴板被拒写内联提示；⌘C/⌘V 放行；非拖拽滚轮放行（xterm 默认）；拖拽中滚轮 → scrollLines + selectionEnd 延伸到新视口边缘 + refresh；拖出下边缘自动滚动（速度>0）且 mouseup 后停止；挂载即注册两个 handler。
 - 既有 mock 面扩展：`terminal-view-lifecycle` / `terminal-input-wiring` / `terminal-agent-session-visibility` 三个测试的 Terminal mock 补新 API（attachCustomKeyEventHandler 等），原有断言不变。
 - 终端链路 8 个测试文件 38 项全绿（2026-11-24）；tsc（src 范围）0 error。
+
+### 事故修复：终端界面空白——右键菜单树翻转卸载 xterm 宿主（2026-11-24，已落地）
+
+上一节落地后现场回归：新建本地终端 / 连接后 xterm 界面不加载。
+
+- **根因**：`TerminalContextMenuSurface` 首次渲染返回 Fragment（直接渲染 host div），`setTimeout(0)` 后 `setTerm` 翻转状态，同一位置的元素类型从 Fragment 变为 ContextMenu 组件——React 对不同元素类型**卸载整个子树重建**，xterm 已 `open()` 进的 host div（内含 screen/viewport/canvas 全部 DOM）被销毁，新空 div 顶上 → 界面空白；drag-scroll 监听与 ResizeObserver 也全部挂在死节点上。
+- **证据固化**：`terminal-interaction.test.tsx` 新增树身份测试——挂载后 flush 翻转 tick，断言 `[data-terminal-host]` 是**同一 DOM 节点**；修复前失败输出直接显示新节点带 `data-slot="context-menu-trigger"`（Radix Trigger 重建），复现与根因完全一致。
+- **修复（树身份契约）**：删除 `TerminalContextMenuSurface` 状态翻转层；`TerminalContextMenu` 改收 `termRef`，菜单树从**首次渲染**就恒定——`ContextMenu > Trigger(asChild) > host div`，Radix Trigger 经 Slot 把 contextmenu 处理器合并到既有 host 节点上（零新增 DOM、零重挂载）；菜单动作点击时经 ref 惰性取 term，term 未就绪时菜单项禁用。Radix Trigger 仅接管 contextmenu 与 touch 长按，鼠标左键链路（xterm 选区、drag-scroll）原样穿透。
+- **回归**：树身份测试转绿；终端链路 9 个测试文件 46 项全绿；tsc（src）0 error。

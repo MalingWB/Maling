@@ -245,13 +245,13 @@ export function TerminalView({
 
   return (
     <div className="relative h-full w-full">
-      <TerminalContextMenuSurface termRef={termRef} onQuoteToConversation={onSelectionQuote}>
+      <TerminalContextMenu termRef={termRef} onQuoteToConversation={onSelectionQuote}>
         <div
           data-terminal-host
           ref={hostRef}
           className="h-full w-full overflow-hidden bg-transparent px-3 py-2"
         />
-      </TerminalContextMenuSurface>
+      </TerminalContextMenu>
       {/* 选区引用（连接→对话）：选中文本后浮出，点击进入会话输入框。 */}
       {onSelectionQuote && selectedText ? (
         <button
@@ -269,34 +269,5 @@ export function TerminalView({
         </button>
       ) : null}
     </div>
-  );
-}
-
-/**
- * Wraps the terminal host with the right-click context menu. The terminal
- * instance is only available after mount, so this shell reads it lazily from
- * the ref and renders nothing menu-able until then.
- */
-function TerminalContextMenuSurface({
-  termRef,
-  onQuoteToConversation,
-  children,
-}: {
-  termRef: React.RefObject<Terminal | null>;
-  onQuoteToConversation?: (text: string) => void;
-  children: React.ReactNode;
-}) {
-  const [term, setTerm] = useState<Terminal | null>(null);
-  useEffect(() => {
-    // The ref is set synchronously inside the terminal effect; a resolved
-    // state update one tick later is enough for the menu to attach.
-    const timer = window.setTimeout(() => setTerm(termRef.current), 0);
-    return () => window.clearTimeout(timer);
-  }, [termRef]);
-  if (!term) return <>{children}</>;
-  return (
-    <TerminalContextMenu term={term} onQuoteToConversation={onQuoteToConversation}>
-      {children}
-    </TerminalContextMenu>
   );
 }

@@ -152,11 +152,24 @@ vi.mock('@/api', () => ({
     Promise.resolve({ base64: '', base: 0, end: 0, trimmed: false }),
 }));
 
-// The context menu uses Radix primitives; the interaction contract under test
-// here is the keyboard/wheel layer, so stub the menu shell out.
-vi.mock('@/components/terminal/TerminalContextMenu', () => ({
-  TerminalContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
+// The real context menu shell stays mounted (only the MenuContent portal is
+// stubbed) — the regression under test is the SURFACE's tree-identity
+// behavior, so stubbing TerminalContextMenu itself would hide the bug.
+// Stub the radix module's Content (portal + focus trap) while keeping Root /
+// Trigger / Item real, so ContextMenuItem's menu context stays intact.
+vi.mock('radix-ui', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('radix-ui')>();
+  const ctxMenu = actual.ContextMenu;
+  return {
+    ...actual,
+    ContextMenu: {
+      ...ctxMenu,
+      // Content normally portals + focus-traps; jsdom is fine with a plain
+      // wrapper that keeps the menu context provider alive.
+      Content: ctxMenu.Group ?? ((props: { children?: React.ReactNode }) => <>{props.children}</>),
+    },
+  };
+});
 
 /** KeyboardEvent is not constructible with `key` in all jsdom versions. */
 function keyEvent(init: {
@@ -259,6 +272,29 @@ describe('terminal clipboard keyboard contract', () => {
     expect(term.customKeyHandler!(keyEvent({ key: 'c', metaKey: true }))).toBe(true);
     expect(term.customKeyHandler!(keyEvent({ key: 'v', metaKey: true }))).toBe(true);
     expect(clipboardWrites).toEqual([]);
+    await act(async () => root.unmount());
+  });
+});
+
+describe('terminal surface tree identity', () => {
+  it('keeps the SAME host DOM node after the context menu attaches (no xterm unload)', async () => {
+    // Regression: the surface first renders a Fragment, then flips state after
+    // a setTimeout(0) to wrap the host in the Radix ContextMenu. Changing the
+    // element type at the same position remounts the ENTIRE subtree — the
+    // xterm-opened host div is destroyed and replaced with an empty one, so
+    // the terminal renders blank and drag-scroll listeners die with the old
+    // node. The host element identity must be stable across the flip.
+    const { root, host } = await mountTerminal();
+    const hostBefore = host.querySelector<HTMLElement>('[data-terminal-host]');
+    expect(hostBefore).not.toBeNull();
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    const hostAfter = host.querySelector<HTMLElement>('[data-terminal-host]');
+    expect(hostAfter).not.toBeNull();
+    expect(hostAfter).toBe(hostBefore); // same node → xterm content survives
     await act(async () => root.unmount());
   });
 });
