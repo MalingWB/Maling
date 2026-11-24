@@ -64,6 +64,7 @@ const h = vi.hoisted(() => {
     selectionText = '';
     hasSelectionFlag = false;
     selectAllCalled = 0;
+    selectionChangeCb: (() => void) | null = null;
 
     constructor() {
       hTerms.push(this);
@@ -76,8 +77,13 @@ const h = vi.hoisted(() => {
     onResize() {
       return { dispose() {} };
     }
-    onSelectionChange() {
+    onSelectionChange(cb: () => void) {
+      this.selectionChangeCb = cb;
       return { dispose() {} };
+    }
+    /** Simulates xterm firing the selection-change event (mouseup commit). */
+    fireSelectionChange() {
+      this.selectionChangeCb?.();
     }
     write(s: string) {
       this.writes.push(s);
@@ -152,11 +158,13 @@ vi.mock('@/api', () => ({
     Promise.resolve({ base64: '', base: 0, end: 0, trimmed: false }),
 }));
 
-// The real context menu shell stays mounted (only the MenuContent portal is
+// The real context menu shell stays mounted (only the Portal's open-gating is
 // stubbed) — the regression under test is the SURFACE's tree-identity
-// behavior, so stubbing TerminalContextMenu itself would hide the bug.
-// Stub the radix module's Content (portal + focus trap) while keeping Root /
-// Trigger / Item real, so ContextMenuItem's menu context stays intact.
+// behavior and the quote-item contract, so stubbing TerminalContextMenu
+// itself would hide the bug. Radix's real Menu Content is kept because
+// ContextMenuItem requires the MenuContent context it provides; only the
+// Portal (which gates rendering on the menu's open state) is replaced with a
+// passthrough so the items exist in the DOM for direct interaction.
 vi.mock('radix-ui', async (importOriginal) => {
   const actual = await importOriginal<typeof import('radix-ui')>();
   const ctxMenu = actual.ContextMenu;
@@ -164,9 +172,7 @@ vi.mock('radix-ui', async (importOriginal) => {
     ...actual,
     ContextMenu: {
       ...ctxMenu,
-      // Content normally portals + focus-traps; jsdom is fine with a plain
-      // wrapper that keeps the menu context provider alive.
-      Content: ctxMenu.Group ?? ((props: { children?: React.ReactNode }) => <>{props.children}</>),
+      Portal: ((props: { children?: React.ReactNode }) => <>{props.children}</>) as typeof ctxMenu.Portal,
     },
   };
 });
@@ -195,7 +201,9 @@ function wheelEvent(deltaY: number, deltaMode: number = WheelEvent.DOM_DELTA_PIX
 
 type MockTerminalInstance = InstanceType<typeof h.MockTerminal>;
 
-async function mountTerminal(): Promise<{
+async function mountTerminal(props: {
+  onSelectionQuote?: (text: string) => void;
+} = {}): Promise<{
   root: Root;
   host: HTMLElement;
   termHost: HTMLElement;
@@ -204,13 +212,43 @@ async function mountTerminal(): Promise<{
   const host = document.createElement('div');
   document.body.appendChild(host);
   const root = createRoot(host);
-  await act(async () => root.render(<TerminalView sessionId="sess-x" />));
+  await act(async () => root.render(
+    <TerminalView sessionId="sess-x" onSelectionQuote={props.onSelectionQuote} />,
+  ));
   const term = h.terms[0];
   if (!term) throw new Error('terminal not mounted');
   // The drag-scroll module attaches to the component's inner terminal host.
   const termHost = host.querySelector<HTMLElement>('[data-terminal-host]');
   if (!termHost) throw new Error('terminal host not rendered');
   return { root, host, termHost, term };
+}
+
+/** Drives the mock through a committed drag-selection so selectedText state
+ * tracks it (the same path onSelectionChange takes in the real terminal). */
+async function selectText(
+  term: MockTerminalInstance,
+  text: string,
+): Promise<void> {
+  term.hasSelectionFlag = true;
+  term.selectionText = text;
+  await act(async () => term.fireSelectionChange());
+}
+
+function click(el: Element): Promise<void> {
+  return act(async () => {
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+}
+
+/** Opens the terminal context menu: Radix's Portal gates the menu content on
+ * the root's `open` state, so the items only exist after the trigger's
+ * contextmenu event fires. jsdom + a synthetic click then drive onSelect. */
+async function openContextMenu(trigger: Element): Promise<void> {
+  await act(async () => {
+    trigger.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }),
+    );
+  });
 }
 
 beforeEach(() => {
@@ -295,6 +333,77 @@ describe('terminal surface tree identity', () => {
     const hostAfter = host.querySelector<HTMLElement>('[data-terminal-host]');
     expect(hostAfter).not.toBeNull();
     expect(hostAfter).toBe(hostBefore); // same node → xterm content survives
+    await act(async () => root.unmount());
+  });
+});
+
+describe('terminal quote-to-conversation flow', () => {
+  it('floating button appears on selection and emits the captured text', async () => {
+    const quoteSpy = vi.fn();
+    const { root, term } = await mountTerminal({ onSelectionQuote: quoteSpy });
+    // No button before a selection exists.
+    expect(document.querySelector('[data-terminal-selection-quote]')).toBeNull();
+    await selectText(term, 'hello world');
+    const button = document.querySelector('[data-terminal-selection-quote]');
+    expect(button).not.toBeNull();
+    await click(button!);
+    expect(quoteSpy).toHaveBeenCalledWith('hello world');
+    await act(async () => root.unmount());
+  });
+
+  it('floating button falls back to the captured selection when the live selection collapsed', async () => {
+    // ROOT CAUSE of the silent no-op: the click handler read
+    // `getSelection() ?? selectedText` — `??` keeps an EMPTY STRING from the
+    // live selection instead of falling back, so the quote never fired when
+    // the click itself had collapsed the selection. `||` must win here.
+    const quoteSpy = vi.fn();
+    const { root, term } = await mountTerminal({ onSelectionQuote: quoteSpy });
+    await selectText(term, 'captured text');
+    // The click collapsed the selection before the handler ran (no
+    // selection-change event fired — exactly the race being pinned).
+    term.hasSelectionFlag = false;
+    term.selectionText = '';
+    const button = document.querySelector('[data-terminal-selection-quote]');
+    expect(button).not.toBeNull();
+    await click(button!);
+    expect(quoteSpy).toHaveBeenCalledWith('captured text');
+    await act(async () => root.unmount());
+  });
+
+  it('context menu quote item emits the captured text even if the live selection cleared', async () => {
+    const quoteSpy = vi.fn();
+    const { root, host, term } = await mountTerminal({ onSelectionQuote: quoteSpy });
+    await selectText(term, 'menu quote');
+    // Right-click opens the menu (Radix Portal mounts the content on open).
+    await openContextMenu(host.querySelector('[data-terminal-host]')!);
+    // Menu interaction cleared the live selection; the item stays enabled on
+    // the captured state and still quotes the original text.
+    term.hasSelectionFlag = false;
+    term.selectionText = '';
+    const item = document.querySelector('[data-terminal-menu-quote]');
+    expect(item).not.toBeNull();
+    await click(item!);
+    expect(quoteSpy).toHaveBeenCalledWith('menu quote');
+    await act(async () => root.unmount());
+  });
+
+  it('context menu quote item is disabled without a selection', async () => {
+    const quoteSpy = vi.fn();
+    const { root, host, term } = await mountTerminal({ onSelectionQuote: quoteSpy });
+    await openContextMenu(host.querySelector('[data-terminal-host]')!);
+    const item = document.querySelector('[data-terminal-menu-quote]');
+    expect(item).not.toBeNull();
+    expect(item!.getAttribute('aria-disabled')).toBe('true');
+    await click(item!);
+    expect(quoteSpy).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it('quote button and menu item are absent when quoting is not wired (detached terminal)', async () => {
+    const { root, term } = await mountTerminal();
+    await selectText(term, 'no receiver');
+    expect(document.querySelector('[data-terminal-selection-quote]')).toBeNull();
+    expect(document.querySelector('[data-terminal-menu-quote]')).toBeNull();
     await act(async () => root.unmount());
   });
 });

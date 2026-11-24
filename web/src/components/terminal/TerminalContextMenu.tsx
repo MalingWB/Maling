@@ -37,11 +37,16 @@ export function TerminalContextMenu({
   termRef,
   children,
   onQuoteToConversation,
+  selectedText,
 }: {
   termRef: React.RefObject<Terminal | null>;
   children: React.ReactNode;
   /** Present only when selection quoting is wired (connection → conversation). */
   onQuoteToConversation?: (text: string) => void;
+  /** Selection captured by TerminalView's onSelectionChange tracking — the
+   * robust source for the quote item, immune to the selection being cleared
+   * between menu open and item click. Only tracked when quoting is wired. */
+  selectedText?: string | null;
 }) {
   const { t } = useTranslation();
   const [canReadClipboard, setCanReadClipboard] = useState<boolean | null>(null);
@@ -124,9 +129,15 @@ export function TerminalContextMenu({
         {onQuoteToConversation ? (
           <ContextMenuItem
             data-terminal-menu-quote="true"
-            disabled={!mounted || !termRef.current?.hasSelection()}
+            // Quoting is wired ⇔ TerminalView tracks selectedText, so the
+            // captured state is authoritative here. The live hasSelection()
+            // check would silently disable the item when the selection got
+            // cleared by the menu interaction itself.
+            disabled={!mounted || !selectedText}
             onSelect={() => {
-              const text = termRef.current?.getSelection();
+              // `||` not `??`: an empty live selection must fall back to the
+              // captured text, not win over it.
+              const text = termRef.current?.getSelection() || selectedText;
               if (text) onQuoteToConversation(text);
             }}
           >

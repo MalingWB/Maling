@@ -57,6 +57,7 @@ import {
   type ComposerWorkspaceFileRef,
 } from '@/lib/composer-context';
 import { composerQuoteFailureMessage } from '@/lib/composer-quote-i18n';
+import { onTerminalQuote } from '@/lib/terminal-quote-bus';
 import { GitBranchSelector } from '@/components/git/GitBranchSelector';
 import {
   createDraftAttachmentWorkspaceResource,
@@ -640,6 +641,23 @@ export function ConversationComposer({
     addQuote: (draft, options) => addQuote(draft, options.isDocked) ? { kind: 'added' } : { kind: 'rejected' },
     addWorkspaceFileRef: (reference, options) => addWorkspaceFile(reference, options.isDocked),
   }), [addQuote, addWorkspaceFile, workspaceFileReferenceBridge]);
+
+  // Terminal selection → conversation quote (connection → conversation).
+  // The conversation-home composer never goes through ACPChatDialog, and
+  // ACPChatDialog used to be the ONLY subscriber of the quote bus — quoting
+  // from a terminal while on the home page was silently dropped. Subscribe
+  // here as well so both composers receive terminal quotes. Under the
+  // read-only experience the quote still lands in the chip list (visible,
+  // removable); only sending is disabled — same as file references.
+  useEffect(() => onTerminalQuote(({ text }) => {
+    addQuote(
+      {
+        source: { kind: 'agentMessage', messageKey: `terminal:${Date.now()}` },
+        text,
+      },
+      false,
+    );
+  }), [addQuote]);
 
   const openWorkspaceFile = useCallback((file: ComposerWorkspaceFileRef) => {
     if (!rightWorkspace?.scopeKey) return;

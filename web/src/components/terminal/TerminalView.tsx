@@ -245,7 +245,11 @@ export function TerminalView({
 
   return (
     <div className="relative h-full w-full">
-      <TerminalContextMenu termRef={termRef} onQuoteToConversation={onSelectionQuote}>
+      <TerminalContextMenu
+        termRef={termRef}
+        selectedText={selectedText}
+        onQuoteToConversation={onSelectionQuote}
+      >
         <div
           data-terminal-host
           ref={hostRef}
@@ -259,7 +263,11 @@ export function TerminalView({
           data-terminal-selection-quote="true"
           className="absolute right-3 top-2 z-10 rounded-md border border-border/60 bg-popover px-2 py-1 text-xs text-popover-foreground shadow-sm hover:bg-accent"
           onClick={() => {
-            const text = termRef.current?.getSelection() ?? selectedText;
+            // `||` not `??`: getSelection() can legitimately be '' at click time
+            // (the click itself may have collapsed the selection); `??` would
+            // keep the empty string instead of falling back to the captured
+            // selection, silently dropping the quote.
+            const text = termRef.current?.getSelection() || selectedText;
             if (text) onSelectionQuote(text);
             termRef.current?.clearSelection();
             setSelectedText(null);
