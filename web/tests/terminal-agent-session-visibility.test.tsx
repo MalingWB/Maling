@@ -65,6 +65,13 @@ vi.mock('@xterm/xterm', () => ({
     hasSelection() { return false; }
     getSelection() { return ''; }
     clearSelection() {}
+    attachCustomKeyEventHandler() {}
+    attachCustomWheelEventHandler() {}
+    paste() {}
+    scrollLines() {}
+    buffer = { active: { viewportY: 0, length: 1 } };
+    cols = 80;
+    rows = 24;
     write() {}
     focus() {}
     dispose() {}

@@ -3675,6 +3675,12 @@
     "otpDialogTitleNamed": "{{name}} にワンタイムパスフレーズが必要です",
     "otpSubmitFailed": "パスフレーズの送信に失敗しました。もう一度やり直してください。",
     "quoteToConversation": "会話に引用",
+    "contextMenu": {
+      "copy": "コピー",
+      "paste": "ペースト",
+      "pasteDenied": "クリップボードを読み取れません",
+      "selectAll": "すべて選択"
+    },
     "failed": {
       "sessionNotFound": "セッションが見つからないか、すでに閉じられています",
       "sessionLimit": "セッション数が上限に達しました。先にタブを閉じてください",

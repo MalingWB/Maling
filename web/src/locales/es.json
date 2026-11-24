@@ -3675,6 +3675,12 @@
     "otpDialogTitleNamed": "{{name}} necesita la frase de contraseña de un solo uso",
     "otpSubmitFailed": "No se pudo enviar la frase de contraseña. Inténtalo de nuevo.",
     "quoteToConversation": "Citar en la conversación",
+    "contextMenu": {
+      "copy": "Copiar",
+      "paste": "Pegar",
+      "pasteDenied": "Portapapeles no disponible",
+      "selectAll": "Seleccionar todo"
+    },
     "failed": {
       "sessionNotFound": "Sesión no encontrada o ya cerrada",
       "sessionLimit": "Límite de sesiones alcanzado — cierra una pestaña primero",

@@ -43,6 +43,16 @@ vi.mock('@xterm/xterm', () => ({
     open() {}
     onData() { return { dispose() {} }; }
     onResize() { return { dispose() {} }; }
+    attachCustomKeyEventHandler() {}
+    attachCustomWheelEventHandler() {}
+    hasSelection() { return false; }
+    getSelection() { return ''; }
+    clearSelection() {}
+    paste() {}
+    scrollLines() {}
+    buffer = { active: { viewportY: 0, length: 1 } };
+    cols = 80;
+    rows = 24;
     write(s: string) {
       // content is base64-encoded in the event; here it is plain text.
       if (this.disposed) this.writesAfterDispose += 1;

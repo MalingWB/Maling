@@ -3675,6 +3675,12 @@
     "otpDialogTitleNamed": "{{name}} 需要輸入動態密碼",
     "otpSubmitFailed": "密碼提交失敗，請重試",
     "quoteToConversation": "引用到對話",
+    "contextMenu": {
+      "copy": "複製",
+      "paste": "貼上",
+      "pasteDenied": "無法讀取剪貼簿",
+      "selectAll": "全選"
+    },
     "failed": {
       "sessionNotFound": "工作階段不存在或已關閉",
       "sessionLimit": "已達工作階段上限，請先關閉分頁",

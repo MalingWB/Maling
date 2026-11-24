@@ -3673,8 +3673,14 @@
     "authPending": "有会话正在等待动态口令 — 请在下方输入以继续",
     "otpDialogTitle": "需要输入动态口令",
     "otpDialogTitleNamed": "{{name}} 需要输入动态口令",
-    "otpSubmitFailed": "口令提交失败，请重试",
-    "quoteToConversation": "引用到对话",
+  "otpSubmitFailed": "口令提交失败，请重试",
+  "quoteToConversation": "引用到对话",
+  "contextMenu": {
+    "copy": "复制",
+    "paste": "粘贴",
+    "pasteDenied": "无法读取剪贴板",
+    "selectAll": "全选"
+  },
     "failed": {
       "sessionNotFound": "会话不存在或已关闭",
       "sessionLimit": "已达会话上限，请先关闭标签",

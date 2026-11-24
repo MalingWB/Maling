@@ -355,3 +355,36 @@ Gold Band 是 EXE 桌面产品，主路径保持任务编排 / 会话心智，�
 - **T15 resize 顺序（P2）**：`terminal_sessions.rs::resize` 先 SSH `window-change` 再本地 pty，顺序与语义一致。
 - **测试渠道门控说明**：`connection_mcp_enabled_for_channel` 在 `cfg!(test)` 下强制开启——测试构建走默认（公共）渠道编译期配置，硬 gate 会让端点/端口相关桌面测试全部不可达；gate 本身的渠道行为由编译期配置项控制，生产路径不受影响。
 - **全量回归（2026-11-23）**：`cargo check --all-targets` 0 error、`cargo fmt` 干净；gold-band lib 2129 测试失败集合与基线 diff 一致（33 项存量：profiles/with_state/turn_files/orchestrator-rerun/storage/npx_cache 等，无一新增；唯一瞬时差异 `npx_cache::running_npx_adapter_*` 单独重跑通过，确认 flaky）；src-tauri 1105 全绿；connection_mcp 52 项 + ssh_sessions 10 项 + terminal_sessions 6 项 + terminal_history 4 项全绿；前端 tsc（src 范围）0 error、终端链路 8 个测试文件 38 项全绿。
+
+## 终端剪贴板与鼠标交互修复（2026-11-24，已落地）
+
+### 根因（xterm 5.5.0 源码逐行核对）
+
+1. **Ctrl+C/Ctrl+V 失效**：xterm 只把 copy 挂在 DOM `copy` 事件（平台快捷键如 ⌘C 触发）、paste 挂在 DOM `paste` 事件；Ctrl+C/Ctrl+V 在 `_keyDown` 中被 `evaluateKeyboardEvent` 转成 ETX(0x03)/SYN(0x16) 直接发 pty（Ctrl+C 触发 SIGINT），既不产生 copy 事件也不会触发 paste 事件。
+2. **右键无响应**：xterm 的 `rightClickHandler` 只把隐藏 textarea 移到鼠标下、依赖 webview 原生右键菜单出现；桌面应用统一禁用原生 context menu（Shell/Workspace 壳层 `preventDefault`），机制悬空。
+3. **拖拽中滚轮选区消失**：主 buffer 下滚轮只滚视口不延伸选区端点；滚动后下一个 mousemove 用**新 ydisp** 重算 `selectionEnd` → 端点跳变，选区视觉塌缩。alt-buffer / mouse-reporting 模式更糟：滚轮被转成方向键输入（`triggerDataEvent`）→ `onUserInput` → `clearSelection()` 直接清空选区。
+4. **拖到视口边缘不自动滚动**：xterm 原生有 `_dragScroll`（每 50ms tick、`_dragScrollAmount` 由 mousemove 出界计算），但依赖连续 mousemove 与 canvas 测量，在本应用 WKWebView 宿主中不可靠。
+
+### 修复（三个独立模块，全部走 xterm 官方 attach API 或集中式内部桥）
+
+- **`xterm-keyboard-clipboard.ts`**：`attachCustomKeyEventHandler` 拦截——Ctrl+C 有选区 → `navigator.clipboard.writeText(getSelection())` 并取消按键（不发 ETX）；无选区 → 放行（保留 SIGINT 终端惯例）；Ctrl+Shift+C → 强制复制；Ctrl+V / Ctrl+Shift+V → `navigator.clipboard.readText()` → `term.paste()`（自带换行归一化 + bracketed paste），读被拒时写终端内联提示（与 `[input failed]` 同惯例）；⌘C/⌘V 不拦截（原生事件路径已工作）；其余按键零侵入。
+- **`xterm-drag-scroll.ts`**：拖拽期间（screen 元素内主键按下 → document mouseup）`attachCustomWheelEventHandler` 接管滚轮——`preventDefault` + `term.scrollLines(±rows)`（按 deltaMode 换算，像素模式 ~40px/行、上限 8 行）+ 通过 `_core._selectionService._model` 桥写 `selectionEnd`（滚动方向延伸到新视口边缘行：下滚到行尾、上滚到行首）+ `refresh()` 重绘；返回 false 阻止 xterm 二次滚动/方向键转换。**边缘自动滚动兜底**：50ms interval 检测最后鼠标位置，出 screen 上/下界时按出界深度 1..8 行/tick 自动滚动并延伸选区；检测 xterm 原生 `_dragScrollAmount` 非 0 时让位（避免双重滚动）。内部桥集中在一个类型化访问器，xterm 升级形状不匹配时静默降级（滚动仍工作，仅不延伸选区）。
+- **`TerminalContextMenu.tsx`**：shadcn ContextMenu 包裹终端 host——复制（有选区）/ 粘贴（`readText` → `term.paste`，被拒时禁用并显示「无法读取剪贴板」）/ 全选 / 引用到对话（复用现有选区引用语义）。挂载时探测剪贴板可用性，jsdom / 旧 webview 无 clipboard API 时防御性降级。
+- **`TerminalView.tsx`**：接线三模块（clipboardKeys + dragScroll + 右键菜单壳），teardown 顺序 disposer 全清。
+- **i18n**：`terminal.contextMenu.{copy,paste,pasteDenied,selectAll}` 七语言同步（zh-CN 语义源，zh-TW 按台湾用语校对）。
+
+### 交互定义（确认版）
+
+| 操作 | 行为 |
+|---|---|
+| Ctrl+C（有选区） | 复制；无选区 = SIGINT（终端惯例保留） |
+| Ctrl+V / ⌘V / 右键菜单粘贴 | 粘贴（bracketed paste 由 xterm 处理） |
+| 右键 | 应用内菜单：复制 / 粘贴 / 全选 / 引用到对话 |
+| 拖拽中滚轮 | 内容滚动，选区端点同步延伸（浏览器语义） |
+| 拖到视口上/下边缘 | 自动滚动并持续延伸选区（1..8 行/tick 随出界深度） |
+
+### 回归
+
+- **`terminal-interaction.test.tsx`（新建，9 项）**：Ctrl+C 有选区复制且取消按键（不触发 SIGINT）/ 无选区放行 ETX；Ctrl+V 走 `term.paste`；剪贴板被拒写内联提示；⌘C/⌘V 放行；非拖拽滚轮放行（xterm 默认）；拖拽中滚轮 → scrollLines + selectionEnd 延伸到新视口边缘 + refresh；拖出下边缘自动滚动（速度>0）且 mouseup 后停止；挂载即注册两个 handler。
+- 既有 mock 面扩展：`terminal-view-lifecycle` / `terminal-input-wiring` / `terminal-agent-session-visibility` 三个测试的 Terminal mock 补新 API（attachCustomKeyEventHandler 等），原有断言不变。
+- 终端链路 8 个测试文件 38 项全绿（2026-11-24）；tsc（src 范围）0 error。

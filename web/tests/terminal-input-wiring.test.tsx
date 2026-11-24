@@ -23,6 +23,16 @@ vi.mock('@xterm/xterm', () => ({
     open() {}
     onData(cb: (d: string) => void) { this.handler = cb; return { dispose() {} }; }
     onResize() { return { dispose() {} }; }
+    attachCustomKeyEventHandler() {}
+    attachCustomWheelEventHandler() {}
+    hasSelection() { return false; }
+    getSelection() { return ''; }
+    clearSelection() {}
+    paste() {}
+    scrollLines() {}
+    buffer = { active: { viewportY: 0, length: 1 } };
+    cols = 80;
+    rows = 24;
     write() {}
     focus() {}
     dispose() {}

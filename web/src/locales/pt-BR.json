@@ -3675,6 +3675,12 @@
     "otpDialogTitleNamed": "{{name}} precisa da frase secreta de uso único",
     "otpSubmitFailed": "Falha ao enviar a frase secreta. Tente novamente.",
     "quoteToConversation": "Citar na conversa",
+    "contextMenu": {
+      "copy": "Copiar",
+      "paste": "Colar",
+      "pasteDenied": "Área de transferência indisponível",
+      "selectAll": "Selecionar tudo"
+    },
     "failed": {
       "sessionNotFound": "Sessão não encontrada ou já fechada",
       "sessionLimit": "Limite de sessões atingido — feche uma aba primeiro",

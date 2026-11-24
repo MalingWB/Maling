@@ -3675,6 +3675,12 @@
     "otpDialogTitleNamed": "{{name}} needs the one-time passphrase",
     "otpSubmitFailed": "Failed to submit the passphrase. Please retry.",
     "quoteToConversation": "Quote to conversation",
+    "contextMenu": {
+      "copy": "Copy",
+      "paste": "Paste",
+      "pasteDenied": "Clipboard unavailable",
+      "selectAll": "Select All"
+    },
     "failed": {
       "sessionNotFound": "Session not found or already closed",
       "sessionLimit": "Session limit reached — close a tab first",
