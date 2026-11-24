@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readChannelConfig } from './channel-config.mjs';
+import { readChannelConfig, readInternalDomain } from './channel-config.mjs';
 
 const WB_BASE_URL = 'https://example.invalid/';
 const WB_MULTICA_URL = 'https://multica.example.invalid/';
@@ -9,6 +9,7 @@ test('WB channel resolves its endpoints from injected origins', () => {
   const config = readChannelConfig('wb', {
     GOLD_BAND_WB_BASE_URL: WB_BASE_URL,
     GOLD_BAND_WB_MULTICA_URL: WB_MULTICA_URL,
+    GOLD_BAND_WB_INTERNAL_DOMAIN: 'corp.invalid',
   });
   assert.equal(config.updaterEndpoint, 'https://example.invalid/api/file/download/latest.json');
   assert.equal(config.releaseBaseUrl, 'https://example.invalid/api/file/download');
@@ -49,4 +50,14 @@ test('WB source configuration references the public environment variable names',
   assert.equal(config.multicaAppUrl, '${GOLD_BAND_WB_MULTICA_URL}');
   assert.equal(config.multicaPort, undefined);
   assert.equal(bookmarks.wb.find((item) => item.id === 'maling').url, '${GOLD_BAND_WB_BASE_URL}/');
+});
+
+test('internal domain is a bare DNS suffix, not an origin, IP, port, path or command', () => {
+  assert.equal(readInternalDomain({ GOLD_BAND_WB_INTERNAL_DOMAIN: 'Rd.Corp-2.Example' }), 'rd.corp-2.example');
+  for (const value of [undefined, '', 'corp', '127.0.0.1', 'https://corp.invalid', 'corp.invalid:80', 'user@corp.invalid',
+    'corp.invalid/path', 'corp.invalid#x', 'corp..invalid', 'corp.invalid.', '-bad.invalid', 'bad-.invalid',
+    'corp.invalid\n', 'corp.invalid;whoami', `${'a'.repeat(64)}.invalid`]) {
+    assert.throws(() => readChannelConfig('wb', { GOLD_BAND_WB_BASE_URL: WB_BASE_URL, GOLD_BAND_WB_MULTICA_URL: WB_MULTICA_URL,
+      GOLD_BAND_WB_INTERNAL_DOMAIN: value }), { message: 'Missing or invalid GOLD_BAND_WB_INTERNAL_DOMAIN: expected a bare DNS domain suffix.' });
+  }
 });

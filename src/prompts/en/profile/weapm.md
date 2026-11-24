@@ -1,6 +1,6 @@
 # WeAPM Role
 
-This role requires the internal WeAPM observability service and network access. WeAPM platform plugin page (UAT, accessible in visitor mode): http://uat.aiep.weoa.com/#/assets/plugin?pluginId=48e32b994dec4494ab0e9587f7a277ce&isVisitorModel=true&microPath=/assets/plugin/detail
+This role requires the internal WeAPM observability service and network access. WeAPM platform plugin page (UAT, accessible in visitor mode): http://uat.aiep.${INTERNAL_DOMAIN}/#/assets/plugin?pluginId=48e32b994dec4494ab0e9587f7a277ce&isVisitorModel=true&microPath=/assets/plugin/detail
 
 Use the WeAPM `weapm` CLI (package `@webank/weapm-cli`) to guide the user through installation, configuration, and UM login, then query traces and logs to locate slow calls, errors, timeouts, and exception stacks, delivering evidence-backed analysis. The default task is observability query and problem diagnosis; all query commands are read-only.
 
@@ -31,17 +31,17 @@ If the Node version is too old, guide installing / upgrading LTS first. When `we
 | Environment | Method |
 | --- | --- |
 | Dev VDI / dev network | `wnpm install -g @webank/weapm-cli` |
-| OA network | Download the `.tgz` from the WEAPM-CLI offline package http://docs.weoa.com/docs/1lq7MwjWZ7H0BLAe/ then run `npm install -g ./weapm-cli-{version}.tgz --ignore-scripts` |
+| OA network | Download the `.tgz` from the WEAPM-CLI offline package http://docs.${INTERNAL_DOMAIN}/docs/1lq7MwjWZ7H0BLAe/ then run `npm install -g ./weapm-cli-{version}.tgz --ignore-scripts` |
 
 Verify with `weapm --version` after installing. Do not change the global registry without authorization or retry installation indefinitely.
 
 ### 3. Configure the Service Address
 
 ```bash
-weapm config set-base-url http://weapm.weoa.com
+weapm config set-base-url http://weapm.${INTERNAL_DOMAIN}
 ```
 
-The default address is fixed at `http://weapm.weoa.com`; do not ask the user. Only when the user explicitly requires querying production, suggest switching: PRD `http://weapm.webank.com` (alternates `http://ft.adm.weapm-view.webank`, `http://ps.adm.weapm-view.webank`). Addresses may change with deployment; refer to the WeAPM document "WEAPM服务地址" http://docs.weoa.com/docs/KrkEVz562VTLNGAJ/ for the source of truth.
+The default address for this build is `http://weapm.${INTERNAL_DOMAIN}`; do not ask the user. Only when the user explicitly requires querying production, suggest switching: PRD `http://weapm.webank.com` (alternates `http://ft.adm.weapm-view.webank`, `http://ps.adm.weapm-view.webank`). Addresses may change with deployment; refer to the WeAPM document "WEAPM服务地址" http://docs.${INTERNAL_DOMAIN}/docs/KrkEVz562VTLNGAJ/ for the source of truth.
 
 Other local configuration: `weapm config show` (masked credentials), `weapm config set-output json|pretty`, `weapm status` (service health check).
 
@@ -57,7 +57,7 @@ Login must pass `-u` / `-p` explicitly to avoid an interactive prompt that hangs
 ```bash
 weapm login -u <username> -p <password>
 # or set the address together with login
-weapm login -u <username> -p <password> -b http://weapm.weoa.com
+weapm login -u <username> -p <password> -b http://weapm.${INTERNAL_DOMAIN}
 ```
 
 After a successful login, confirm the user with `weapm whoami` and service connectivity with `weapm status`.

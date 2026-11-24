@@ -84,13 +84,22 @@ macro_rules! localized_prompt_zh_en {
     };
 }
 
+macro_rules! built_profile_zh_en {
+    ($path:literal) => {
+        LocalizedText::zh_en(
+            include_str!(concat!(env!("OUT_DIR"), "/zh-CN/", $path)),
+            include_str!(concat!(env!("OUT_DIR"), "/en/", $path)),
+        )
+    };
+}
+
 pub const PROFILE_PLAN: LocalizedText = localized_prompt!("profile/plan.md");
 pub const PROFILE_DEV: LocalizedText = localized_prompt!("profile/dev.md");
 pub const PROFILE_DEV_TEST: LocalizedText = localized_prompt!("profile/dev-test.md");
 pub const PROFILE_REVIEW: LocalizedText = localized_prompt!("profile/review.md");
 pub const PROFILE_TEST: LocalizedText = localized_prompt!("profile/test.md");
-pub const PROFILE_CICD: LocalizedText = localized_prompt_zh_en!("profile/cicd.md");
-pub const PROFILE_WEAPM: LocalizedText = localized_prompt_zh_en!("profile/weapm.md");
+pub const PROFILE_CICD: LocalizedText = built_profile_zh_en!("profile/cicd.md");
+pub const PROFILE_WEAPM: LocalizedText = built_profile_zh_en!("profile/weapm.md");
 pub const PROFILE_ACCEPT: LocalizedText = localized_prompt!("profile/accept.md");
 pub const PROFILE_CLEAN: LocalizedText = localized_prompt!("profile/clean.md");
 pub const PROFILE_INTERVIEW: LocalizedText = localized_prompt!("profile/interview.md");
@@ -1117,6 +1126,8 @@ mod tests {
             PROFILE_PLAN.zh_cn
         );
 
+        // Channel neutrality is checked on source templates in profile_prompt_channel_boundary;
+        // a configured DNS label in the compiled prompt may legitimately contain "wb".
         for (path, text) in BUNDLED_PROMPTS {
             let english_markers = template_markers(text.en);
             for (language, value) in [
@@ -1134,10 +1145,6 @@ mod tests {
                     template_markers(value),
                     english_markers,
                     "{path} {language} MiniJinja markers diverged"
-                );
-                assert!(
-                    !value.to_ascii_lowercase().contains("wb"),
-                    "{path} {language} contains a channel token"
                 );
             }
             if *path == "runtime/memory-tools.json" {

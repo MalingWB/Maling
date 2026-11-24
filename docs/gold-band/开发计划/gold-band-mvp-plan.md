@@ -3172,3 +3172,9 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - 实现：`portal-container` 新增纯函数 `overlayFitsBeside` / `overlayCollisionRect`；`AcpModelThoughtSelects` 把模型与配置分区收成同一个 `CompositeConfigSection`，`openSection` 统一记录 `{ id, presentation: flyout | inline }`。每次尝试打开时测量主菜单与边界：放得下走原有 Radix 侧弹；放不下时悬停不弹出，点击 / Enter / Space / → 在主菜单内原地展开，← 收起。
 - 证据：`web/tests/acp-model-thought-submenu-placement.test.tsx` 在修复前因窄边界下仍打开侧向菜单而失败，修复后与相关菜单、碰撞边界测试全部通过；浏览器 harness 验证 480px 会话栏原地展开且不越界，900px 会话栏保持悬停侧弹。
 - 过度设计与性能评审：只在打开二级菜单时读一次 `getBoundingClientRect`，无常驻监听、缓存或新的持久状态；两种载体共用同一份单选列表。
+
+## 2026-11-23 WB 书签与内置角色的内部域名配置
+
+- WB 开发与发布从 `GOLD_BAND_WB_INTERNAL_DOMAIN` 读取一个独立 DNS 后缀；六个工具书签与 WeAPM、CI/CD 的中英文正文在构建期完成替换。官网书签与 Multica 仍使用各自的 origin。
+- 验收：校验缺失及非法输入；验证书签完整 URL、双语角色中的端口与路径、默认渠道不需要配置，以及两条发布工作流实际执行步骤的 Secret 注入和仓库域名扫描。
+- 复用既有渠道选择、书签解析及角色回退，无运行时查环境变量、网络请求或新增依赖。

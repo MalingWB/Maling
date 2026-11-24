@@ -1,3 +1,6 @@
+#[path = "../build_support/internal_domain.rs"]
+mod internal_domain;
+pub use internal_domain::InternalDomain;
 use serde_json::Value;
 use url::Url;
 
@@ -9,11 +12,13 @@ const MULTICA_TOKEN: &str = "${GOLD_BAND_WB_MULTICA_URL}";
 pub struct WbUrls {
     base: String,
     multica: String,
+    domain: InternalDomain,
 }
 
 impl WbUrls {
-    pub fn new(base: &str, multica: &str) -> Result<Self, String> {
+    pub fn new(base: &str, multica: &str, domain: InternalDomain) -> Result<Self, String> {
         Ok(Self {
+            domain,
             base: origin_from(WB_BASE_URL, base)?,
             multica: origin_from(WB_MULTICA_URL, multica)?,
         })
@@ -22,7 +27,9 @@ impl WbUrls {
     pub fn resolve(&self, value: &mut Value) {
         match value {
             Value::String(text) => {
-                *text = text
+                *text = self
+                    .domain
+                    .render(text)
                     .replace(BASE_TOKEN, &self.base)
                     .replace(MULTICA_TOKEN, &self.multica)
             }
@@ -71,18 +78,23 @@ fn invalid_origin(name: &str) -> String {
 pub fn wb_urls() -> Result<WbUrls, String> {
     let base = std::env::var(WB_BASE_URL).map_err(|_| format!("missing {WB_BASE_URL}"))?;
     let multica = std::env::var(WB_MULTICA_URL).map_err(|_| format!("missing {WB_MULTICA_URL}"))?;
-    WbUrls::new(&base, &multica)
+    WbUrls::new(&base, &multica, InternalDomain::from_env()?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn domain() -> InternalDomain {
+        InternalDomain::parse("corp.invalid").unwrap()
+    }
+
     #[test]
     fn resolves_wb_channel_and_bookmarks_with_separate_origins() {
         let urls = WbUrls::new(
             "https://example.invalid/",
             "https://multica.example.invalid/",
+            domain(),
         )
         .unwrap();
         let mut config: Value =
@@ -113,7 +125,21 @@ mod tests {
                 .unwrap()
                 .contains("https://example.invalid")
         );
-        assert_eq!(bookmarks["wb"][0]["url"], "https://example.invalid/");
+        let wb = bookmarks["wb"].as_array().unwrap();
+        for (id, expected) in [
+            ("maling", "https://example.invalid/"),
+            ("ci", "http://rd.corp.invalid/"),
+            ("dpms", "http://dpms.corp.invalid/"),
+            ("aomp", "http://uat.aompplus.corp.invalid/"),
+            ("weapm", "http://weapm.corp.invalid/"),
+            ("pace", "http://pace.corp.invalid/"),
+            ("cmdb", "http://uat.cmdb.corp.invalid/"),
+        ] {
+            assert_eq!(
+                wb.iter().find(|item| item["id"] == id).unwrap()["url"],
+                expected
+            );
+        }
     }
 
     #[test]
@@ -128,7 +154,7 @@ mod tests {
             "https://example.invalid/a/..",
             "https://example.invalid/?secret=1",
         ] {
-            let error = WbUrls::new(raw, "https://multica.example.invalid")
+            let error = WbUrls::new(raw, "https://multica.example.invalid", domain())
                 .err()
                 .expect("must reject invalid service origin");
             assert!(error.contains("GOLD_BAND_WB_BASE_URL"));
@@ -144,7 +170,7 @@ mod tests {
             "https://example.invalid/a/..",
             "https://example.invalid/?secret=1",
         ] {
-            let error = WbUrls::new("https://example.invalid", raw)
+            let error = WbUrls::new("https://example.invalid", raw, domain())
                 .err()
                 .expect("must reject invalid multica origin");
             assert!(error.contains("GOLD_BAND_WB_MULTICA_URL"));

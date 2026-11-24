@@ -27,9 +27,21 @@ function readOrigin(env, name) {
   }
 }
 
+// Same DNS contract as the Rust build: leave room for the longest service prefix.
+export function readInternalDomain(env) {
+  const raw = env.GOLD_BAND_WB_INTERNAL_DOMAIN;
+  const labels = typeof raw === 'string' ? raw.split('.') : [];
+  if (labels.length < 2 || raw.length + 'uat.aompplus.'.length > 253 || !/^[A-Za-z]/.test(labels.at(-1)) ||
+      labels.some((label) => label.length < 1 || label.length > 63 || /[^A-Za-z0-9-]/.test(label) || label.startsWith('-') || label.endsWith('-'))) {
+    throw new Error('Missing or invalid GOLD_BAND_WB_INTERNAL_DOMAIN: expected a bare DNS domain suffix.');
+  }
+  return raw.toLowerCase();
+}
+
 function resolveWbConfig(config, env) {
   const origin = readOrigin(env, WB_BASE_URL_ENV);
   const multicaOrigin = readOrigin(env, WB_MULTICA_URL_ENV);
+  readInternalDomain(env); // Validate desktop build inputs before packaging starts.
   const replace = (value) => {
     if (typeof value === 'string') return value.replaceAll(BASE_TOKEN, origin).replaceAll(MULTICA_TOKEN, multicaOrigin);
     if (Array.isArray(value)) return value.map(replace);

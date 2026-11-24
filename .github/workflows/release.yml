@@ -23,6 +23,7 @@ jobs:
     env:
       GOLD_BAND_WB_BASE_URL: ${{ secrets.GOLD_BAND_WB_BASE_URL }}
       GOLD_BAND_WB_MULTICA_URL: ${{ secrets.GOLD_BAND_WB_MULTICA_URL }}
+      GOLD_BAND_WB_INTERNAL_DOMAIN: ${{ secrets.GOLD_BAND_WB_INTERNAL_DOMAIN }}
 
     steps:
       - name: Checkout release tag
@@ -78,6 +79,7 @@ jobs:
       GOLD_BAND_METRICS_API_KEY: ${{ secrets.GOLD_BAND_METRICS_API_KEY }}
       GOLD_BAND_WB_BASE_URL: ${{ secrets.GOLD_BAND_WB_BASE_URL }}
       GOLD_BAND_WB_MULTICA_URL: ${{ secrets.GOLD_BAND_WB_MULTICA_URL }}
+      GOLD_BAND_WB_INTERNAL_DOMAIN: ${{ secrets.GOLD_BAND_WB_INTERNAL_DOMAIN }}
 
     steps:
       - name: Checkout release tag
@@ -225,6 +227,7 @@ jobs:
         env:
           GOLD_BAND_WB_BASE_URL: ${{ secrets.GOLD_BAND_WB_BASE_URL }}
           GOLD_BAND_WB_MULTICA_URL: ${{ secrets.GOLD_BAND_WB_MULTICA_URL }}
+          GOLD_BAND_WB_INTERNAL_DOMAIN: ${{ secrets.GOLD_BAND_WB_INTERNAL_DOMAIN }}
         shell: bash
         run: node release-tools/scripts/generate-release-assets.mjs release-assets release-output --version "${RELEASE_TAG#v}"
 

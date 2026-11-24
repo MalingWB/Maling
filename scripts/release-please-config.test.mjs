@@ -30,6 +30,7 @@ for (const [file, toolingRoot] of [
     const env = { ...workflow.env, ...preflight.env, ...check.env };
     assert.equal(env.GOLD_BAND_RELEASE_CHANNEL, 'wb');
     assert.equal(env.GOLD_BAND_WB_BASE_URL, '${{ secrets.GOLD_BAND_WB_BASE_URL }}');
+    assert.equal(env.GOLD_BAND_WB_INTERNAL_DOMAIN, '${{ secrets.GOLD_BAND_WB_INTERNAL_DOMAIN }}');
     assert.equal(env.GOLD_BAND_WB_MULTICA_URL, '${{ secrets.GOLD_BAND_WB_MULTICA_URL }}');
   });
 
@@ -62,6 +63,11 @@ for (const [file, toolingRoot] of [
     const actionIndex = build.steps.findIndex((step) => step.uses?.startsWith('tauri-apps/tauri-action@'));
     assert.ok(actionIndex > prepareIndex);
     const action = build.steps[actionIndex];
+    const scan = build.steps.find((step) => step.run === `node ${toolingRoot}scripts/check-wb-domain.mjs`);
+    for (const [job, step] of [[build, scan], [build, build.steps[prepareIndex]], [build, action], [workflow.jobs['updater-json'], manifestStep]]) {
+      const env = { ...workflow.env, ...job.env, ...step.env };
+      assert.equal(env.GOLD_BAND_WB_INTERNAL_DOMAIN, '${{ secrets.GOLD_BAND_WB_INTERNAL_DOMAIN }}');
+    }
     assert.equal(action.with.args, '--config src-tauri/target/channel/tauri.release.conf.json');
     assert.equal(action.with.releaseName, '${{ steps.channel.outputs.release_name }}');
     assert.equal(action.with.releaseDraft, true);

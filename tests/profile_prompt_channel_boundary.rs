@@ -73,3 +73,34 @@ fn all_prompt_assets_are_channel_neutral() {
 
     assert!(checked > 0, "prompt tree must contain markdown assets");
 }
+
+#[test]
+fn internal_profiles_embed_only_the_build_channel_domain() {
+    use gold_band::{
+        channel::{RELEASE_CHANNEL, WB_CHANNEL},
+        prompts::{PROFILE_CICD, PROFILE_WEAPM},
+    };
+    for (cicd, weapm) in [
+        (PROFILE_CICD.zh_cn, PROFILE_WEAPM.zh_cn),
+        (PROFILE_CICD.en, PROFILE_WEAPM.en),
+    ] {
+        if RELEASE_CHANNEL == WB_CHANNEL {
+            let domain = option_env!("GOLD_BAND_WB_INTERNAL_DOMAIN")
+                .expect("required for WB builds")
+                .to_ascii_lowercase();
+            assert!(cicd.contains(&format!("http://wnpm.{domain}:8001")));
+            for url in [
+                format!("http://weapm.{domain}"),
+                format!("http://docs.{domain}/docs/"),
+                format!("http://uat.aiep.{domain}/#/assets/plugin?"),
+            ] {
+                assert!(weapm.contains(&url));
+            }
+            assert!(!cicd.contains("${INTERNAL_DOMAIN}") && !weapm.contains("${INTERNAL_DOMAIN}"));
+        } else {
+            // Disabled roles retain channel-neutral templates, even if the builder has WB secrets.
+            assert!(cicd.contains("wnpm.${INTERNAL_DOMAIN}:8001"));
+            assert!(weapm.contains("weapm.${INTERNAL_DOMAIN}"));
+        }
+    }
+}

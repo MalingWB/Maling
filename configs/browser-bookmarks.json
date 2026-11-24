@@ -8,11 +8,11 @@
   ],
   "wb": [
     { "id": "maling", "title": "码灵官网", "url": "${GOLD_BAND_WB_BASE_URL}/" },
-    { "id": "ci", "title": "CI平台", "url": "http://rd.weoa.com/" },
-    { "id": "dpms", "title": "DPMS", "url": "http://dpms.weoa.com/" },
-    { "id": "aomp", "title": "AOMP", "url": "http://uat.aompplus.weoa.com/" },
-    { "id": "weapm", "title": "WeAPM", "url": "http://weapm.weoa.com/" },
-    { "id": "pace", "title": "Pace+", "url": "http://pace.weoa.com/" },
-    { "id": "cmdb", "title": "CMDB", "url": "http://uat.cmdb.weoa.com/" }
+    { "id": "ci", "title": "CI平台", "url": "http://rd.${INTERNAL_DOMAIN}/" },
+    { "id": "dpms", "title": "DPMS", "url": "http://dpms.${INTERNAL_DOMAIN}/" },
+    { "id": "aomp", "title": "AOMP", "url": "http://uat.aompplus.${INTERNAL_DOMAIN}/" },
+    { "id": "weapm", "title": "WeAPM", "url": "http://weapm.${INTERNAL_DOMAIN}/" },
+    { "id": "pace", "title": "Pace+", "url": "http://pace.${INTERNAL_DOMAIN}/" },
+    { "id": "cmdb", "title": "CMDB", "url": "http://uat.cmdb.${INTERNAL_DOMAIN}/" }
   ]
 }
