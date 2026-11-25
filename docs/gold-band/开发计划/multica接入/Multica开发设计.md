@@ -3438,6 +3438,30 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.98 改动九十六：远程 SKILL 同步弹窗支持名称/描述搜索（M5-da，2026-11-25）
+
+**背景**：SKILL 管理页「同步远程 SKILL」弹窗一次性列出工作空间全部远端 SKILL；可同步项多时逐条查找勾选困难，用户要求在弹窗内增加搜索框，支持按 SKILL 名称或概要（description）搜索。
+
+**实现**：
+
+- ① **客户端过滤**：新增 `query` 瞬时状态 + `useMemo` 投影 `visibleSkills`——`trim` + 小写化后对 `name` / `description` 做子串匹配，空查询不过滤；口径与 `ContextManagementPage` 既有 SKILL 列表过滤一致。不引入服务端搜索契约：远端列表本就一次性全量拉取，数量为工作空间级（十到百级），无分页要求。
+- ② **全选语义**：全选作用于当前**可见**（过滤后）项，并保留其他查询下已勾选项（「搜 A 选 A，再搜 B 选 B」可跨多次搜索累积目标）；全选框三态按可见项勾选情况推导，可见集合为空时禁用。计数保持全局口径 `已选 x / 总数 y`——过滤不会低估实际同步范围（避免只看到过滤结果时误以为同步范围变小）。
+- ③ **空态区分**：列表本身为空 → 既有 `remoteSync.empty`；列表非空但无命中 → 复用 `common.noResults`。
+- ④ **状态生命周期**：`query` 与列表/勾选一起重置（弹窗重新打开、切换来源、切换工作空间）；同一工作空间内手动重载保留查询词（重载是为了拿最新列表，用户搜索目标未变）。
+- ⑤ **i18n**：新增 `contextManagement.skills.remoteSync.searchPlaceholder`，7 种语言同步维护（en / zh-CN / zh-TW / es / ja-JP / ko-KR / pt-BR）；语言键集与占位符对等由 `i18n-loading` parity 测试锁定，`remote-skill-sync-i18n` 的 key 清单同步登记。
+
+**方案自评审**：过度设计——复用 shadcn `Input`、已有 `Search` 图标、既有客户端过滤与 `common.noResults`，无新组件/新接口/新状态机/持久化；「全选保留隐藏勾选」是既有 `selected` 单一真源的固有语义（本次只把全选操作收窄到可见集合），未引入第二份选择状态。性能——过滤为 O(n) 子串匹配，n 为工作空间远端 SKILL 数，每次按键一次全量比较、无 I/O；不引入防抖（与既有 SKILL 列表过滤同规模），本次不触碰列表/同步热路径。
+
+**验证结果**：
+
+- 单元/契约测试：`remote-skill-sync-dialog.test.tsx` 新增 3 例——① 名称大小写不敏感与「仅描述命中」均保留，无命中显示 `common.noResults` 且只剩（禁用的）全选行，过滤不触发再次拉取；② 可见项全选跨搜索累积并保留隐藏勾选，提交为完整集合；③ 弹窗重开清空查询。该文件既有 4 例回归；同批 3 个文件（dialog / remote-sync i18n 对等 / i18n-loading 七语言对等）**18 passed / 0 failed**。
+- `tsc -p web/tsconfig.build.json --noEmit` 零错误。
+- 真实浏览器（Chrome + `web:dev`，临时浏览器桩播种 1 个工作空间 + 12 个远端 SKILL，验后已 revert）：名称/描述搜索命中与无命中态正确；过滤后全选令全局计数 9/12 → 10/12、确认按钮为「同步（覆盖 1）」；清空查询保留跨搜索勾选；480px 窄窗口与深色主题下搜索框、全选行、列表布局与对比度正常。
+
+**文件**：`web/src/components/RemoteSkillSyncDialog.tsx`、`web/src/locales/{en,zh-CN,zh-TW,es,ja-JP,ko-KR,pt-BR}.json`、`web/tests/remote-skill-sync-dialog.test.tsx`、`web/tests/remote-skill-sync-i18n.test.ts`；文档 `接入方案.md` M5-da、本条。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）

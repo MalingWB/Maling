@@ -1517,6 +1517,7 @@
         "reload": "重新載入",
         "reportSummary": "新建 {{created}} · 覆蓋 {{overwritten}} · 跳過 {{skipped}} · 失敗 {{failed}}",
         "reportTitle": "同步結果",
+        "searchPlaceholder": "搜尋名稱或描述…",
         "selectAll": "全選",
         "selectedCount": "已選 {{selected}} / {{total}}",
         "title": "從遠端同步 SKILL",

@@ -16,6 +16,7 @@ const KEYS = [
   'reload',
   'newBadge',
   'existsBadge',
+  'searchPlaceholder',
   'selectAll',
   'selectedCount',
   'confirm',

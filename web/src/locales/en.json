@@ -1499,6 +1499,7 @@
         "title": "Sync SKILLs from remote",
         "workspace": "Workspace",
         "reload": "Reload",
+        "searchPlaceholder": "Search name or description…",
         "newBadge": "New",
         "existsBadge": "Exists, will overwrite",
         "selectAll": "Select all",
