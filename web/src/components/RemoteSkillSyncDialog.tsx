@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { Loader2, RefreshCw } from 'lucide-react';
+import { Loader2, RefreshCw, Search } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -42,8 +43,10 @@ interface RemoteSkillSyncDialogProps {
   onFinished: () => void;
 }
 
-/// SKILL 管理页「从远程同步」弹窗：选择远程来源 → 工作空间 → 勾选远端 SKILL（新增默认
-/// 勾选，已存在默认不勾选并提示将覆盖）→ 同步 → 展示逐项结果报告。
+/// SKILL 管理页「从远程同步」弹窗：选择远程来源 → 工作空间 → 按名称/描述筛选并勾选远端
+/// SKILL（新增默认勾选，已存在默认不勾选并提示将覆盖）→ 同步 → 展示逐项结果报告。
+/// 筛选只投影当前可见集合；全选作用于可见项并保留其他搜索下已勾选项；计数保持全局口径，
+/// 确保过滤时同步范围不会被低估。
 /// 来源选择器由注册表驱动（与需求管理页同款，单来源也显示）；文案零品牌名——来源名只作为
 /// 选择器数据出现。当前 wire 无来源参数（单来源在架），来源相关的连接状态/列表拉取以
 /// 单一 helper 收口，P2 引入 SkillSource wire 参数时只扩 helper、弹窗结构不动。
@@ -60,6 +63,8 @@ export function RemoteSkillSyncDialog({
   const [settings, setSettings] = useState<MulticaSettingsVm | null>(null);
   const [workspaceId, setWorkspaceId] = useState('');
   const [skills, setSkills] = useState<RemoteSkillListItemVm[]>([]);
+  // 当前列表的瞬时过滤条件：生命周期与列表/勾选一起重置（打开、换来源、换工作空间）。
+  const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [loadingList, setLoadingList] = useState(false);
   const [pulling, setPulling] = useState(false);
@@ -88,6 +93,7 @@ export function RemoteSkillSyncDialog({
     setSettings(null);
     setWorkspaceId('');
     setSkills([]);
+    setQuery('');
     setSelected({});
     setError(null);
     setReport(null);
@@ -133,20 +139,41 @@ export function RemoteSkillSyncDialog({
     return () => { cancelled = true; };
   }, [open, workspaceId, reloadNonce, t]);
 
+  // 客户端过滤已加载列表：名称或描述的大小写不敏感子串匹配；trim 空查询不过滤。
+  // 远端列表本就一次性全量拉取，不引入服务端搜索契约。
+  const visibleSkills = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return skills;
+    return skills.filter(
+      (item) =>
+        item.name.toLowerCase().includes(normalized) ||
+        item.description.toLowerCase().includes(normalized),
+    );
+  }, [skills, query]);
+
   const selectedIds = skills.filter((item) => selected[item.id]);
   const selectedExistsCount = selectedIds.filter((item) => item.localState === 'exists').length;
+  const visibleSelectedCount = visibleSkills.filter((item) => selected[item.id]).length;
+  const selectAllVisible =
+    visibleSkills.length > 0 && visibleSelectedCount === visibleSkills.length;
 
-  // 全选开关：非全选 → 点选全部；全选 → 全不选（默认「新增勾选、已存在不勾」的部分态
-  // 下连点两次即可全部取消，再单独勾选想要的）。状态仍收敛在 selected 单一事实源。
+  // 全选开关作用于当前可见（过滤后的）项，并保留其他搜索下已勾选项——支持「搜 A 选 A，
+  // 再搜 B 选 B」跨多次搜索累积目标 SKILL。计数仍是全局口径，同步范围不会被过滤低估。
   function handleToggleSelectAll(selectAll: boolean) {
-    setSelected(Object.fromEntries(skills.map((item) => [item.id, selectAll])));
+    if (visibleSkills.length === 0) return;
+    setSelected((prev) => {
+      const next = { ...prev };
+      for (const item of visibleSkills) next[item.id] = selectAll;
+      return next;
+    });
   }
 
-  // 换来源 → 工作空间与勾选随来源重置（fallback effect 重选默认空间后列表 effect 重拉）。
+  // 换来源 → 工作空间、查询与勾选随来源重置（fallback effect 重选默认空间后列表 effect 重拉）。
   function handleSourceChange(next: string) {
     if (!isRemoteTaskSource(next) || next === source) return;
     setSource(next);
     setWorkspaceId('');
+    setQuery('');
     setSelected({});
   }
 
@@ -223,7 +250,7 @@ export function RemoteSkillSyncDialog({
                   </div>
                   <Select
                     value={workspaceId || undefined}
-                    onValueChange={setWorkspaceId}
+                    onValueChange={(next) => { setWorkspaceId(next); setQuery(''); }}
                     disabled={loadingList || pulling || (settings?.workspaces.length ?? 0) < 2}
                   >
                     <SelectTrigger className="h-9 min-w-0 text-xs">
@@ -249,17 +276,31 @@ export function RemoteSkillSyncDialog({
                 </Button>
               </div>
 
+              {workspaceId && (
+                <div className="relative shrink-0">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    className="h-9 pl-8 text-xs"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder={t('contextManagement.skills.remoteSync.searchPlaceholder')}
+                    aria-label={t('contextManagement.skills.remoteSync.searchPlaceholder')}
+                    disabled={loadingList || pulling}
+                  />
+                </div>
+              )}
+
               {!loadingList && skills.length > 0 && (
                 <label className="flex shrink-0 cursor-pointer items-center gap-2 px-1">
                   <Checkbox
                     checked={
-                      selectedIds.length === skills.length
+                      selectAllVisible
                         ? true
-                        : selectedIds.length > 0
+                        : visibleSelectedCount > 0
                           ? 'indeterminate'
                           : false
                     }
-                    disabled={pulling}
+                    disabled={pulling || visibleSkills.length === 0}
                     onCheckedChange={(checked) => handleToggleSelectAll(checked === true)}
                   />
                   <span className="text-xs font-medium">
@@ -286,7 +327,12 @@ export function RemoteSkillSyncDialog({
                       {t('contextManagement.skills.remoteSync.empty')}
                     </p>
                   )}
-                  {!loadingList && skills.map((item) => (
+                  {!loadingList && skills.length > 0 && visibleSkills.length === 0 && (
+                    <p className="p-6 text-center text-xs text-muted-foreground">
+                      {t('common.noResults')}
+                    </p>
+                  )}
+                  {!loadingList && visibleSkills.map((item) => (
                     <label
                       key={item.id}
                       className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-muted/50"

@@ -20,6 +20,7 @@ vi.mock('@/i18n', () => ({
 vi.mock('lucide-react', () => ({
   Loader2: () => null,
   RefreshCw: () => null,
+  Search: () => null,
 }));
 
 vi.mock('@/components/ui/dialog', () => ({
@@ -148,6 +149,24 @@ function syncButton(container: HTMLElement): HTMLButtonElement {
   );
   if (!button) throw new Error('sync button not found');
   return button;
+}
+
+function searchInput(container: HTMLElement): HTMLInputElement {
+  const input = [...container.querySelectorAll<HTMLInputElement>('input')].find(
+    (candidate) => candidate.getAttribute('aria-label') === `${BASE}.searchPlaceholder`,
+  );
+  if (!input) throw new Error('search input not found');
+  return input;
+}
+
+/// 受控 React input 需经原型 setter + input 事件触发 onChange（直接赋值不触发）。
+async function typeSearch(container: HTMLElement, value: string) {
+  const input = searchInput(container);
+  const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  await act(async () => {
+    setValue?.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 }
 
 beforeEach(() => {
@@ -283,6 +302,100 @@ describe('remote skill sync dialog', () => {
     await flushEffects();
     expect(mocks.pullRemoteSkills).toHaveBeenCalledTimes(1);
     expect(mocks.pullRemoteSkills).toHaveBeenCalledWith('ws-1', ['s-new']);
+  });
+
+  it('filters by name or description and distinguishes empty from no matching results', async () => {
+    mocks.listRemoteSkills.mockResolvedValue([
+      { id: 's-deploy', name: 'Deploy Helper', description: 'Automates deployment', localState: 'new' },
+      { id: 's-old', name: 'Old One', description: '', localState: 'exists' },
+    ]);
+    const { container, root } = renderDialog();
+    await act(async () => {
+      root.render(
+        <RemoteSkillSyncDialog open onOpenChange={() => {}} onFinished={() => {}} />,
+      );
+    });
+    await flushEffects();
+
+    expect(container.textContent).toContain('Deploy Helper');
+    expect(container.textContent).toContain('Old One');
+
+    // 名称匹配（大小写不敏感）。
+    await typeSearch(container, 'DEPLOY');
+    expect(container.textContent).toContain('Deploy Helper');
+    expect(container.textContent).not.toContain('Old One');
+
+    // 描述匹配：查询词只出现在 description 也应命中。
+    await typeSearch(container, 'automates');
+    expect(container.textContent).toContain('Deploy Helper');
+    expect(container.textContent).not.toContain('Old One');
+
+    // 无命中：显示既有 common.noResults，只剩全选行（禁用的空可见集合）。
+    await typeSearch(container, 'zzz');
+    expect(container.textContent).toContain('common.noResults');
+    expect(container.textContent).not.toContain('Deploy Helper');
+    expect(container.querySelectorAll('label input')).toHaveLength(1);
+
+    // 过滤是纯客户端投影，不触发再次拉取。
+    expect(mocks.listRemoteSkills).toHaveBeenCalledTimes(1);
+  });
+
+  it('select-all applies to filtered rows and preserves selections across searches', async () => {
+    const { container, root } = renderDialog();
+    await act(async () => {
+      root.render(
+        <RemoteSkillSyncDialog open onOpenChange={() => {}} onFinished={() => {}} />,
+      );
+    });
+    await flushEffects();
+
+    // 默认：新增已勾、旧项未勾。
+    expect(itemCheckbox(container, 'New One').dataset.checked).toBe('true');
+    expect(itemCheckbox(container, 'Old One').dataset.checked).toBe('false');
+
+    // 搜索到旧项后全选：只勾当前可见项，隐藏的新增项保持原勾选。
+    await typeSearch(container, 'Old');
+    expect(container.textContent).not.toContain('New One');
+    await act(async () => { selectAllCheckbox(container).click(); });
+    expect(itemCheckbox(container, 'Old One').dataset.checked).toBe('true');
+
+    // 清空搜索：两次搜索的选择累积，全选框回到全选态。
+    await typeSearch(container, '');
+    expect(itemCheckbox(container, 'New One').dataset.checked).toBe('true');
+    expect(itemCheckbox(container, 'Old One').dataset.checked).toBe('true');
+    expect(selectAllCheckbox(container).dataset.checked).toBe('true');
+
+    // 提交的是累积后的完整集合，而非最后一次过滤的可见项。
+    await act(async () => { syncButton(container).click(); });
+    await flushEffects();
+    expect(mocks.pullRemoteSkills).toHaveBeenCalledWith('ws-1', ['s-new', 's-exists']);
+  });
+
+  it('clears the search query when the dialog reopens', async () => {
+    const { container, root } = renderDialog();
+    await act(async () => {
+      root.render(
+        <RemoteSkillSyncDialog open onOpenChange={() => {}} onFinished={() => {}} />,
+      );
+    });
+    await flushEffects();
+
+    await typeSearch(container, 'Old');
+    expect(searchInput(container).value).toBe('Old');
+
+    await act(async () => {
+      root.render(
+        <RemoteSkillSyncDialog open={false} onOpenChange={() => {}} onFinished={() => {}} />,
+      );
+    });
+    await act(async () => {
+      root.render(
+        <RemoteSkillSyncDialog open onOpenChange={() => {}} onFinished={() => {}} />,
+      );
+    });
+    await flushEffects();
+
+    expect(searchInput(container).value).toBe('');
   });
 
   it('not connected → source selector + inline connect entry; connected via dialog refetches settings', async () => {

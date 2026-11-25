@@ -1517,6 +1517,7 @@
         "reload": "다시 불러오기",
         "reportSummary": "생성 {{created}} · 덮어쓰기 {{overwritten}} · 건너뜀 {{skipped}} · 실패 {{failed}}",
         "reportTitle": "동기화 결과",
+        "searchPlaceholder": "이름 또는 설명 검색…",
         "selectAll": "모두 선택",
         "selectedCount": "{{selected}} / {{total}} 선택됨",
         "title": "원격에서 SKILL 동기화",

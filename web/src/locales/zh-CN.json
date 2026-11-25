@@ -1499,6 +1499,7 @@
         "title": "从远程同步 SKILL",
         "workspace": "工作空间",
         "reload": "重新加载",
+        "searchPlaceholder": "搜索名称或描述…",
         "newBadge": "新增",
         "existsBadge": "已存在，将覆盖",
         "selectAll": "全选",

@@ -1517,6 +1517,7 @@
         "reload": "Recarregar",
         "reportSummary": "Criados {{created}} · Sobrescritos {{overwritten}} · Ignorados {{skipped}} · Com falha {{failed}}",
         "reportTitle": "Resultados da sincronização",
+        "searchPlaceholder": "Buscar nome ou descrição…",
         "selectAll": "Selecionar tudo",
         "selectedCount": "{{selected}} / {{total}} selecionados",
         "title": "Sincronizar SKILLs do remoto",

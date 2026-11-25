@@ -1517,6 +1517,7 @@
         "reload": "再読み込み",
         "reportSummary": "作成 {{created}} · 上書き {{overwritten}} · スキップ {{skipped}} · 失敗 {{failed}}",
         "reportTitle": "同期結果",
+        "searchPlaceholder": "名前または説明を検索…",
         "selectAll": "すべて選択",
         "selectedCount": "{{selected}} / {{total}} 件を選択中",
         "title": "リモートから SKILL を同期",
