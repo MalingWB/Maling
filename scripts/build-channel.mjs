@@ -5,6 +5,7 @@ import { basename, join, relative } from 'node:path';
 import { assertChannelBuildSecrets, channelBuildPlan, parseChannelBuildArgs, updaterGeneratorArgs } from './build-channel-options.mjs';
 import { findBundleDir, possibleBundleDirs, readCargoTargetDirectory } from './cargo-bundle-dirs.mjs';
 import { channelEnvPrefix, readChannelConfig, repoRoot, writeTauriConfigOverlay } from './channel-config.mjs';
+import { loadLocalEnv } from './local-env.mjs';
 
 let buildOptions;
 try {
@@ -14,6 +15,9 @@ try {
   process.exit(1);
 }
 const { channel, isCritical, devtools } = buildOptions;
+
+// `.env` 提供 WB origin、签名私钥等本地构建配置；已导出的变量与 CI Secret 优先。
+loadLocalEnv(process.env);
 
 let config;
 try {

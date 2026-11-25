@@ -1,3 +1,4 @@
+process.env.GOLD_BAND_WB_INTERNAL_DOMAIN = 'corp.invalid';
 process.env.GOLD_BAND_WB_BASE_URL = 'https://example.invalid';
 process.env.GOLD_BAND_WB_MULTICA_URL = 'https://multica.example.invalid';
 import assert from 'node:assert/strict';
@@ -50,6 +51,8 @@ test('release preparation uses WB identity and exact tag version without exposin
 });
 
 for (const [overrides, message] of [
+  [{ GOLD_BAND_WB_INTERNAL_DOMAIN: '' }, /GOLD_BAND_WB_INTERNAL_DOMAIN/],
+  [{ GOLD_BAND_WB_INTERNAL_DOMAIN: 'https://corp.invalid' }, /GOLD_BAND_WB_INTERNAL_DOMAIN/],
   [{ GOLD_BAND_WB_BASE_URL: '' }, /GOLD_BAND_WB_BASE_URL/],
   [{ GOLD_BAND_WB_BASE_URL: 'https://example.invalid/path' }, /GOLD_BAND_WB_BASE_URL/],
   [{ GOLD_BAND_WB_MULTICA_URL: '' }, /GOLD_BAND_WB_MULTICA_URL/],

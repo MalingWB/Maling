@@ -39,6 +39,10 @@ struct ChannelConfig {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=GOLD_BAND_RELEASE_CHANNEL");
+    println!(
+        "cargo:rerun-if-env-changed={}",
+        build_channel_config::InternalDomain::ENV
+    );
     println!("cargo:rerun-if-env-changed=GOLD_BAND_WB_BASE_URL");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_WB_MULTICA_URL");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_METRICS_API_KEY");
