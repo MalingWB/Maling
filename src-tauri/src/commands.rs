@@ -31,14 +31,14 @@ use gold_band::app::runtime_resume::{
 };
 use gold_band::app::{
     AcpPromptLifecycleEvent, AcpTurnBatchProgress, AcpTurnOutcome, App, AutoTemplate,
-    AutoTemplateStore, BoundedTerminalHistory, CreateTaskInput, DirectTurnLifecycleEvent,
-    DirectTurnLifecycleTransition, ImportProfileFilesInput, ImportProfilesInput,
-    ImportProfilesResult, MAX_TERMINAL_HISTORY_BYTES, MetricsInterventionSourceEvent,
-    ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, RecentConnectionSummary,
-    RuntimeInterventionKind, RuntimeLifecycleEvent, ServerConnection, ServerConnectionCommandError,
-    ServerConnectionInput, ServerConnectionSummary, SshSessionCommandError, TerminalEvent,
-    TerminalEventSink, TerminalSessionCommandError, TerminalSessionManager, TerminalSessionView,
-    WorkflowTemplateStore,
+    AutoTemplateStore, BoundedTerminalHistory, ConnectionMcpEndpoint, CreateTaskInput,
+    DirectTurnLifecycleEvent, DirectTurnLifecycleTransition, ImportProfileFilesInput,
+    ImportProfilesInput, ImportProfilesResult, MAX_TERMINAL_HISTORY_BYTES,
+    MetricsInterventionSourceEvent, ProfileCommandError, ProfileEntry, ProfileInput, ProfileList,
+    RecentConnectionSummary, RuntimeInterventionKind, RuntimeLifecycleEvent, ServerConnection,
+    ServerConnectionCommandError, ServerConnectionInput, ServerConnectionSummary,
+    SshSessionCommandError, TerminalEvent, TerminalEventSink, TerminalSessionCommandError,
+    TerminalSessionManager, TerminalSessionView, WorkflowTemplateStore,
 };
 use gold_band::domain::{
     NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode, TurnControlMode,
@@ -3571,9 +3571,8 @@ pub fn terminal_session_state_for(
 /// TCP listener on an OS-assigned port and spawns the accept loop on a
 /// dedicated thread, sharing the same `TerminalSessionManager` and history
 /// buffer as the user-facing terminal UI (opened sessions are reviewable /
-/// take-over-able, per the design). Returns the bound port so the caller can
-/// record it on `App` via `DesktopState::set_connection_mcp_endpoint_port` —
-/// `build_worker_invocation` only injects `mcp_servers` once that's set.
+/// take-over-able, per the design). The caller installs the returned endpoint
+/// in DesktopState so both the listener and invocations use the same grants.
 ///
 /// The listener never accepts a connection from outside 127.0.0.1 (bound to
 /// loopback only), so this does not expose the connection tools beyond the
@@ -3583,7 +3582,7 @@ pub fn spawn_connection_mcp_endpoint(
     app: gold_band::app::App,
     terminal_state: &TerminalSessionState,
     history_state: &TerminalHistoryStore,
-) -> std::io::Result<u16> {
+) -> std::io::Result<ConnectionMcpEndpoint> {
     let handle_for_resolver = app_handle.clone();
     let workspace_paths_resolver = std::sync::Arc::new(
         move |project_id: &str| -> anyhow::Result<gold_band::storage::GoldBandPaths> {
@@ -3618,10 +3617,12 @@ pub fn spawn_connection_mcp_endpoint_with_resolver(
     workspace_paths_resolver: std::sync::Arc<
         dyn Fn(&str) -> anyhow::Result<gold_band::storage::GoldBandPaths> + Send + Sync,
     >,
-) -> std::io::Result<u16> {
+) -> std::io::Result<ConnectionMcpEndpoint> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
+    let endpoint = ConnectionMcpEndpoint::new(port);
     let factory = std::sync::Arc::new(gold_band::app::ConnectionMcpRuntimeFactory::new(
+        endpoint.clone(),
         app,
         Arc::clone(&terminal_state.0),
         Arc::clone(&history_state.0),
@@ -3641,7 +3642,7 @@ pub fn spawn_connection_mcp_endpoint_with_resolver(
         port,
         "connection MCP endpoint listening on 127.0.0.1 (connection tools available to agents)"
     );
-    Ok(port)
+    Ok(endpoint)
 }
 
 /// Bounds the per-session history buffer so a long-lived shell can't grow it
@@ -13533,7 +13534,7 @@ mod tests {
             config: RuntimeConfig::default(),
             recent_workspaces: Vec::new(),
             needs_workspace: false,
-            connection_mcp_endpoint_port: None,
+            connection_mcp_endpoint: None,
         });
         let offer = app.inspect_runtime_resume(locator.clone()).unwrap().offer;
         // Missing worker_ref fails restore after admission, without launching a provider.
@@ -14626,7 +14627,7 @@ mod tests {
             config: RuntimeConfig::default(),
             recent_workspaces: Vec::new(),
             needs_workspace: false,
-            connection_mcp_endpoint_port: None,
+            connection_mcp_endpoint: None,
         };
         let workspaces = vec![
             ConversationWorkspaceEntry {
@@ -18264,7 +18265,7 @@ mod tests {
             expires_at_ms: snapshot.expires_at_ms,
         };
         let state = DesktopState::new(crate::state::DesktopContext {
-            connection_mcp_endpoint_port: None,
+            connection_mcp_endpoint: None,
             repo_root,
             config: RuntimeConfig::default(),
             recent_workspaces: Vec::new(),
@@ -19070,8 +19071,11 @@ mod tests {
             config_dir_name: ".gold-band",
             home_env_var,
         };
-        let app =
-            App::with_config_and_path_config(repo_root, RuntimeConfig::default(), path_config);
+        let app = App::with_config_and_path_config(
+            repo_root.clone(),
+            RuntimeConfig::default(),
+            path_config,
+        );
         let run = RunState {
             version: gold_band::domain::VERSION.to_string(),
             id: "run-001".to_string(),
@@ -19111,24 +19115,34 @@ mod tests {
         let history_state =
             TerminalHistoryStore(Arc::new(Mutex::new(std::collections::HashMap::new())));
 
-        let project_id = app.paths.project_id.clone();
-        // T02: the endpoint authorizes via the App's shared authorizer — grant
-        // a token exactly the way `build_worker_invocation` does on injection.
-        let token = app
-            .connection_mcp_authorizer()
-            .grant(gold_band::app::ConnectionRunLocator {
-                project_id: project_id.clone(),
-                task_id: "task-001".to_string(),
-                run_id: "run-001".to_string(),
-            });
         let resolver_paths = app.paths.clone();
-        let port = spawn_connection_mcp_endpoint_with_resolver(
+        let endpoint = spawn_connection_mcp_endpoint_with_resolver(
             app,
             &terminal_state,
             &history_state,
             std::sync::Arc::new(move |_| Ok(resolver_paths.clone())),
         )
         .expect("endpoint should bind and start serving");
+        let state = DesktopState::new(crate::state::DesktopContext {
+            repo_root: repo_root.clone(),
+            config: RuntimeConfig::default(),
+            recent_workspaces: Vec::new(),
+            needs_workspace: false,
+            connection_mcp_endpoint: None,
+        });
+        state.install_connection_mcp_endpoint(endpoint).unwrap();
+        let context = state.context().unwrap();
+        let initial_config = state
+            .app()
+            .unwrap()
+            .connection_mcp_server_for_run("task-001", "run-001")
+            .unwrap();
+        let workspace_app = app_for_workspace(&context, repo_root.as_str()).unwrap();
+        let follow_up_config = workspace_app
+            .connection_mcp_server_for_run("task-001", "run-001")
+            .unwrap();
+        assert_eq!(initial_config, follow_up_config);
+        let url = follow_up_config["url"].as_str().unwrap();
 
         // `.no_proxy()`: see the analogous lib-side test in
         // `src/app/connection_mcp_http.rs` — a corporate/system HTTP proxy can
@@ -19137,14 +19151,10 @@ mod tests {
             .no_proxy()
             .build()
             .expect("build http client");
-        let url = format!(
-            "http://127.0.0.1:{port}/mcp?projectId={project_id}&taskId=task-001&runId=run-001&token={token}"
-        );
-
         // T02 protocol handshake: `initialize` first (no session yet), then
         // carry the issued `mcp-session-id` on the actual tools/call.
         let init_resp = client
-            .post(&url)
+            .post(url)
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -19167,7 +19177,7 @@ mod tests {
             .to_string();
 
         let resp = client
-            .post(&url)
+            .post(url)
             .header("mcp-session-id", &session_id)
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",

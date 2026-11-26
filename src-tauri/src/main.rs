@@ -484,9 +484,9 @@ fn run() -> anyhow::Result<()> {
                             &terminal_state,
                             &history_state,
                         ) {
-                            Ok(port) => {
-                                if let Err(error) = state.set_connection_mcp_endpoint_port(port) {
-                                    warn!(%error, "failed to record connection MCP endpoint port");
+                            Ok(endpoint) => {
+                                if let Err(error) = state.install_connection_mcp_endpoint(endpoint) {
+                                    warn!(%error, "failed to install connection MCP endpoint");
                                 }
                             }
                             Err(error) => {

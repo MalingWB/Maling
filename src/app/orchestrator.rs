@@ -14360,28 +14360,10 @@ fn build_dynamic_worker_invocation(
         );
         Vec::new()
     });
-    // 连接→对话 阶段4：与 `build_worker_invocation` 同规则——桌面层已起监听即注入
-    // 连接 MCP 工具 server，不以绑定状态为条件（MCP 工具集在会话创建时固化，
-    // 会话中途绑定连接也要能生效）；工具作用域由 URL 里的 runId 按请求现读。
-    // T02: same run-scoped token discipline as the ordinary worker path.
-    if let Some(port) = ctx.app.connection_mcp_endpoint_port() {
-        let token = ctx
-            .app
-            .connection_mcp_authorizer()
-            .grant(crate::app::ConnectionRunLocator {
-                project_id: ctx.app.paths.project_id.clone(),
-                task_id: ctx.task_id.to_string(),
-                run_id: ctx.run_id.to_string(),
-            });
-        let url = crate::app::connection_mcp_url(
-            port,
-            &ctx.app.paths.project_id,
-            &ctx.task_id,
-            &ctx.run_id,
-            &token,
-        );
-        mcp_servers.push(crate::app::connection_mcp_server_config(&url));
-    }
+    mcp_servers.extend(
+        ctx.app
+            .connection_mcp_server_for_run(&ctx.task_id, &ctx.run_id),
+    );
     let workspace_file_roots = if !task_prompt_input.workspace_files.is_empty()
         || prompt_display
             .as_ref()
@@ -24879,7 +24861,7 @@ mod tests {
     fn dynamic_worker_invocation_injects_connection_mcp_server_when_bound_and_endpoint_listening() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root, RuntimeConfig::default())
-            .with_connection_mcp_endpoint_port(9124);
+            .with_connection_mcp_endpoint(Some(crate::app::ConnectionMcpEndpoint::new(9124)));
         write_test_outer_run(&app);
         let mut run: RunState = read_json(&app.paths.run_file("task-006", "run-001")).unwrap();
         run.connection_specs = vec![crate::app::ConnectionSpec {
@@ -24939,7 +24921,6 @@ mod tests {
     #[test]
     fn dynamic_worker_invocation_omits_connection_mcp_server_without_a_listening_endpoint() {
         let (_temp, repo_root) = init_repo();
-        // No `.with_connection_mcp_endpoint_port(..)`.
         let app = App::with_config(repo_root, RuntimeConfig::default());
         write_test_outer_run(&app);
         let mut run: RunState = read_json(&app.paths.run_file("task-006", "run-001")).unwrap();
@@ -24992,7 +24973,7 @@ mod tests {
      {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root, RuntimeConfig::default())
-            .with_connection_mcp_endpoint_port(9124);
+            .with_connection_mcp_endpoint(Some(crate::app::ConnectionMcpEndpoint::new(9124)));
         // Deliberately do NOT write the outer run — some fixtures build a
         // dynamic invocation without it (see `dynamic_prompt_moves_runtime_facts_to_hidden_context`),
         // and this must not turn into a hard invocation-build failure.

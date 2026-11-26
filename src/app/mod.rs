@@ -185,10 +185,11 @@ const STATE_CONFIG_LOCK_SHARDS: usize = 32;
 static STATE_CONFIG_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 pub use self::connection_mcp::{
     AppConnectionMcpRuntime, CONNECTION_MCP_PROTOCOL_VERSION, CONNECTION_MCP_SERVER_NAME,
-    CONNECTION_MCP_SERVER_VERSION, ConnectionMcpAuthorizer, ConnectionMcpRuntime,
+    CONNECTION_MCP_SERVER_VERSION, ConnectionMcpEndpoint, ConnectionMcpRuntime,
     ConnectionMcpRuntimeFactory, ConnectionOutputChunk, ConnectionToolError,
     connection_mcp_server_config, connection_tools_schema, handle_jsonrpc,
 };
+pub(crate) use self::connection_mcp_http::redact_connection_mcp_token;
 pub use self::connection_mcp_http::{
     HttpRequest, HttpResponse, MCP_ENDPOINT_PATH, connection_mcp_url, parse_http_request, respond,
     respond_scoped, serve,
@@ -1452,13 +1453,7 @@ pub struct App {
     scheduled_occurrence_id: Option<String>,
     scheduled_task_context: Option<crate::provider::ScheduledTaskContextInfo>,
     runtime_recovery: Option<Arc<RuntimeRecoveryCoordinator>>,
-    /// localhost 端口，供应用内连接 MCP 工具 server（连接→对话 阶段4）监听。
-    /// `None` 时不注入 `mcp_servers`（无绑定连接、或桌面层尚未起监听）。
-    connection_mcp_endpoint_port: Option<u16>,
-    /// 连接 MCP 的 run 级授权注册表（T02）：注入侧 `grant(locator) -> token`
-    /// 签发授权，端点侧 `authorize` 逐请求校验。App 克隆（含后台克隆）共享
-    /// 同一注册表，保证注入与端点看到同一份事实。
-    connection_mcp_authorizer: Arc<ConnectionMcpAuthorizer>,
+    connection_mcp_endpoint: Option<ConnectionMcpEndpoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1771,8 +1766,7 @@ impl App {
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
             scheduled_task_context: self.scheduled_task_context.clone(),
             runtime_recovery: self.runtime_recovery.clone(),
-            connection_mcp_endpoint_port: self.connection_mcp_endpoint_port,
-            connection_mcp_authorizer: Arc::clone(&self.connection_mcp_authorizer),
+            connection_mcp_endpoint: self.connection_mcp_endpoint.clone(),
         }
     }
 
@@ -1783,23 +1777,32 @@ impl App {
         self
     }
 
-    /// Records the localhost port the desktop layer has bound the connection
-    /// MCP tools server to (see `connection_mcp_http::serve`). `build_worker_invocation`
-    /// reads this to decide whether/where to inject `mcp_servers`.
-    pub fn with_connection_mcp_endpoint_port(mut self, port: u16) -> Self {
-        self.connection_mcp_endpoint_port = Some(port);
+    pub fn with_connection_mcp_endpoint(mut self, endpoint: Option<ConnectionMcpEndpoint>) -> Self {
+        self.connection_mcp_endpoint = endpoint;
         self
     }
 
-    pub fn connection_mcp_endpoint_port(&self) -> Option<u16> {
-        self.connection_mcp_endpoint_port
+    /// Include the tools whenever the endpoint is available. The endpoint reads
+    /// current run bindings per request, including bindings added mid-session.
+    pub fn connection_mcp_server_for_run(
+        &self,
+        task_id: &str,
+        run_id: &str,
+    ) -> Option<serde_json::Value> {
+        let endpoint = self.connection_mcp_endpoint.as_ref()?;
+        Some(endpoint.server_config(&ConnectionRunLocator {
+            project_id: self.paths.project_id.clone(),
+            task_id: task_id.to_string(),
+            run_id: run_id.to_string(),
+        }))
     }
 
-    /// 连接 MCP 的 run 级授权注册表（T02）。注入侧（`build_worker_invocation` /
-    /// 动态 worker）用它签发 token，端点侧（`ConnectionMcpRuntimeFactory`）用它
-    /// 校验请求。App 克隆共享同一 `Arc`，两侧看到同一份授权事实。
-    pub fn connection_mcp_authorizer(&self) -> &Arc<ConnectionMcpAuthorizer> {
-        &self.connection_mcp_authorizer
+    /// Capture the current task's grants before deleting its files. Call the
+    /// returned revocation only after deletion succeeds.
+    pub fn connection_mcp_task_revocation(&self, task_id: &str) -> Option<impl FnOnce() + use<>> {
+        self.connection_mcp_endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.task_revocation(&self.paths.project_id, task_id))
     }
 
     pub fn with_provider_diagnostics_source(
@@ -1865,8 +1868,7 @@ impl App {
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
             scheduled_task_context: self.scheduled_task_context.clone(),
             runtime_recovery: self.runtime_recovery.clone(),
-            connection_mcp_endpoint_port: self.connection_mcp_endpoint_port,
-            connection_mcp_authorizer: Arc::clone(&self.connection_mcp_authorizer),
+            connection_mcp_endpoint: self.connection_mcp_endpoint.clone(),
         }
     }
 
@@ -4821,10 +4823,7 @@ impl App {
             scheduled_occurrence_id: None,
             scheduled_task_context: None,
             runtime_recovery: None,
-            connection_mcp_endpoint_port: None,
-            connection_mcp_authorizer: Arc::new(
-                self::connection_mcp::ConnectionMcpAuthorizer::new(),
-            ),
+            connection_mcp_endpoint: None,
         }
     }
 
@@ -4920,6 +4919,10 @@ impl App {
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
 
         let (task_id, task_dir) = reserve_next_task_dir(&self.paths.tasks_dir())?;
+        // Reserving a previously used ID must not carry over a deleted task's grant.
+        if let Some(endpoint) = &self.connection_mcp_endpoint {
+            endpoint.revoke_task(&self.paths.project_id, &task_id);
+        }
         let mut owned_task_dir = OwnedTaskDirectory::new(task_dir.clone());
         let task = TaskState {
             version: VERSION.to_string(),

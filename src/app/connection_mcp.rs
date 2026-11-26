@@ -6,7 +6,8 @@
 //! 桌面接线（`ServerConnectionStore` + `TerminalSessionManager`/`SshSessionManager`）在后续
 //! 步骤接入。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow};
@@ -25,68 +26,186 @@ pub const CONNECTION_MCP_SERVER_VERSION: &str = "0.1.0";
 /// 与 `mcp/mod.rs` 的 MCP 协议版本一致。
 pub const CONNECTION_MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 
-/// ── Run 级授权（T02）────────────────────────────────────────────────────
-///
-/// 回环监听不等于调用方授权：本机上任何进程都能向端点伪造 `?taskId=..&runId=..`
-/// 的 URL。因此桌面端在注入 `mcp_servers` 时为该 run 签发一个一次性随机 token，
-/// 端点在**读取 run 数据或访问任何连接资源之前**先校验 token，再校验 token
-/// 对应的 locator 与 URL 三元组一致，最后把下发的 `mcp-session-id` 与该 token
-/// 绑定（后续请求须携带匹配的 session id），防止跨 run 复用会话。
-///
-/// Token 只活在注入方与端点共享的进程内存中：不落盘、不进日志、不进 run 数据。
-/// 端点与注入方同进程（桌面端起端点、桌面端组装 invocation），注册表天然可用。
+const CONNECTION_RUN_TOKEN_PREFIX: &str = "conn-auth-";
+
+/// The listener and the Apps that prepare agent invocations share its
+/// process-local grants and MCP session bindings.
+#[derive(Clone)]
+pub struct ConnectionMcpEndpoint {
+    port: u16,
+    authorizer: Arc<ConnectionMcpAuthorizer>,
+}
+
+impl fmt::Debug for ConnectionMcpEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConnectionMcpEndpoint")
+            .field("port", &self.port)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ConnectionMcpEndpoint {
+    pub fn new(port: u16) -> Self {
+        Self {
+            port,
+            authorizer: Arc::new(ConnectionMcpAuthorizer::default()),
+        }
+    }
+
+    pub fn server_config(&self, locator: &ConnectionRunLocator) -> Value {
+        let token = self.authorizer.token_for_run(locator);
+        connection_mcp_server_config(&super::connection_mcp_url(
+            self.port,
+            &locator.project_id,
+            &locator.task_id,
+            &locator.run_id,
+            &token,
+        ))
+    }
+
+    pub(super) fn revoke_task(&self, project_id: &str, task_id: &str) {
+        self.authorizer.revoke_task(project_id, task_id, None);
+    }
+
+    pub(super) fn task_revocation(&self, project_id: &str, task_id: &str) -> impl FnOnce() + use<> {
+        let generation = self
+            .authorizer
+            .with_task_grants(project_id, task_id, |grants| Arc::clone(&grants.generation));
+        let authorizer = Arc::clone(&self.authorizer);
+        let project_id = project_id.to_owned();
+        let task_id = task_id.to_owned();
+        move || authorizer.revoke_task(&project_id, &task_id, Some(&generation))
+    }
+}
+
+struct RunGrant {
+    token: String,
+    sessions: HashSet<String>,
+}
+
 #[derive(Default)]
-pub struct ConnectionMcpAuthorizer {
-    /// token → 该 token 被授权的 run 定位。注入时登记，进程生命周期内有效。
-    grants: Mutex<HashMap<String, ConnectionRunLocator>>,
-    /// `mcp-session-id` → 签发它的 token。`initialize` 成功时登记；
-    /// 后续请求必须携带与 token 匹配的 session id。
-    sessions: Mutex<HashMap<String, String>>,
+struct TaskGrants {
+    generation: Arc<()>,
+    runs: HashMap<String, RunGrant>,
+}
+
+type ProjectGrants = HashMap<String, TaskGrants>;
+
+#[derive(Default)]
+pub(super) struct ConnectionMcpAuthorizer {
+    /// Project → Task → Run. Deleting a task drops its grants and session
+    /// bindings together, including when a task ID will later be reused.
+    grants: Mutex<HashMap<String, ProjectGrants>>,
 }
 
 impl ConnectionMcpAuthorizer {
-    pub fn new() -> Self {
-        Self::default()
+    /// A single get-or-insert keeps the MCP URL stable across concurrent
+    /// invocations of the same run.
+    pub(super) fn token_for_run(&self, locator: &ConnectionRunLocator) -> String {
+        self.with_task_grants(&locator.project_id, &locator.task_id, |grants| {
+            grants
+                .runs
+                .entry(locator.run_id.clone())
+                .or_insert_with(|| RunGrant {
+                    token: format!("{CONNECTION_RUN_TOKEN_PREFIX}{}", generate_uuid()),
+                    sessions: HashSet::new(),
+                })
+                .token
+                .clone()
+        })
     }
 
-    /// 桌面端注入路径：为一次 run 级注入签发 token 并登记授权。返回追加到
-    /// MCP URL 的 `token` 查询参数值。
-    pub fn grant(&self, locator: ConnectionRunLocator) -> String {
-        let token = format!("conn-auth-{}", generate_uuid());
-        self.grants
+    fn with_task_grants<T>(
+        &self,
+        project_id: &str,
+        task_id: &str,
+        access: impl FnOnce(&mut TaskGrants) -> T,
+    ) -> T {
+        let mut grants = self
+            .grants
             .lock()
-            .expect("authorizer grants lock poisoned")
-            .insert(token.clone(), locator);
-        token
+            .expect("connection MCP grants lock poisoned");
+        let task = grants
+            .entry(project_id.to_owned())
+            .or_default()
+            .entry(task_id.to_owned())
+            .or_default();
+        access(task)
     }
 
-    /// 端点请求路径：校验 URL 里的 token 是否授权了该 locator。
-    /// 任何不匹配（未知 token / locator 不一致）一律拒绝；不区分原因避免
-    /// 给伪造者提供探测信息。
-    pub fn authorize(&self, token: &str, locator: &ConnectionRunLocator) -> bool {
-        self.grants
-            .lock()
-            .expect("authorizer grants lock poisoned")
-            .get(token)
-            .is_some_and(|granted| granted == locator)
+    pub(super) fn authorize(
+        &self,
+        token: &str,
+        locator: &ConnectionRunLocator,
+        session_id: Option<&str>,
+    ) -> bool {
+        self.with_grant(token, locator, |grant| {
+            session_id.is_none_or(|id| grant.sessions.contains(id))
+        })
+        .unwrap_or(false)
     }
 
-    /// `initialize` 成功后把下发的 session id 与其 token 绑定。
-    pub fn bind_session(&self, session_id: &str, token: &str) {
-        self.sessions
-            .lock()
-            .expect("authorizer sessions lock poisoned")
-            .insert(session_id.to_string(), token.to_string());
+    pub(super) fn bind_session(
+        &self,
+        token: &str,
+        locator: &ConnectionRunLocator,
+        session_id: &str,
+    ) -> bool {
+        self.with_grant(token, locator, |grant| {
+            grant.sessions.insert(session_id.to_owned());
+        })
+        .is_some()
     }
 
-    /// 后续请求路径：校验请求携带的 `mcp-session-id` 确实是由该 token 的
-    /// `initialize` 签发的。未带 session id 或不匹配均拒绝。
-    pub fn session_belongs_to_token(&self, session_id: &str, token: &str) -> bool {
-        self.sessions
+    pub(super) fn close_session(
+        &self,
+        token: &str,
+        locator: &ConnectionRunLocator,
+        session_id: &str,
+    ) -> bool {
+        self.with_grant(token, locator, |grant| grant.sessions.remove(session_id))
+            .unwrap_or(false)
+    }
+
+    fn with_grant<T>(
+        &self,
+        token: &str,
+        locator: &ConnectionRunLocator,
+        access: impl FnOnce(&mut RunGrant) -> T,
+    ) -> Option<T> {
+        let mut grants = self
+            .grants
             .lock()
-            .expect("authorizer sessions lock poisoned")
-            .get(session_id)
-            .is_some_and(|bound| bound == token)
+            .expect("connection MCP grants lock poisoned");
+        let grant = grants
+            .get_mut(&locator.project_id)?
+            .get_mut(&locator.task_id)?
+            .runs
+            .get_mut(&locator.run_id)?;
+        let matches = token.len() == grant.token.len()
+            && blake3::hash(token.as_bytes()) == blake3::hash(grant.token.as_bytes());
+        matches.then(|| access(grant))
+    }
+
+    fn revoke_task(&self, project_id: &str, task_id: &str, generation: Option<&Arc<()>>) {
+        let mut grants = self
+            .grants
+            .lock()
+            .expect("connection MCP grants lock poisoned");
+        let Some(project) = grants.get_mut(project_id) else {
+            return;
+        };
+        if let Some(generation) = generation
+            && project
+                .get(task_id)
+                .is_none_or(|task| !Arc::ptr_eq(generation, &task.generation))
+        {
+            return;
+        }
+        project.remove(task_id);
+        if project.is_empty() {
+            grants.remove(project_id);
+        }
     }
 }
 
@@ -517,10 +636,7 @@ pub struct ConnectionMcpRuntimeFactory {
     app: App,
     manager: Arc<Mutex<TerminalSessionManager>>,
     history: Arc<Mutex<HashMap<String, BoundedTerminalHistory>>>,
-    /// Run-level authorization grants (T02). The injection side calls `grant`
-    /// when building the MCP URL; the endpoint side calls `authorize` /
-    /// `bind_session` per request. Shared so both halves see the same grants.
-    authorizer: Arc<ConnectionMcpAuthorizer>,
+    endpoint: ConnectionMcpEndpoint,
     /// Resolves a URL `projectId` to the workspace-scoped paths that own the
     /// run's data. Runs live under per-workspace data dirs
     /// (`~/<data>/projects/<workspace-project-id>/…`), so the endpoint — built
@@ -533,6 +649,7 @@ pub struct ConnectionMcpRuntimeFactory {
 
 impl ConnectionMcpRuntimeFactory {
     pub fn new(
+        endpoint: ConnectionMcpEndpoint,
         app: App,
         manager: Arc<Mutex<TerminalSessionManager>>,
         history: Arc<Mutex<HashMap<String, BoundedTerminalHistory>>>,
@@ -540,25 +657,17 @@ impl ConnectionMcpRuntimeFactory {
             dyn Fn(&str) -> Result<crate::storage::GoldBandPaths> + Send + Sync,
         >,
     ) -> Self {
-        // T02: use the App's SHARED authorizer — the injection side grants
-        // tokens through `app.connection_mcp_authorizer()`, so a factory that
-        // minted its own would reject every legitimately granted token (the
-        // desktop test caught exactly that: tools/call answered 403).
-        let authorizer = Arc::clone(app.connection_mcp_authorizer());
         Self {
+            endpoint,
             app,
             manager,
             history,
-            authorizer,
             workspace_paths_resolver,
         }
     }
 
-    /// The shared run-level authorization registry (T02). The desktop builds
-    /// the worker invocation with `grant(locator) -> token`, appends it to the
-    /// MCP URL, and the endpoint verifies every request against it.
-    pub fn authorizer(&self) -> &Arc<ConnectionMcpAuthorizer> {
-        &self.authorizer
+    pub(super) fn authorizer(&self) -> &ConnectionMcpAuthorizer {
+        &self.endpoint.authorizer
     }
 
     /// 现读 `run.connection_specs`，构建该 run 作用域的 runtime。连接解析走基础
@@ -826,6 +935,68 @@ mod tests {
     use crate::app::{
         ConnectionAuthMethod, ConnectionEnvironment, TerminalSessionKind, TerminalSessionStatus,
     };
+
+    #[test]
+    fn endpoint_reuses_one_token_per_run_across_invocations() {
+        let endpoint = ConnectionMcpEndpoint::new(9123);
+        let locator = ConnectionRunLocator {
+            project_id: "project-a".into(),
+            task_id: "task-001".into(),
+            run_id: "run-001".into(),
+        };
+        let configs = std::thread::scope(|scope| {
+            (0..4)
+                .map(|_| scope.spawn(|| endpoint.clone().server_config(&locator)))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let token = endpoint.authorizer.token_for_run(&locator);
+        assert!(configs.iter().all(|config| config == &configs[0]));
+        assert!(endpoint.authorizer.authorize(&token, &locator, None));
+
+        for other in [
+            ConnectionRunLocator {
+                project_id: "project-b".into(),
+                ..locator.clone()
+            },
+            ConnectionRunLocator {
+                task_id: "task-002".into(),
+                ..locator.clone()
+            },
+            ConnectionRunLocator {
+                run_id: "run-002".into(),
+                ..locator.clone()
+            },
+        ] {
+            assert_ne!(endpoint.authorizer.token_for_run(&other), token);
+            assert!(!endpoint.authorizer.authorize(&token, &other, None));
+        }
+
+        let replacement = ConnectionMcpEndpoint::new(9123);
+        assert_ne!(replacement.server_config(&locator), configs[0]);
+        assert!(!replacement.authorizer.authorize(&token, &locator, None));
+    }
+
+    #[test]
+    fn task_revocation_does_not_remove_a_reused_task_ids_grants() {
+        let endpoint = ConnectionMcpEndpoint::new(9123);
+        let locator = ConnectionRunLocator {
+            project_id: "project-a".into(),
+            task_id: "task-001".into(),
+            run_id: "run-001".into(),
+        };
+        let original = endpoint.server_config(&locator);
+        let revoke_deleted_task = endpoint.task_revocation(&locator.project_id, &locator.task_id);
+
+        endpoint.revoke_task(&locator.project_id, &locator.task_id);
+        let replacement = endpoint.server_config(&locator);
+        revoke_deleted_task();
+
+        assert_ne!(original, replacement);
+        assert_eq!(endpoint.server_config(&locator), replacement);
+    }
 
     #[derive(Default)]
     struct FakeRuntime {
@@ -1193,6 +1364,7 @@ mod tests {
         let history = Arc::new(Mutex::new(HashMap::new()));
         let resolver_paths = app.paths.clone();
         let factory = ConnectionMcpRuntimeFactory::new(
+            ConnectionMcpEndpoint::new(0),
             app,
             manager,
             history,

@@ -18,6 +18,7 @@ use crate::app::{
 
 /// 连接工具 server 的 HTTP 端点路径。
 pub const MCP_ENDPOINT_PATH: &str = "/mcp";
+const TOKEN_QUERY_PARAM: &str = "token";
 
 /// 生成的 session id 前缀。
 const SESSION_PREFIX: &str = "connection-mcp-";
@@ -164,12 +165,7 @@ pub fn respond(runtime: &mut dyn ConnectionMcpRuntime, request: &HttpRequest) ->
     }
     match request.method.as_str() {
         "POST" => respond_post(runtime, &request.body),
-        "DELETE" => HttpResponse {
-            status: 200,
-            body: String::new(),
-            content_type: "application/json".to_string(),
-            set_session: None,
-        },
+        "DELETE" => empty_json_response(200),
         _ => plain(405, "method not allowed"),
     }
 }
@@ -186,12 +182,7 @@ fn respond_post(runtime: &mut dyn ConnectionMcpRuntime, body: &str) -> HttpRespo
         .map(|method| method.starts_with("notifications/"))
         .unwrap_or_default();
     if is_notification {
-        return HttpResponse {
-            status: 202,
-            body: String::new(),
-            content_type: "application/json".to_string(),
-            set_session: None,
-        };
+        return empty_json_response(202);
     }
     let response = handle_jsonrpc(&value, runtime);
     let is_initialize = value.get("method").and_then(Value::as_str) == Some("initialize");
@@ -200,6 +191,15 @@ fn respond_post(runtime: &mut dyn ConnectionMcpRuntime, body: &str) -> HttpRespo
         body: serde_json::to_string(&response).unwrap_or_default(),
         content_type: "application/json".to_string(),
         set_session: is_initialize.then(new_session_id),
+    }
+}
+
+fn empty_json_response(status: u16) -> HttpResponse {
+    HttpResponse {
+        status,
+        body: String::new(),
+        content_type: "application/json".to_string(),
+        set_session: None,
     }
 }
 
@@ -231,13 +231,8 @@ fn query_param<'a>(request: &'a HttpRequest, key: &str) -> Option<&'a str> {
     })
 }
 
-/// 全局单端点 + URL 带 run 作用域 + token 授权（T02）：请求必须携带
-/// `?token=..`（桌面端注入时由 [`ConnectionMcpAuthorizer::grant`] 签发），
-/// 且 token 授权的 locator 与 URL 的 `projectId`/`taskId`/`runId` 完全一致，
-/// **之后**才读取 run 数据构建 runtime——授权失败在访问任何资源前拒绝。
-/// `initialize` 成功时把下发的 `mcp-session-id` 与 token 绑定；后续请求必须
-/// 携带匹配的 `mcp-session-id` 头，防止跨 run 复用会话。缺少/不匹配的参数
-/// 一律 403；`taskId`/`runId` 缺失或 run 不存在仍返回 400，不崩溃。
+/// Verify the endpoint's run grant and any MCP session before loading run data.
+/// Initialize binds each new MCP session to the current grant for that run.
 pub fn respond_scoped(
     factory: &ConnectionMcpRuntimeFactory,
     request: &HttpRequest,
@@ -245,7 +240,7 @@ pub fn respond_scoped(
     if request_path_without_query(request) != MCP_ENDPOINT_PATH {
         return plain(404, "not found");
     }
-    let Some(token) = query_param(request, "token") else {
+    let Some(token) = query_param(request, TOKEN_QUERY_PARAM) else {
         return plain(403, "missing `token` query parameter");
     };
     let Some(project_id) = query_param(request, "projectId") else {
@@ -263,38 +258,35 @@ pub fn respond_scoped(
         run_id: run_id.to_string(),
     };
     let authorizer = factory.authorizer();
-    // Authorize BEFORE loading any run data or touching credentials.
-    if !authorizer.authorize(token, &locator) {
-        return plain(403, "unauthorized");
-    }
-    // Session binding: after `initialize` issued a session id, later requests
-    // must present the SAME session id issued under this token. (The response
-    // `Set-Session` header plus this check closes the cross-run session reuse
-    // hole; loopback callers cannot forge it.)
     let session_header = request
         .headers
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case("mcp-session-id"))
         .map(|(_, value)| value.as_str());
-    if let Some(session_id) = session_header {
-        if !authorizer.session_belongs_to_token(session_id, token) {
-            return plain(403, "unauthorized");
-        }
-    } else {
+    if request.method == "DELETE" {
+        return if session_header.is_some_and(|id| authorizer.close_session(token, &locator, id)) {
+            empty_json_response(200)
+        } else {
+            plain(403, "unauthorized")
+        };
+    }
+    if !authorizer.authorize(token, &locator, session_header) {
+        return plain(403, "unauthorized");
+    }
+    if session_header.is_none() {
         // No session header is only acceptable while handshaking: initialize
         // (and notifications) arrive without one. Any tools/call before
         // initialize would have no session — reject it so every stateful
         // request is bound to an authorized session.
-        let is_initialize_or_notification = serde_json::from_str::<Value>(&request.body)
-            .ok()
-            .and_then(|value| {
+        let is_initialize_or_notification = request.method == "POST"
+            && serde_json::from_str::<Value>(&request.body).is_ok_and(|value| {
                 value
                     .get("method")
                     .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .map(|method| method == "initialize" || method.starts_with("notifications/"))
-            .unwrap_or(false);
+                    .is_some_and(|method| {
+                        method == "initialize" || method.starts_with("notifications/")
+                    })
+            });
         if !is_initialize_or_notification {
             return plain(403, "unauthorized");
         }
@@ -303,18 +295,23 @@ pub fn respond_scoped(
         Ok(runtime) => runtime,
         Err(error) => return plain(400, &format!("{error:#}")),
     };
+    // A task may be deleted while the runtime is being resolved. The check
+    // before loading and this check bracket the read of the run's locator.
+    if !authorizer.authorize(token, &locator, session_header) {
+        return plain(403, "unauthorized");
+    }
     let response = respond(&mut runtime, request);
-    // Bind the issued session id to this token at the authorize layer.
-    if let Some(session_id) = &response.set_session {
-        authorizer.bind_session(session_id, token);
+    if let Some(session_id) = &response.set_session
+        && !authorizer.bind_session(token, &locator, session_id)
+    {
+        return plain(403, "unauthorized");
     }
     response
 }
 
 /// 构建注入 `mcp_servers` 时用的按 run 作用域 URL。`projectId` 必带：run 数据
 /// 按工作区数据目录分片存放，端点（全局 App）须经它解析出正确的工作区路径。
-/// `token` 由 [`crate::app::ConnectionMcpAuthorizer::grant`] 签发；缺 token 的
-/// URL 会被端点以 403 拒绝（T02）。
+/// 同一个端点内，URL 使用当前 run 的有效 token。
 pub fn connection_mcp_url(
     port: u16,
     project_id: &str,
@@ -323,8 +320,20 @@ pub fn connection_mcp_url(
     token: &str,
 ) -> String {
     format!(
-        "http://127.0.0.1:{port}{MCP_ENDPOINT_PATH}?projectId={project_id}&taskId={task_id}&runId={run_id}&token={token}"
+        "http://127.0.0.1:{port}{MCP_ENDPOINT_PATH}?projectId={project_id}&taskId={task_id}&runId={run_id}&{TOKEN_QUERY_PARAM}={token}"
     )
+}
+
+pub(crate) fn redact_connection_mcp_token(url: &str) -> Option<String> {
+    let (endpoint, query) = url.split_once('?')?;
+    let parameters = query
+        .split('&')
+        .filter(|pair| {
+            pair.split_once('=')
+                .is_none_or(|(name, _)| name != TOKEN_QUERY_PARAM)
+        })
+        .collect::<Vec<_>>();
+    Some(format!("{endpoint}?{}", parameters.join("&")))
 }
 
 /// 启动 localhost MCP endpoint 的 accept 循环。`stop` 置位后退出。
@@ -460,8 +469,8 @@ fn write_response(stream: &mut std::net::TcpStream, response: &HttpResponse) -> 
 mod tests {
     use super::*;
     use crate::app::{
-        ConnectionAuthMethod, ConnectionEnvironment, ConnectionSpec, TerminalSessionKind,
-        TerminalSessionStatus, TerminalSessionView,
+        ConnectionAuthMethod, ConnectionEnvironment, ConnectionMcpEndpoint, ConnectionSpec,
+        TerminalSessionKind, TerminalSessionStatus, TerminalSessionView,
     };
     use serde_json::json;
 
@@ -570,11 +579,7 @@ mod tests {
     fn socket_server_sheds_load_beyond_the_concurrency_cap() {
         // Fill the handler pool with slow connections; the next client must
         // get a 503 instead of hanging, and resources stay bounded.
-        use crate::app::{
-            App, ConnectionAuthMethod as AppConnectionAuthMethod,
-            ConnectionEnvironment as AppConnectionEnvironment, ConnectionSpec as AppConnectionSpec,
-            TerminalSessionManager,
-        };
+        use crate::app::{App, TerminalSessionManager};
         let temp = tempfile::TempDir::new().unwrap();
         let app = App::with_config(
             camino::Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap(),
@@ -586,6 +591,7 @@ mod tests {
         )));
         let history = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let factory = Arc::new(ConnectionMcpRuntimeFactory::new(
+            ConnectionMcpEndpoint::new(0),
             app,
             manager,
             history,
@@ -858,6 +864,7 @@ mod tests {
         let resolver_paths = app.paths.clone();
         (
             ConnectionMcpRuntimeFactory::new(
+                ConnectionMcpEndpoint::new(0),
                 app,
                 manager,
                 history,
@@ -876,15 +883,11 @@ mod tests {
         let resp = respond_scoped(&factory, &request("POST", "/mcp", "{}"));
         assert_eq!(resp.status, 403);
 
-        let token = factory
-            .authorizer()
-            .grant(crate::app::ConnectionRunLocator {
-                project_id: "proj-1".to_string(),
-                task_id: "task-001".to_string(),
-                run_id: "run-001".to_string(),
-            });
-        let token_q = format!("&token={token}");
-
+        let token = factory.authorizer().token_for_run(&ConnectionRunLocator {
+            project_id: "proj-1".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+        });
         // A present-but-forged token with no other parameters: parameter
         // completeness is checked first (400 is the protocol error), the
         // token itself is verified before any resource access below.
@@ -927,19 +930,16 @@ mod tests {
         );
         assert_eq!(resp.status, 400);
         assert!(resp.body.contains("runId"));
-        let _ = token_q;
     }
 
     #[test]
     fn respond_scoped_returns_403_for_a_missing_or_lying_token() {
         let (factory, _temp) = isolated_factory("GOLD_BAND_TEST_HOME_CONNECTION_MCP_HTTP_TOKEN");
-        let legit = factory
-            .authorizer()
-            .grant(crate::app::ConnectionRunLocator {
-                project_id: "proj-1".to_string(),
-                task_id: "task-001".to_string(),
-                run_id: "run-001".to_string(),
-            });
+        let legit = factory.authorizer().token_for_run(&ConnectionRunLocator {
+            project_id: "proj-1".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+        });
 
         // No token at all.
         let resp = respond_scoped(
@@ -1027,20 +1027,21 @@ mod tests {
         ));
         let history = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let resolver_paths = app.paths.clone();
+        let endpoint = ConnectionMcpEndpoint::new(0);
         let factory = ConnectionMcpRuntimeFactory::new(
+            endpoint.clone(),
             app,
             manager,
             history,
             Arc::new(move |_| Ok(resolver_paths.clone())),
         );
 
-        let token = factory
-            .authorizer()
-            .grant(crate::app::ConnectionRunLocator {
-                project_id: "proj-1".to_string(),
-                task_id: "task-001".to_string(),
-                run_id: "run-001".to_string(),
-            });
+        let locator = ConnectionRunLocator {
+            project_id: "proj-1".into(),
+            task_id: "task-001".into(),
+            run_id: "run-001".into(),
+        };
+        let token = factory.authorizer().token_for_run(&locator);
         let url_path = format!("/mcp?projectId=proj-1&taskId=task-001&runId=run-001&token={token}");
 
         // initialize succeeds and issues a session id bound to this token.
@@ -1057,7 +1058,7 @@ mod tests {
         assert!(
             factory
                 .authorizer()
-                .session_belongs_to_token(&session_id, &token),
+                .authorize(&token, &locator, Some(&session_id)),
             "the issued session must be bound to the request token"
         );
 
@@ -1085,24 +1086,36 @@ mod tests {
         assert_eq!(resp.status, 200);
 
         // Another run's session id (bound to another token) is rejected here.
-        let other_token = factory
-            .authorizer()
-            .grant(crate::app::ConnectionRunLocator {
-                project_id: "proj-1".to_string(),
-                task_id: "task-001".to_string(),
-                run_id: "run-002".to_string(),
-            });
-        let mut forged = request(
+        let other = ConnectionRunLocator {
+            run_id: "run-002".into(),
+            ..locator.clone()
+        };
+        let other_token = factory.authorizer().token_for_run(&other);
+        let mut wrong_scope = request(
+            "POST",
+            &format!("/mcp?projectId=proj-1&taskId=task-001&runId=run-002&token={other_token}"),
+            &req.body,
+        );
+        wrong_scope.headers = req.headers.clone();
+        assert_eq!(respond_scoped(&factory, &wrong_scope).status, 403);
+
+        let mut close = request("DELETE", &url_path, "");
+        close.headers = req.headers.clone();
+        assert_eq!(respond_scoped(&factory, &close).status, 200);
+        assert_eq!(respond_scoped(&factory, &req).status, 403);
+        assert_eq!(factory.authorizer().token_for_run(&locator), token);
+
+        let initialize = request(
             "POST",
             &url_path,
-            &json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/list" }).to_string(),
+            &json!({ "jsonrpc": "2.0", "id": 5, "method": "initialize" }).to_string(),
         );
-        forged
-            .headers
-            .push(("mcp-session-id".to_string(), session_id.clone()));
-        let _ = &other_token;
-        let resp = respond_scoped(&factory, &forged);
-        assert_eq!(resp.status, 200, "same token + same session is still fine");
+        assert_eq!(respond_scoped(&factory, &initialize).status, 200);
+        let revoke_deleted_task = endpoint.task_revocation(&locator.project_id, &locator.task_id);
+        revoke_deleted_task();
+        assert_eq!(respond_scoped(&factory, &initialize).status, 403);
+        assert_ne!(factory.authorizer().token_for_run(&locator), token);
+        assert_eq!(respond_scoped(&factory, &initialize).status, 403);
     }
 
     // ── socket-level integration: real TCP + real HTTP client ──
@@ -1181,26 +1194,22 @@ mod tests {
         )));
         let history = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let resolver_paths = app.paths.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let endpoint = ConnectionMcpEndpoint::new(port);
         let factory = Arc::new(ConnectionMcpRuntimeFactory::new(
+            endpoint.clone(),
             app,
             manager,
             history,
             Arc::new(move |_| Ok(resolver_paths.clone())),
         ));
-        // T02: the loopback client must hold a token that authorizes exactly
-        // this (projectId, taskId, runId) — signed through the factory's
-        // shared authorizer, the same way the injection side does it. Sign
-        // BEFORE the factory moves into the server thread.
-        let token = factory
-            .authorizer()
-            .grant(crate::app::ConnectionRunLocator {
-                project_id: "proj-1".to_string(),
-                task_id: "task-001".to_string(),
-                run_id: "run-001".to_string(),
-            });
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().unwrap().port();
+        let config = endpoint.server_config(&ConnectionRunLocator {
+            project_id: "proj-1".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+        });
+        let url = config["url"].as_str().unwrap();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop_for_server = Arc::clone(&stop);
         let server = std::thread::spawn(move || serve(listener, factory, stop_for_server));
@@ -1212,10 +1221,8 @@ mod tests {
             .no_proxy()
             .build()
             .expect("build http client");
-        let url = connection_mcp_url(port, "proj-1", "task-001", "run-001", &token);
-
         let init_resp = client
-            .post(&url)
+            .post(url)
             .header(
                 "MCP-Protocol-Version",
                 crate::app::CONNECTION_MCP_PROTOCOL_VERSION,
@@ -1242,7 +1249,7 @@ mod tests {
         );
 
         let list_resp = client
-            .post(&url)
+            .post(url)
             .header("mcp-session-id", &session_id)
             .json(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
             .send()
@@ -1267,7 +1274,7 @@ mod tests {
         );
 
         let call_resp = client
-            .post(&url)
+            .post(url)
             .header("mcp-session-id", &session_id)
             .json(&json!({
                 "jsonrpc": "2.0",
@@ -1284,7 +1291,7 @@ mod tests {
         assert_eq!(specs[0].name, "wb");
 
         let notify_resp = client
-            .post(&url)
+            .post(url)
             .json(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
             .send()
             .expect("notification request");

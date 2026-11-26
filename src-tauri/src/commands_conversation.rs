@@ -2220,12 +2220,16 @@ pub async fn delete_conversation_task(
                     serde_json::json!({ "taskId": task_id }),
                 ));
             }
+            let revoke_connection_mcp = workspace_app.connection_mcp_task_revocation(&task_id);
             trash::delete(task_dir.as_std_path()).map_err(|error| {
                 CommandErrorVm::new(
                     "conversation.task-delete-failed",
                     serde_json::json!({ "taskId": task_id, "message": error.to_string() }),
                 )
             })?;
+            if let Some(revoke) = revoke_connection_mcp {
+                revoke();
+            }
         }
         gold_band::storage::sqlite::delete_task(&task_dir);
         if let Some(task_uuid) = task_uuid {

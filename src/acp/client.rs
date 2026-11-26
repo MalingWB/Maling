@@ -7973,10 +7973,28 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn append_outbound_frame(&self, frame: &Value) {
+        let mut snapshot = frame.clone();
+        if let Some(servers) = snapshot
+            .pointer_mut("/params/mcpServers")
+            .and_then(Value::as_array_mut)
+        {
+            for server in servers.iter_mut().filter(|server| {
+                server.get("name").and_then(Value::as_str)
+                    == Some(crate::app::CONNECTION_MCP_SERVER_NAME)
+            }) {
+                if let Some(url) = server.get_mut("url")
+                    && let Some(redacted) = url
+                        .as_str()
+                        .and_then(crate::app::redact_connection_mcp_token)
+                {
+                    *url = Value::String(redacted);
+                }
+            }
+        }
         append_raw_frame_best_effort(
             &self.paths.raw,
             "outbound",
-            frame.clone(),
+            snapshot,
             self.raw_max_size,
             self.raw_target_size,
         );
@@ -15525,6 +15543,11 @@ do {
     }
 
     #[test]
+    fn unchanged_run_connection_tools_allow_attached_acp_follow_up() {
+        assert_upgraded_acp_terminal_recovery("connection-mcp-stable");
+    }
+
+    #[test]
     fn prompt_response_limits_and_waits_do_not_publish_completed_turns() {
         for reason in [
             "max_tokens",
@@ -15575,8 +15598,23 @@ do {
         ]
         .map(str::to_string)
         .to_vec();
+        let connection_mcp = (scenario == "connection-mcp-stable")
+            .then(|| crate::app::ConnectionMcpEndpoint::new(9123));
+        let direct_task_id = cwd.to_string();
         let assertions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for turn in [1, 2] {
+                if connection_mcp.is_some() {
+                    super::register_direct_session(
+                        &attempt,
+                        crate::acp::retention::DirectSessionRegistration {
+                            project_id: "test-project".into(),
+                            task_id: direct_task_id.clone(),
+                            resident: false,
+                            background_stop_grace: Duration::from_secs(10),
+                            live_update: None,
+                        },
+                    );
+                }
                 let turn_id = format!("upgrade-turn-{turn}");
                 let submission = AcpPromptSubmission {
                     turn_id: turn_id.clone(),
@@ -15663,6 +15701,13 @@ do {
                         .push(crate::storage::read_json::<Value>(&snapshot)?);
                     Ok(())
                 };
+                let mcp_server = connection_mcp.as_ref().map(|endpoint| {
+                    endpoint.server_config(&crate::app::ConnectionRunLocator {
+                        project_id: "test-project".into(),
+                        task_id: "task-001".into(),
+                        run_id: "run-001".into(),
+                    })
+                });
                 let result = super::run_prompt(
                     "upgrade-terminal",
                     &config,
@@ -15698,7 +15743,7 @@ do {
                     },
                     owner,
                     Some(&on_live),
-                    &[],
+                    mcp_server.as_slice(),
                     Some(&on_snapshot),
                     None,
                     None,
@@ -15713,7 +15758,11 @@ do {
                         | "stop-during-terminal-write"
                         | "connection-tools-late-stop"
                 );
-                let completed = turn == 2 || scenario == "connection-tools-missing";
+                let completed = turn == 2
+                    || matches!(
+                        scenario,
+                        "connection-tools-missing" | "connection-mcp-stable"
+                    );
                 let expected_status = if completed {
                     "completed"
                 } else if cancelled || scenario == "interrupted" {
@@ -15856,6 +15905,26 @@ do {
                 assert!(tool.ended_seq.is_some());
             }
             let methods = std::fs::read_to_string(cwd.join("upgrade-methods")).unwrap();
+            if connection_mcp.is_some() {
+                assert_eq!(
+                    methods
+                        .lines()
+                        .filter(|line| *line == "session/new")
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    methods
+                        .lines()
+                        .filter(|line| *line == "session/load")
+                        .count(),
+                    0,
+                    "same Run should keep the attached ACP session"
+                );
+                let raw = std::fs::read_to_string(attempt.join("acp.raw.jsonl")).unwrap();
+                assert!(raw.contains(crate::app::CONNECTION_MCP_SERVER_NAME));
+                assert!(!raw.contains("conn-auth-"));
+            }
             assert_eq!(
                 methods
                     .lines()
@@ -15871,6 +15940,9 @@ do {
                 usize::from(matches!(scenario, "cancel" | "stop-after-refusal"))
             );
         }));
+        if connection_mcp.is_some() {
+            super::close_direct_conversation("test-project", &direct_task_id).unwrap();
+        }
         super::AdapterConnectionManager::shared()
             .close_workspace_connections_bounded(&cwd, Duration::from_secs(2))
             .unwrap();
@@ -15924,7 +15996,19 @@ do {
                 "initialize" => {
                     json!({"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}})
                 }
-                "session/new" | "session/load" => json!({"result":{"sessionId":"upgrade-session"}}),
+                "session/new" | "session/load" => {
+                    if scenario == "connection-mcp-stable" {
+                        let server = &frame["params"]["mcpServers"][0];
+                        assert_eq!(server["name"], crate::app::CONNECTION_MCP_SERVER_NAME);
+                        assert!(
+                            server["url"]
+                                .as_str()
+                                .unwrap()
+                                .contains("&token=conn-auth-")
+                        );
+                    }
+                    json!({"result":{"sessionId":"upgrade-session"}})
+                }
                 "session/list" if scenario == "stop-after-refusal" => {
                     if std::path::Path::new("upgrade-first-done").exists() {
                         update(
@@ -15965,7 +16049,9 @@ do {
                             json!({})
                         } else if scenario == "stop-after-refusal" {
                             json!({"stopReason":"refusal"})
-                        } else if scenario.starts_with("connection-tools-") {
+                        } else if scenario.starts_with("connection-tools-")
+                            || scenario == "connection-mcp-stable"
+                        {
                             json!({"stopReason":"end_turn"})
                         } else {
                             json!({"stopReason":scenario})

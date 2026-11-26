@@ -28,7 +28,7 @@ use crate::storage::sqlite::{AttemptIndexContext, index_attempt_with_retry};
 use crate::storage::{read_json, write_json};
 
 use super::ids::now_rfc3339_like;
-use super::{AcpLiveEventContext, App, ConnectionRunLocator};
+use super::{AcpLiveEventContext, App};
 
 fn worker_task_instruction(worker: &WorkerNode) -> Option<String> {
     worker
@@ -759,22 +759,7 @@ pub(crate) fn build_worker_invocation(
         warn!(%e, "failed to load MCP servers for ACP session, falling back to empty list");
         Vec::new()
     });
-    // 连接→对话 阶段4：桌面层已起监听即注入连接 MCP 工具 server。**不**以
-    // `run.connection_specs` 非空为条件——MCP 工具集在 ACP 会话创建时固化，若按
-    // 绑定状态注入，会话中途绑定连接永远无法生效（现场事故：先开会话后附连接，
-    // agent 的 `open_connection` 报 No such tool available）。工具作用域由 URL 里
-    // 的 runId 按请求现读（未绑定时 list 返回空、open 拒绝），无条件注入无害。
-    // T02: each injection signs a fresh run-scoped token; the endpoint rejects
-    // URLs whose token does not authorize the exact (projectId, taskId, runId).
-    if let Some(port) = app.connection_mcp_endpoint_port() {
-        let token = app.connection_mcp_authorizer().grant(ConnectionRunLocator {
-            project_id: app.paths.project_id.clone(),
-            task_id: task_id.to_string(),
-            run_id: run_id.to_string(),
-        });
-        let url = super::connection_mcp_url(port, &app.paths.project_id, task_id, run_id, &token);
-        mcp_servers.push(super::connection_mcp_server_config(&url));
-    }
+    mcp_servers.extend(app.connection_mcp_server_for_run(task_id, run_id));
     info!(
         target: "gold_band::perf",
         task_id,
