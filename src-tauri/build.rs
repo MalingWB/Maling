@@ -35,6 +35,11 @@ struct ChannelConfig {
     multica_base_url: String,
     #[serde(default)]
     multica_app_url: String,
+    /// Remote server-connection + remote SSH is an **intranet-only** capability.
+    /// Terminal (local) is available in every channel; remote connections are
+    /// gated on this flag (external/public channels leave it false).
+    #[serde(default)]
+    remote_connections_enabled: bool,
 }
 
 fn main() {
@@ -47,6 +52,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=GOLD_BAND_MULTICA_TOGGLE_LOCKED");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_MULTICA_BASE_URL");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_MULTICA_APP_URL");
+    println!("cargo:rerun-if-env-changed=GOLD_BAND_REMOTE_CONNECTIONS_ENABLED");
     println!("cargo:rerun-if-changed=../configs/channels");
     println!("cargo:rerun-if-changed=../configs/browser-bookmarks.json");
 
@@ -209,6 +215,10 @@ fn main() {
     println!(
         "cargo:rustc-env=GOLD_BAND_MULTICA_APP_URL={}",
         multica_app_url
+    );
+    println!(
+        "cargo:rustc-env=GOLD_BAND_REMOTE_CONNECTIONS_ENABLED={}",
+        config.remote_connections_enabled
     );
 
     tauri_build::build()

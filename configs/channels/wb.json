@@ -23,6 +23,7 @@
   "multicaToggleLocked": true,
   "multicaBaseUrl": "${GOLD_BAND_WB_MULTICA_URL}",
   "multicaAppUrl": "${GOLD_BAND_WB_MULTICA_URL}",
+  "remoteConnectionsEnabled": true,
   "builtinMcpServers": [
     {
       "id": "maling-code-graph",

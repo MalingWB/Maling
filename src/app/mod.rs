@@ -1,8 +1,12 @@
+mod connection_mcp;
+mod connection_mcp_http;
 mod conversation_run;
+mod credentials;
 mod execution_plan_service;
 mod failed_node_rerun;
 mod ids;
 pub mod intervention;
+mod known_hosts;
 mod node_executor;
 mod notification;
 pub mod observability;
@@ -11,8 +15,12 @@ mod profile_resolver;
 mod profiles;
 mod runtime_recovery;
 pub mod runtime_resume;
+mod server_connections;
+mod ssh_sessions;
 mod state_access;
 mod state_factory;
+mod terminal_history;
+mod terminal_sessions;
 mod transition_context;
 pub mod upstream;
 mod workflow_share;
@@ -85,6 +93,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use self::credentials::CredentialStore;
 use self::ids::{generate_uuid, next_workflow_id, now_rfc3339_like, reserve_next_task_dir};
 pub use self::orchestrator::ManualCheckSubmissionLease;
 use self::orchestrator::{
@@ -174,10 +183,34 @@ pub(crate) fn attempt_runtime_state_lock(
 /// 按规范化后的 `user_state_file()` 路径取同一把锁）。
 const STATE_CONFIG_LOCK_SHARDS: usize = 32;
 static STATE_CONFIG_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
+pub use self::connection_mcp::{
+    AppConnectionMcpRuntime, CONNECTION_MCP_PROTOCOL_VERSION, CONNECTION_MCP_SERVER_NAME,
+    CONNECTION_MCP_SERVER_VERSION, ConnectionMcpEndpoint, ConnectionMcpRuntime,
+    ConnectionMcpRuntimeFactory, ConnectionOutputChunk, ConnectionToolError,
+    connection_mcp_server_config, connection_tools_schema, handle_jsonrpc,
+};
+pub(crate) use self::connection_mcp_http::redact_connection_mcp_token;
+pub use self::connection_mcp_http::{
+    HttpRequest, HttpResponse, MCP_ENDPOINT_PATH, connection_mcp_url, parse_http_request, respond,
+    respond_scoped, serve,
+};
+pub use self::known_hosts::{HostKeyTrust, KnownHostsError, KnownHostsStore};
 pub use self::profiles::{
     ImportProfileFilesInput, ImportProfilesInput, ImportProfilesResult, MulticaInstallOutcome,
     MulticaRoleExchange, ProfileCommandError, ProfileEntry, ProfileInput, ProfileList,
     ProfileScope, multica_exchange_to_profile_input, profile_to_multica_exchange,
+};
+pub use self::server_connections::{
+    ConnectionAuthMethod, ConnectionEnvironment, ConnectionSpec, RecentConnectionSummary,
+    ServerConnection, ServerConnectionCommandError, ServerConnectionInput, ServerConnectionStore,
+    ServerConnectionSummary,
+};
+pub use self::ssh_sessions::{SshAuth, SshOpenRequest, SshSessionCommandError};
+pub use self::terminal_history::{BoundedTerminalHistory, MAX_TERMINAL_HISTORY_BYTES};
+pub use self::terminal_sessions::{
+    ConnectionRunLocator, MAX_TERMINAL_SESSIONS, TerminalEvent, TerminalEventSink,
+    TerminalSessionCommandError, TerminalSessionKind, TerminalSessionManager,
+    TerminalSessionStatus, TerminalSessionView,
 };
 pub use self::workflow_share::{MulticaWorkflowExchange, workflow_template_to_multica_exchange};
 
@@ -1389,6 +1422,7 @@ impl RuntimeLifecycleEvent {
 pub struct App {
     pub paths: GoldBandPaths,
     pub config: RuntimeConfig,
+    credential_store: Arc<dyn CredentialStore>,
     task_search_indexer: Arc<dyn Fn(&Utf8Path, &str) + Send + Sync>,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
     upstream_output_resolver: Option<Arc<dyn upstream::UpstreamOutputResolver>>,
@@ -1419,6 +1453,7 @@ pub struct App {
     scheduled_occurrence_id: Option<String>,
     scheduled_task_context: Option<crate::provider::ScheduledTaskContextInfo>,
     runtime_recovery: Option<Arc<RuntimeRecoveryCoordinator>>,
+    connection_mcp_endpoint: Option<ConnectionMcpEndpoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1715,6 +1750,7 @@ impl App {
         Self {
             paths: self.paths.clone(),
             config: self.config.clone(),
+            credential_store: self.credential_store.clone(),
             task_search_indexer: self.task_search_indexer.clone(),
             provider_override: self.provider_override.clone(),
             upstream_output_resolver: self.upstream_output_resolver.clone(),
@@ -1730,7 +1766,43 @@ impl App {
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
             scheduled_task_context: self.scheduled_task_context.clone(),
             runtime_recovery: self.runtime_recovery.clone(),
+            connection_mcp_endpoint: self.connection_mcp_endpoint.clone(),
         }
+    }
+
+    /// Replaces the credential store (tests inject a deterministic in-memory
+    /// store; production uses the OS keyring by default).
+    pub fn with_credential_store(mut self, credential_store: Arc<dyn CredentialStore>) -> Self {
+        self.credential_store = credential_store;
+        self
+    }
+
+    pub fn with_connection_mcp_endpoint(mut self, endpoint: Option<ConnectionMcpEndpoint>) -> Self {
+        self.connection_mcp_endpoint = endpoint;
+        self
+    }
+
+    /// Include the tools whenever the endpoint is available. The endpoint reads
+    /// current run bindings per request, including bindings added mid-session.
+    pub fn connection_mcp_server_for_run(
+        &self,
+        task_id: &str,
+        run_id: &str,
+    ) -> Option<serde_json::Value> {
+        let endpoint = self.connection_mcp_endpoint.as_ref()?;
+        Some(endpoint.server_config(&ConnectionRunLocator {
+            project_id: self.paths.project_id.clone(),
+            task_id: task_id.to_string(),
+            run_id: run_id.to_string(),
+        }))
+    }
+
+    /// Capture the current task's grants before deleting its files. Call the
+    /// returned revocation only after deletion succeeds.
+    pub fn connection_mcp_task_revocation(&self, task_id: &str) -> Option<impl FnOnce() + use<>> {
+        self.connection_mcp_endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.task_revocation(&self.paths.project_id, task_id))
     }
 
     pub fn with_provider_diagnostics_source(
@@ -1780,6 +1852,7 @@ impl App {
         Self {
             paths,
             config,
+            credential_store: self.credential_store.clone(),
             task_search_indexer: self.task_search_indexer.clone(),
             provider_override: self.provider_override.clone(),
             upstream_output_resolver: self.upstream_output_resolver.clone(),
@@ -1795,6 +1868,7 @@ impl App {
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
             scheduled_task_context: self.scheduled_task_context.clone(),
             runtime_recovery: self.runtime_recovery.clone(),
+            connection_mcp_endpoint: self.connection_mcp_endpoint.clone(),
         }
     }
 
@@ -4733,6 +4807,7 @@ impl App {
         Self {
             paths,
             config,
+            credential_store: self::credentials::default_credential_store(),
             task_search_indexer: default_task_search_indexer(),
             provider_override: None,
             upstream_output_resolver: None,
@@ -4748,6 +4823,7 @@ impl App {
             scheduled_occurrence_id: None,
             scheduled_task_context: None,
             runtime_recovery: None,
+            connection_mcp_endpoint: None,
         }
     }
 
@@ -4843,6 +4919,10 @@ impl App {
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
 
         let (task_id, task_dir) = reserve_next_task_dir(&self.paths.tasks_dir())?;
+        // Reserving a previously used ID must not carry over a deleted task's grant.
+        if let Some(endpoint) = &self.connection_mcp_endpoint {
+            endpoint.revoke_task(&self.paths.project_id, &task_id);
+        }
         let mut owned_task_dir = OwnedTaskDirectory::new(task_dir.clone());
         let task = TaskState {
             version: VERSION.to_string(),
@@ -6280,6 +6360,10 @@ impl App {
         invocation.turn_control_mode = crate::domain::TurnControlMode::NonRuntimeControlled;
         invocation.runtime_control_intent = crate::provider::RuntimeControlIntent::ManualFollowUp;
         invocation.extra_hidden_sections.clear();
+        invocation.extra_hidden_sections = crate::provider::connection_hidden_sections(
+            &run.connection_specs,
+            self.config.desktop_language,
+        );
         let prompt = prepare_prompt_bundle(&mut invocation)?;
         Ok(PreparedAcpPrompt {
             prompt,
@@ -7128,6 +7212,7 @@ mod tests {
         runtime_execution_id: Option<&str>,
     ) {
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),
@@ -7532,6 +7617,7 @@ mod tests {
             "direct",
             "manual",
             "blocked",
+            "waiting-for-input",
             "permission",
             "task-missing",
             "run-missing",
@@ -7562,6 +7648,7 @@ mod tests {
                     write_json(&path, &node).unwrap();
                 }
                 "blocked" => run.pause_reason = Some(PauseReason::ErrorBlocked),
+                "waiting-for-input" => run.pause_reason = Some(PauseReason::WaitingForUserInput),
                 "permission" => run.pause_reason = Some(PauseReason::PermissionRequested),
                 "task-missing" => {
                     let mut task: TaskState = read_json(&app.paths.task_file("task-001")).unwrap();
@@ -7647,6 +7734,21 @@ mod tests {
             ],
         );
         bind_resume_test_identity(&app);
+        let locator = super::intervention::InterventionLocator {
+            project_id: app.paths.project_id.clone(),
+            node_id: "leaf-a".into(),
+            outer_node_id: Some("ai-dynamic".into()),
+            outer_attempt_id: Some("attempt-001".into()),
+            ..resume_test_locator()
+        };
+        write_json(
+            &app.runtime_resume_attempt_dir(&locator)
+                .join("acp.snapshot.json"),
+            &serde_json::json!({"latestTurnStatus":"cancelled", "stopReason":"cancelled"}),
+        )
+        .unwrap();
+        let error = app.inspect_runtime_resume(locator.clone()).unwrap_err();
+        assert_eq!(error.details.get("reason").unwrap(), "leaf-not-resumable");
         app.pause_dynamic_attempt_runtime_state(
             "task-001",
             "run-001",
@@ -7662,13 +7764,6 @@ mod tests {
             app.run_status("task-001", "run-001").unwrap().status,
             RunStatus::Running
         );
-        let locator = super::intervention::InterventionLocator {
-            project_id: app.paths.project_id.clone(),
-            node_id: "leaf-a".into(),
-            outer_node_id: Some("ai-dynamic".into()),
-            outer_attempt_id: Some("attempt-001".into()),
-            ..resume_test_locator()
-        };
         let inspected = app.inspect_runtime_resume(locator.clone()).unwrap();
         assert_eq!(
             inspected.pause_reason,
@@ -8728,6 +8823,7 @@ mod tests {
 
     fn resumability_run(reason: PauseReason) -> RunState {
         RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),
@@ -10454,6 +10550,7 @@ mod tests {
         write_json(
             &app.paths.run_file(task_id, run_id),
             &RunState {
+                connection_specs: Vec::new(),
                 version: VERSION.to_string(),
                 id: run_id.to_string(),
                 task_id: task_id.to_string(),
@@ -10972,6 +11069,7 @@ mod tests {
         write_json(
             &app.paths.run_file(task_id, run_id),
             &RunState {
+                connection_specs: Vec::new(),
                 version: VERSION.to_string(),
                 id: run_id.to_string(),
                 task_id: task_id.to_string(),
@@ -11094,6 +11192,7 @@ mod tests {
         write_json(
             &app.paths.run_file(task_id, run_id),
             &RunState {
+                connection_specs: Vec::new(),
                 version: VERSION.to_string(),
                 id: run_id.to_string(),
                 task_id: task_id.to_string(),

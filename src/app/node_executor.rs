@@ -751,12 +751,15 @@ pub(crate) fn build_worker_invocation(
             ),
         };
 
+    let run: crate::runtime::RunState = read_json(&app.paths.run_file(task_id, run_id))?;
+
     let mcp_resolution_started_at = Instant::now();
     let mcp_mgr = crate::mcp::McpManager::new(app.paths.user_settings_file());
-    let mcp_servers = mcp_mgr.configured_acp_mcp_servers().unwrap_or_else(|e| {
+    let mut mcp_servers = mcp_mgr.configured_acp_mcp_servers().unwrap_or_else(|e| {
         warn!(%e, "failed to load MCP servers for ACP session, falling back to empty list");
         Vec::new()
     });
+    mcp_servers.extend(app.connection_mcp_server_for_run(task_id, run_id));
     info!(
         target: "gold_band::perf",
         task_id,
@@ -817,7 +820,16 @@ pub(crate) fn build_worker_invocation(
         // 首条 prompt 的隐式隐藏区段（multica 远程任务上下文等，改动四十八）：策略见
         // [`first_prompt_hidden_sections`]——仅首次执行 / 自动重试加载，追问与续跑不重放。
         // 上游交付说明区段（M5-cf）在同一策略下追加（见上方装配注释）。
-        extra_hidden_sections,
+        // 连接绑定区段（连接→对话 阶段4）：每回合按 run.connection_specs 现拼，连接
+        // 变更在续跑/追问回合即时生效，与首条加载策略不同。
+        extra_hidden_sections: {
+            let mut sections = extra_hidden_sections;
+            sections.extend(crate::provider::connection_hidden_sections(
+                &run.connection_specs,
+                app.config.desktop_language,
+            ));
+            sections
+        },
         task_instruction,
         user_tips_instruction: None,
         resume_task_instruction: None,
@@ -1746,6 +1758,7 @@ mod tests {
 
     fn write_attachment_test_run(app: &App) {
         let run = crate::runtime::RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-001".to_string(),
             task_id: "task-001".to_string(),

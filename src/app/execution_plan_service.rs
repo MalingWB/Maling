@@ -1640,6 +1640,7 @@ mod tests {
     fn fabricate_auto_run(app: &App, task_id: &str, run_id: &str, config: &ConversationAutoConfig) {
         let task_uuid = app.task_show(task_id).unwrap().uuid;
         let run = RunState {
+            connection_specs: Vec::new(),
             version: "0.1".to_string(),
             id: run_id.to_string(),
             task_id: task_id.to_string(),
@@ -1780,6 +1781,7 @@ mod tests {
         let run_id = "run-002";
         let task_uuid = app.task_show(&task_id).unwrap().uuid;
         let run = RunState {
+            connection_specs: Vec::new(),
             version: "0.1".to_string(),
             id: run_id.to_string(),
             task_id: task_id.clone(),

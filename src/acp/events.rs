@@ -4683,6 +4683,7 @@ mod tests {
             adapter_display_name: "Codex".to_string(),
             cwd: "C:/tmp/attempt".to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "follow up".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -4996,6 +4997,7 @@ mod tests {
             adapter_display_name: "Codex".into(),
             cwd: "C:/tmp".into(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "retry".into(),
                 quotes: vec![],
                 role: None,
@@ -5053,6 +5055,7 @@ mod tests {
                 adapter_display_name: "Codex".to_string(),
                 cwd: "C:/tmp/attempt".to_string(),
                 input: crate::provider::ConversationPromptInput {
+                    context_connections: Vec::new(),
                     display_text: format!("message for {turn_id}"),
                     quotes: Vec::new(),
                     role: None,
@@ -5178,6 +5181,7 @@ mod tests {
             adapter_display_name: "Codex".to_string(),
             cwd: "C:/tmp/attempt".to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "survive restart".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -5230,6 +5234,7 @@ mod tests {
             adapter_display_name: "Codex".to_string(),
             cwd: "C:/tmp/attempt".to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "stop before provider startup".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -5311,6 +5316,7 @@ mod tests {
                 quotes: Vec::new(),
                 role: None,
                 workspace_files: Vec::new(),
+                context_connections: Vec::new(),
             },
             attachment_paths: Vec::new(),
             admitted_at: "2026-08-19T10:00:00Z".to_string(),
@@ -5331,6 +5337,7 @@ mod tests {
             turn_id: "turn-2".to_string(),
             operation_id: "operation-2".to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "second".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -5403,6 +5410,7 @@ mod tests {
             adapter_display_name: "Codex".to_string(),
             cwd: "C:/tmp/attempt".to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "continue legacy session".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -5451,6 +5459,7 @@ mod tests {
             adapter_display_name: "Codex".to_string(),
             cwd: attempt_dir.to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "shared lifecycle".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -5492,6 +5501,7 @@ mod tests {
             adapter_display_name: "Codex".to_string(),
             cwd: "C:/tmp/attempt".to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "claim me".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -5582,6 +5592,7 @@ mod tests {
             adapter_display_name: "Codex".to_string(),
             cwd: "C:/tmp/attempt".to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "run owned".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -5645,6 +5656,7 @@ mod tests {
             adapter_display_name: "Codex".to_string(),
             cwd: "C:/tmp/attempt".to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "stop me".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -5772,6 +5784,7 @@ mod tests {
             adapter_display_name: "Claude".to_string(),
             cwd: "C:/tmp/attempt".to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "hi".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -5825,6 +5838,7 @@ mod tests {
             adapter_display_name: "Claude".to_string(),
             cwd: "C:/tmp/attempt".to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "follow up".to_string(),
                 quotes: Vec::new(),
                 role: None,
@@ -5886,6 +5900,7 @@ mod tests {
             adapter_display_name: "Claude".to_string(),
             cwd: "C:/tmp/attempt".to_string(),
             input: crate::provider::ConversationPromptInput {
+                context_connections: Vec::new(),
                 display_text: "follow up".to_string(),
                 quotes: Vec::new(),
                 role: None,

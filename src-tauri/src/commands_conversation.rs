@@ -1007,6 +1007,58 @@ pub async fn get_conversation_run(
     result
 }
 
+/// Binds a server connection to a conversation run. The run stores only the
+/// non-secret spec; the agent's hidden context and connection MCP tool scope read
+/// it on the next turn. Gated on `remoteConnectionsEnabled` (connections are an
+/// intranet-only capability), matching the other remote commands.
+#[tauri::command]
+pub async fn bind_conversation_connection(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    connection_id: String,
+) -> CommandResult<gold_band::app::ConnectionSpec> {
+    crate::commands::ensure_remote_connections_enabled()?;
+    let context = state.context().map_err(command_error)?;
+    let global_app = context.app();
+    let app_state = global_app.load_state().map_err(command_error)?;
+    let (workspace_path, _resolved_project_id) =
+        runtime_workspace_entry_for_project(&app_state, &project_id).await?;
+    spawn_blocking_command(move || {
+        let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+        workspace_app
+            .bind_run_connection(&task_id, &run_id, &connection_id)
+            .map_err(command_error)
+    })
+    .await
+}
+
+/// Removes a connection from a conversation run's bound set. Returns whether it
+/// had been bound (idempotent from the UI's point of view).
+#[tauri::command]
+pub async fn unbind_conversation_connection(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    connection_id: String,
+) -> CommandResult<bool> {
+    crate::commands::ensure_remote_connections_enabled()?;
+    let context = state.context().map_err(command_error)?;
+    let global_app = context.app();
+    let app_state = global_app.load_state().map_err(command_error)?;
+    let (workspace_path, _resolved_project_id) =
+        runtime_workspace_entry_for_project(&app_state, &project_id).await?;
+    spawn_blocking_command(move || {
+        let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+        workspace_app
+            .unbind_run_connection(&task_id, &run_id, &connection_id)
+            .map_err(command_error)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn validate_conversation_create(
     state: State<'_, DesktopState>,
@@ -1083,6 +1135,7 @@ async fn create_conversation_run_inner(
         quotes: input.quotes.clone(),
         role: input.role.clone(),
         workspace_files: input.workspace_files.clone(),
+        context_connections: Vec::new(),
     };
     validate_prompt_workspace_files(
         &app,
@@ -2167,12 +2220,16 @@ pub async fn delete_conversation_task(
                     serde_json::json!({ "taskId": task_id }),
                 ));
             }
+            let revoke_connection_mcp = workspace_app.connection_mcp_task_revocation(&task_id);
             trash::delete(task_dir.as_std_path()).map_err(|error| {
                 CommandErrorVm::new(
                     "conversation.task-delete-failed",
                     serde_json::json!({ "taskId": task_id, "message": error.to_string() }),
                 )
             })?;
+            if let Some(revoke) = revoke_connection_mcp {
+                revoke();
+            }
         }
         gold_band::storage::sqlite::delete_task(&task_dir);
         if let Some(task_uuid) = task_uuid {
@@ -3122,6 +3179,7 @@ mod tests {
         write_json(
             &app.paths.run_file(task_id, run_id),
             &RunState {
+                connection_specs: Vec::new(),
                 version: VERSION.to_string(),
                 id: run_id.to_string(),
                 task_id: task_id.to_string(),

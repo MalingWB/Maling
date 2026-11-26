@@ -187,6 +187,7 @@ fn write_fixture(app: &App, completed: bool, current_attempt: &str) {
         rerun: None,
         last_executed_node: None,
         worktree: None,
+        connection_specs: Vec::new(),
         execution: RuntimeExecutionState {
             phase: if completed {
                 RuntimeExecutionPhase::Terminal

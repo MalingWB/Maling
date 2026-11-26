@@ -527,6 +527,7 @@ impl ScheduledTaskService {
             selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            connection_id: None,
             workflow_authoring: None,
             first_prompt_hidden_sections: None,
             role: None,
@@ -718,6 +719,7 @@ impl ScheduledTaskService {
             selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            connection_id: None,
             workflow_authoring: None,
             first_prompt_hidden_sections: None,
             role: None,
@@ -1768,6 +1770,7 @@ mod tests {
         write_json(
             &fixture.app.paths.run_file(task_id, run_id),
             &RunState {
+                connection_specs: Vec::new(),
                 version: VERSION.to_string(),
                 id: run_id.to_string(),
                 task_id: task_id.to_string(),

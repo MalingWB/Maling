@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { readChannelConfig, repoRoot, writeTauriConfigOverlay } from './channel-config.mjs';
+import { loadLocalEnv } from './local-env.mjs';
 
 export function devChannelEnvironment(baseEnv, channel, lowMemory = false) {
   const environment = {
@@ -25,7 +26,8 @@ function run() {
   // Read channel config and apply channel-specific product name / window title etc.
   let config;
   try {
-    config = readChannelConfig(channel);
+    // `.env` 提供 WB origin 等本地开发配置；已导出的变量优先，不会被文件覆盖。
+    config = readChannelConfig(channel, loadLocalEnv(process.env));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     return 1;

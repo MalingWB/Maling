@@ -111,6 +111,7 @@ export function Shell({ onConversationRevealHandled: propsRevealHandled, onConve
         onRevealHandled={propsRevealHandled}
         conversationTaskUuid={conversationTaskUuid}
         workLocation={workLocation}
+        repoRoot={repoRoot}
         conversationWorkspaceStore={conversationWorkspaceStore}
       >
         {children}

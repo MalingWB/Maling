@@ -2260,6 +2260,7 @@ mod tests {
             outer_attempt_id: outer.then(|| "dynamic-attempt".into()),
         };
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: locator.run_id.clone(),
             task_id: locator.task_id.clone(),
@@ -2783,6 +2784,7 @@ mod tests {
         )
         .unwrap();
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: locator.run_id.clone(),
             task_id: locator.task_id.clone(),

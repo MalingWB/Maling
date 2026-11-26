@@ -3542,6 +3542,7 @@ fn scheduled_continue_prompt_input(
         quotes: input.quotes,
         role: input.role,
         workspace_files: input.workspace_files,
+        context_connections: Vec::new(),
     }
 }
 
@@ -3595,6 +3596,7 @@ fn scheduled_create_input(
         selected_branch: None,
         scheduled_task_id: Some(definition.id.clone()),
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
+        connection_id: None,
         workflow_authoring,
         first_prompt_hidden_sections: None,
         role: None,
@@ -4040,6 +4042,7 @@ mod tests {
     #[test]
     fn scheduled_continue_prompt_keeps_workspace_file_references_and_quotes() {
         let input = crate::view_models_conversation::ConversationCreateInputVm {
+            connection_id: None,
             project_id: "project-a".to_string(),
             content: "检查状态".to_string(),
             run_mode: "direct".to_string(),
@@ -5039,6 +5042,7 @@ mod tests {
             UpdateJobResult::Updated(_)
         ));
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-1".to_string(),
             task_id: "task-1".to_string(),
@@ -5126,6 +5130,7 @@ mod tests {
         accept_current_occurrence_execution(&database, owner_id, &definition, &claimed, &links)
             .unwrap();
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-1".to_string(),
             task_id: "task-1".to_string(),
@@ -6541,6 +6546,7 @@ mod tests {
         let task_id = "task-1";
         let run_id = "run-1";
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: run_id.to_string(),
             task_id: task_id.to_string(),
@@ -7138,6 +7144,7 @@ mod tests {
     #[test]
     fn reconcile_running_occurrence_finalizes_when_underlying_run_completed() {
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-reconcile".to_string(),
             task_id: "task-reconcile".to_string(),
@@ -7190,6 +7197,7 @@ mod tests {
     #[test]
     fn reconcile_running_occurrence_preserves_when_underlying_run_still_active() {
         let run = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-reconcile".to_string(),
             task_id: "task-reconcile".to_string(),
@@ -7227,6 +7235,7 @@ mod tests {
     #[test]
     fn reconcile_running_occurrence_ignores_a_newer_active_run_on_the_same_task() {
         let completed = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-reconcile".to_string(),
             task_id: "task-reconcile".to_string(),
@@ -7253,6 +7262,7 @@ mod tests {
         };
         let (app, occurrence, _dir) = reconcile_outcome_setup(Some(completed));
         let newer_active = RunState {
+            connection_specs: Vec::new(),
             version: VERSION.to_string(),
             id: "run-newer".to_string(),
             task_id: "task-reconcile".to_string(),

@@ -19,6 +19,7 @@ import { useConversationComposerDraft, type ConversationComposerRemoteBinding } 
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
 import { shouldBackspaceClearRemoteBinding } from '@/lib/conversation-composer-remote-chip';
 import { AgentIcon, AgentIdentityLabel } from '@/components/AgentIdentityLabel';
+import { ConversationHomeAttach } from '@/components/conversation/ConversationConnectionRefs';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
 import { useMentionMenuLabels } from '@/hooks/useMentionWorkspaceFiles';
@@ -56,6 +57,7 @@ import {
   type ComposerWorkspaceFileRef,
 } from '@/lib/composer-context';
 import { composerQuoteFailureMessage } from '@/lib/composer-quote-i18n';
+import { onTerminalQuote } from '@/lib/terminal-quote-bus';
 import { GitBranchSelector } from '@/components/git/GitBranchSelector';
 import {
   createDraftAttachmentWorkspaceResource,
@@ -93,6 +95,12 @@ interface ConversationComposerProps {
   onWorkspaceChange: (projectId: string) => void;
   onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
   onScheduledModeExit?: () => void;
+  /** Home-composer connection attach (pre-first-turn). Draft state lives in the
+   *  parent; the run binding happens after creation. Omit to hide the entry. */
+  connectionAttach?: {
+    selectedId: string | null;
+    onSelect: (connectionId: string | null) => void;
+  };
 }
 
 interface ConversationWorkspaceControlProps {
@@ -471,6 +479,7 @@ export function ConversationComposer({
   onWorkspaceChange,
   onWorkLocationChange,
   onScheduledModeExit,
+  connectionAttach,
 }: ConversationComposerProps) {
   const measuredComposerRef = useWebviewMeasuredContainer<HTMLDivElement>('conversation-composer');
   const { t } = useTranslation();
@@ -632,6 +641,23 @@ export function ConversationComposer({
     addQuote: (draft, options) => addQuote(draft, options.isDocked) ? { kind: 'added' } : { kind: 'rejected' },
     addWorkspaceFileRef: (reference, options) => addWorkspaceFile(reference, options.isDocked),
   }), [addQuote, addWorkspaceFile, workspaceFileReferenceBridge]);
+
+  // Terminal selection → conversation quote (connection → conversation).
+  // The conversation-home composer never goes through ACPChatDialog, and
+  // ACPChatDialog used to be the ONLY subscriber of the quote bus — quoting
+  // from a terminal while on the home page was silently dropped. Subscribe
+  // here as well so both composers receive terminal quotes. Under the
+  // read-only experience the quote still lands in the chip list (visible,
+  // removable); only sending is disabled — same as file references.
+  useEffect(() => onTerminalQuote(({ text }) => {
+    addQuote(
+      {
+        source: { kind: 'agentMessage', messageKey: `terminal:${Date.now()}` },
+        text,
+      },
+      false,
+    );
+  }), [addQuote]);
 
   const openWorkspaceFile = useCallback((file: ComposerWorkspaceFileRef) => {
     if (!rightWorkspace?.scopeKey) return;
@@ -1237,6 +1263,13 @@ export function ConversationComposer({
               >
                 <Paperclip className="size-3.5" />
               </Button>
+              {connectionAttach ? (
+                <ConversationHomeAttach
+                  selectedId={connectionAttach.selectedId}
+                  onSelect={connectionAttach.onSelect}
+                  disabled={busy}
+                />
+              ) : null}
             </div>
             <div
               data-slot="conversation-composer-trailing-actions"
