@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { ChevronDown, ChevronUp, FolderOpen, Loader2, Package } from 'lucide-react';
 import { forgetWorkBuddySource, importPluginAsset, listInstalledPlugins, selectWorkBuddySource } from '../api';
 import { displayAppError } from '../i18n';
@@ -13,7 +14,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/com
 import { Checkbox } from '@/components/ui/checkbox';
 import { forgeItemKey, pluginForgeItems } from '@/lib/forge-items';
 import { RefreshSingleFlight } from '@/lib/refresh-single-flight';
-import type { AgentCatalogEntryVm, InstalledPluginVm, ForgeSourceItemVm } from '../types';
+import type { AgentCatalogEntryVm, InstalledPluginVm, ForgeSourceItemVm, PluginImportBlockerVm } from '../types';
 
 type ImportSelection = { projectId: string | null; assetId: string; name: string; kind: 'skill' | 'agent' };
 interface PluginForgeAssetsProps {
@@ -133,6 +134,42 @@ function ScopedInventory(props: PluginForgeAssetsProps) {
   </div>;
 }
 
+// Use exact binary units: rounding a nearby limit up would promise a size that cannot be imported.
+function formatByteLimit(bytes: number, locale: string) {
+  const units = ['B', 'KiB', 'MiB', 'GiB'];
+  let unit = 0;
+  while (bytes >= 1024 && bytes % 256 === 0 && unit < units.length - 1) {
+    bytes /= 1024;
+    unit++;
+  }
+  return `${bytes.toLocaleString(locale)} ${units[unit]}`;
+}
+
+function importBlockerNote(t: TFunction, locale: string, blocker?: PluginImportBlockerVm) {
+  const code = blocker?.code;
+  const limit = blocker?.limit;
+  let reason: string;
+  let path = blocker?.path;
+  switch (code) {
+    case 'unsupported-directory': case 'unsupported-file': case 'hidden-entry': case 'special-entry': case 'inspection-incomplete':
+      reason = t(`plugin.importBlocker.${code}`);
+      break;
+    case 'depth-limit': case 'file-count-limit': case 'file-size-limit': case 'bundle-size-limit':
+      reason = typeof limit === 'number' && Number.isSafeInteger(limit) && limit >= 0
+        ? t(`plugin.importBlocker.${code}-value`, { limit: code === 'file-size-limit' || code === 'bundle-size-limit' ? formatByteLimit(limit, locale) : limit.toLocaleString(locale) })
+        : t(`plugin.importBlocker.${code}`);
+      break;
+    default:
+      reason = t('plugin.importBlocker.unknown');
+      path = undefined;
+  }
+  // Display only the supplied bundle-relative path, never an asset id or inferred filename.
+  const showPath = path && !/[\\:\p{Cc}\p{Bidi_Control}]/u.test(path) && path.split('/').every(part => part && part !== '.' && part !== '..');
+  return <p className="text-xs text-muted-foreground">{t('plugin.importBlocker.message', { reason })}
+    {showPath && <bdi className="block break-all">{path}</bdi>}
+  </p>;
+}
+
 const PREVIEW_ROWS = 3;
 function PluginCard({ plugin, projectName, host, canGenerate, canImport, disabled, isSelected, toggle, onImport, onForget }: {
   plugin: InstalledPluginVm; projectName: string | null; host?: AgentCatalogEntryVm;
@@ -141,7 +178,7 @@ function PluginCard({ plugin, projectName, host, canGenerate, canImport, disable
   onForget: () => void;
   onImport: (asset: Omit<ImportSelection, 'projectId'>) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const listId = useId();
   const manual = plugin.provenance === 'manual-directory';
@@ -163,14 +200,14 @@ function PluginCard({ plugin, projectName, host, canGenerate, canImport, disable
     </CardHeader>
     <CardContent className="border-t border-border/30 px-4 py-3">
       <p className="text-xs text-muted-foreground">{plugin.unavailable ? t('plugin.unavailable') : plugin.assets.length ? t('plugin.assetCount', { count: plugin.assets.length }) : t('contextManagement.skills.plugins.noAssets')}</p>
-      <ul id={listId} className="divide-y divide-border/30">{(expanded ? plugin.assets : plugin.assets.slice(0, PREVIEW_ROWS)).map(({assetId, name, kind, description, importable}) => {
+      <ul id={listId} className="divide-y divide-border/30">{(expanded ? plugin.assets : plugin.assets.slice(0, PREVIEW_ROWS)).map(({assetId, name, kind, description, importable, importBlocker}) => {
         const item: ForgeSourceItemVm = { catalog: 'plugin', source: plugin.source, assetId };
         return <li key={forgeItemKey(item)} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-2">
           {canGenerate && <Checkbox disabled={disabled} checked={isSelected(item)} onCheckedChange={() => toggle(item)} aria-label={t('contextManagement.skills.forgeSelect', { name })} />}
           <div className="min-w-[min(100%,6rem)] flex-1"><span className="break-all text-xs font-medium">{name}</span>
             <span className="ml-1.5 text-ui-micro text-muted-foreground">{t(`forge.itemsPrefill.kind.${kind}`)}</span>
             {description && <p className="line-clamp-2 break-words text-xs text-muted-foreground">{description}</p>}
-            {kind === 'skill' && !importable && <p className="text-xs text-muted-foreground">{t('plugin.unsupportedBundle')}</p>}</div>
+            {kind === 'skill' && !importable && importBlockerNote(t, i18n.language, importBlocker)}</div>
           {canImport && importable && (kind === 'skill' || kind === 'agent') && <Button size="sm" variant="outline" className="ml-auto h-7 px-2 text-xs" disabled={disabled} onClick={() => onImport({ assetId, name, kind })}>{t(kind === 'skill' ? 'plugin.importSkill' : 'plugin.importRole')}</Button>}
         </li>;
       })}</ul>

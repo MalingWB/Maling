@@ -18,6 +18,116 @@ fn write(root: &Utf8Path, file: &str, content: &str) {
 }
 const SKILL: &str = "---\nname: probe\ndescription: Fixture\n---\nRead the probe definition.";
 
+#[test]
+fn buddy_import_blockers_are_package_relative_and_do_not_authorize_import() {
+    use gold_band::skill::{
+        SKILL_BUNDLE_MAX_BUNDLE_BYTES, SKILL_BUNDLE_MAX_DEPTH, SKILL_BUNDLE_MAX_FILE_BYTES,
+        SKILL_BUNDLE_MAX_FILES, claude_plugin::scan_codebuddy_plugins,
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Utf8PathBuf::from_path_buf(tmp.path().canonicalize().unwrap()).unwrap();
+    let pkg = store.join("cache/probe");
+    write(&pkg, ".codebuddy-plugin/plugin.json", r#"{"name":"probe"}"#);
+    write(
+        &store,
+        "installed_plugins.json",
+        &json!({"plugins":{"probe":[{"scope":"user","installPath":pkg}]}}).to_string(),
+    );
+    write(&pkg, "commands/cmd.md", "Command");
+    write(&pkg, "agents/agent.md", "Agent");
+    let skill = pkg.join("skills/probe");
+    write(&skill, "SKILL.md", SKILL);
+    let list = || scan_codebuddy_plugins(&store, None).pop().unwrap();
+    let clean = list();
+    for asset in &clean.assets {
+        assert!(
+            serde_json::to_value(asset)
+                .unwrap()
+                .get("importBlocker")
+                .is_none()
+        );
+    }
+    let assert_blocked = |expected: serde_json::Value| {
+        let row = list();
+        assert_eq!(row.assets.len(), 3);
+        let asset = row.assets.iter().find(|a| a.name == "probe").unwrap();
+        assert!(!asset.importable && row.declarative_skill_files(asset).is_none());
+        assert_eq!(
+            serde_json::to_value(asset).unwrap()["importBlocker"],
+            expected
+        );
+    };
+    for (path, blocker) in [
+        (
+            "scripts/run.txt",
+            json!({"code":"unsupported-directory", "path":"scripts"}),
+        ),
+        (
+            "references/sample.bin",
+            json!({"code":"unsupported-file", "path":"references/sample.bin"}),
+        ),
+        (
+            "references/no-extension",
+            json!({"code":"unsupported-file", "path":"references/no-extension"}),
+        ),
+        (
+            "references/misleading\u{202e}.bin",
+            json!({"code":"unsupported-file"}),
+        ),
+        (
+            "assets/.private",
+            json!({"code":"hidden-entry", "path":"assets/.private"}),
+        ),
+        (
+            "references/a/b/c/note.md",
+            json!({"code":"depth-limit", "path":"references/a/b/c", "limit":SKILL_BUNDLE_MAX_DEPTH}),
+        ),
+    ] {
+        write(&skill, path, "inert");
+        assert_blocked(blocker);
+        std::fs::remove_dir_all(skill.join(path.split('/').next().unwrap())).unwrap();
+    }
+    let data = skill.join("sample.txt");
+    std::fs::File::create(&data)
+        .unwrap()
+        .set_len(SKILL_BUNDLE_MAX_FILE_BYTES + 1)
+        .unwrap();
+    assert_blocked(
+        json!({"code":"file-size-limit", "path":"sample.txt", "limit":SKILL_BUNDLE_MAX_FILE_BYTES}),
+    );
+    // A timestamp the existing revision format cannot represent is not a package limit.
+    std::fs::File::create(&data)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH - std::time::Duration::from_secs(60))
+        .unwrap();
+    assert_blocked(json!({"code":"inspection-incomplete", "path":"sample.txt"}));
+    std::fs::remove_file(data).unwrap();
+    let refs = skill.join("references");
+    std::fs::create_dir(&refs).unwrap();
+    for i in 0..SKILL_BUNDLE_MAX_BUNDLE_BYTES.div_ceil(SKILL_BUNDLE_MAX_FILE_BYTES) {
+        std::fs::File::create(refs.join(format!("{i}.txt")))
+            .unwrap()
+            .set_len(SKILL_BUNDLE_MAX_FILE_BYTES)
+            .unwrap();
+    }
+    // Aggregate limits describe the bundle, not whichever entry the filesystem yielded last.
+    assert_blocked(json!({"code":"bundle-size-limit","limit":SKILL_BUNDLE_MAX_BUNDLE_BYTES}));
+    std::fs::remove_dir_all(&refs).unwrap();
+    for i in 0..SKILL_BUNDLE_MAX_FILES {
+        write(&refs, &format!("{i}.txt"), "");
+    }
+    assert_blocked(json!({"code":"file-count-limit","limit":SKILL_BUNDLE_MAX_FILES}));
+    #[cfg(unix)]
+    {
+        std::fs::remove_dir_all(&refs).unwrap();
+        std::os::unix::fs::symlink("not-a-target", skill.join("link.txt")).unwrap();
+        assert_blocked(json!({"code":"special-entry", "path":"link.txt"}));
+        std::fs::remove_file(skill.join("link.txt")).unwrap();
+        write(&skill, "unsafe\nname.txt", "inert");
+        assert_blocked(json!({"code":"inspection-incomplete"}));
+    }
+}
+
 fn isolated_desktop_child(name: &str) -> Option<Utf8PathBuf> {
     const CHILD: &str = "GOLD_BAND_DESKTOP_DISCOVERY_TEST";
     if std::env::var(CHILD).as_deref() == Ok(name) {
@@ -58,6 +168,7 @@ fn recognized_desktop_installation_picker_rechecks_product_and_skill_identity() 
     let install = root.join("installation");
     let bundle = install.join("resources/app.asar.unpacked/resources/plugins/workbuddy-builtin");
     write(&bundle, "skills/expert-manager/SKILL.md", SKILL);
+    write(&bundle, "skills/expert-manager/tools/note.txt", "inert");
     write(&bundle, "commands/ignored.md", "Not a bundled Skill");
     let shell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
@@ -89,6 +200,13 @@ fn recognized_desktop_installation_picker_rechecks_product_and_skill_identity() 
         "desktop-bundled"
     );
     assert_eq!(selected.assets.len(), 1);
+    for row in [&automatic[0], &selected] {
+        assert!(!row.assets[0].importable);
+        assert_eq!(
+            serde_json::to_value(&row.assets[0]).unwrap()["importBlocker"],
+            json!({"code":"unsupported-directory", "path":"tools"})
+        );
+    }
     let id = selected.assets[0].asset_id.as_str();
     assert_eq!(
         resolve_plugin_assets(&app.paths, Project, [id])[0].assets[0]
@@ -281,6 +399,16 @@ fn workbuddy_native_selection_resolves_only_current_owner_and_definition() {
         ["probe", "auditor"]
     );
     assert!(!listed.assets[0].importable && listed.assets[1].importable);
+    assert_eq!(
+        serde_json::to_value(&listed.assets[0]).unwrap()["importBlocker"],
+        json!({"code":"unsupported-directory", "path":"scripts"})
+    );
+    assert!(
+        serde_json::to_value(&listed.assets[1])
+            .unwrap()
+            .get("importBlocker")
+            .is_none()
+    );
     let id = listed.assets[0].asset_id.clone();
     let item = ForgeSourceItem {
         source: Project,

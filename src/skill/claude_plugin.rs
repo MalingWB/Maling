@@ -59,12 +59,37 @@ pub enum ClaudePluginAssetKind {
     Agent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImportBlockerCode {
+    UnsupportedDirectory,
+    UnsupportedFile,
+    HiddenEntry,
+    SpecialEntry,
+    DepthLimit,
+    FileSizeLimit,
+    BundleSizeLimit,
+    FileCountLimit,
+    InspectionIncomplete,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportBlocker {
+    pub code: ImportBlockerCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudePluginAsset {
     pub asset_id: String,
     pub kind: ClaudePluginAssetKind,
     pub importable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_blocker: Option<ImportBlocker>,
     #[serde(skip)]
     support_revision: Option<blake3::Hash>,
     pub name: String,
@@ -173,6 +198,7 @@ impl AssetReader<'_> {
             asset_id,
             kind,
             importable: kind != ClaudePluginAssetKind::Command,
+            import_blocker: None,
             support_revision: None,
             name: alias.map(str::to_owned).unwrap_or(name),
             description,
@@ -241,7 +267,8 @@ impl InstalledPlugin {
             content.len(),
             &mut (super::SKILL_BUNDLE_MAX_FILES * 4),
             true,
-        )?;
+        )
+        .ok()?;
         (Some(bundle.revision) == asset.support_revision).then_some(bundle.files)
     }
 
@@ -525,6 +552,7 @@ fn scan_root(entry: PluginRoot, filter: InstallationFilter<'_>) -> InstalledPlug
                                 asset_id,
                                 kind: ClaudePluginAssetKind::Command,
                                 importable: false,
+                                import_blocker: None,
                                 support_revision: None,
                                 name: command_name.clone(),
                                 description: declared_description.trim().to_string(),

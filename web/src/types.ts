@@ -3481,9 +3481,19 @@ export type ForgeCompileOutcomeVm =
     repairPrompt: string;
   };
 
-/// 已安装的 Claude Code plugin 及其可铸造素材（入口 C）。
+export interface PluginImportBlockerVm {
+  code: 'unsupported-directory' | 'unsupported-file' | 'hidden-entry' | 'special-entry'
+    | 'depth-limit' | 'file-size-limit' | 'bundle-size-limit' | 'file-count-limit' | 'inspection-incomplete';
+  /** Displayable path relative to the Skill root; omitted when it cannot be disclosed. */
+  path?: string;
+  /** Bytes for size limits; levels or files for depth and count limits. */
+  limit?: number;
+}
+
+/// 已安装的 plugin 及其可铸造素材（入口 C）。
 export interface InstalledPluginAssetVm {
   importable: boolean;
+  importBlocker?: PluginImportBlockerVm;
   kind: 'skill' | 'command' | 'agent';
   name: string;
   description: string;

@@ -271,11 +271,55 @@ describe('PluginForgeAssets', () => {
     expect(host.textContent).not.toContain('导入 Skill');
   });
 
-  it('keeps a definition with unsupported dependencies available to generate but not to import', async () => {
-    listInstalledPluginsMock.mockResolvedValue([{ ...deployTools, assets: [{ ...deployTools.assets[0], importable: false }] }]);
+  it('shows the unsupported directory in the affected Skill row without disabling generation', async () => {
+    const blocked = { ...deployTools.assets[0], importable: false, importBlocker: { code: 'unsupported-directory', path: 'examples' } };
+    listInstalledPluginsMock.mockResolvedValue([{ ...deployTools, assets: [blocked, ...deployTools.assets.slice(1)] }]);
+    const toggle = await render();
+    const [row, command, agent] = host.querySelectorAll('li');
+    expect(row.textContent).toContain('不支持的目录');
+    expect(row.textContent).toContain('examples');
+    expect(row.textContent).toContain('可用于生成');
+    expect(row.textContent).not.toContain('导入 Skill');
+    expect(command.textContent).not.toContain('examples');
+    expect(agent.textContent).not.toContain('examples');
+    await act(async () => checkboxes(row)[0].click());
+    expect(toggle).toHaveBeenCalledExactlyOnceWith({ assetId: blocked.assetId, catalog: 'plugin', source: 'global' });
+  });
+
+  it.each([
+    [{ code: 'unsupported-file' }, '不支持的文件类型'],
+    [{ code: 'hidden-entry' }, '隐藏项'],
+    [{ code: 'special-entry' }, '特殊文件系统条目'],
+    [{ code: 'depth-limit', limit: 5 }, '超过 5 层'],
+    [{ code: 'file-size-limit', limit: 1536 }, '超过 1.5 KiB'],
+    [{ code: 'bundle-size-limit', limit: 3 * 1024 * 1024 }, '整个包超过 3 MiB'],
+    [{ code: 'file-count-limit', limit: 17 }, '超过 17 个'],
+    [{ code: 'file-count-limit' }, '文件数量超过上限'],
+    [{ code: 'file-size-limit', limit: -1 }, '单个文件超过大小上限'],
+    [{ code: 'inspection-incomplete' }, '未能完整检查包内容'],
+    [{ code: 'unrecognized-code', path: 'not-for-display' }, '具体原因未知'],
+    [undefined, '具体原因未知'],
+  ] as const)('explains the reported import blocker without inventing missing details (%j)', async (importBlocker, expected) => {
+    listInstalledPluginsMock.mockResolvedValue([{ ...deployTools, assets: [{ ...deployTools.assets[0], importable: false, importBlocker }] }]);
     await render();
-    expect(checkboxes(host)).toHaveLength(1);
-    expect(host.textContent).not.toContain('导入 Skill');
+    const row = host.querySelector('li')!;
+    expect(row.textContent).toContain(expected);
+    expect(row.textContent).not.toMatch(/undefined|null|\{\{|plugin\.importBlocker|not-for-display|unrecognized-code|fixture-deploy/);
+  });
+
+  it('wraps long bundle-relative paths, but does not expose absolute paths or parent traversal', async () => {
+    const relative = `assets/${'a'.repeat(140)}.py`;
+    const assets = [relative, 'C:\\private\\entry.py', '../private/entry.py'].map((path, index) => ({
+      ...deployTools.assets[0], assetId: `blocked-${index}`, importable: false, importBlocker: { code: 'unsupported-file', path },
+    }));
+    listInstalledPluginsMock.mockResolvedValue([{ ...deployTools, assets }]);
+    await render();
+    const [safe, absolute, traversal] = host.querySelectorAll('li');
+    expect(safe.querySelector('bdi.break-all')?.textContent).toBe(relative);
+    for (const row of [absolute, traversal]) {
+      expect(row.textContent).toContain('不支持的文件类型');
+      expect(row.textContent).not.toContain('private');
+    }
   });
 
   it('offers to forget an unavailable manual source, not its files or a same-named host source', async () => {

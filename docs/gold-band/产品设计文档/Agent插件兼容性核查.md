@@ -37,6 +37,12 @@ CLI [插件参考](https://www.codebuddy.cn/docs/cli/plugins-reference)规定自
 - 安装位置不写死 `D:`：本机的 `Software/Classes/workbuddy/shell/open/command` 登记实际指向该 EXE。登记仅作定位，绝不执行注册命令；精确验证宿主文件和固定的随附资源相对路径。其他已知候选包括 Windows App Paths 和[腾讯列出的常见安装位置](https://cloud.tencent.com/document/faq/1831/134405)。版本不识别时保留显式选目录，不递归扫盘或解包 ASAR。
 - 另一种来源是桌面用户登记 `%USERPROFILE%/.workbuddy/plugins/installed_plugins.json`，不能与 CLI 的 `.codebuddy` 登记混为一谈。[Windows 社区实例](https://cloud.tencent.com/developer/article/2768686)给出插件缓存布局；v2 是识别的登记格式而非官方永久承诺。只接受可归属的记录与缓存内匹配的包，不能拿市场目录、无登记缓存或同名文件推断已安装。自动回归使用临时登记和合成包。本次另按用户指定的目录只读核对真实登记：v2，39 条 `user` 记录，39 个对应版本缓存目录存在。只证实有登记和缓存，未读取包内正文、未逐项验证可导入素材或运行时启用状态。用户目录注册与客户端随附包是彼此独立的两条来源。非 Windows 按 `$HOME/.workbuddy/plugins` 解析符合契约的登记，不据此宣称已验证 macOS/Linux 随附包的安装布局。
 
+### 可读取的定义与不可导入的 Skill 包
+
+当 WorkBuddy 的 `SKILL.md` 可读，但当前检查不能确认整个 Skill 可以复制进库时，Plugin 卡片保留定义及原有生成素材入口，在该 Skill 行直接显示一个实际遇到的拦截原因。例：在顶层遇到 `scripts/`，说明**目录**不受支持，不推断其中有某个脚本；在 `assets/` 内遇到 `logo.png`，说明不支持附件 `assets/logo.png`。只展示 Skill 内的相对位置；大小、文件数或深度触及限制时说明是哪项限制。检查未能完成不等于发现了不支持的内容。它不是完整的问题清单，也不是 WorkBuddy 的启用状态。
+
+列表检查不为说明原因额外读取附件正文；执行导入时仍重新核对当前素材。此提示不放宽导入格式、不执行脚本，也不会将包同步给其他 Agent。
+
 ## 本轮应用接入范围
 
 除原有 Claude Code、CodeBuddy Code、Codex CLI、Qwen Code、Gemini CLI 五类安装来源外，Windows 的 WorkBuddy 桌面用户登记与安装目录随附 Skill 也可定向发现。WorkBuddy 是独立素材来源而非新增 ACP Agent；不能由此推断全部 14 个运行宿主的插件都已接入。CodeBuddy 使用登记表指向的插件缓存，不遍历市场源。Codex 根据上游 `core-plugin-common/src/installed.rs` 的规则选择 `local` 或当前版本，不能用按目录名排序的最后一个冒充当前版本。其余宿主保留上表调查结论，不拼猜测路径。

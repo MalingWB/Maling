@@ -673,18 +673,16 @@ pub(super) fn read_source_with_budget(
         {
             continue;
         }
-        let support_revision = (kind == ClaudePluginAssetKind::Skill)
-            .then(|| {
-                super::buddy_support::inspect(
-                    &dir,
-                    skill_dir,
-                    raw.len(),
-                    &mut support_entries_left,
-                    false,
-                )
-            })
-            .flatten()
-            .map(|s| s.revision);
+        let (support_revision, import_blocker) = if kind == ClaudePluginAssetKind::Skill {
+            use super::buddy_support::{InspectionError, inspect};
+            match inspect(&dir, skill_dir, raw.len(), &mut support_entries_left, false) {
+                Ok(support) => (Some(support.revision), None),
+                Err(InspectionError::Blocked(reason)) => (None, Some(reason)),
+                Err(InspectionError::SharedBudgetExhausted) => (None, None),
+            }
+        } else {
+            (None, None)
+        };
         // A large bundled collection may exhaust the aggregate sidecar budget. Keep
         // already verified definitions; do not issue an identity for a partial inspection.
         if bundle && support_entries_left == 0 {
@@ -704,6 +702,7 @@ pub(super) fn read_source_with_budget(
             asset_id,
             kind,
             support_revision,
+            import_blocker,
             importable: kind == ClaudePluginAssetKind::Agent || support_revision.is_some(),
             name: name.to_owned(),
             description: description.to_owned(),
