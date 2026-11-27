@@ -294,7 +294,7 @@ describe('ConversationRunPage workspace renderer lifecycle', () => {
     const initialRegistrations = [...workspace.registerResourceRenderer.mock.calls];
     expect(initialRegistrations.map(([kind]) => kind)).toEqual([
       'workflow-view', 'workflow-edit', 'auto-config', 'system-prompt',
-      'hidden-prompt-section', 'compaction-summary', 'raw-frames',
+      'hidden-prompt-section', 'compaction-summary', 'raw-frames', 'forge-preview',
     ]);
     const initialDisposers = workspace.registerResourceRenderer.mock.results.map((result) => result.value);
     await act(async () => {

@@ -114,6 +114,17 @@ pub(crate) fn resolved_config_for_node(
                 serde_json::Value::String("new".to_string()),
             );
         }
+        NodeDsl::ParallelGroup(group) => {
+            config.insert(
+                "outputArtifact".into(),
+                crate::dsl::PARALLEL_GROUP_RESULT.into(),
+            );
+            config.insert("maxParallel".into(), group.max_parallel.into());
+            config.insert(
+                "branches".into(),
+                serde_json::to_value(&group.branches).expect("serialize parallel branches"),
+            );
+        }
         NodeDsl::AiDynamic(dynamic) => {
             // Extract provider from agent strategy so it's available as a flat key
             // for metrics (node_name / agent_type fallback).

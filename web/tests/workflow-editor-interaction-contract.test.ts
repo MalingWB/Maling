@@ -174,11 +174,24 @@ describe('workflow editor interaction contracts', () => {
     const projection = createAuthoringFlowProjection(value, graph, layout, null, null, new Set(), new Map(), t);
 
     expect(projection.edges.every((edge) => edge.type === 'workflowRouted')).toBe(true);
-    expect(projection.edges.map((edge) => edge.sourceHandle)).toEqual(['success', 'success', 'failure', 'success']);
-    expect(projection.edges.every((edge) => edge.className?.includes('workflow-edge-flow'))).toBe(true);
+    const realEdges = projection.edges.filter(edge => edge.source !== graph.startId);
+    expect(projection.edges.find(edge => edge.source === graph.startId)).toMatchObject({ target: value.entry, selectable: false, deletable: false });
+    expect(realEdges.map((edge) => edge.sourceHandle)).toEqual(['success', 'success', 'failure', 'success']);
+    expect(realEdges.every((edge) => edge.className?.includes('workflow-edge-flow'))).toBe(true);
     expect(projection.edges.every((edge) => edge.data?.route?.path)).toBe(true);
     expect(editorSource).toContain('const path = route?.path ?? smoothPath;');
     expect(runtimeGraphSource).toContain('const path = route?.path ?? smoothPath;');
+  });
+
+  it('keeps a real worker named $start distinct from the sessionless boundary', async () => {
+    const value = workflow({ entry: '$start', nodes: [worker('$start')], edges: [{ from: '$start', to: '$end', on: 'success' }] });
+    const { graph, layout } = await authoringLayout(value);
+    const projection = createAuthoringFlowProjection(value, graph, layout, '$start', null, new Set(), new Map(), t);
+    expect(graph.startId).not.toBe('$start');
+    expect(graph.entryLink).toMatchObject({ from: graph.startId, to: '$start' });
+    expect(layout.nodes.size).toBe(3);
+    expect(projection.nodes.find(n => n.id === '$start')?.data).toMatchObject({ terminal: false, selected: true });
+    expect(projection.nodes.find(n => n.id === graph.startId)?.data).toMatchObject({ start: true, selected: false });
   });
 
   it('derives failure handles from AI output validation or manual check instead of node kind', () => {
@@ -282,8 +295,8 @@ describe('workflow editor interaction contracts', () => {
     expect(dynamicReady.issues.map((issue) => issue.message)).toContain('workflowEditor.validationAllowedProfileMissing');
   });
 
-  it('selects terminal projections without a node toolbar and deletes their incoming edges as one domain operation', () => {
-    const value = workflow();
+  it('keeps End permanent and removes only an optional new-round terminal and its incoming edges', () => {
+    const value = workflow({ edges: [...workflow().edges, { from: 'review', to: NEW_ROUND_NODE, on: 'failure', new_round_entry: '$entry' }] });
     const graph = createAuthoringGraph(value, new Set(['$end']), t);
     const projection = createAuthoringFlowProjection(value, graph, null, null, null, new Set(), new Map(), t, undefined, undefined, '$end');
     const terminal = projection.nodes.find((node) => node.id === '$end');
@@ -292,8 +305,9 @@ describe('workflow editor interaction contracts', () => {
     expect(terminal?.className).toContain('workflow-node-selected');
     expect(terminal?.className).toContain('workflow-terminal-node');
     expect(terminal?.data.onDelete).toBeUndefined();
-    const next = removeTerminalFromWorkflow(value, '$end');
-    expect(next.edges.some((edge) => edge.to === '$end')).toBe(false);
+    expect(removeTerminalFromWorkflow(value, '$end')).toBe(value);
+    const next = removeTerminalFromWorkflow(value, NEW_ROUND_NODE);
+    expect(next.edges.some(edge => edge.to === NEW_ROUND_NODE)).toBe(false);
     expect(value.edges.some((edge) => edge.to === '$end')).toBe(true);
     const undo = undoWorkflowHistory(recordWorkflowHistory({ past: [], future: [] }, value), next);
     expect(undo?.workflow).toEqual(value);

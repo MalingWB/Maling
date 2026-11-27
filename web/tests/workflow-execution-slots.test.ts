@@ -118,7 +118,8 @@ describe('Workflow JSON execution slots', () => {
 
     const normalized = normalizeWorkflowJsonForAuthoring(parsed, previous, createSlotId);
 
-    expect(normalized.entry).toBe('dynamic');
+    // Slot normalization does not repair or replace the author's entry; validation owns that error.
+    expect(normalized.entry).toBe(parsed.entry);
     expect(normalized.nodes).toEqual([
       expect.not.objectContaining({ executionSlotId: expect.anything() }),
       expect.objectContaining({ id: 'existing', executionSlotId: 'slot-existing' }),

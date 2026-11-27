@@ -332,6 +332,7 @@ export function resetConversationWorkspaceTaskPage(
   if (!sidebar.workspaces.some((workspace) => workspace.projectId === projectId)) return sidebar;
   return {
     ...sidebar,
+    locatedTask: sidebar.locatedTask?.projectId === projectId ? null : sidebar.locatedTask,
     tasksByWorkspace: { ...sidebar.tasksByWorkspace, [projectId]: [] },
     workspaceTaskPages: {
       ...sidebar.workspaceTaskPages,
@@ -391,6 +392,11 @@ function updateTaskCopies(
   };
 }
 
+/** Renaming does not make a historical task recent, change pin order, or load a workspace. */
+export function applyConversationTaskTitle(sidebar: ConversationSidebarVm, updated: ConversationTaskRowVm) {
+  return updateTaskCopies(sidebar, task => sameTask(task, updated), task => ({ ...task, title: updated.title, autoTitle: updated.autoTitle }));
+}
+
 export function beginConversationRunHistoryLoad(
   sidebar: ConversationSidebarVm,
   task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>,
@@ -429,7 +435,7 @@ export function applyConversationRunSummaryPage(
     }).slice(0, CONVERSATION_SIDEBAR_RUN_WINDOW);
     return {
       ...task,
-      latestRun: !append && page.runs[0] ? page.runs[0] : task.latestRun,
+      // History includes parallel children; the task row owns its default run.
       runs,
       runHistoryStatus: 'ready',
       runsNextCursor: runs.length >= CONVERSATION_SIDEBAR_RUN_WINDOW ? null : page.nextCursor ?? null,
@@ -441,18 +447,20 @@ export function removeConversationSidebarTask(
   sidebar: ConversationSidebarVm,
   projectId: string,
   taskId: string,
+  taskUuid: string,
 ) {
+  const keep = (task: Pick<ConversationTaskRowVm, "projectId" | "taskId" | "taskUuid">) => task.projectId !== projectId || task.taskId !== taskId || task.taskUuid !== taskUuid;
   return {
     ...sidebar,
-    locatedTask: sidebar.locatedTask?.projectId === projectId && sidebar.locatedTask.taskId === taskId ? null : sidebar.locatedTask,
-    pinnedTasks: sidebar.pinnedTasks.filter((task) => task.projectId !== projectId || task.taskId !== taskId),
+    locatedTask: sidebar.locatedTask && !keep(sidebar.locatedTask) ? null : sidebar.locatedTask,
+    pinnedTasks: sidebar.pinnedTasks.filter(keep),
     // A deleted conversation must leave every projection, including the merged
     // recent list, or it stays clickable there until the next page reload.
-    recentTasks: (sidebar.recentTasks ?? []).filter((task) => task.projectId !== projectId || task.taskId !== taskId),
+    recentTasks: (sidebar.recentTasks ?? []).filter(keep),
     tasksByWorkspace: {
       ...sidebar.tasksByWorkspace,
       [projectId]: (sidebar.tasksByWorkspace[projectId] ?? [])
-        .filter((task) => task.projectId !== projectId || task.taskId !== taskId),
+        .filter(keep),
     },
   };
 }

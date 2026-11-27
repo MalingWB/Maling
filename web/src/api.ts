@@ -178,40 +178,54 @@ export function getWorkflowTemplates() {
   return getRuntimeApi().getWorkflowTemplates();
 }
 
-export function forgeSourceDigest(projectId: string, taskId: string, after?: string | null) {
-  return getRuntimeApi().forgeSourceDigest(projectId, taskId, after);
+export function forgeSourceDigest(projectId: string, taskId: string, session?: import('./types').ForgeSourceSessionVm) {
+  return getRuntimeApi().forgeSourceDigest(projectId, taskId, session);
 }
 
-export function forgeSkillsDigest(projectId: string, skills: Parameters<ReturnType<typeof getRuntimeApi>['forgeSkillsDigest']>[1]) {
-  return getRuntimeApi().forgeSkillsDigest(projectId, skills);
+export function forgeItemsDigest(projectId: string, items: Parameters<RuntimeApi['forgeItemsDigest']>[1]) {
+  return getRuntimeApi().forgeItemsDigest(projectId, items);
+}
+
+export function importPluginAsset(input: Parameters<RuntimeApi['importPluginAsset']>[0]) { return getRuntimeApi().importPluginAsset(input); }
+
+export function forgetWorkBuddySource(projectId: string | null, pluginId: string) {
+  return getRuntimeApi().forgetWorkBuddySource(projectId, pluginId);
+}
+
+export function selectWorkBuddySource(projectId: string | null) {
+  return getRuntimeApi().selectWorkBuddySource(projectId);
+}
+
+export function listInstalledPlugins(projectId?: string | null) {
+  return getRuntimeApi().listInstalledPlugins(projectId);
+}
+
+export function subscribeForgeTurnSettled(listener: Parameters<NonNullable<RuntimeApi['subscribeForgeTurnSettled']>>[0]) {
+  return getRuntimeApi().subscribeForgeTurnSettled?.(listener) ?? Promise.resolve(() => {});
 }
 
 export function forgeGetSpec(projectId: string, taskId: string) {
   return getRuntimeApi().forgeGetSpec(projectId, taskId);
 }
 
-export function forgeSaveSpec(projectId: string, taskId: string, spec: Parameters<ReturnType<typeof getRuntimeApi>['forgeSaveSpec']>[2]) {
-  return getRuntimeApi().forgeSaveSpec(projectId, taskId, spec);
+export function forgeSaveSpec(projectId: string, taskId: string, spec: Parameters<ReturnType<typeof getRuntimeApi>['forgeSaveSpec']>[2], taskUuid: string) {
+  return getRuntimeApi().forgeSaveSpec(projectId, taskId, spec, taskUuid);
 }
 
-export function forgeCompile(spec: Parameters<ReturnType<typeof getRuntimeApi>['forgeCompile']>[0], taskId?: string | null) {
-  return getRuntimeApi().forgeCompile(spec, taskId);
+export function forgeCompile(projectId: string, spec: Parameters<RuntimeApi['forgeCompile']>[1], taskId?: string | null, repairAttempt?: number, copy?: Parameters<RuntimeApi['forgeCompile']>[4]) {
+  return getRuntimeApi().forgeCompile(projectId, spec, taskId, repairAttempt, copy);
 }
 
 export function forgeFromWorkflow(templateId: string) {
   return getRuntimeApi().forgeFromWorkflow(templateId);
 }
 
-export function forgeStartTrial(projectId: string, templateId: string, intent: string) {
-  return getRuntimeApi().forgeStartTrial(projectId, templateId, intent);
+export function forgeStartTrial(projectId: string, templateId: string, revision: string, intent: string) {
+  return getRuntimeApi().forgeStartTrial(projectId, templateId, revision, intent);
 }
 
-export function forgeListSessions(projectId: string) {
-  return getRuntimeApi().forgeListSessions(projectId);
-}
-
-export function forgeCleanupSessions(projectId: string, taskIds: string[]) {
-  return getRuntimeApi().forgeCleanupSessions(projectId, taskIds);
+export function forgeSetStageFailure(projectId: string, taskId: string, stageId: string, onFailure: Parameters<RuntimeApi['forgeSetStageFailure']>[3]) {
+  return getRuntimeApi().forgeSetStageFailure(projectId, taskId, stageId, onFailure);
 }
 
 export function saveWorkflowTemplate(name: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[1], modelBindings?: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[2]) {
@@ -254,8 +268,8 @@ export function getRoundDetail(taskId: string, runId: string, roundId: string, s
   return getRuntimeApi().getRoundDetail(taskId, runId, roundId, selection);
 }
 
-export function startRun(taskId: string) {
-  return getRuntimeApi().startRun(taskId);
+export function startRun(projectId: string | undefined, taskId: string) {
+  return getRuntimeApi().startRun(projectId, taskId);
 }
 
 export function continueRun(projectId: string | null | undefined, taskId: string, runId: string) {
@@ -863,6 +877,10 @@ export function getConversationSidebarBootstrap() {
   return getRuntimeApi().getConversationSidebarBootstrap();
 }
 
+export function getGenerationHistoryPage(input: import('./types').GenerationHistoryQuery) {
+  return getRuntimeApi().getGenerationHistoryPage(input);
+}
+
 export function getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number) {
   return getRuntimeApi().getConversationTaskPage(projectId, cursor, limit);
 }
@@ -950,12 +968,13 @@ export function rerunConversationTask(projectId: string, taskId: string) {
   return getRuntimeApi().rerunConversationTask(projectId, taskId);
 }
 
-export function updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null) {
-  return getRuntimeApi().updateTaskMetadata(projectId, taskId, title, description);
+export function updateTaskMetadata(projectId: string, taskId: string, taskUuid: string | null | undefined, title: string, description?: string | null) {
+  if (!taskUuid) return Promise.reject({ code: 'conversation.task-not-found', params: { taskId } });
+  return getRuntimeApi().updateTaskMetadata(projectId, taskId, taskUuid, title, description);
 }
 
-export function deleteConversationTask(projectId: string, taskId: string) {
-  return getRuntimeApi().deleteConversationTask(projectId, taskId);
+export function deleteConversationTask(projectId: string, taskId: string, taskUuid: string) {
+  return getRuntimeApi().deleteConversationTask(projectId, taskId, taskUuid);
 }
 
 export function pinConversation(projectId: string, taskId: string) {

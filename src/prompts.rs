@@ -96,9 +96,10 @@ pub const PROFILE_CLEAN: LocalizedText = localized_prompt!("profile/clean.md");
 pub const PROFILE_INTERVIEW: LocalizedText = localized_prompt!("profile/interview.md");
 pub const PROFILE_GRILLME: LocalizedText = localized_prompt!("profile/GrillMe.md");
 pub const PROFILE_WORKFLOW_FORGE: LocalizedText = localized_prompt!("profile/workflow-forge.md");
-/// Forge Spec 输出协议/修复模板（七语言,路径一致）。
+/// Forge Spec 输出协议 / 修正提示词 / 基线区段（七语言,路径一致）。
 pub const FORGE_SPEC_PROTOCOL: LocalizedText = localized_prompt!("forge/spec-protocol.md");
 pub const FORGE_SPEC_REPAIR: LocalizedText = localized_prompt!("forge/spec-repair.md");
+pub const FORGE_SPEC_BASELINE: LocalizedText = localized_prompt!("forge/spec-baseline.md");
 pub const PROFILE_OVERLAY_REQUIREMENT_IDENTITY: LocalizedText =
     localized_prompt!("profile/overlays/requirement-identity.md");
 pub const PROFILE_OVERLAY_DEV_TEST_AUTO_COMMIT: LocalizedText =
@@ -268,6 +269,7 @@ pub const BUNDLED_PROMPTS: &[(&str, LocalizedText)] = &[
     ("profile/workflow-forge.md", PROFILE_WORKFLOW_FORGE),
     ("forge/spec-protocol.md", FORGE_SPEC_PROTOCOL),
     ("forge/spec-repair.md", FORGE_SPEC_REPAIR),
+    ("forge/spec-baseline.md", FORGE_SPEC_BASELINE),
     (
         "profile/overlays/requirement-identity.md",
         PROFILE_OVERLAY_REQUIREMENT_IDENTITY,
@@ -899,6 +901,72 @@ mod tests {
                 prompt.contains(fragment),
                 "prompt contract is missing `{fragment}`"
             );
+        }
+    }
+
+    fn every_language(text: LocalizedText) -> [&'static str; 7] {
+        [
+            text.zh_cn,
+            text.en,
+            text.zh_tw.unwrap(),
+            text.ja_jp.unwrap(),
+            text.ko_kr.unwrap(),
+            text.pt_br.unwrap(),
+            text.es.unwrap(),
+        ]
+    }
+
+    #[test]
+    fn forge_prompts_start_from_a_complete_draft_and_speak_the_full_protocol() {
+        // 输出协议与修正提示词在七种语言里结构一致：失败去向的每种写法、待澄清项的推荐
+        // 答案、角色的只读引用都要出现，否则模型不知道可以这么写，界面上的选项也就落不了盘。
+        for text in every_language(FORGE_SPEC_PROTOCOL) {
+            assert_eq!(text.matches("```json").count(), 1);
+            assert!(text.contains("{{ spec_schema }}"));
+            let example = text.split_once("```json").unwrap().1.split_once("```").unwrap().0;
+            let delta: serde_json::Value = serde_json::from_str(example).unwrap();
+            assert!(delta["stages"].as_array().unwrap().iter().all(|stage| stage.get("profileId").is_none()));
+            for fragment in [
+                "removedStageIds",
+                "\"recommendation\"",
+                "\"retry\"",
+                "\"manual-check\"",
+                "\"end\"",
+                "\"new-round\"",
+                "{\"new-round\": \"",
+                "{\"goto\": \"",
+                "\"continueSession\": true",
+                "profileId",
+                "profileName",
+            ] {
+                assert!(text.contains(fragment), "protocol is missing `{fragment}`");
+            }
+        }
+        for text in every_language(FORGE_SPEC_REPAIR) {
+            assert_eq!(text.matches("<hidden").count(), 1);
+            assert!(text.trim_end().ends_with("</hidden>"));
+            for fragment in [
+                "{{ attempt }}/{{ max_attempts }}",
+                "{{ errors }}",
+                "forge/unknown-failure-target",
+                "forge/role-id-conflict",
+                "forge/role-definition-conflict",
+                "forge/readonly-role",
+                "forge/missing-goal-element",
+                "forge/unresolved-questions",
+                "forge/duplicate-workflow-name",
+            ] {
+                assert!(text.contains(fragment), "repair prompt is missing `{fragment}`");
+            }
+        }
+
+        // 对话方式：首轮就给完整草稿；角色以名字为身份；工作流名唯一。
+        assert_prompt_contract(PROFILE_WORKFLOW_FORGE.zh_cn, &["首轮就给完整草稿", "recommendation", "以名字为身份", "不授予权限", "不要输出 `profileId`", "必须唯一"]);
+        assert_prompt_contract(PROFILE_WORKFLOW_FORGE.en, &["complete draft in your first reply", "recommendation", "identified by its name", "not permissions", "Never output `profileId`", "must be unique"]);
+        for text in every_language(PROFILE_WORKFLOW_FORGE) {
+            // 拷问节奏（每轮问题数上限）不再规定：它会被模型当成规则复述给用户。
+            assert!(!text.contains("三个问题") && !text.contains("三個問題") && !text.contains("三つの質問") && !text.contains("세 개 이하") && !text.contains("three questions") && !text.contains("no máximo três") && !text.contains("tres preguntas"));
+            assert!(text.contains("openQuestions") && text.contains("recommendation") && text.contains("profileId") && text.contains("Skill"));
         }
     }
 

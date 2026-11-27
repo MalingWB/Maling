@@ -176,10 +176,9 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
     )
     .unwrap();
     let migrated = app.task_authoring_workflow(task_id).unwrap();
-    assert!(migrated.workflow.nodes.iter().all(|node| match node {
-        gold_band::dsl::NodeDsl::Worker(worker) => worker.execution_slot_id.is_some(),
-        gold_band::dsl::NodeDsl::AiDynamic(_) => true,
-    }));
+    assert!(migrated.workflow.nodes.iter().all(|node| matches!(
+        node, gold_band::dsl::NodeDsl::Worker(worker) if worker.execution_slot_id.is_some()
+    )));
     assert_eq!(migrated.model_bindings.bindings.len(), 2);
     let persisted: serde_json::Value = serde_json::from_slice(
         &std::fs::read(app.paths.workflow_file(task_id).as_std_path()).unwrap(),

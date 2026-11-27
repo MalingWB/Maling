@@ -1,6 +1,7 @@
 import type React from 'react';
+import { MarkdownJsonFenceCollapsedContext } from '@/components/acp/forge-markdown-context';
 import { createContext, isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Download, FileCode2, ImageIcon, Loader2 } from 'lucide-react';
+import { ChevronDown, Download, FileCode2, ImageIcon, Loader2 } from 'lucide-react';
 import remarkBreaks from 'remark-breaks';
 import { remarkAlert } from 'remark-github-blockquote-alert';
 import { useTranslation } from 'react-i18next';
@@ -267,10 +268,38 @@ type MarkdownCodeBlockProps = React.HTMLAttributes<HTMLElement> & {
   };
 };
 
+/**
+ * 工作流生成会话里，助手回复中的 JSON 围栏是给系统读的草稿增量：收成一条可展开的
+ * 状态条，草稿本身显示在预览里。围栏还在输出时同样只显示状态条，不让原始 JSON 刷屏。
+ * 由会话层按“是否生成会话”置位。
+ */
+
+
+function MarkdownDraftFence({ isIncomplete, renderSource }: { isIncomplete: boolean; renderSource: () => React.ReactNode }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div data-gb-markdown-draft-fence={expanded ? 'expanded' : 'collapsed'} className="my-1.5 min-w-0">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+        className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+      >
+        {isIncomplete ? <Loader2 className="size-3 shrink-0 animate-spin" /> : <FileCode2 className="size-3.5 shrink-0" />}
+        <span className="truncate">{t(isIncomplete ? 'forge.chat.draftUpdating' : 'forge.chat.draftUpdated')}</span>
+        <ChevronDown className={cn('size-3 shrink-0 transition-transform', expanded && 'rotate-180')} />
+      </button>
+      {expanded ? <div className="mt-1.5">{renderSource()}</div> : null}
+    </div>
+  );
+}
+
 function MarkdownCodeBlock({ className, children, node, ...props }: MarkdownCodeBlockProps) {
   const { t } = useTranslation();
   const isIncomplete = useIsCodeFenceIncomplete();
   const openPreview = useContext(MarkdownImagePreviewContext);
+  const collapseJsonFence = useContext(MarkdownJsonFenceCollapsedContext);
   const language = className?.match(CODE_LANGUAGE_PATTERN)?.[1] ?? '';
   const meta = node?.properties?.metastring;
   const parsedStartLine = meta?.match(CODE_START_LINE_PATTERN)?.[1];
@@ -313,6 +342,9 @@ function MarkdownCodeBlock({ className, children, node, ...props }: MarkdownCode
   // A streaming fence stays a code block until the renderer reports it closed.
   if (language === MERMAID_LANGUAGE && !isIncomplete) {
     return <MarkdownMermaidBlock source={source} renderSource={renderCodeBlock} onOpenPreview={openPreview} />;
+  }
+  if (collapseJsonFence && language === 'json') {
+    return <MarkdownDraftFence isIncomplete={isIncomplete} renderSource={() => renderCodeBlock()} />;
   }
   return renderCodeBlock();
 }

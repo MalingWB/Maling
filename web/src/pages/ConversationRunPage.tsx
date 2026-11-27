@@ -8,8 +8,10 @@ import {
   ACPChatDialog,
   createAcpEventWindowCacheKey,
   hasHydratedAcpSessionContent,
+  type AcpChatDialogHandle,
   type AcpInitialSessionQueryState,
   type AcpLifecycleSnapshot,
+  type AcpPromptSubmitResult,
   type AcpRuntimeComposerContext,
 } from '@/components/acp/ACPChatDialog';
 import { BrandLoadingState } from '@/components/BrandLoadingState';
@@ -23,6 +25,7 @@ import { conversationPageForSession } from '@/lib/conversation-navigation';
 import type { ConversationSessionLocator } from '@/lib/conversation-navigation';
 import { submitManualCheck } from '@/api';
 import { conversationSessionKeyFromParts, findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
+import { conversationTurnInFlight } from '@/lib/conversation-sidebar-activity';
 import { UNRESOLVED_WORK_LOCATION, worktreeBranchOfLocation, worktreePathOfLocation } from '@/lib/workspace-root';
 import { acpRuntimeErrorBannerCopy, acpRuntimeErrorBannerTitle } from '@/lib/acp-runtime-error';
 import { shouldTreatAcpRuntimeErrorAsFallback } from '@/lib/acp-runtime-composer-state';
@@ -87,9 +90,11 @@ interface ConversationRunPageProps {
   onEditWorkflow: () => void;
   /// 铸造为工作流（入口 A）：携带本会话上下文预填 composer。带时间戳为
   /// 右键消息"从此处铸造"变体（截断其后上下文,§5.1）。
-  onForgeWorkflow?: (fromTimestamp?: string) => void;
-  /// 铸造试运行任务创建后启动并导航到该会话（方案 §5.6）。
+  onForgeWorkflow?: (session?: import('@/types').ForgeSourceSessionVm) => void;
+  /// 试运行任务创建后启动并导航到该会话（方案 §5.6）。
   onForgeTrialSessionStarted?: (projectId: string, taskId: string) => void;
+  /// 打开已保存的工作流查看（预览完成态的「查看工作流」）。
+  onViewForgeWorkflow?: (templateId: string) => void;
   workflowTemplates?: WorkflowTemplateStore | null;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
   onExecutionPlanSaved?: (saved: ExecutionPlanSaveResultVm) => void | Promise<void>;
@@ -115,6 +120,7 @@ export function ConversationRunPage({
   onEditWorkflow,
   onForgeWorkflow,
   onForgeTrialSessionStarted,
+  onViewForgeWorkflow,
   workflowTemplates = null,
   onWorkflowTemplatesChange,
   onExecutionPlanSaved,
@@ -308,6 +314,7 @@ export function ConversationRunPage({
   const workflowTemplatesRef = useRef(workflowTemplates);
   const onWorkflowTemplatesChangeRef = useRef(onWorkflowTemplatesChange);
   const onForgeTrialSessionStartedRef = useRef(onForgeTrialSessionStarted);
+  const onViewForgeWorkflowRef = useRef(onViewForgeWorkflow);
   const handleWorkflowNodeOpenSessionRef = useRef(handleWorkflowNodeOpenSession);
   const onNodeRetryRef = useRef(onNodeRetry);
   const previousWorkflowGraphRef = useRef(run.workflowGraph);
@@ -317,6 +324,7 @@ export function ConversationRunPage({
   workflowTemplatesRef.current = workflowTemplates;
   onWorkflowTemplatesChangeRef.current = onWorkflowTemplatesChange;
   onForgeTrialSessionStartedRef.current = onForgeTrialSessionStarted;
+  onViewForgeWorkflowRef.current = onViewForgeWorkflow;
   handleWorkflowNodeOpenSessionRef.current = handleWorkflowNodeOpenSession;
   onNodeRetryRef.current = onNodeRetry;
   useEffect(() => {
@@ -349,6 +357,27 @@ export function ConversationRunPage({
   const onForgeTrialSessionStartedStable = useCallback((projectId: string, taskId: string) => {
     onForgeTrialSessionStartedRef.current?.(projectId, taskId);
   }, []);
+  const onWorkflowTemplatesChangeStable = useCallback((store: WorkflowTemplateStore) => {
+    onWorkflowTemplatesChangeRef.current?.(store);
+  }, []);
+  // 预览里的消息（自动修正、采用推荐）经对话栏自身的提交链路发出：乐观更新、生命周期投影
+  // 与用户手动发送完全一致，预览 Tab 不另造一条提交路径。
+  const chatDialogRef = useRef<AcpChatDialogHandle | null>(null);
+  const submitForgePrompt = useCallback(
+    (prompt: string, promptId?: string): Promise<AcpPromptSubmitResult> => (
+      chatDialogRef.current?.submitPrompt({ displayText: prompt, quotes: [] }, promptId)
+      ?? Promise.resolve<AcpPromptSubmitResult>('unavailable')
+    ),
+    [],
+  );
+  const prefillForgePrompt = useCallback((text: string) => {
+    chatDialogRef.current?.prefillPrompt(text);
+  }, []);
+  const onViewForgeWorkflowStable = useCallback((templateId: string) => {
+    onViewForgeWorkflowRef.current?.(templateId);
+  }, []);
+  const forgeConversationActive = run.origin === 'forge'
+    && conversationTurnInFlight(findSelectedLeaf(runRef.current)?.lifecycle);
 
   const renderWorkspaceResource = useCallback((resource: RightWorkspaceResource) => {
     if (
@@ -368,14 +397,18 @@ export function ConversationRunPage({
         run={runRef.current}
         agentRegistry={agentRegistryRef.current}
         workflowTemplates={workflowTemplatesRef.current}
-        onWorkflowTemplatesChange={(store) => onWorkflowTemplatesChangeRef.current?.(store)}
+        onWorkflowTemplatesChange={onWorkflowTemplatesChangeStable}
         onForgeTrialSessionStarted={onForgeTrialSessionStartedStable}
+        onForgePrompt={submitForgePrompt}
+        onForgePrefillPrompt={prefillForgePrompt}
+        onViewForgeWorkflow={onViewForgeWorkflowRef.current ? onViewForgeWorkflowStable : undefined}
+        forgeConversationActive={forgeConversationActive}
         onExecutionPlanSaved={onExecutionPlanSavedStable}
         onNodeOpenSession={onNodeOpenSessionStable}
         onNodeRetry={onNodeRetryStable}
       />
     );
-  }, [onExecutionPlanSavedStable, onNodeOpenSessionStable, onNodeRetryStable, onForgeTrialSessionStartedStable]);
+  }, [forgeConversationActive, onExecutionPlanSavedStable, onNodeOpenSessionStable, onNodeRetryStable, onForgeTrialSessionStartedStable, onWorkflowTemplatesChangeStable, onViewForgeWorkflowStable, prefillForgePrompt, submitForgePrompt]);
 
   useEffect(() => {
     const unregister = [
@@ -662,7 +695,7 @@ export function ConversationRunPage({
             canEditWorkflow={!readOnly && run.runMode === 'workflow'}
             onRerun={handleRerun}
             onEditWorkflow={handleEditWorkflow}
-            onForgeWorkflow={onForgeWorkflow}
+            onForgeWorkflow={onForgeWorkflow ? () => onForgeWorkflow() : undefined}
             onOpenForgePreview={run.origin === 'forge' ? handleViewForgePreview : undefined}
             onConfigureAuto={readOnly ? undefined : handleConfigureAuto}
             readOnly={readOnly}
@@ -742,6 +775,7 @@ export function ConversationRunPage({
         ) : selectedLeaf ? (
           <ACPChatDialog
             key={selectedContentIdentity}
+            ref={chatDialogRef}
             readOnly={sessionReadOnly}
             showDisabledComposer={readOnly && !run.sealed}
             agentRegistry={agentRegistry}
@@ -780,9 +814,9 @@ export function ConversationRunPage({
               onTitleChange,
               resident: readOnly ? undefined : resident,
               forgePreview: run.origin === 'forge' ? { onOpen: handleViewForgePreview } : undefined,
-              forgeWorkflow: !run.origin && onForgeWorkflow ? { onOpen: () => onForgeWorkflow() } : undefined,
+              forgeWorkflow: !run.origin && onForgeWorkflow ? { onOpen: onForgeWorkflow } : undefined,
             } : undefined}
-            onForgeFromHere={!run.origin && !readOnly && onForgeWorkflow ? (timestamp) => onForgeWorkflow(timestamp) : undefined}
+            onForgeFromHere={!run.origin && !readOnly && onForgeWorkflow ? onForgeWorkflow : undefined}
             usageCompact
             cacheNamespace={run.taskUuid ?? `${run.projectId}:${run.taskId}`}
           />

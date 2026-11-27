@@ -86,6 +86,20 @@ it('keeps user scroll intent when a missing search row arrives late, and allows 
   } finally { await act(async () => root.unmount()); }
 });
 
+it('focuses the real task for management when a search hit has no run to navigate to', async () => {
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const noRun = { ...task, latestRun: null };
+  const onSelect = vi.fn();
+  try {
+    await act(async () => root.render(<ConversationSidebar {...callbacks} onSelect={onSelect} vm={{...vm, tasksByWorkspace:{a:[], b:[noRun]}}} active={{kind:'conversation-home'}} workspaceRevealRequest={{ projectId:'b', taskId:noRun.taskId, taskUuid:noRun.taskUuid, requestId:1, manageOnly:true }} />));
+    const row = container.querySelector('[data-conversation-task-row="workspace"]')!;
+    expect(document.activeElement).toBe(row);
+    expect(row.querySelector('[aria-label="common.delete"]')).not.toBeNull();
+    expect(onSelect).not.toHaveBeenCalled();
+  } finally { await act(async () => root.unmount()); }
+});
+
 it('does not replay a consumed reveal when the sidebar remounts', async () => {
   const container = document.createElement('div'); document.body.append(container);
   const root = createRoot(container);

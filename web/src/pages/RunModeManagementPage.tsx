@@ -13,7 +13,7 @@ import {
   updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
-import { WorkflowEditor, validateWorkflowForSave } from '@/components/WorkflowEditor';
+import { WorkflowEditor, activeWorkflowEditorDefinition, validateWorkflowForSave, type WorkflowEditorSessionDraft } from '@/components/WorkflowEditor';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -41,6 +41,8 @@ interface RunModeManagementPageProps {
   agentRegistry: AgentRegistryVm | null;
   workflowTemplates: WorkflowTemplateStore | null;
   repairTarget?: WorkflowRepairTarget | null;
+  /** 从外部请求在编辑器里打开某个模板（工作流预览的「查看工作流」）；同一个请求只处理一次。 */
+  openTemplateId?: string;
   onProjectChange: (projectId: string) => void;
   onSave: (mode: ConversationRunModeVm) => void | Promise<void>;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
@@ -48,7 +50,7 @@ interface RunModeManagementPageProps {
   /** Run context only: a committed execution-plan save so the owner can refresh project-level run mode. */
   onExecutionPlanSaved?: (saved: ExecutionPlanSaveResultVm) => void;
   /** 对话式修改（方案 §5.9）：以既有模板发起 Forge 修改会话;缺省隐藏入口。 */
-  onForgeTemplate?: (templateId: string, templateName: string) => void;
+  onForgeTemplate?: (templateId: string, templateName: string, saveAsCopy: boolean) => void;
   /** Right-workspace tab: same form, without the standalone management page chrome. */
   embedded?: boolean;
 }
@@ -261,6 +263,7 @@ export function RunModeManagementPage({
   agentRegistry,
   workflowTemplates,
   repairTarget = null,
+  openTemplateId,
   onProjectChange,
   onSave,
   onWorkflowTemplatesChange,
@@ -311,6 +314,7 @@ export function RunModeManagementPage({
 
   // Workflow template editor state
   const [wfEditTemplateId, setWfEditTemplateId] = useState<string | null>(null);
+  const workflowEditorSession = useRef<WorkflowEditorSessionDraft | null>(null);
   const [wfEditWorkflow, setWfEditWorkflow] = useState<WorkflowDsl | null>(null);
   const [wfEditModelBindings, setWfEditModelBindings] = useState<WorkflowModelBindings>({ definitionRevision: '', bindingRevision: 0, bindings: [] });
   const [wfTemplatePickerOpen, setWfTemplatePickerOpen] = useState(false);
@@ -716,6 +720,26 @@ export function RunModeManagementPage({
     }
   }, [workflowTemplateList, mode]);
 
+  const handledOpenRequestRef = useRef<string | null>(null);
+  useEffect(() => {
+    // 放在初始化 effect 之后：刚进入这个页面时，先由它完成默认选择，再打开请求的模板。
+    if (!openTemplateId || handledOpenRequestRef.current === openTemplateId) return;
+    const template = workflowTemplateList.find((item) => item.id === openTemplateId);
+    // 模板库还没带上这个模板时先等它到，到了再打开。
+    if (!template) return;
+    handledOpenRequestRef.current = openTemplateId;
+    setMode('workflow');
+    setWorkflowTemplateId(template.id);
+    wfEditorInitialized.current = true;
+    setWfEditTemplateId(template.id);
+    setWfEditWorkflow(template.workflow);
+    setWfEditModelBindings(template.modelBindings);
+    setWfSaveName('');
+    setWfLastUsedHintDismissed(template.id === effectiveWorkflowTemplates?.lastUsedTemplateId);
+    setWfNotice(null);
+    setWfError(null);
+  }, [openTemplateId, workflowTemplateList, effectiveWorkflowTemplates?.lastUsedTemplateId]);
+
   const selectWfTemplate = (templateId: string) => {
     const found = effectiveWorkflowTemplates?.templates.find((t) => t.id === templateId);
     if (!found) return;
@@ -762,8 +786,13 @@ export function RunModeManagementPage({
   };
 
   const validateWfForTemplate = (workflow: WorkflowDsl, validateTemplateDuplicateId = true, validateModelBindings = false): WorkflowDsl | null => {
+    // The template toolbar is outside the editor. Its debounced onChange only publishes
+    // valid definitions, not necessarily the JSON the user is about to submit.
+    const snapshot = workflowEditorSession.current;
+    const submitted = snapshot ? activeWorkflowEditorDefinition(snapshot) : workflow;
+    if (!submitted) { setWfError(t('workflowEditor.outputSchemaInvalid')); return null; }
     const supportedAgents = agents.filter((agent) => agent.diagnostic?.available === true);
-    const validation = validateWorkflowForSave(workflow, profileCatalog, supportedAgents, t, effectiveWorkflowTemplates ?? null, wfEditTemplateId, selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : null, validateTemplateDuplicateId, wfEditModelBindings, validateModelBindings);
+    const validation = validateWorkflowForSave(submitted, profileCatalog, supportedAgents, t, effectiveWorkflowTemplates ?? null, wfEditTemplateId, selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : null, validateTemplateDuplicateId, wfEditModelBindings, validateModelBindings);
     if (!validation.valid) {
       setWfError(validation.issues.map((issue) => issue.message).join('\n'));
       return null;
@@ -1474,13 +1503,13 @@ export function RunModeManagementPage({
                                 </span>
                               ) : null}
                             </button>
-                            {!readOnly && onForgeTemplate && !isDefault ? (
+                            {!readOnly && onForgeTemplate ? (
                               <Button
                                 variant="ghost"
                                 size="icon-xs"
                                 className="size-6 shrink-0"
                                 aria-label={t('runMode.forgeModifyTemplate', { name: workflowTemplateDisplayName(tpl, t) })}
-                                onClick={() => { setWfTemplatePickerOpen(false); onForgeTemplate(tpl.id, workflowTemplateDisplayName(tpl, t)); }}
+                                onClick={() => { setWfTemplatePickerOpen(false); onForgeTemplate(tpl.id, workflowTemplateDisplayName(tpl, t), isDefault); }}
                               >
                                 <Hammer className="size-3" />
                               </Button>
@@ -1541,6 +1570,7 @@ export function RunModeManagementPage({
                   <WorkflowEditor
                     className="h-full min-h-0"
                     value={wfEditWorkflow}
+                    sessionSnapshotRef={workflowEditorSession}
                     modelBindings={wfEditModelBindings}
                     agentRegistry={agentRegistry}
                     profileCatalog={profileCatalog}

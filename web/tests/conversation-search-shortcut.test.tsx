@@ -116,6 +116,29 @@ describe('conversation search keyboard entry', () => {
     expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(true);
   });
 
+  it('ignores an older query and includes generation results in ordinary global search', async () => {
+    const { searchConversationTasks } = await import('@/api');
+    const search = vi.mocked(searchConversationTasks);
+    const row = (projectId: string) => ({ projectId, taskId: 'same', title: `${projectId} workflow`, origin: 'forge-trial' as const, workspaceName: projectId, workspacePath: '/fixture', matchPreview: 'match', requirementPreview: '', runMode: 'workflow' as const });
+    let release!: (rows: ReturnType<typeof row>[]) => void;
+    search.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    search.mockResolvedValueOnce([row('B')]);
+    await renderSearch({ initialOpen: true });
+    const type = (value: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(searchInput(), value);
+      searchInput()!.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await type('first');
+    await vi.waitFor(() => expect(search).toHaveBeenCalledWith('first', 20));
+    await type('second');
+    await act(async () => { await vi.waitFor(() => expect(search).toHaveBeenCalledWith('second', 20)); });
+    await act(async () => { release([row('A')]); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain('B workflow');
+    expect(dialog.textContent).not.toContain('A workflow');
+    expect(dialog.querySelector('[data-slot="badge"]')?.textContent).toBe('forge.session.trialBadge');
+  });
+
   it('refocuses the open search without clearing its query or reopening the dialog', async () => {
     const { onOpenChange } = await renderSearch({ initialOpen: true });
     const input = searchInput()!;

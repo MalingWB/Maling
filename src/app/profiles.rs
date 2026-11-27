@@ -58,6 +58,10 @@ pub struct ProfileEntry {
     pub dynamic_template: bool,
     pub scope: ProfileScope,
     pub is_built_in: bool,
+    /// 由工作流生成（工作流铸造）落库的角色。它随工作流回收：没有任何模板、任务或
+    /// 可继续的运行再引用它时自动删除；用户手工建的角色永不自动删除。
+    #[serde(default)]
+    pub forged: bool,
     pub created_at: String,
     pub updated_at: String,
     pub path: String,
@@ -147,6 +151,7 @@ struct ParsedProfile {
     updated_at: String,
     content: String,
     dynamic_template: bool,
+    forged: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -516,22 +521,22 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
         required_capability: None,
         id: "pf-builtin-workflow-forge",
         name: LocalizedProfileText::all(
-            "铸造",
-            "鑄造",
-            "Forge",
-            "鋳造",
-            "단조",
-            "Forja",
-            "Forja",
+            "生成",
+            "產生",
+            "Generate",
+            "生成",
+            "생성",
+            "Gerar",
+            "Generar",
         ),
         summary: LocalizedProfileText::all(
-            "工作流铸造角色，通过引导式对话把会话记录或 skill 组合铸造成带产物契约的工作流。",
-            "工作流鑄造角色，透過引導式對話把會話記錄或 skill 組合鑄造成帶產物契約的工作流。",
-            "Forge role for turning conversation records or skill sets into workflows with artifact contracts through guided interviews.",
-            "会話記録やスキルの組み合わせを、ガイド対話を通じて産物契約付きワークフローへ鋳造する Forge ロールです。",
-            "대화 기록이나 스킬 조합을 안내형 대화를 통해 산출물 계약이 있는 워크플로로 단조하는 Forge 역할입니다.",
-            "Papel de Forge para transformar registros de conversa ou conjuntos de skills em workflows com contratos de artefato por entrevistas guiadas.",
-            "Rol de Forge para convertir registros de conversación o conjuntos de skills en workflows con contratos de artefacto mediante entrevistas guiadas.",
+            "工作流生成角色：把会话记录或 skill 组合变成带产物契约的工作流草稿，先给完整草稿，再按反馈修订。",
+            "工作流產生角色：把會話記錄或 skill 組合變成帶產物契約的工作流草稿，先給完整草稿，再依回饋修訂。",
+            "Workflow generation role: turns conversation records or skill sets into a workflow draft with artifact contracts — a complete draft first, then revised on feedback.",
+            "会話記録やスキルの組み合わせを、産物契約付きワークフローの下書きに変えるロールです。まず完全な下書きを出し、フィードバックで修正します。",
+            "대화 기록이나 스킬 조합을 산출물 계약이 있는 워크플로 초안으로 만드는 역할입니다. 먼저 완전한 초안을 제시하고 피드백으로 수정합니다.",
+            "Papel de geração de workflows: transforma registros de conversa ou conjuntos de skills em um rascunho de workflow com contratos de artefato — primeiro o rascunho completo, depois revisões com o feedback.",
+            "Rol de generación de workflows: convierte registros de conversación o conjuntos de skills en un borrador de workflow con contratos de artefacto; primero el borrador completo y luego se revisa con el feedback.",
         ),
         dynamic_template: false,
     },
@@ -595,6 +600,16 @@ pub(crate) fn show_profile(
 }
 
 pub(crate) fn create_profile(paths: &GoldBandPaths, input: ProfileInput) -> Result<ProfileEntry> {
+    create_profile_entry(paths, input, false)
+}
+
+/// 工作流铸造落库的角色：与手工创建同一条写入链路，只在 frontmatter 里多一个
+/// forged: true 标记，供工作流回收时识别。
+pub(crate) fn create_forged_profile(paths: &GoldBandPaths, input: ProfileInput) -> Result<ProfileEntry> {
+    create_profile_entry(paths, input, true)
+}
+
+fn create_profile_entry(paths: &GoldBandPaths, input: ProfileInput, forged: bool) -> Result<ProfileEntry> {
     ensure_profile_input(&input)?;
     let now = local_timestamp();
     let mut entry = ProfileEntry {
@@ -606,6 +621,7 @@ pub(crate) fn create_profile(paths: &GoldBandPaths, input: ProfileInput) -> Resu
         dynamic_template: input.dynamic_template,
         scope: ProfileScope::User,
         is_built_in: false,
+        forged,
         created_at: now.clone(),
         updated_at: now,
         path: String::new(),
@@ -1119,6 +1135,7 @@ pub(crate) fn update_profile(
         dynamic_template: input.dynamic_template,
         scope: ProfileScope::User,
         is_built_in: false,
+        forged: existing.forged,
         created_at: existing.created_at,
         updated_at: local_timestamp(),
         path: String::new(),
@@ -1164,6 +1181,166 @@ pub(crate) fn find_profile_by_id(
         .find(|profile| profile.id == id))
 }
 
+/// A selection is reference material, not a ProfileEntry that can be executed or updated.
+/// No paths, dynamic flags, bindings or ownership fields cross this boundary.
+pub(super) struct ProfileMaterial {
+    pub name: String,
+    pub summary: String,
+    pub body: String,
+}
+
+const MATERIAL_PROFILE_DIRECTORY_CAP: usize = 1_024;
+const MATERIAL_PROFILE_HEADER_BYTES: usize = 16 * 1_024;
+
+pub(super) fn read_profile_materials(
+    paths: &GoldBandPaths,
+    scope: ProfileScope,
+    ids: &BTreeSet<&str>,
+    language: DesktopLanguage,
+    body_char_limit: usize,
+) -> Result<BTreeMap<String, ProfileMaterial>> {
+    use crate::app::forge_service::ForgeMaterialUnavailable;
+    use std::io::BufReader;
+
+    let mut found = BTreeMap::new();
+    if ids.is_empty() {
+        return Ok(found);
+    }
+    if scope == ProfileScope::BuiltIn {
+        for seed in available_default_profile_seeds().filter(|s| ids.contains(s.id)) {
+            found.insert(
+                seed.id.into(),
+                ProfileMaterial {
+                    name: seed.name.value(language).into(),
+                    summary: seed.summary.value(language).into(),
+                    body: if body_char_limit == 0 {
+                        String::new()
+                    } else {
+                        built_in_profile_content(seed.key, language)
+                            .chars()
+                            .take(body_char_limit)
+                            .collect()
+                    },
+                },
+            );
+        }
+        return Ok(found);
+    }
+    // Built-in IDs are reserved even if their channel capability is unavailable.
+    anyhow::ensure!(
+        !DEFAULT_PROFILE_SEEDS.iter().any(|s| ids.contains(s.id)),
+        ForgeMaterialUnavailable
+    );
+    let owner = paths.user_gold_band_dir();
+    let dir = paths.user_context_profiles_dir();
+    let relative = dir.strip_prefix(&owner)?;
+    anyhow::ensure!(
+        dir.canonicalize_utf8()? == owner.canonicalize_utf8()?.join(relative),
+        ForgeMaterialUnavailable
+    );
+    let owner =
+        cap_std::fs::Dir::open_ambient_dir(owner.as_std_path(), cap_std::ambient_authority())?;
+    let directory = owner.open_dir(relative.as_std_path())?;
+    let mut open = cap_std::fs::OpenOptions::new();
+    open.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        open.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    for (index, entry) in directory.entries()?.enumerate() {
+        // Fail closed rather than use the first of possibly duplicate stored IDs.
+        anyhow::ensure!(
+            index < MATERIAL_PROFILE_DIRECTORY_CAP,
+            ForgeMaterialUnavailable
+        );
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if Utf8Path::new(name).extension() != Some("md")
+            || !entry.file_type().is_ok_and(|ty| ty.is_file())
+        {
+            continue;
+        }
+        let Ok(file) = directory.open_with(name, &open) else {
+            continue;
+        };
+        if !file.metadata().is_ok_and(|meta| meta.is_file()) {
+            continue;
+        }
+        // Keep the same open handle through the optional body read. Never reopen by name.
+        let mut reader = BufReader::with_capacity(1_024, file);
+        let Some(mut fields) = material_profile_header(&mut reader) else {
+            continue;
+        };
+        let Some(id) = fields.remove("id") else {
+            continue;
+        };
+        let id = id.trim();
+        if !ids.contains(id) {
+            continue;
+        }
+        anyhow::ensure!(!found.contains_key(id), ForgeMaterialUnavailable);
+        found.insert(
+            id.to_owned(),
+            ProfileMaterial {
+                name: stored_profile_name(&fields),
+                summary: fields.remove("summary").unwrap_or_default().trim().into(),
+                body: material_profile_body(reader, body_char_limit)?,
+            },
+        );
+    }
+    Ok(found)
+}
+
+fn material_profile_header(reader: &mut impl std::io::BufRead) -> Option<BTreeMap<String, String>> {
+    use std::io::{BufRead, Read};
+    // Bound the *reader* before looking for a newline; read_line alone accepts unbounded lines.
+    let mut limited = reader.take(MATERIAL_PROFILE_HEADER_BYTES as u64 + 1);
+    let mut header = Vec::new();
+    loop {
+        let start = header.len();
+        if limited.read_until(b'\n', &mut header).ok()? == 0
+            || header.len() > MATERIAL_PROFILE_HEADER_BYTES
+        {
+            return None;
+        }
+        let line = std::str::from_utf8(&header[start..])
+            .ok()?
+            .trim_end_matches(['\n', '\r']);
+        if start == 0 {
+            if line.strip_prefix('\u{feff}').unwrap_or(line) != "---" {
+                return None;
+            }
+        } else if line == "---" {
+            break;
+        }
+    }
+    Some(
+        parse_frontmatter_document(std::str::from_utf8(&header).ok()?)
+            .ok()?
+            .fields,
+    )
+}
+
+fn material_profile_body(reader: impl std::io::Read, char_limit: usize) -> Result<String> {
+    use std::io::Read;
+    if char_limit == 0 {
+        return Ok(String::new());
+    }
+    let byte_limit = char_limit * 4;
+    let mut bytes = Vec::new();
+    reader.take(byte_limit as u64).read_to_end(&mut bytes)?;
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        Err(e) if bytes.len() == byte_limit && e.error_len().is_none() => {
+            std::str::from_utf8(&bytes[..e.valid_up_to()])?
+        }
+        Err(e) => return Err(e.into()),
+    };
+    Ok(text.chars().take(char_limit).collect())
+}
+
 fn built_in_profiles(language: DesktopLanguage) -> Vec<ProfileEntry> {
     available_default_profile_seeds()
         .map(|seed| ProfileEntry {
@@ -1175,6 +1352,7 @@ fn built_in_profiles(language: DesktopLanguage) -> Vec<ProfileEntry> {
             dynamic_template: seed.dynamic_template,
             scope: ProfileScope::BuiltIn,
             is_built_in: true,
+            forged: false,
             created_at: BUILT_IN_PROFILE_TIMESTAMP.to_string(),
             updated_at: BUILT_IN_PROFILE_TIMESTAMP.to_string(),
             path: format!("builtin://profiles/{}", seed.key),
@@ -1194,6 +1372,7 @@ fn built_in_profile_by_id(id: &str, language: DesktopLanguage) -> Option<Profile
             dynamic_template: seed.dynamic_template,
             scope: ProfileScope::BuiltIn,
             is_built_in: true,
+            forged: false,
             created_at: BUILT_IN_PROFILE_TIMESTAMP.to_string(),
             updated_at: BUILT_IN_PROFILE_TIMESTAMP.to_string(),
             path: format!("builtin://profiles/{}", seed.key),
@@ -1261,12 +1440,17 @@ fn read_profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Vec<Pr
             dynamic_template: parsed.dynamic_template,
             scope,
             is_built_in: false,
+            forged: parsed.forged,
             created_at: parsed.created_at,
             updated_at: parsed.updated_at,
             path: path.to_string(),
         });
     }
     Ok(profiles)
+}
+
+fn stored_profile_name(fields: &BTreeMap<String, String>) -> String {
+    fields.get("name").map(|name| name.trim()).unwrap_or("未命名角色").to_owned()
 }
 
 fn parse_profile_file(path: &Utf8Path) -> Result<ParsedProfile> {
@@ -1285,10 +1469,7 @@ fn parse_profile_file(path: &Utf8Path) -> Result<ParsedProfile> {
     let now = local_timestamp();
     Ok(ParsedProfile {
         id,
-        name: fields
-            .get("name")
-            .map(|value| value.trim().to_string())
-            .unwrap_or_else(|| "未命名角色".to_string()),
+        name: stored_profile_name(&fields),
         summary: fields
             .get("summary")
             .map(|value| value.trim().to_string())
@@ -1310,6 +1491,9 @@ fn parse_profile_file(path: &Utf8Path) -> Result<ParsedProfile> {
         content: document.body,
         dynamic_template: fields
             .get("dynamicTemplate")
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("true")),
+        forged: fields
+            .get("forged")
             .is_some_and(|value| value.trim().eq_ignore_ascii_case("true")),
     })
 }
@@ -1351,13 +1535,13 @@ fn profile_markdown(profile: &ProfileEntry) -> String {
     render_frontmatter_document(&profile_frontmatter_updates(profile), &profile.content)
 }
 
-fn profile_frontmatter_updates(profile: &ProfileEntry) -> [FrontmatterUpdate<'_>; 6] {
+fn profile_frontmatter_updates(profile: &ProfileEntry) -> Vec<FrontmatterUpdate<'_>> {
     let dynamic_template = if profile.dynamic_template {
         "true"
     } else {
         "false"
     };
-    [
+    let mut updates = vec![
         FrontmatterUpdate {
             key: "id",
             value: &profile.id,
@@ -1388,7 +1572,15 @@ fn profile_frontmatter_updates(profile: &ProfileEntry) -> [FrontmatterUpdate<'_>
             value: dynamic_template,
             source: None,
         },
-    ]
+    ];
+    if profile.forged {
+        updates.push(FrontmatterUpdate {
+            key: "forged",
+            value: "true",
+            source: None,
+        });
+    }
+    updates
 }
 
 fn ensure_profile_input(input: &ProfileInput) -> Result<()> {
@@ -2444,6 +2636,7 @@ profile body
             dynamic_template: false,
             scope: ProfileScope::User,
             is_built_in: false,
+            forged: false,
             created_at: "2026-10-31 10:00:00".to_string(),
             updated_at: "2026-10-31 11:00:00".to_string(),
             path: String::new(),

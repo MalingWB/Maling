@@ -254,6 +254,8 @@ pub struct OptionalEntryStage {
 pub enum WorkflowTemplateCommandError {
     #[error("workflow-template.readonly-built-in")]
     ReadonlyBuiltIn,
+    #[error("workflow-template.duplicate-name")]
+    DuplicateName { name: String },
     #[error("workflow.optional-entry.invalid")]
     InvalidOptionalEntry { reason: &'static str },
 }
@@ -262,6 +264,7 @@ impl WorkflowTemplateCommandError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::ReadonlyBuiltIn => "workflow-template.readonly-built-in",
+            Self::DuplicateName { .. } => "workflow-template.duplicate-name",
             Self::InvalidOptionalEntry { .. } => "workflow.optional-entry.invalid",
         }
     }
@@ -269,6 +272,7 @@ impl WorkflowTemplateCommandError {
     pub fn params(&self) -> serde_json::Value {
         match self {
             Self::ReadonlyBuiltIn => serde_json::json!({}),
+            Self::DuplicateName { name } => serde_json::json!({ "name": name }),
             Self::InvalidOptionalEntry { reason } => serde_json::json!({ "reason": reason }),
         }
     }
@@ -793,37 +797,8 @@ fn default_lightweight_workflow_dsl(
     }
 }
 
-fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> String {
-    let slug = name
-        .trim()
-        .to_ascii_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string();
-    let base = if slug.is_empty() {
-        "workflow".to_string()
-    } else {
-        slug
-    };
-    let mut candidate = base.clone();
-    let mut index = 1;
-    while store
-        .templates
-        .iter()
-        .any(|template| template.id == candidate)
-    {
-        index += 1;
-        candidate = format!("{base}-{index}");
-    }
-    candidate
+fn next_workflow_template_id() -> String {
+    format!("template-{}", ids::generate_uuid())
 }
 
 fn upsert_built_in_workflow_template(
@@ -1452,6 +1427,10 @@ enum AttemptRuntimePausePolicy<'a> {
     PausedManualCheck,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("conversation.task-not-found")]
+pub struct ConversationTaskNotFound;
+
 fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
     Arc::new(sqlite::index_task_with_retry)
 }
@@ -1542,6 +1521,54 @@ fn validate_unique_workflow_template_id(
     duplicate_workflow_id_error(workflow_name, workflow_id, conflicts)
 }
 
+/// 工作流名唯一：名字是用户找到一条工作流的主要线索，铸造出来的角色也以「工作流名 ·
+/// 角色名」区分归属，重名会让两者都分不清。原位更新（改名）时排除模板自己。
+fn validate_unique_workflow_template_name(
+    store: &WorkflowTemplateStore,
+    name: &str,
+    exclude_template_id: Option<&str>,
+) -> Result<()> {
+    let name = name.trim();
+    let taken = store
+        .templates
+        .iter()
+        .any(|template| exclude_template_id != Some(template.id.as_str()) && template.name.trim() == name);
+    if taken {
+        return Err(WorkflowTemplateCommandError::DuplicateName {
+            name: name.to_string(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// 工作流（worker 节点）引用的全部 profile id，去重后按出现顺序。
+fn profile_refs(workflow: &WorkflowDsl) -> Vec<String> {
+    let mut refs = Vec::new();
+    for node in &workflow.nodes {
+        if let NodeDsl::Worker(worker) = node
+            && let Some(profile) = worker.profile.as_deref()
+            && !refs.iter().any(|existing| existing == profile)
+        {
+            refs.push(profile.to_string());
+        }
+    }
+    refs
+}
+
+/// 模板落盘后回收铸造角色：改动之前被引用、之后不再被引用的 profile 进入候选。
+fn recycle_profiles_dropped_by(
+    app: &App,
+    previous: &[String],
+    next: &[String],
+) -> Result<()> {
+    let dropped = previous
+        .iter()
+        .filter(|profile_id| !next.contains(profile_id))
+        .cloned();
+    app.recycle_forged_profiles(dropped).map(|_| ())
+}
+
 fn validate_ai_dynamic_allowed_workflows(
     workflow: &WorkflowDsl,
     store: &WorkflowTemplateStore,
@@ -1600,13 +1627,14 @@ fn validate_ai_dynamic_allowed_workflows(
 fn workflow_uses_profile(workflow: &WorkflowDsl, profile_id: &str) -> bool {
     workflow.nodes.iter().any(|node| match node {
         NodeDsl::Worker(worker) => worker.profile.as_deref() == Some(profile_id),
-        NodeDsl::AiDynamic(_) => false,
+        NodeDsl::AiDynamic(_) | NodeDsl::ParallelGroup(_) => false,
     })
 }
 
 fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     match node {
         NodeDsl::Worker(worker) => worker.provider.iter().cloned().collect(),
+        NodeDsl::ParallelGroup(_) => Vec::new(),
         NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
             AiDynamicAgentStrategy::Fixed { provider, .. } => vec![provider.clone()],
             AiDynamicAgentStrategy::Dynamic {
@@ -1634,6 +1662,7 @@ fn configured_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<S
             .map(|provider| (provider.clone(), worker.permission_mode.clone()))
             .into_iter()
             .collect(),
+        NodeDsl::ParallelGroup(_) => Vec::new(),
         NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
             AiDynamicAgentStrategy::Fixed {
                 provider,
@@ -2398,7 +2427,7 @@ impl App {
                 )
                 .ok()
             })
-            .is_some_and(|node| node.node_type == crate::domain::NodeType::AiDynamic)
+            .is_some_and(|node| node.node_type.owns_branch_graph())
     }
 
     fn emit_derived_metrics_fact(&self, event: &RuntimeLifecycleEvent) {
@@ -3976,6 +4005,7 @@ impl App {
             }
             // builtin 只读：继续走物化用户副本（返回的是本次安装产物，不是既有内置）。
         }
+        validate_unique_workflow_template_name(&store, name, None)?;
         let mut workflow = exchange.workflow.clone();
         workflow.id = next_workflow_id();
         let mut model_bindings = WorkflowModelBindings::default();
@@ -3990,7 +4020,7 @@ impl App {
         {
             exchange.id.clone()
         } else {
-            unique_workflow_template_id(&store, name)
+            next_workflow_template_id()
         };
         let now = now_rfc3339_like();
         let template = WorkflowTemplate {
@@ -4065,10 +4095,11 @@ impl App {
         let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         validate_unique_workflow_template_id(&store, &validated.raw, name, None)?;
+        validate_unique_workflow_template_name(&store, name, None)?;
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
 
         let now = now_rfc3339_like();
-        let id = unique_workflow_template_id(&store, name);
+        let id = next_workflow_template_id();
         store.templates.push(WorkflowTemplate {
             id: id.clone(),
             name: name.to_string(),
@@ -4100,14 +4131,42 @@ impl App {
     pub fn update_workflow_template_with_bindings(
         &self,
         template_id: &str,
+        workflow: WorkflowDsl,
+        model_bindings: WorkflowModelBindings,
+    ) -> Result<WorkflowTemplateStore> {
+        self.update_workflow_template_with_name(template_id, None, workflow, model_bindings)
+    }
+
+    /// 更新模板的工作流定义与绑定，可同时改名（`name` 为空串或 `None` 时保持
+    /// 原名）。改名与定义变更落在同一次落盘里：模板库是单文件全量原子写，
+    /// 分两次写会让写放大翻倍，并留下“名已改、定义未改”的中间态。
+    pub fn update_workflow_template_with_name(
+        &self,
+        template_id: &str,
+        name: Option<&str>,
+        workflow: WorkflowDsl,
+        model_bindings: WorkflowModelBindings,
+    ) -> Result<WorkflowTemplateStore> {
+        let (store, dropped) = self.update_workflow_template_in_store(
+            self.load_workflow_template_store()?, template_id, name, workflow, model_bindings,
+        )?;
+        self.recycle_forged_profiles(dropped)?;
+        Ok(store)
+    }
+
+    /// Returns candidates only. The caller rechecks live usage after releasing its authoring lock.
+    pub(crate) fn update_workflow_template_in_store(
+        &self,
+        mut store: WorkflowTemplateStore,
+        template_id: &str,
+        name: Option<&str>,
         mut workflow: WorkflowDsl,
         mut model_bindings: WorkflowModelBindings,
-    ) -> Result<WorkflowTemplateStore> {
+    ) -> Result<(WorkflowTemplateStore, Vec<String>)> {
         let template_id = template_id.trim();
         if template_id.is_empty() {
             bail!("workflow template id cannot be empty");
         }
-        let mut store = self.load_workflow_template_store()?;
         if store
             .templates
             .iter()
@@ -4121,6 +4180,7 @@ impl App {
             .iter()
             .find(|template| template.id == template_id)
             .with_context(|| format!("workflow template `{template_id}` not found"))?;
+        let previous_profile_refs = profile_refs(&persisted_template.workflow);
         let persisted = TaskAuthoringWorkflow {
             workflow: persisted_template.workflow.clone(),
             model_bindings: persisted_template.model_bindings.clone(),
@@ -4143,19 +4203,27 @@ impl App {
             template_id,
             Some(template_id),
         )?;
+        if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
+            validate_unique_workflow_template_name(&store, name, Some(template_id))?;
+        }
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
+        let next_profile_refs = profile_refs(&validated.raw);
 
         let template = store
             .templates
             .iter_mut()
             .find(|template| template.id == template_id)
             .expect("persisted workflow template was resolved before validation");
+        if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
+            template.name = name.to_string();
+        }
         template.workflow = validated.raw;
         template.model_bindings = model_bindings;
         template.updated_at = now_rfc3339_like();
         store.last_used_template_id = Some(template_id.to_string());
         self.save_workflow_template_store(&mut store)?;
-        Ok(store)
+        let dropped = previous_profile_refs.into_iter().filter(|id| !next_profile_refs.contains(id)).collect();
+        Ok((store, dropped))
     }
 
     pub fn update_built_in_workflow_template_bindings(
@@ -4214,6 +4282,12 @@ impl App {
             return Err(WorkflowTemplateCommandError::ReadonlyBuiltIn.into());
         }
         let original_len = store.templates.len();
+        let previous_profile_refs = store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .map(|template| profile_refs(&template.workflow))
+            .unwrap_or_default();
         store
             .templates
             .retain(|template| template.id != template_id);
@@ -4224,6 +4298,7 @@ impl App {
             store.last_used_template_id = Some("default".to_string());
         }
         self.save_workflow_template_store(&mut store)?;
+        recycle_profiles_dropped_by(self, &previous_profile_refs, &[])?;
         Ok(store)
     }
 
@@ -4781,6 +4856,80 @@ impl App {
         Ok(task)
     }
 
+    /// Numeric IDs can be reused. Validate generation and run admission under the same
+    /// task lock used by authoring mutations; retain admission through trash and cleanup.
+    pub fn with_task_deletion_guard<T>(
+        &self,
+        task_id: &str,
+        expected_uuid: &str,
+        mutate: impl FnOnce(&Utf8Path) -> T,
+    ) -> Result<T> {
+        use crate::execution_plan as plan;
+        if expected_uuid.is_empty()
+            || Utf8Path::new(task_id).file_name() != Some(task_id)
+            || task_id.contains(['/', '\\', ':'])
+        {
+            return Err(TaskDeletionError::NotFound.into());
+        }
+        let key = plan::authoring_lock_key(&self.paths.project_id, task_id);
+        let _task_guard = plan::acquire_plan_write_wait(&key)?;
+        let (dir, task) = self
+            .checked_task_locator(task_id)
+            .map_err(|_| TaskDeletionError::NotFound)?;
+        if expected_uuid.is_empty() || task.uuid.as_deref() != Some(expected_uuid) {
+            return Err(TaskDeletionError::NotFound.into());
+        }
+        let runs_dir = dir.join("runs");
+        let mut run_guards = Vec::new();
+        match fs::symlink_metadata(&runs_dir) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (), // genuinely unstarted
+            Err(error) => return Err(error.into()),
+            Ok(_) => {
+                let root = dir.canonicalize_utf8()?.join("runs");
+                anyhow::ensure!(
+                    runs_dir.canonicalize_utf8()? == root,
+                    "invalid runs directory"
+                );
+                for entry in fs::read_dir(&runs_dir)? {
+                    let entry = entry?;
+                    let id = entry
+                        .file_name()
+                        .into_string()
+                        .map_err(|_| anyhow!("invalid run id"))?;
+                    let kind = entry.file_type()?;
+                    // The runtime keeps diagnostic text files beside the run directories.
+                    if kind.is_file() && !id.starts_with("run-") {
+                        continue;
+                    }
+                    let file = root.join(&id).join("run.json");
+                    anyhow::ensure!(
+                        kind.is_dir() && file.canonicalize_utf8()? == file,
+                        "invalid run directory"
+                    );
+                    run_guards.push(
+                        plan::try_acquire_plan_write(&plan::lock_key(&self.paths, task_id, &id))
+                            .map_err(|_| TaskDeletionError::Running)?,
+                    );
+                    let run: RunState = read_json(&file)?;
+                    validate_run_state(&run)?;
+                    anyhow::ensure!(
+                        run.id == id
+                            && run.task_id == task_id
+                            && run
+                                .task_uuid
+                                .as_deref()
+                                .is_none_or(|uuid| uuid == expected_uuid),
+                        "mismatched run identity"
+                    );
+                    if run.status == RunStatus::Running {
+                        return Err(TaskDeletionError::Running.into());
+                    }
+                }
+            }
+        }
+        Ok(mutate(&dir))
+    }
+
     pub fn task_list(&self) -> Result<Vec<TaskState>> {
         let mut tasks: Vec<TaskState> = self.read_json_dir_sorted(&self.paths.tasks_dir())?;
         for task in &tasks {
@@ -4854,10 +5003,14 @@ impl App {
 
         let (task_id, task_dir) = reserve_next_task_dir(&self.paths.tasks_dir())?;
         let mut owned_task_dir = OwnedTaskDirectory::new(task_dir.clone());
+        let key = crate::execution_plan::authoring_lock_key(&self.paths.project_id, &task_id);
+        let _creation_guard = crate::execution_plan::acquire_plan_write_wait(&key)?;
+        let title = input.title.filter(|value| !value.trim().is_empty());
         let task = TaskState {
             version: VERSION.to_string(),
             id: task_id.clone(),
-            title: input.title.filter(|value| !value.trim().is_empty()),
+            forge_naming: (input.origin == Some(crate::runtime::TaskOrigin::Forge)).then(|| crate::runtime::ForgeNaming::Automatic { fallback: title.clone() }),
+            title,
             description: input.description.filter(|value| !value.trim().is_empty()),
             uuid: Some(generate_uuid()),
             origin: input.origin,
@@ -4869,7 +5022,7 @@ impl App {
             self.paths.requirement_file(&task_id).as_std_path(),
             input.requirement_content,
         )?;
-        self.save_task_authoring_workflow(
+        self.save_task_authoring_workflow_unlocked(
             &task_id,
             TaskAuthoringWorkflow {
                 workflow: validated.raw.clone(),
@@ -4896,17 +5049,35 @@ impl App {
     pub fn update_task_metadata(
         &self,
         task_id: &str,
+        task_uuid: &str,
         title: &str,
         description: Option<&str>,
     ) -> Result<()> {
-        let mut task = self.task_show(task_id)?;
+        let key = crate::execution_plan::authoring_lock_key(&self.paths.project_id, task_id);
+        let _guard = crate::execution_plan::acquire_plan_write_wait(&key)?;
+        let (dir, mut task) = self.checked_task_locator(task_id).map_err(|_| ConversationTaskNotFound)?;
+        anyhow::ensure!(task.uuid.as_deref() == Some(task_uuid) && !task_uuid.is_empty(), ConversationTaskNotFound);
         task.title = Some(title.to_string());
+        if task.origin == Some(crate::runtime::TaskOrigin::Forge) {
+            task.forge_naming = Some(crate::runtime::ForgeNaming::Manual);
+        }
         if let Some(description) = description {
             task.description = Some(description.to_string());
         }
         validate_task_state(&task)?;
+        let metadata_path = dir.join("authoring/conversation.json");
+        if metadata_path.try_exists()? {
+            crate::storage::with_file_lock(&metadata_path, || -> Result<()> {
+                let mut metadata: ConversationMetadata = read_json(&metadata_path)?;
+                if metadata.title_auto_generated {
+                    metadata.title_auto_generated = false;
+                    write_json(&metadata_path, &metadata)?;
+                }
+                Ok(())
+            })?;
+        }
         write_json(&self.paths.task_file(task_id), &task)?;
-        (self.task_search_indexer)(&self.paths.task_dir(task_id), task_id);
+        (self.task_search_indexer)(&dir, task_id);
         Ok(())
     }
 
@@ -6187,7 +6358,11 @@ impl App {
         )?;
         invocation.turn_control_mode = crate::domain::TurnControlMode::NonRuntimeControlled;
         invocation.runtime_control_intent = crate::provider::RuntimeControlIntent::ManualFollowUp;
-        invocation.extra_hidden_sections.clear();
+        // 追问不重放任务级隐藏上下文（首条 prompt 的区段已在会话历史里）。例外是 Forge
+        // 会话的基线 Spec：它逐轮变化、必须随每条消息携带，不能跟着一起清掉。
+        invocation
+            .extra_hidden_sections
+            .retain(|section| section.title == forge_service::FORGE_BASELINE_SECTION_TITLE);
         let prompt = prepare_prompt_bundle(&mut invocation)?;
         Ok(PreparedAcpPrompt {
             prompt,
@@ -6664,15 +6839,33 @@ impl App {
             .filter(|template| workflow_uses_profile(&template.workflow, profile_id))
             .count();
 
+        // Profiles and templates are user-wide; tasks in inactive workspaces still own references.
+        self.count_project_profile_references(profile_id, &mut counts)?;
+        let projects = self.paths.projects_dir();
+        if projects.try_exists()? {
+            for entry in fs::read_dir(projects)? {
+                let entry = entry?;
+                if !entry.file_type()?.is_dir() { continue; }
+                let root = Utf8PathBuf::from_path_buf(entry.path()).map_err(|_| anyhow!("invalid project storage path"))?;
+                if root == self.paths.runtime_root { continue; }
+                let mut other = self.clone_for_background();
+                other.paths.project_id = root.file_name().context("invalid project storage root")?.to_owned();
+                other.paths.runtime_root = root;
+                other.count_project_profile_references(profile_id, &mut counts)?;
+            }
+        }
+        Ok(counts)
+    }
+
+    fn count_project_profile_references(&self, profile_id: &str, counts: &mut ProfileUsageCounts) -> Result<()> {
         let tasks_dir = self.paths.tasks_dir();
-        if !tasks_dir.exists() {
-            return Ok(counts);
+        if !tasks_dir.try_exists()? {
+            return Ok(());
         }
 
         let mut task_paths = fs::read_dir(tasks_dir.as_std_path())?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .collect::<Vec<_>>();
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
         task_paths.sort();
 
         for path in task_paths {
@@ -6687,21 +6880,21 @@ impl App {
             };
 
             let workflow_path = self.paths.workflow_file(task_id);
-            if workflow_path.exists() {
-                let workflow = self.task_workflow(task_id)?;
+            if workflow_path.try_exists()? {
+                let stored: TaskAuthoringWorkflowCompat = read_json(&workflow_path)?;
+                let workflow = stored.into_current().0.workflow;
                 if workflow_uses_profile(&workflow, profile_id) {
                     counts.task_count += 1;
                 }
             }
 
             let runs_dir = self.paths.runs_dir(task_id);
-            if !runs_dir.exists() {
+            if !runs_dir.try_exists()? {
                 continue;
             }
             let mut run_paths = fs::read_dir(runs_dir.as_std_path())?
-                .filter_map(|entry| entry.ok())
-                .map(|entry| entry.path())
-                .collect::<Vec<_>>();
+                .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
             run_paths.sort();
             for run_path in run_paths {
                 if !run_path.is_dir() {
@@ -6714,7 +6907,7 @@ impl App {
                     continue;
                 };
                 let run_file = self.paths.run_file(task_id, run_id);
-                if !run_file.exists() {
+                if !run_file.try_exists()? {
                     continue;
                 }
                 let run = read_json::<RunState>(&run_file)?;
@@ -6728,7 +6921,7 @@ impl App {
             }
         }
 
-        Ok(counts)
+        Ok(())
     }
 
     fn run_snapshot_is_actionable(&self, task_id: &str, run: &RunState) -> Result<bool> {
@@ -7673,7 +7866,7 @@ mod tests {
         assert_eq!(created_results.len(), 1);
         assert_eq!(created_results[0].task_id, created.task.id);
 
-        app.update_task_metadata(&created.task.id, "Renamed conversation", None)
+        app.update_task_metadata(&created.task.id, created.task.uuid.as_deref().unwrap(), "Renamed conversation", None)
             .unwrap();
 
         assert!(index.search_tasks("searchable", 10).unwrap().is_empty());
@@ -8336,13 +8529,17 @@ mod tests {
         // #6：同 key 既有用户模板 → 复用（非新装），服务端据此区分「已装过」。
         assert_eq!(skipped_outcome, MulticaInstallOutcome::ReusedExisting);
 
-        // builtin id 推送：内置只读，物化用户副本（派生 id、is_built_in=false、名字保留）。
+        let conflict = app.install_workflow_template_from_multica(&exchange_for("another-pipeline", "共享流水线"));
+        assert!(matches!(conflict.unwrap_err().downcast_ref::<WorkflowTemplateCommandError>(), Some(WorkflowTemplateCommandError::DuplicateName { .. })));
+        assert_eq!(app.workflow_templates().unwrap().templates.iter().filter(|t| t.name == "共享流水线").count(), 1);
+
+        // builtin id 推送：内置只读，物化不同名的用户副本。
         let (builtin_copy, copy_outcome) = app
-            .install_workflow_template_from_multica(&exchange_for("default", "默认完整工作流"))
+            .install_workflow_template_from_multica(&exchange_for("default", "共享完整工作流副本"))
             .unwrap();
         assert_ne!(builtin_copy.id, "default");
         assert!(!builtin_copy.is_built_in);
-        assert_eq!(builtin_copy.name, "默认完整工作流");
+        assert_eq!(builtin_copy.name, "共享完整工作流副本");
         // 副本是本次新落库的用户模板（Created），不是复用。
         assert_eq!(copy_outcome, MulticaInstallOutcome::Created);
         // 内置本体未被覆盖（仍是 builtin 且名字未变）。
@@ -10812,4 +11009,12 @@ mod tests {
             "偏好写入不应被 Multica 后台写入覆盖"
         );
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TaskDeletionError {
+    #[error("conversation.task-not-found")]
+    NotFound,
+    #[error("conversation.task-running")]
+    Running,
 }

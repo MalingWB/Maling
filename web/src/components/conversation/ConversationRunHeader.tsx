@@ -1,4 +1,5 @@
-import { AlarmClock, Eye, Hammer, RotateCcw, Settings2, Workflow, ChevronDown } from 'lucide-react';
+import { AlarmClock, Eye, RotateCcw, Settings2, Workflow, ChevronDown } from 'lucide-react';
+import { ForgeConversationAction } from './ForgeConversationAction';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ConversationRunVm, ConversationSessionLeafVm } from '../../types';
@@ -112,26 +113,8 @@ export function ConversationRunHeader({
 
         {/* Actions */}
         <div className="flex shrink-0 items-center gap-1">
-          {isDirect && !run.origin && onForgeWorkflow ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-5.5" disabled={readOnly} aria-label={t('forge.entry.action')} onClick={onForgeWorkflow}>
-                  <Hammer className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{t('forge.entry.action')}</TooltipContent>
-            </Tooltip>
-          ) : null}
-          {run.origin === 'forge' && onOpenForgePreview ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-5.5" aria-label={t('forge.preview.open')} onClick={onOpenForgePreview}>
-                  <Hammer className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{t('forge.preview.open')}</TooltipContent>
-            </Tooltip>
-          ) : null}
+          {isDirect && !run.origin && onForgeWorkflow && <ForgeConversationAction disabled={readOnly} onClick={onForgeWorkflow} />}
+          {run.origin === 'forge' && onOpenForgePreview && <ForgeConversationAction preview onClick={onOpenForgePreview} />}
 
           {canViewWorkflow ? (
             <Tooltip>

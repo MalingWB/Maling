@@ -1,5 +1,5 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRecentTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, DesktopLanguage, ForgeCompileResultVm, ForgeSessionCreatedVm, ForgeSessionEntryVm, ForgeSourceDigestVm, ForgeSpecVm, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaUpstreamPullEventVm, MulticaUpstreamPullPendingVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteImageTrustVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, RuntimeAssetInstalledEventVm, RuntimeAssetUninstalledEventVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
-import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationPinnedTaskPageVm, ConversationRecentTaskPageVm, ConversationRunModeVm, ConversationRunSummaryPageVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionTreeVm, ConversationSidebarBootstrapVm, ConversationSidebarVm, ConversationTaskPageVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DeleteImChannelResultVm, InstalledPluginVm, DesktopLanguage, ForgeCompileOutcomeVm, ForgeOnFailureVm, ForgeSessionCreatedVm, ForgeSourceDigestVm, ForgeSourceItemVm, ForgeSourceSummaryVm, ForgeSpecVm, GitOperationVm, GitStateChangedEventVm, ImChannelSnapshotVm, ImSettingsVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaUpstreamPullEventVm, MulticaUpstreamPullPendingVm, MulticaWorkspaceRefVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteImageTrustVm, RemoteSkillListItemVm, RemoteSkillPullReportVm, RemoteTaskVm, RuntimeAssetInstalledEventVm, RuntimeAssetUninstalledEventVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, ForgeTurnSettledEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { RetryCurrentNodeRequest } from '../types';
 import { BROWSER_ADDRESS_SUGGESTION_ACTION_EVENT } from './client';
 import {
@@ -7,6 +7,7 @@ import {
   APP_EXIT_REQUESTED_EVENT,
   CONVERSATION_RUN_STATE_UPDATED_EVENT,
   CONVERSATION_TERMINAL_RESULT_UPDATED_EVENT,
+  FORGE_TURN_SETTLED_EVENT,
   GIT_OPERATION_UPDATED_EVENT,
   GIT_STATE_CHANGED_EVENT,
   GITHUB_OPERATION_UPDATED_EVENT,
@@ -201,6 +202,13 @@ export const desktopApi: RuntimeApi = {
   async subscribeAcpSessionUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen<AcpSessionUpdatedEventVm>(ACP_SESSION_UPDATED_EVENT, (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  async subscribeForgeTurnSettled(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<ForgeTurnSettledEventVm>(FORGE_TURN_SETTLED_EVENT, (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
@@ -445,8 +453,8 @@ export const desktopApi: RuntimeApi = {
   getRoundDetail(taskId: string, runId: string, roundId: string, selection?: RoundSelection) {
     return invokeCommand('get_round_detail', { taskId, runId, roundId, selection: toRoundSelectionInput(selection) });
   },
-  startRun(taskId: string) {
-    return invokeCommand('start_run', { taskId });
+  startRun(projectId, taskId) {
+    return invokeCommand('start_run', { projectId, taskId });
   },
   continueRun(projectId, taskId, runId) {
     return invokeCommand('continue_run', { projectId, taskId, runId });
@@ -772,6 +780,9 @@ export const desktopApi: RuntimeApi = {
   getConversationSidebarBootstrap() {
     return invokeCommand<ConversationSidebarBootstrapVm>('get_conversation_sidebar_bootstrap');
   },
+  getGenerationHistoryPage(input) {
+    return invokeCommand<ConversationRecentTaskPageVm>('get_generation_history_page', { ...input });
+  },
   getConversationTaskPage(projectId, cursor, limit) {
     return invokeCommand<ConversationTaskPageVm>('get_conversation_task_page', { projectId, cursor, limit });
   },
@@ -910,41 +921,48 @@ export const desktopApi: RuntimeApi = {
   createConversationRun(input) {
     return invokeCommand<ConversationCreateResultVm>('create_conversation_run', { input });
   },
-  forgeSourceDigest(projectId, taskId) {
-    return invokeCommand<ForgeSourceDigestVm>('forge_source_digest', { projectId, taskId });
+  forgeSourceDigest(projectId, taskId, session) {
+    return invokeCommand<ForgeSourceDigestVm>('forge_source_digest', { projectId, taskId, session: session ?? null });
   },
-  forgeSkillsDigest(projectId, skills) {
-    return invokeCommand<ForgeSourceDigestVm>('forge_skills_digest', { projectId, skills });
+  forgeItemsDigest(projectId, items) {
+    return invokeCommand<ForgeSourceSummaryVm[]>('forge_items_digest', { projectId, items });
   },
   forgeGetSpec(projectId, taskId) {
     return invokeCommand<ForgeSpecVm | null>('forge_get_spec', { projectId, taskId });
   },
-  forgeSaveSpec(projectId, taskId, spec) {
-    return invokeCommand<void>('forge_save_spec', { projectId, taskId, spec });
+  forgeSaveSpec(projectId, taskId, spec, taskUuid) {
+    return invokeCommand<ForgeSpecVm>('forge_save_spec', { projectId, taskId, spec, taskUuid });
   },
-  forgeCompile(spec, taskId) {
-    return invokeCommand<ForgeCompileResultVm>('forge_compile', { spec, taskId: taskId ?? null });
+  forgeCompile(projectId, spec, taskId, repairAttempt = 1, copy) {
+    return invokeCommand<ForgeCompileOutcomeVm>('forge_compile', { projectId, spec, taskId: taskId ?? null, repairAttempt, copy });
+  },
+  importPluginAsset(input) { return invokeCommand<void>('import_plugin_asset', { input }); },
+  forgetWorkBuddySource(projectId, pluginId) {
+    return invokeCommand<boolean>('forget_workbuddy_source', { projectId, pluginId });
+  },
+  selectWorkBuddySource(projectId) {
+    return invokeCommand<InstalledPluginVm | null>('select_workbuddy_source', { projectId });
+  },
+  listInstalledPlugins(projectId) {
+    return invokeCommand<InstalledPluginVm[]>('list_installed_plugins', { projectId: projectId ?? null });
   },
   forgeFromWorkflow(templateId) {
     return invokeCommand<ForgeSpecVm>('forge_from_workflow', { templateId });
   },
-  forgeStartTrial(projectId, templateId, intent) {
-    return invokeCommand<ForgeSessionCreatedVm>('forge_start_trial', { projectId, templateId, intent });
+  forgeStartTrial(projectId, templateId, revision, intent) {
+    return invokeCommand<ForgeSessionCreatedVm>('forge_start_trial', { projectId, templateId, revision, intent });
   },
-  forgeListSessions(projectId) {
-    return invokeCommand<ForgeSessionEntryVm[]>('forge_list_sessions', { projectId });
-  },
-  forgeCleanupSessions(projectId, taskIds) {
-    return invokeCommand<string[]>('forge_cleanup_sessions', { projectId, taskIds });
+  forgeSetStageFailure(projectId, taskId, stageId, onFailure) {
+    return invokeCommand<ForgeSpecVm>('forge_set_stage_failure', { projectId, taskId, stageId, onFailure });
   },
   rerunConversationTask(projectId, taskId) {
     return invokeCommand<ConversationRunVm>('rerun_conversation_task', { projectId, taskId });
   },
-  updateTaskMetadata(projectId, taskId, title, description) {
-    return invokeCommand<ConversationTaskRowVm>('update_task_metadata', { projectId, taskId, title, description });
+  updateTaskMetadata(projectId, taskId, taskUuid, title, description) {
+    return invokeCommand<ConversationTaskRowVm>('update_task_metadata', { projectId, taskId, taskUuid, title, description });
   },
-  deleteConversationTask(projectId, taskId) {
-    return invokeCommand<ConversationSidebarBootstrapVm>('delete_conversation_task', { projectId, taskId });
+  deleteConversationTask(projectId, taskId, taskUuid) {
+    return invokeCommand<ConversationSidebarBootstrapVm>('delete_conversation_task', { projectId, taskId, taskUuid });
   },
   setConversationResident(projectId, taskId, resident) {
     return invokeCommand<ConversationTaskRowVm>("set_conversation_resident", { projectId, taskId, resident });

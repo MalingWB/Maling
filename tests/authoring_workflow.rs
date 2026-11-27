@@ -1198,7 +1198,7 @@ fn task_workflow_revisions_advance_once_per_binding_change() {
         .iter_mut()
         .find_map(|node| match node {
             gold_band::dsl::NodeDsl::Worker(worker) => Some(worker),
-            gold_band::dsl::NodeDsl::AiDynamic(_) => None,
+            gold_band::dsl::NodeDsl::AiDynamic(_) | gold_band::dsl::NodeDsl::ParallelGroup(_) => None,
         })
         .unwrap();
     worker.goal = Some("Changed definition only".to_string());

@@ -450,7 +450,7 @@ export function ConversationComposer({
   projectId,
   workspaceName,
   workspaces,
-  runMode,
+  runMode: workspaceRunMode,
   agentRegistry,
   workflowTemplates,
   profiles,
@@ -475,6 +475,10 @@ export function ConversationComposer({
   const measuredComposerRef = useWebviewMeasuredContainer<HTMLDivElement>('conversation-composer');
   const { t } = useTranslation();
   const composerDraft = useConversationComposerDraft();
+  // Generation is a Direct draft, not a change to the workspace's preferred run mode.
+  const forgeDraft = composerDraft.draft.forge !== null;
+  const runMode = useMemo(() => forgeDraft && workspaceRunMode.mode !== 'direct'
+    ? { ...workspaceRunMode, mode: 'direct' as const } : workspaceRunMode, [forgeDraft, workspaceRunMode]);
   const readOnly = useReadOnlyExperience();
   const content = composerDraft.draft.content;
   const setContent = composerDraft.setContent;
@@ -818,7 +822,7 @@ export function ConversationComposer({
 
   useEffect(() => {
     const fallbackAgent = runMode.directConfig?.agentType
-      || agents[0]?.agentType
+      || (!forgeDraft && agents[0]?.agentType)
       || '';
     const directConfig = fallbackAgent ? directConfigForAgent(runMode, fallbackAgent) : undefined;
     setSelectedDirectAgent(fallbackAgent);
@@ -835,7 +839,7 @@ export function ConversationComposer({
     setSelectedModelBoundOverrides(runMode.autoConfig?.modelBoundOverrides ?? {});
     setGlobalGoal(runMode.autoConfig?.globalGoal ?? '');
     setWorkflowTemplateId(runMode.workflowTemplateId ?? workflowTemplates?.lastUsedTemplateId ?? templates[0]?.id ?? '');
-  }, [runMode, workflowTemplates, agents]);
+  }, [runMode, workflowTemplates, agents, forgeDraft]);
 
   const updateDirectConfig = (config: ConversationDirectConfigVm) => {
     onRunModeChange({
@@ -908,6 +912,8 @@ export function ConversationComposer({
   const handleSubmit = async () => {
     if (!canSubmit) return;
     const role = committedRoleSnapshot(committedSlashCommand);
+    const forgeBinding = composerDraft.draft.forge;
+    const forgeProjectMismatch = forgeBinding !== null && forgeBinding.sourceProjectId !== projectId;
     const trimmed = slashSendableText(content, committedSlashCommand).trim();
     const inputBase: ConversationCreateInput = {
       projectId,
@@ -956,35 +962,47 @@ export function ConversationComposer({
       ...(role ? { role } : {}),
       workspaceFiles: workspaceFiles.map(({ source }) => source),
       quotes,
-      // 工作流铸造绑定：源（会话/技能）须仍在当前项目下（切换工作区后源不可寻址）。
-      ...(composerDraft.draft.forge && composerDraft.draft.forge.sourceProjectId === projectId
+      // Forge binding: a forge session must live in the project that owns its source (the source
+      // session and project-scoped material are only addressable there). A draft that still carries
+      // the forge tag after switching workspace is blocked with a message, never sent as a plain
+      // conversation.
+      ...(forgeBinding && !forgeProjectMismatch
         ? {
-            ...(composerDraft.draft.forge.sourceTaskId
-              ? { forgeSourceTaskId: composerDraft.draft.forge.sourceTaskId }
+            ...(forgeBinding.sourceTaskId
+              ? { forgeSourceTaskId: forgeBinding.sourceTaskId }
               : {}),
-            ...(composerDraft.draft.forge.sourceSkills && composerDraft.draft.forge.sourceSkills.length > 0
-              ? { forgeSourceSkills: composerDraft.draft.forge.sourceSkills }
+            ...(forgeBinding.sourceSession
+              ? { forgeSourceSession: forgeBinding.sourceSession }
               : {}),
-            ...(composerDraft.draft.forge.sourceTemplateId
-              ? { forgeSourceTemplateId: composerDraft.draft.forge.sourceTemplateId }
+            ...(forgeBinding.sourceItems && forgeBinding.sourceItems.length > 0
+              ? { forgeSourceItems: forgeBinding.sourceItems }
+              : {}),
+            ...(forgeBinding.sourceTemplateId
+              ? { forgeSourceTemplateId: forgeBinding.sourceTemplateId }
               : {}),
           }
         : {}),
     };
     setSubmittingAttachments(true);
     try {
-      const localIssues = isDirect
-        ? validateDirectConfig(inputBase.directConfig, agentRegistry, t)
-        : isAuto
-          ? validateAutoConfig(inputBase.autoConfig, agentRegistry, workflowTemplates, t)
-          : await validateWorkflowTemplateForConversationStartWithFreshProfiles(
-          inputBase.workflowTemplateId,
-          agentRegistry,
-          profiles,
-          onLoadProfiles,
-          workflowTemplates,
-          t,
-        );
+      const localIssues = [
+        ...(forgeProjectMismatch ? [t('conversation.composer.forgeProjectMismatch')] : []),
+        // A forge session is a conversational session: the backend only accepts Direct mode, so
+        // report it here instead of waiting for the command to fail.
+        ...(forgeBinding && runMode.mode !== 'direct' ? [t('conversation.composer.forgeRequiresDirect')] : []),
+        ...(isDirect
+          ? validateDirectConfig(inputBase.directConfig, agentRegistry, t)
+          : isAuto
+            ? validateAutoConfig(inputBase.autoConfig, agentRegistry, workflowTemplates, t)
+            : await validateWorkflowTemplateForConversationStartWithFreshProfiles(
+              inputBase.workflowTemplateId,
+              agentRegistry,
+              profiles,
+              onLoadProfiles,
+              workflowTemplates,
+              t,
+            )),
+      ];
       if (localIssues.length > 0) {
         if (!isDirect && !isAuto) {
           onWorkflowRepairTargetChange?.(workflowRepairTargetForTemplate(
@@ -1094,7 +1112,8 @@ export function ConversationComposer({
     composerDraft.clearRemote();
   }, [composerDraft]);
 
-  // 解除铸造绑定(claim-at-send 同 remote):正文保留,草稿降级为普通本地会话。
+  // Drop the forge binding (claim-at-send, same as the remote binding): body text is kept and the
+  // draft degrades to a normal local conversation.
   const handleUnbindForge = useCallback(() => {
     if (!composerDraft.draft.forge) return;
     composerDraft.clearForge();
@@ -1423,7 +1442,7 @@ export function ConversationComposer({
           }}>
             <TabsList className={CONVERSATION_HOME_COMPOSER_LAYOUT.optionTabsListClassName}>
               {CONVERSATION_RUN_MODE_ORDER.map((mode) => (
-                <TabsTrigger value={mode} className="px-3 text-xs" key={mode}>
+                <TabsTrigger value={mode} disabled={forgeDraft && mode !== 'direct'} className="px-3 text-xs" key={mode}>
                   {t(`conversation.home.${mode}`)}
                 </TabsTrigger>
               ))}

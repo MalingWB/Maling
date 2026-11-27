@@ -279,11 +279,13 @@ pub struct McpServerVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillMetaVm {
+    pub asset_id: String,
     pub name: String,
     pub description: String,
     pub source: String,
     pub directory_path: String,
     pub agent_source: String,
+    pub work_buddy_code_mode_readable: bool,
     pub load_warnings: Vec<String>,
     pub synced_agent_types: Vec<String>,
 }
@@ -1677,10 +1679,7 @@ pub fn task_list_vm(app: &App) -> Result<TaskListVm> {
     let mut invalid = 0usize;
 
     for summary in summaries {
-        // Forge 铸造/试运行会话不进默认任务列表(方案 G2,铸造历史统一管理)。
-        if summary.task.origin.is_some() {
-            continue;
-        }
+        // 生成会话和试运行任务与其他任务是同一条记录，同样列出；生成会话的标题是工作流名。
         let row = task_row_vm(app, &summary)?;
         match row.display_status.as_str() {
             "running" => running += 1,
@@ -1871,11 +1870,7 @@ fn task_row_vm(app: &App, summary: &TaskSummary) -> Result<TaskRowVm> {
     let (artifact_count, attachment_count) = count_task_outputs(app, &summary.task.id)?;
     Ok(TaskRowVm {
         id: summary.task.id.clone(),
-        title: summary
-            .task
-            .title
-            .clone()
-            .unwrap_or_else(|| summary.task.id.clone()),
+        title: crate::view_models_conversation::conversation_task_title(&summary.task),
         description: summary.task.description.clone(),
         requirement,
         requirement_preview,
@@ -2258,8 +2253,11 @@ fn canonical_round_trace(
     canonical_trace_for_round(run, &[round.clone(), current_round], round)
 }
 
+#[path = "view_models_parallel.rs"]
+mod parallel_graph;
+
 pub fn workflow_graph_vm(app: &App, workflow: &WorkflowDsl) -> GraphVm {
-    GraphVm {
+    let mut graph = GraphVm {
         nodes: workflow
             .nodes
             .iter()
@@ -2304,7 +2302,9 @@ pub fn workflow_graph_vm(app: &App, workflow: &WorkflowDsl) -> GraphVm {
             })
             .collect(),
         groups: Vec::new(),
-    }
+    };
+    parallel_graph::add_structure(&mut graph, workflow);
+    graph
 }
 
 fn sealed_source_allows_new_handoff(app: &App, task_id: &str, run: &RunState) -> bool {
@@ -2329,7 +2329,19 @@ fn round_graph_vm(
     control_failure: Option<&ControlFailureVm>,
     workflow_mode: bool,
 ) -> Result<GraphVm> {
-    let node_labels = workflow_node_labels(app, task_id, &run.id);
+    let workflow = app.current_run_workflow(task_id, &run.id).or_else(|_| app.task_workflow(task_id)).ok();
+    let labels = workflow.iter().flat_map(|w| w.nodes.iter()).map(|n| (n.id().to_string(), node_label(n))).collect();
+    let observed = observed_round_graph_vm(app, task_id, run, round, nodes, &labels, control_failure, workflow_mode)?;
+    if let Some(workflow) = workflow.filter(|w| w.nodes.iter().any(|n| matches!(n, NodeDsl::ParallelGroup(_)))) {
+        return Ok(parallel_graph::round_projection(app, task_id, run, round, &workflow, observed));
+    }
+    Ok(observed)
+}
+
+fn observed_round_graph_vm(
+    app: &App, task_id: &str, run: &RunState, round: &RoundState, nodes: &[NodeState],
+    node_labels: &HashMap<String, String>, control_failure: Option<&ControlFailureVm>, workflow_mode: bool,
+) -> Result<GraphVm> {
     let sealed_source_allows_new_handoff = sealed_source_allows_new_handoff(app, task_id, run);
     if !round.trace.is_empty() {
         return round_trace_graph_vm(
@@ -8146,23 +8158,10 @@ fn count_round_outputs(
     Ok((artifacts, attachments))
 }
 
-fn workflow_node_labels(app: &App, task_id: &str, run_id: &str) -> HashMap<String, String> {
-    app.current_run_workflow(task_id, run_id)
-        .or_else(|_| app.task_workflow(task_id))
-        .map(|workflow| {
-            workflow
-                .nodes
-                .iter()
-                .map(|node| (node.id().to_string(), node_label(node)))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn node_label(node: &NodeDsl) -> String {
     match node {
         NodeDsl::Worker(node) => node.goal.clone().unwrap_or_else(|| node.id.clone()),
-        NodeDsl::AiDynamic(node) => node.id.clone(),
+        NodeDsl::AiDynamic(_) | NodeDsl::ParallelGroup(_) => node.id().to_string(),
     }
 }
 
@@ -8300,11 +8299,13 @@ pub fn skill_content_vm(content: &gold_band::skill::SkillContent) -> SkillConten
 
 pub fn skill_meta_vm(meta: &gold_band::config::SkillMeta) -> SkillMetaVm {
     SkillMetaVm {
+        asset_id: gold_band::skill::forge_skill_asset_id(camino::Utf8Path::new(&meta.directory_path)),
         name: meta.name.clone(),
         description: meta.description.clone(),
         source: skill_source_str(meta.source),
         directory_path: meta.directory_path.clone(),
         agent_source: meta.agent_source.clone(),
+        work_buddy_code_mode_readable: meta.work_buddy_code_mode_readable,
         load_warnings: meta.load_warnings.clone(),
         synced_agent_types: meta.synced_agent_types.clone(),
     }
@@ -11502,6 +11503,7 @@ mod tests {
         let outer_path = Utf8PathBuf::from("C:/GoldBand/worktrees/outer");
         let child_path = Utf8PathBuf::from("D:/repo/.gold-band/worktrees/child");
         let run_worktree = gold_band::runtime::RunWorktreeState {
+            graph_owner: None,
             path: outer_path.clone(),
             branch: "gb-conversation-outer".to_string(),
             fork_commit: "abc123".to_string(),

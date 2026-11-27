@@ -34,6 +34,19 @@ describe('desktopApi', () => {
     expect(invokeCommand).toHaveBeenCalledWith('resolve_right_workspace_file_target', { source });
     expect(invokeCommand).toHaveBeenCalledWith('reveal_right_workspace_file', { source });
   });
+  it('binds a pending draft save to the original forge task generation', async () => {
+    const spec = { specVersion: '0.1', intent: 'fixture', workflows: [], sourceSkills: [], openQuestions: [] };
+    await desktopApi.forgeSaveSpec('project-a', 'task-002', spec, 'old-forge-generation');
+    expect(invokeCommand).toHaveBeenCalledWith('forge_save_spec', {
+      projectId: 'project-a', taskId: 'task-002', spec, taskUuid: 'old-forge-generation',
+    });
+  });
+  it('requires the confirmed task generation at the delete IPC boundary', async () => {
+    await desktopApi.deleteConversationTask('project-a', 'task-001', 'uuid-a');
+    expect(invokeCommand).toHaveBeenCalledWith('delete_conversation_task', {
+      projectId: 'project-a', taskId: 'task-001', taskUuid: 'uuid-a',
+    });
+  });
   it('reads only the selected conversation summary with its canonical identity', async () => {
     await desktopApi.getConversationTaskSummary('project-a', 'task-001', 'uuid-a');
     expect(invokeCommand).toHaveBeenCalledWith('get_conversation_task_summary', {
@@ -246,6 +259,14 @@ describe('desktopApi', () => {
       runId: 'run-1',
       projectId: 'project-1',
     });
+  });
+
+  it('requests global generation history by default and forwards explicit scope and cursor', async () => {
+    await desktopApi.getGenerationHistoryPage({});
+    expect(invokeCommand).toHaveBeenLastCalledWith('get_generation_history_page', {});
+    const query = { projectId: 'atlas', origin: 'forge-trial' as const, query: 'release', cursor: 'older', limit: 20 };
+    await desktopApi.getGenerationHistoryPage(query);
+    expect(invokeCommand).toHaveBeenLastCalledWith('get_generation_history_page', query);
   });
 
   it('forwards conversation search to the desktop command contract', async () => {

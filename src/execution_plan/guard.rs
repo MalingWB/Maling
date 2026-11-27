@@ -46,6 +46,40 @@ pub fn evaluate_current_workflow(
             ));
             return issues;
         };
+        // A running group's frozen child workflows cannot adopt different
+        // membership, worker settings or retry edges halfway through the barrier.
+        if let Some(NodeDsl::ParallelGroup(group)) = previous_nodes.get(current_node_id).copied() {
+            let stages = group
+                .branches
+                .iter()
+                .flat_map(|branch| &branch.stages)
+                .collect::<BTreeSet<_>>();
+            let changed = node_signature(next_node)
+                != node_signature(previous_nodes[current_node_id])
+                || previous.control.max_attempts != next.control.max_attempts
+                || stages.iter().any(|id| {
+                    previous_nodes.get(*id).copied().map(node_signature)
+                        != next_nodes.get(*id).copied().map(node_signature)
+                })
+                || previous
+                    .edges
+                    .iter()
+                    .filter(|edge| stages.contains(&edge.from))
+                    .map(|edge| serde_json::to_value(edge).unwrap())
+                    .collect::<Vec<_>>()
+                    != next
+                        .edges
+                        .iter()
+                        .filter(|edge| stages.contains(&edge.from))
+                        .map(|edge| serde_json::to_value(edge).unwrap())
+                        .collect::<Vec<_>>();
+            if changed {
+                issues.push(ExecutionPlanError::new(
+                    error::CURRENT_NODE_IDENTITY_CHANGED,
+                    serde_json::json!({"nodeId":current_node_id,"field":"parallelBranches"}),
+                ));
+            }
+        }
         let next_type = next_node.node_type();
         if guard
             .durable_node_type
@@ -140,6 +174,7 @@ pub fn affected_node_ids(previous: &WorkflowDsl, next: &WorkflowDsl) -> Vec<Stri
 
 pub fn agent_identity(node: &NodeDsl) -> String {
     match node {
+        NodeDsl::ParallelGroup(_) => String::new(),
         NodeDsl::Worker(worker) => worker.provider.clone().unwrap_or_default(),
         NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
             crate::dsl::AiDynamicAgentStrategy::Fixed { provider, .. } => provider.clone(),

@@ -179,6 +179,8 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
       layout = next;
     },
     async getConversationWorkspaces() { return [{ projectId: 'default', workspacePath: '/default', name: 'MALING' }]; },
+    // The curated demo contains ordinary conversations, not generated workflows.
+    async getGenerationHistoryPage() { return { tasks: [], nextCursor: null, errors: [] }; },
     async listSkills() { return { global: [skill().meta], project: [] }; },
     async listProjectSkills() { return []; },
     async readSkill(name) {
@@ -212,7 +214,7 @@ export function createDemoApi(storage?: Pick<Storage, 'getItem' | 'setItem'>): R
   function skill(): SkillContentVm {
     const en = state.getPreferences().language === 'en';
     return {
-      meta: { name: 'project-review', description: en ? 'Review project structure and document the result.' : '检查项目结构，整理问题并记录审阅结果。', source: 'global', directoryPath: '/demo/skills/project-review', agentSource: '.maling', loadWarnings: [], syncedAgentTypes: demoAgentRegistry.agents.map((agent) => agent.agentType) },
+      meta: { assetId: 'demo-project-review', name: 'project-review', description: en ? 'Review project structure and document the result.' : '检查项目结构，整理问题并记录审阅结果。', source: 'global', directoryPath: '/demo/skills/project-review', agentSource: '.maling', loadWarnings: [], syncedAgentTypes: demoAgentRegistry.agents.map((agent) => agent.agentType) },
       body: en ? '# Project review\n\n1. Read the project documentation.\n2. Inspect the relevant implementation.\n3. Record findings with file references.\n4. Verify the result.\n' : '# 项目审阅\n\n1. 阅读项目说明与设计文档。\n2. 检查相关实现。\n3. 记录问题及对应的文件位置。\n4. 验证结果。\n',
     };
   }

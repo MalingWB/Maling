@@ -16,11 +16,13 @@ import type {
   ConversationAutoConfigVm,
   ConversationCreateResultVm,
   ConversationCreateInput,
-  ForgeCompileResultVm,
+  InstalledPluginVm,
+  ForgeCompileOutcomeVm,
   ForgeSessionCreatedVm,
-  ForgeSkillRefVm,
-  ForgeSessionEntryVm,
+  ForgeOnFailureVm,
   ForgeSourceDigestVm,
+  ForgeSourceItemVm,
+  ForgeSourceSummaryVm,
   ForgeSpecVm,
   ConversationRunModeVm,
   ConversationRunVm,
@@ -202,6 +204,23 @@ export type AcpSessionUpdatedEventVm = AcpSessionUpdatedEventBaseVm & (
       timelineRevision?: number | null;
     }
 );
+
+/** 铸造会话一轮结束、Spec 增量提取完成后的通知（预览 Tab 与自动修正回路的驱动信号）。 */
+export interface ForgeTurnSettledEventVm {
+  promptId: string | null;
+  projectId: string;
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  /** 这一轮的终局。 */
+  outcome: 'completed' | 'cancelled' | 'failed';
+  /** 本轮回复是否带来了可解析的 Spec 增量（存档已在本事件之前更新）。 */
+  specUpdated: boolean;
+  /** 回复里有增量但无法应用（如 JSON 不合法）。普通对话轮没有增量，不带错误。 */
+  error?: { code: string; detail: string } | null;
+}
 
 export interface ConversationRunStateUpdatedEventVm {
   eventKind: 'node-started' | 'run-paused' | 'run-completed' | 'run-recovered';
@@ -506,7 +525,7 @@ export interface RuntimeApi {
   replaceAutoTemplates(templates: AutoTemplate[]): Promise<AutoTemplateStore>;
   getRunDetail(taskId: string, runId: string): Promise<RunDetailVm>;
   getRoundDetail(taskId: string, runId: string, roundId: string, selection?: RoundSelection): Promise<RoundDetailVm>;
-  startRun(taskId: string): Promise<RunSummaryVm>;
+  startRun(projectId: string | undefined, taskId: string): Promise<RunSummaryVm>;
   continueRun(projectId: string | null | undefined, taskId: string, runId: string): Promise<RunSummaryVm>;
   continueConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null, input?: import('../types').ConversationPromptInput, promptId?: string | null, attachmentPaths?: string[]): Promise<ConversationPromptSubmitVm>;
   recoverConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number): Promise<ConversationPromptSubmitVm>;
@@ -529,6 +548,7 @@ export interface RuntimeApi {
   renewAcpSessionLease?(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<number>;
   subscribeAcpSessionUpdates?(listener: (event: AcpSessionUpdatedEventVm) => void): Promise<() => void>;
   subscribeConversationRunStateUpdates?(listener: (event: ConversationRunStateUpdatedEventVm) => void): Promise<() => void>;
+  subscribeForgeTurnSettled?(listener: (event: ForgeTurnSettledEventVm) => void): Promise<() => void>;
   subscribeConversationTerminalResultUpdates?(listener: (event: ConversationTerminalResultUpdatedEventVm) => void): Promise<() => void>;
   subscribeScheduledTaskUpdates?(listener: (event: ScheduledTaskUpdatedEventVm) => void): Promise<() => void>;
   subscribeScheduledOccurrenceUpdates?(listener: (event: ScheduledOccurrenceUpdatedEventVm) => void): Promise<() => void>;
@@ -650,6 +670,7 @@ export interface RuntimeApi {
   trustRemoteImageHosts(hosts: string[]): Promise<RemoteImageTrustVm>;
   revokeRemoteImageHost(host: string): Promise<RemoteImageTrustVm>;
   getConversationSidebarBootstrap(): Promise<ConversationSidebarBootstrapVm>;
+  getGenerationHistoryPage(input: import('../types').GenerationHistoryQuery): Promise<ConversationRecentTaskPageVm>;
   getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number): Promise<ConversationTaskPageVm>;
   getConversationTaskSummary(projectId: string, taskId: string, taskUuid?: string | null): Promise<ConversationTaskRowVm>;
   getConversationPinnedTaskPage(cursor?: string | null, limit?: number): Promise<ConversationPinnedTaskPageVm>;
@@ -670,18 +691,23 @@ export interface RuntimeApi {
   getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null): Promise<ConversationRunVm>;
   validateConversationCreate(input: ConversationCreateInput): Promise<ConversationValidationResultVm>;
   createConversationRun(input: ConversationCreateInput): Promise<ConversationCreateResultVm>;
-  forgeSourceDigest(projectId: string, taskId: string, after?: string | null): Promise<ForgeSourceDigestVm>;
-  forgeSkillsDigest(projectId: string, skills: ForgeSkillRefVm[]): Promise<ForgeSourceDigestVm>;
+  forgeSourceDigest(projectId: string, taskId: string, session?: import('../types').ForgeSourceSessionVm): Promise<ForgeSourceDigestVm>;
+  forgeItemsDigest(projectId: string, items: ForgeSourceItemVm[]): Promise<ForgeSourceSummaryVm[]>;
   forgeGetSpec(projectId: string, taskId: string): Promise<ForgeSpecVm | null>;
-  forgeSaveSpec(projectId: string, taskId: string, spec: ForgeSpecVm): Promise<void>;
-  forgeCompile(spec: ForgeSpecVm, taskId?: string | null): Promise<ForgeCompileResultVm>;
+  forgeSaveSpec(projectId: string, taskId: string, spec: ForgeSpecVm, taskUuid: string): Promise<ForgeSpecVm>;
+  /** repairAttempt：若未通过校验，将要发出的修正轮次（只影响修正提示词里的轮次编号）。 */
+  forgeCompile(projectId: string, spec: ForgeSpecVm, taskId?: string | null, repairAttempt?: number, copy?: { workflowId: string; name: string }): Promise<ForgeCompileOutcomeVm>;
+  importPluginAsset(input: { projectId: string | null; assetId: string }): Promise<void>;
+  forgetWorkBuddySource(projectId: string | null, pluginId: string): Promise<boolean>;
+  selectWorkBuddySource(projectId: string | null): Promise<InstalledPluginVm | null>;
+  listInstalledPlugins(projectId?: string | null): Promise<InstalledPluginVm[]>;
   forgeFromWorkflow(templateId: string): Promise<ForgeSpecVm>;
-  forgeStartTrial(projectId: string, templateId: string, intent: string): Promise<ForgeSessionCreatedVm>;
-  forgeListSessions(projectId: string): Promise<ForgeSessionEntryVm[]>;
-  forgeCleanupSessions(projectId: string, taskIds: string[]): Promise<string[]>;
+  forgeStartTrial(projectId: string, templateId: string, revision: string, intent: string): Promise<ForgeSessionCreatedVm>;
+  /** 在预览里直接改某个阶段的失败策略；返回合并后的 Spec，目标无效时以 `forge/unknown-failure-target` 拒绝。 */
+  forgeSetStageFailure(projectId: string, taskId: string, stageId: string, onFailure: ForgeOnFailureVm): Promise<ForgeSpecVm>;
   rerunConversationTask(projectId: string, taskId: string): Promise<ConversationRunVm>;
-  updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null): Promise<ConversationTaskRowVm>;
-  deleteConversationTask(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;
+  updateTaskMetadata(projectId: string, taskId: string, taskUuid: string, title: string, description?: string | null): Promise<ConversationTaskRowVm>;
+  deleteConversationTask(projectId: string, taskId: string, taskUuid: string): Promise<ConversationSidebarBootstrapVm>;
   pinConversation(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;
   setConversationResident(projectId: string, taskId: string, resident: boolean): Promise<ConversationTaskRowVm>;
   unpinConversation(projectId: string, taskId: string): Promise<ConversationSidebarBootstrapVm>;

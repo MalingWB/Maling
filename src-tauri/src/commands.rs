@@ -1757,7 +1757,10 @@ fn prompt_turn_lifecycle_callback(
         + Sync,
 > {
     Arc::new(move |context, event| {
-        let terminal = matches!(&event, AcpPromptLifecycleEvent::Finished { .. });
+        let finished = match &event {
+            AcpPromptLifecycleEvent::Finished { prompt_id, outcome } => Some((prompt_id.clone(), *outcome)),
+            AcpPromptLifecycleEvent::Accepted { .. } => None,
+        };
         let locator = AttemptLocator::new(
             context.task_id,
             context.run_id,
@@ -1767,37 +1770,67 @@ fn prompt_turn_lifecycle_callback(
             context.outer_node_id,
             context.outer_attempt_id,
         );
+        // 排队消息的续发不在生命周期处理内部直接调度，而是先记下来：铸造会话要先提取
+        // 本轮的 Spec 增量，排队的下一条消息才能带上更新后的基线。
+        let mut deferred_drain = None;
         let result = process_prompt_turn_lifecycle(
             &app,
             locator.clone(),
             event,
             |locator, outcome, completion| {
-                schedule_direct_prompt_queue_drain(
-                    app_handle.clone(),
-                    project_id.clone(),
-                    direct_prompt_queue_drain_app(&app),
-                    locator,
-                    outcome,
-                    completion,
-                );
+                deferred_drain = Some((locator, outcome, completion));
             },
         );
-        if result.is_ok() && terminal {
-            // 工作流铸造回路(方案 §3.1 增量生长):Forge 会话每轮完成后
-            // 提取助手消息中的 Spec 增量并合并落存档;预览 Tab 由随后的
-            // 会话更新事件驱动刷新。普通会话/无围栏轮零副作用。
-            if let Err(error) = app.forge_extract_turn_delta(
+        if result.is_ok() && let Some((prompt_id, outcome)) = finished {
+            // 工作流铸造回路(方案 §3.1 增量生长):Forge 会话每轮完成后提取助手消息中的
+            // Spec 增量并合并落存档,然后发出轮次收口通知——预览 Tab 与自动修正回路以它
+            // 为驱动信号(存档在通知之前已更新)。普通会话/无围栏轮零副作用。
+            match app.forge_settle_turn(
                 &locator.task_id,
                 &locator.run_id,
                 &locator.round_id,
                 &locator.node_id,
                 &locator.attempt_id,
+                prompt_id.as_deref(),
+                outcome,
             ) {
-                warn!(
-                    %error,
-                    task_id = %locator.task_id,
-                    "forge spec delta extraction failed"
-                );
+                // 轮次已经结束：无论增量是否应用都收口。增量无法解析时带着原因通知，
+                // 自动修正回路据此停下并说明情况，而不是一直等一个不会到来的信号。
+                Ok(Some(settlement)) => {
+                    if let Some(error) = &settlement.error {
+                        warn!(
+                            code = error.code(),
+                            %error,
+                            task_id = %locator.task_id,
+                            "forge spec delta could not be applied"
+                        );
+                    }
+                    emit_forge_turn_settled(
+                        &app_handle,
+                        &app,
+                        project_id.clone(),
+                        &locator,
+                        prompt_id,
+                        acp_turn_outcome_label(outcome),
+                        &settlement,
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    warn!(
+                        %error,
+                        task_id = %locator.task_id,
+                        "forge turn settlement failed"
+                    );
+                    emit_forge_turn_settled(
+                        &app_handle, &app, project_id.clone(), &locator, prompt_id,
+                        acp_turn_outcome_label(outcome),
+                        &gold_band::app::forge_service::ForgeTurnSettlement {
+                            spec_updated: false,
+                            error: Some(gold_band::forge::ForgeError::TurnUnconfirmed),
+                        },
+                    );
+                }
             }
             emit_acp_session_update(
                 &app_handle,
@@ -1813,8 +1846,50 @@ fn prompt_turn_lifecycle_callback(
                 None,
             );
         }
+        if let Some((locator, outcome, completion)) = deferred_drain {
+            schedule_direct_prompt_queue_drain(
+                app_handle.clone(),
+                project_id.clone(),
+                direct_prompt_queue_drain_app(&app),
+                locator,
+                outcome,
+                completion,
+            );
+        }
         result
     })
+}
+
+/// 铸造会话一轮收口通知（载荷定义见 `commands_forge::ForgeTurnSettledEventVm`）。
+fn emit_forge_turn_settled(
+    app_handle: &AppHandle,
+    app: &App,
+    project_id: Option<String>,
+    locator: &AttemptLocator,
+    prompt_id: Option<String>,
+    outcome: &'static str,
+    settlement: &gold_band::app::forge_service::ForgeTurnSettlement,
+) {
+    let _ = app_handle.emit(
+        crate::commands_forge::FORGE_TURN_SETTLED_EVENT,
+        crate::commands_forge::ForgeTurnSettledEventVm {
+            project_id: project_id.unwrap_or_else(|| app.paths.project_id.clone()),
+            prompt_id,
+            task_id: locator.task_id.clone(),
+            run_id: locator.run_id.clone(),
+            round_id: locator.round_id.clone(),
+            node_id: locator.node_id.clone(),
+            attempt_id: locator.attempt_id.clone(),
+            outcome,
+            spec_updated: settlement.spec_updated,
+            error: settlement.error.as_ref().map(|error| {
+                crate::commands_forge::ForgeTurnSettledErrorVm {
+                    code: error.code(),
+                    detail: error.to_string(),
+                }
+            }),
+        },
+    );
 }
 
 fn touch_task_activity_at_best_effort(
@@ -3789,17 +3864,25 @@ pub fn get_round_detail(
 }
 
 #[tauri::command]
-pub fn start_run(
+pub async fn start_run(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
+    project_id: Option<String>,
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let _ = state.record_heartbeat_activity();
-    let base_app = state.app().map_err(command_error)?;
-    let app = configure_conversation_runtime_callbacks(base_app, app_handle, None);
-    app.run_start_background(&task_id, None)
-        .map(run_summary_vm)
-        .map_err(command_error)
+    let app = resolve_runtime_command_app_with_emitters(
+        &app_handle,
+        state.inner(),
+        project_id.as_deref(),
+    )
+    .await?;
+    spawn_blocking_command(move || {
+        app.run_start_background(&task_id, None)
+            .map(run_summary_vm)
+            .map_err(command_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -9317,9 +9400,13 @@ async fn execute_admitted_acp_prompt_with_configured_app(
         Ok(outcome)
     })
     .await;
-    let outcome = match execution {
-        Ok(Ok(value)) => value,
-        Ok(Err(error)) => {
+    let outcome = finish_admitted_prompt_execution(
+        execution,
+        &app_for_emit,
+        &locator,
+        &turn_id,
+        task_uuid_for_emit.clone(),
+        |error| {
             let _ = clear_auto_dispatch_reply_batch(&locator.attempt_dir(&app_for_emit));
             let settled = settle_failed_prompt_submission(
                 &app_for_emit,
@@ -9328,7 +9415,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 Some(&claimed_operation_id),
                 claimed_revision,
                 task_uuid_for_emit.clone(),
-                &error,
+                error,
             );
             if settled {
                 emit_acp_turn_finished(
@@ -9343,7 +9430,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             emit_acp_session_update(
                 &app_handle,
                 &app_for_emit,
-                project_id_for_emit,
+                project_id_for_emit.clone(),
                 &task_id_for_emit,
                 &run_id_for_emit,
                 &round_id_for_emit,
@@ -9353,60 +9440,8 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 outer_attempt_id_for_emit.clone(),
                 None,
             );
-            let _ = app_for_emit.notify_prompt_turn_finished(
-                acp_live_event_context(
-                    &locator.task_id,
-                    acp_turn_task_uuid(&app_for_emit, &locator),
-                    &locator.run_id,
-                    &locator.round_id,
-                    &locator.node_id,
-                    &locator.attempt_id,
-                    locator.outer_node_id.clone(),
-                    locator.outer_attempt_id.clone(),
-                ),
-                Some(turn_id.clone()),
-                AcpTurnOutcome::Failed,
-            );
-            return Err(error);
-        }
-        Err(_) => {
-            let error = CommandErrorVm::new("app.task-join-failed", serde_json::json!({}));
-            let _ = clear_auto_dispatch_reply_batch(&locator.attempt_dir(&app_for_emit));
-            let settled = settle_failed_prompt_submission(
-                &app_for_emit,
-                &locator,
-                &turn_id,
-                Some(&claimed_operation_id),
-                claimed_revision,
-                task_uuid_for_emit.clone(),
-                &error,
-            );
-            if settled {
-                emit_acp_turn_finished(
-                    &app_for_emit,
-                    &locator,
-                    &turn_id,
-                    &agent_label,
-                    AcpTurnOutcome::Failed,
-                    AcpTurnBatchProgress::terminal(1),
-                );
-            }
-            emit_acp_session_update(
-                &app_handle,
-                &app_for_emit,
-                project_id_for_emit,
-                &task_id_for_emit,
-                &run_id_for_emit,
-                &round_id_for_emit,
-                &node_id_for_emit,
-                &attempt_id_for_emit,
-                outer_node_id_for_emit.clone(),
-                outer_attempt_id_for_emit.clone(),
-                None,
-            );
-            return Err(error);
-        }
-    };
+        },
+    )?;
     emit_acp_session_update(
         &app_handle,
         &app_for_emit,
@@ -9461,6 +9496,41 @@ async fn execute_admitted_acp_prompt_with_configured_app(
     );
 
     Ok(())
+}
+
+/// A failed worker join is a terminal failure of the admitted turn, not a second lifecycle.
+fn finish_admitted_prompt_execution<E>(
+    execution: Result<CommandResult<AcpTurnOutcome>, E>,
+    app: &App,
+    locator: &AttemptLocator,
+    prompt_id: &str,
+    task_uuid: Option<String>,
+    project_failure: impl FnOnce(&CommandErrorVm),
+) -> CommandResult<AcpTurnOutcome> {
+    let result = execution.unwrap_or_else(|_| {
+        Err(CommandErrorVm::new(
+            "app.task-join-failed",
+            serde_json::json!({}),
+        ))
+    });
+    if let Err(error) = &result {
+        project_failure(error);
+        let _ = app.notify_prompt_turn_finished(
+            acp_live_event_context(
+                &locator.task_id,
+                task_uuid,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                locator.outer_node_id.clone(),
+                locator.outer_attempt_id.clone(),
+            ),
+            Some(prompt_id.to_owned()),
+            AcpTurnOutcome::Failed,
+        );
+    }
+    result
 }
 
 #[tauri::command]
@@ -10788,6 +10858,7 @@ pub fn start_update_install(app: AppHandle) -> CommandResult<UpdateStatusVm> {
 fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     match node {
         NodeDsl::Worker(worker) => worker.provider.iter().cloned().collect(),
+        NodeDsl::ParallelGroup(_) => vec![], // Group workers supply their own bindings.
         NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
             AiDynamicAgentStrategy::Fixed { provider, .. } => vec![provider.clone()],
             AiDynamicAgentStrategy::Dynamic {
@@ -10808,6 +10879,9 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
 }
 
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
+    if error.is::<gold_band::app::ConversationTaskNotFound>() {
+        return CommandErrorVm::new("conversation.task-not-found", serde_json::json!({}));
+    }
     if let Some(error) = error.downcast_ref::<gold_band::onboarding::model::SetupError>() {
         return CommandErrorVm::new(error.code, error.params.clone());
     }
@@ -10858,6 +10932,9 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<WorkflowValidationError>() {
         return workflow_validation_command_error(error);
     }
+    if error.is::<gold_band::app::forge_service::ForgeMaterialUnavailable>() {
+        return CommandErrorVm::new("plugin.asset-unavailable", serde_json::json!({}));
+    }
     if let Some(error) = error.downcast_ref::<SkillCommandError>() {
         return CommandErrorVm::new(error.code(), error.params());
     }
@@ -10866,6 +10943,14 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     }
     if let Some(error) = error.downcast_ref::<gold_band::app::WorkflowTemplateCommandError>() {
         return CommandErrorVm::new(error.code(), error.params());
+    }
+    // Forge 的结构化错误（`forge/…` 码与字段明细）：预览里的直接修改被拒绝时原样交给前端本地化。
+    if let Some(error) = error.downcast_ref::<gold_band::app::forge_service::ForgeTaskAccessError>() {
+        return CommandErrorVm::new(error.to_string(), serde_json::json!({}));
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::forge::ForgeError>() {
+        let vm = gold_band::app::forge_service::ForgeErrorVm::from(error);
+        return CommandErrorVm::new(vm.code, vm.context);
     }
     if let Some(error) =
         error.downcast_ref::<gold_band::workflow_model_binding::WorkflowModelBindingError>()
@@ -13081,6 +13166,103 @@ mod tests {
     };
     use std::collections::BTreeMap;
 
+    #[tokio::test]
+    async fn admitted_provider_and_join_failures_settle_original_prompt_once_without_changing_forge_draft()
+     {
+        use gold_band::app::forge_service::CreateForgeTaskInput;
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_owned()).unwrap();
+        let cfg = gold_band::storage::StoragePathConfig {
+            app_key: "forge-repair-test",
+            config_dir_name: ".gold-band",
+            home_env_var: "GOLD_BAND_FORGE_REPAIR_TEST_HOME",
+        };
+        let app = App::with_config_and_path_config(root.clone(), RuntimeConfig::default(), cfg);
+        assert!(app.paths.user_gold_band_root.starts_with(&root));
+        let id = app
+            .create_forge_task(CreateForgeTaskInput {
+                title: None,
+                requirement_content: "fixture".into(),
+                agent_type: "claude-acp".into(),
+                initial_spec: None,
+                workflow: None,
+            })
+            .unwrap()
+            .task
+            .id;
+        let locator = AttemptLocator::new(
+            id.clone(),
+            "run-1".into(),
+            "round-1".into(),
+            "node-1".into(),
+            "attempt-1".into(),
+            None,
+            None,
+        );
+        let dir = locator.attempt_dir(&app);
+        std::fs::create_dir_all(&dir).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observed = seen.clone();
+        let archive = app.clone_for_background();
+        let app = app.with_prompt_turn_lifecycle(Arc::new(move |context, event| {
+            let AcpPromptLifecycleEvent::Finished { prompt_id, outcome } = event else {
+                panic!("not a terminal");
+            };
+            let terminal = archive
+                .forge_settle_turn(
+                    &context.task_id,
+                    &context.run_id,
+                    &context.round_id,
+                    &context.node_id,
+                    &context.attempt_id,
+                    prompt_id.as_deref(),
+                    outcome,
+                )?
+                .unwrap();
+            assert!(!terminal.spec_updated);
+            observed.lock().unwrap().push((prompt_id, outcome));
+            Ok(())
+        }));
+        for (prompt_id, expected) in [
+            ("provider-error", "acp.failed"),
+            ("join-error", "app.task-join-failed"),
+        ] {
+            let user = serde_json::json!({"item":{"id":"u","seq":1,"timestamp":"1","kind":"userTextDelta","raw":{"source":"goldBandPrompt","promptId":prompt_id}}});
+            let partial = serde_json::json!({"item":{"id":"a","seq":2,"timestamp":"2","kind":"textDelta","content":"```json\n{\"intent\":\"must not apply\"}\n```"}});
+            std::fs::write(
+                dir.join("acp.timeline.jsonl"),
+                format!("{user}\n{partial}\n"),
+            )
+            .unwrap();
+            let execution = if prompt_id == "join-error" {
+                let worker = tokio::spawn(std::future::pending::<CommandResult<AcpTurnOutcome>>());
+                worker.abort();
+                worker.await
+            } else {
+                Ok(Err(CommandErrorVm::new(
+                    "acp.failed",
+                    serde_json::json!({}),
+                )))
+            };
+            let mut projected = 0;
+            let error =
+                finish_admitted_prompt_execution(execution, &app, &locator, prompt_id, None, |_| {
+                    projected += 1
+                })
+                .unwrap_err();
+            assert_eq!(error.code, expected);
+            assert_eq!(projected, 1);
+            assert!(app.forge_spec(&id).unwrap().is_none());
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                (Some("provider-error".into()), AcpTurnOutcome::Failed),
+                (Some("join-error".into()), AcpTurnOutcome::Failed)
+            ]
+        );
+    }
+
     #[test]
     fn terminal_result_event_carries_task_activity_for_sidebar_ordering() {
         let event = ConversationTerminalResultUpdatedEventVm {
@@ -14869,6 +15051,7 @@ mod tests {
         write_json(
             &indexed_task.join("task.json"),
             &TaskState {
+                forge_naming: None,
                 version: gold_band::domain::VERSION.to_string(),
                 id: "task-001".to_string(),
                 title: Some("Indexed title".to_string()),
@@ -14907,6 +15090,7 @@ mod tests {
         write_json(
             &missing_row_task.join("task.json"),
             &TaskState {
+                forge_naming: None,
                 version: gold_band::domain::VERSION.to_string(),
                 id: "task-002".to_string(),
                 title: Some("Missing row repair".to_string()),

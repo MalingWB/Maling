@@ -1183,6 +1183,35 @@
     },
     "remote": {
       "source-not-configured": "작업 소스가 구성되어 있지 않습니다. 먼저 연결해 주세요."
+    },
+    "forge": {
+      "missing-goal": "\"{{stage}}\" 단계에 아직 목표가 없습니다",
+      "missing-goal-element": "\"{{stage}}\" 단계의 목표에 {{element}}이(가) 없습니다",
+      "missing-success-condition": "\"{{stage}}\" 단계의 JSON 산출물에 성공 조건이 없습니다",
+      "empty-stages": "워크플로 \"{{workflow}}\"에 단계가 없습니다",
+      "too-many-stages": "워크플로 \"{{workflow}}\"의 단계가 {{count}}개로 상한 {{limit}}개를 넘었습니다",
+      "missing-name": "워크플로에 이름이 없습니다",
+      "compile-failed": "워크플로 구조가 검사를 통과하지 못했습니다: {{detail}}",
+      "unresolved-questions": "대화에서 확인이 필요한 질문이 있습니다",
+      "invalid-spec": "생성 초안 형식이 올바르지 않습니다: {{detail}}",
+      "unknown-failure-target": "‘{{stage}}’의 실패 대상 ‘{{target}}’이 없습니다",
+      "role-id-conflict": "{{stages}}에서 ‘{{role}}’이 서로 다른 역할을 참조합니다",
+      "role-definition-conflict": "{{stages}}에서 ‘{{role}}’의 정의가 다릅니다",
+      "unavailable-role": "{{stage}}에서 참조하는 ‘{{role}}’ 역할을 더 이상 사용할 수 없습니다",
+      "readonly-role": "‘{{stage}}’의 ‘{{role}}’은 읽기 전용입니다",
+      "target-unavailable": "기존 워크플로가 삭제 또는 교체되었거나 여기에서 더 이상 수정할 수 없습니다. 초안을 새 워크플로로 저장할 수 있습니다.",
+      "source-session-unavailable": "선택한 대화의 메시지를 읽을 수 없습니다. 원본 대화를 다시 열고 시도하세요.",
+      "stale-message": "선택한 메시지가 변경되었습니다. 원본 대화로 돌아가 시작 메시지를 다시 선택하세요.",
+      "revision-conflict": "초안이 변경되었습니다. 최신 내용을 확인한 후 저장하세요.",
+      "duplicate-workflow-name": "‘{{name}}’은 사용 중입니다. 다른 이름을 선택하세요."
+    },
+    "workflow-template": {
+      "duplicate-name": "‘{{name}}’은 사용 중입니다. 다른 이름을 선택하세요."
+    },
+    "plugin": {
+      "asset-unavailable": "소재가 변경되었거나 읽을 수 없습니다. 새로 고친 후 다시 시도하세요.",
+      "bundle-unreadable": "Skill 전체를 가져올 수 없습니다. 파일 인코딩, 수 및 크기를 확인하세요.",
+      "role-exists": "‘{{name}}’ 역할이 이미 있어 덮어쓰지 않았습니다."
     }
   },
   "status": {
@@ -1366,6 +1395,7 @@
   },
   "contextManagement": {
     "title": "컨텍스트 관리",
+    "forgeRoleHint": "선택한 역할은 워크플로 생성을 위한 참고 자료입니다. 역할을 선택해도 실행 권한은 부여되지 않습니다.",
     "profileManagement": "역할 관리",
     "profileHint": "역할은 Markdown 파일로 저장되며, 워크플로 노드는 전역 고유 ID로 참조합니다.",
     "addProfile": "역할 추가",
@@ -1522,11 +1552,20 @@
         "title": "원격에서 SKILL 동기화",
         "workspace": "워크스페이스"
       },
-      "forgeAction": "skill에서 워크플로 생성 ({{count}})",
+      "forgeLimit": "자료는 최대 {{count}}개까지 선택할 수 있습니다.",
+      "forgeModeUnavailable": "프로젝트 실행 설정을 읽을 수 없습니다. 다시 시도하세요.",
+      "forgeProjectUnavailable": "사용할 수 있는 프로젝트가 없습니다. 프로젝트를 추가하거나 다시 연 후 시도하세요.",
+      "forgeAction": "선택한 소재에서 워크플로 생성 ({{count}})",
       "forgeSelect": "{{name}} 선택",
       "forgeAnchorTitle": "연결 프로젝트 선택",
-      "forgeAnchorInfo": "단조 세션과 시험 실행은 선택한 프로젝트에 연결됩니다. 생성된 워크플로 템플릿은 모든 프로젝트에서 사용할 수 있습니다.",
-      "forgeAnchorConfirm": "단조 시작"
+      "forgeAnchorInfo": "생성 세션과 시험 실행은 선택한 프로젝트에 연결됩니다. 생성된 워크플로 템플릿은 모든 프로젝트에서 사용할 수 있습니다.",
+      "forgeAnchorConfirm": "생성 시작",
+      "plugins": {
+        "tab": "Plugin",
+        "loading": "플러그인 출처를 불러오는 중…",
+        "empty": "이 범위에 플러그인이나 수동 출처가 없습니다.",
+        "noAssets": "소재로 쓸 수 있는 skill, command, agent가 없습니다"
+      }
     },
     "importProfile": "역할 가져오기",
     "importSettingsDescription": "폴더에서 일괄 가져오거나 역할 Markdown 파일을 직접 선택하여 가져옵니다. 이름과 요약이 없으면 자동으로 채웁니다.",
@@ -1684,12 +1723,27 @@
     "noRunsForFilter": "이 필터에 맞는 Run이 없습니다",
     "openRoundA11y": "{{runId}}의 {{roundId}} 보기",
     "sourceTag": {
-      "forged": "단조",
+      "forged": "생성",
       "imported": "가져오기",
       "manual": "수동"
     }
   },
   "workflowEditor": {
+    "parallel": {
+      "insert": "병렬 분기 추가",
+      "fork": "병렬 분기점",
+      "join": "합류",
+      "cap": "동시에 실행할 분기 수",
+      "addStep": "단계 추가",
+      "addBranch": "분기 추가",
+      "afterJoin": "합류 후 단계 추가",
+      "up": "{{id}} 위로 이동",
+      "down": "{{id}} 아래로 이동",
+      "remove": "{{id}} 삭제",
+      "invalid": "{{id}}을(를) 확인하세요. 동시 실행 수는 1~5이며, 고유한 식별자가 있는 비어 있지 않은 분기가 두 개 이상 필요합니다. 그룹당 일반 단계는 최대 64개이며, 단계를 공유하거나 수동 검토를 사용할 수 없습니다.",
+      "invalidEntry": "시작점을 분기 내부 단계에 직접 연결할 수 없습니다.",
+      "invalidEdge": "{{from}}에서 {{to}}(으)로 연결할 수 없습니다. 재시도는 같은 분기에서 제한된 횟수만 가능하며 분기점과 합류점에서는 세션을 이어갈 수 없습니다."
+    },
     "title": "워크플로 편집기",
     "subtitle": "캔버스에서 노드와 엣지를 만들고 각 노드에 Agent를 바인딩하세요.",
     "canvas": "캔버스",
@@ -1716,7 +1770,8 @@
     "profileCatalogLoadFailed": "역할 목록을 불러오지 못했습니다",
     "profileCatalogRetry": "다시 불러오기",
     "selectHint": "구성하려면 캔버스에서 노드 또는 엣지를 선택하세요.",
-    "terminalSelectionHint": "종점 노드는 구성할 필요가 없으며, 캔버스 위의 삭제로 제거할 수 있습니다.",
+    "startSelectionHint": "시작을 처음 실행할 노드에 연결하세요.",
+    "terminalSelectionHint": "이 제어 노드는 세션을 시작하지 않습니다.",
     "currentSelection": "현재 선택",
     "currentSelectionHelp": "노드 및 엣지 구성이 여기에 먼저 표시됩니다.",
     "workflowSettings": "워크플로 설정",
@@ -1886,6 +1941,7 @@
     "validationTerminalEdgeSource": "종료 노드 {{node}}는 엣지 소스가 될 수 없습니다.",
     "validationContinueTerminalTarget": "엣지 {{index}} continue session은 종료 노드를 대상으로 할 수 없습니다.",
     "nodeLabels": {
+      "start": "시작",
       "plan": "계획",
       "dev": "개발",
       "review": "검토",
@@ -3150,8 +3206,10 @@
       "removeRemoteBinding": "작업 바인딩 해제",
       "remoteAttachmentHint": "원격 작업 첨부 파일이며 전송 시 자동으로 다운로드되어 첨부됩니다",
       "remoteBindingTag": "{{source}} · {{title}}",
-      "forgeBindingTag": "단조 · {{title}}",
-      "removeForgeBinding": "단조 바인딩 해제"
+      "forgeBindingTag": "생성 · {{title}}",
+      "removeForgeBinding": "생성 바인딩 해제",
+      "forgeProjectMismatch": "생성 소스가 다른 프로젝트에 속합니다. 해당 프로젝트로 전환하거나 입력창의 생성 표시를 제거한 뒤 전송하세요",
+      "forgeRequiresDirect": "생성 세션은 Direct 모드를 사용합니다. 전환한 뒤 전송하세요"
     },
     "branchPicker": {
       "label": "브랜치",
@@ -3543,17 +3601,17 @@
   },
   "forge": {
     "entry": {
-      "action": "워크플로로 단조",
-      "fromHere": "여기서부터 단조"
+      "action": "워크플로 생성",
+      "fromHere": "여기서부터 워크플로 생성"
     },
     "prefill": {
-      "intro": "아래 소스 대화에서 워크플로를 단조합니다. 요구사항을 보강한 뒤 전송하세요:"
+      "intro": "아래 소스 대화에서 워크플로를 생성합니다. 요구사항을 보강한 뒤 전송하세요:"
     },
     "preview": {
-      "title": "단조 미리보기",
-      "open": "단조 미리보기 열기",
-      "loading": "단조 초안을 불러오는 중…",
-      "empty": "아직 단조 초안이 없습니다. 대화가 수렴하면 단계와 계약이 여기에 표시됩니다.",
+      "title": "워크플로 미리보기",
+      "open": "워크플로 미리보기 열기",
+      "loading": "생성 초안을 불러오는 중…",
+      "empty": "대화에서 흐름이 정리되면 각 단계가 여기에 표시됩니다.",
       "openQuestions": "미해결 항목",
       "outputKind": {
         "json": "JSON 산출물",
@@ -3565,9 +3623,15 @@
         "retry": "자동 재시도",
         "manual-check": "수동 검토",
         "new-round": "새 라운드 시작",
-        "end": "종료"
+        "end": "종료",
+        "jump": "단계로 이동",
+        "new-round-from": "지정 단계부터 재시작",
+        "jump-detail": "‘{{stage}}’로 이동",
+        "jump-continue-detail": "‘{{stage}}’로 돌아가 세션 계속",
+        "new-round-from-detail": "‘{{stage}}’부터 새 라운드 시작"
       },
       "role": {
+        "unassigned": "역할 없음",
         "dev": "개발",
         "test": "테스트",
         "review": "리뷰",
@@ -3575,11 +3639,19 @@
         "accept": "인수"
       },
       "outputKindLabel": "산출물",
+      "startGroupTrial": "첫 병렬 그룹 시험 실행",
+      "trialChanged": "워크플로 또는 실행 바인딩이 변경되어 시험 실행을 시작하지 않았습니다. 변경된 실행 범위를 확인한 뒤 다시 시작하세요.",
+      "groupTrialScope": "{{branches}}개 분기를 모두 시험 실행합니다. 동시에 최대 {{cap}}개까지 실행하고 합류 후 멈춥니다.",
+      "parallelFork": "병렬 · {{id}} (동시 실행 최대 {{cap}}개)",
+      "parallelJoin": "합류 · {{id}}",
+      "parallelBranch": "{{group}} · 분기 {{branch}}",
       "onFailureLabel": "실패 시 정책",
-      "compile": "템플릿으로 컴파일",
-      "compileHint": "수렴된 Spec을 산출물 계약이 있는 워크플로 템플릿으로 컴파일",
-      "compileBlocked": "미해결 항목이 남아 있습니다. 수렴 후 컴파일할 수 있습니다",
-      "startTrial": "첫 노드 시험 실행",
+      "copyName": "‘{{name}}’의 새 이름",
+      "saveCopy": "새 워크플로로 저장",
+      "compile": "워크플로로 저장",
+      "compileHint": "각 단계가 대화에서 확인되면 워크플로 템플릿으로 컴파일할 수 있습니다",
+      "compileBlocked": "질문에 답한 후 저장할 수 있습니다.",
+      "startTrial": "첫 단계 시험 실행",
       "startTrialHint": "템플릿으로 실제 작업을 만들고 첫 노드 완료 후 중지",
       "compiledCount": "워크플로 템플릿 {{count}}개를 만들었습니다",
       "bindingMissing": "사용 가능한 모델 바인딩이 없습니다. 시험 실행 전에 설정에서 바인딩하세요",
@@ -3588,42 +3660,123 @@
         "output": "산출",
         "boundary": "경계",
         "acceptance": "인수"
-      }
-    },
-    "history": {
-      "title": "단조 기록",
-      "subtitle": "단조·시험 실행 세션은 기본 대화 목록에 표시되지 않습니다. 여기서 확인하고 정리하세요.",
-      "loading": "단조 세션을 불러오는 중…",
-      "loadFailed": "단조 세션을 불러오지 못했습니다",
-      "empty": "이 프로젝트에는 단조 세션이 없습니다",
-      "sessionBadge": "단조",
-      "trialBadge": "시험 실행",
-      "noSpec": "아직 단조 초안이 없습니다",
-      "stageCount": "단계 {{count}}개",
-      "openQuestionCount": "미해결 {{count}}건",
-      "openQuestionHint": "미수렴 항목이 남아 있습니다. 대화로 계속 수렴시킵니다",
-      "cleanupUnfinished": "미완료 정리",
-      "cleanupSelected": "선택 정리 ({{count}})",
-      "cleanupConfirmTitle": "단조 세션 정리",
-      "cleanupConfirmDescription": "{{count}}개 세션의 작업 디렉터리(대화 기록과 단조 초안 포함)를 삭제합니다. 되돌릴 수 없습니다.",
-      "cleanupConfirmAction": "정리",
-      "selectSession": "{{title}} 선택"
-    },
-    "skillPrefill": {
-      "intro": "아래 선택한 skill에서 워크플로를 단조합니다. 요구사항을 보강한 뒤 전송하세요:"
-    },
-    "report": {
-      "title": "업그레이드 비교",
-      "before": "단조 전",
-      "beforeFallback": "자연어 대화 한 편",
-      "after": "단조 후",
-      "capabilityStages": "{{count}}개 단계가 자동 연결——각 단계가 무엇을 하고 무엇을 넘기는지 명시됨",
-      "capabilitySchema": "{{count}}개 산출물에 형식 계약이 있어 기계가 합격을 자동 확인",
-      "capabilityFailure": "{{count}}곳의 실패를 자동 처리(재시도 또는 사람 확인)——소리 없이 썩지 않음",
-      "capabilityResume": "중단돼도 중단 지점부터 재개——처음부터 다시 하지 않음"
+      },
+      "compiledUpdated": "기존 워크플로 템플릿을 업데이트했습니다",
+      "compiledMixed": "워크플로 템플릿 {{created}}개를 만들고 {{updated}}개를 업데이트했습니다",
+      "loadFailed": "생성 초안을 불러오지 못했습니다",
+      "stageOrdinal": "{{index}}번째 단계",
+      "deltaInvalid": "직전 답변의 Spec 증분은 형식이 잘못되어 적용되지 않았습니다. 다시 출력해 달라고 요청하세요.",
+      "untitled": "이름 없는 워크플로",
+      "adoptRecommendation": "추천안 사용",
+      "adoptAll": "모두 사용",
+      "adoptSent": "전송됨",
+      "adoptUnavailable": "보낼 수 없습니다. 대화에서 답하세요.",
+      "recommendationLabel": "추천안",
+      "adoptMessage": "‘{{question}}’에 대해 추천안 ‘{{recommendation}}’을 사용합니다.",
+      "adoptAllMessage": "다음 추천안을 사용합니다: {{items}}",
+      "adoptAllItem": "{{index}}. {{question}}: {{recommendation}}",
+      "savedCreated": "‘{{name}}’ 생성됨",
+      "savedUpdated": "‘{{name}}’ 업데이트됨",
+      "viewWorkflow": "워크플로 보기",
+      "keepAdjusting": "계속 수정",
+      "keepAdjustingPrompt": "이 워크플로를 수정하고 싶습니다:",
+      "staleAfterEdit": "새 버전을 시험하려면 변경 사항을 저장하세요.",
+      "changedBadge": "이번에 수정됨",
+      "modifyStage": "이 단계 수정",
+      "modifyStagePrompt": "{{index}}단계 ‘{{name}}’ 수정:",
+      "technicalDetails": "기술 세부 정보",
+      "roleDefinition": "역할 책임",
+      "failureTargetLabel": "돌아갈 단계",
+      "restartTargetLabel": "다음 라운드 시작 단계",
+      "failureTargetPlaceholder": "단계 선택",
+      "continueSessionLabel": "이전 세션 계속",
+      "conversationActiveHint": "응답이 끝난 후 수정할 수 있습니다."
     },
     "modifyPrefill": {
-      "intro": "워크플로 \"{{name}}\"({{count}}단계)를 불러왔습니다. 변경 내용을 적고 전송하면 안내형 조정이 시작됩니다:"
+      "intro": "워크플로 \"{{name}}\"({{count}}단계)를 불러왔습니다. 변경 내용을 적고 전송하면 안내형 조정이 시작됩니다:",
+      "builtinIntro": "기본 워크플로 ‘{{name}}’({{count}}단계)의 사본을 만듭니다. 새 이름과 변경 사항을 입력하세요. 원본은 그대로 유지됩니다."
+    },
+    "repair": {
+      "stop": "수정 중지",
+      "errorsTitle": "아직 해결되지 않은 문제:",
+      "inProgress": "컴파일 미통과, 자동 수정 중 ({{attempt}}/{{max}} 라운드)…",
+      "recompiling": "수정 완료, 다시 컴파일하는 중…",
+      "exhausted": "{{attempt}}라운드 자동 수정 후에도 통과하지 못했습니다. 대화에서 남은 항목을 확인한 뒤 다시 컴파일하세요.",
+      "handedBack": "답변이 필요한 질문이 있습니다. 대화에서 답한 뒤 컴파일하세요.",
+      "busy": "대화가 아직 응답 중입니다. 응답이 끝난 뒤 컴파일하세요.",
+      "unavailable": "수정 요청을 보내지 못했습니다. 세션이 사용 가능한지 확인한 뒤 다시 컴파일하세요.",
+      "turnCancelled": "자동 수정이 중단되었습니다. 다시 컴파일할 수 있습니다.",
+      "unconfirmed": "이번 수정의 전체 응답을 확인할 수 없습니다. 대화에서 초안을 확인한 후 다시 컴파일하세요.",
+      "turnFailed": "자동 수정 라운드 실행에 실패했습니다. 다시 컴파일할 수 있습니다.",
+      "noChange": "이번 수정 라운드에서 사용 가능한 변경이 나오지 않았습니다. 대화에서 무엇을 바꿀지 말해 주세요.",
+      "compileFailed": "다시 컴파일하지 못했습니다. 다시 시도할 수 있습니다.",
+      "aborted": "자동 수정을 중지했습니다.",
+      "invalidDelta": "모델이 이번 라운드에 출력한 Spec 증분의 형식이 잘못되어 적용되지 않았습니다. 다시 컴파일해 주세요."
+    },
+    "history": {
+      "title": "워크플로 생성 기록",
+      "allProjects": "모든 프로젝트",
+      "clearFilters": "필터 지우기",
+      "kind": "기록 유형",
+      "allKinds": "모든 유형",
+      "search": "제목 또는 설명 검색",
+      "loading": "생성 기록을 불러오는 중…",
+      "failed": "생성 기록을 불러올 수 없습니다.",
+      "partial": "일부 기록을 읽을 수 없습니다.",
+      "empty": "조건에 맞는 생성 또는 시험 실행 기록이 없습니다.",
+      "newest": "최신 기록으로 돌아가기",
+      "noRun": "아직 실행되지 않음",
+      "lastActivity": "최근 활동: {{time}}"
+    },
+    "itemsPrefill": {
+      "intro": "다음 자료로 워크플로를 생성하세요:",
+      "title": "소재 {{count}}개에서 워크플로 생성",
+      "kind": {
+        "role": "역할",
+        "skill": "skill",
+        "command": "command",
+        "agent": "agent"
+      },
+      "scope": {
+        "built-in": "내장",
+        "global": "전역",
+        "project": "프로젝트"
+      }
+    },
+    "session": {
+      "badge": "생성",
+      "projectHistory": "프로젝트 생성 기록",
+      "searchHistory": "생성 기록 검색",
+      "trialBadge": "시험 실행"
+    },
+    "chat": {
+      "draftUpdating": "초안 생성 중…",
+      "draftUpdated": "초안 내용 보기"
     }
+  },
+  "plugin": {
+    "importSkill": "Skill 가져오기",
+    "importRole": "역할로 가져오기",
+    "skillConfirm": "Skill과 지원 파일을 같은 범위의 Skill 라이브러리로 복사합니다. 플러그인은 설치하지 않습니다. Skill 목록에서 동기화할 Agent를 선택하세요. 전용 도구는 원래 호스트가 필요합니다.",
+    "roleConfirm": "역할 지침만 가져옵니다. 플러그인 권한과 설정은 복사하지 않습니다.",
+    "skillImported": "가져왔습니다. Skill 목록에서 동기화 대상을 선택하세요.",
+    "forget": "출처 제거",
+    "forgetConfirm": "추가한 출처만 제거합니다. 폴더와 파일은 삭제하지 않습니다.",
+    "unavailable": "출처를 사용할 수 없습니다. 폴더를 다시 선택하거나 출처를 제거하세요.",
+    "unsupportedBundle": "정의는 읽을 수 있지만 이 Skill 패키지는 가져올 수 없습니다.",
+    "manualEngine": "CodeBuddy 엔진을 사용합니다. 폴더 선택은 설치 여부를 나타내지 않습니다.",
+    "desktopBundled": "WorkBuddy · 데스크톱 앱에 기본 포함",
+    "desktopRegistry": "WorkBuddy · 데스크톱 앱에 등록됨(활성화 여부와 무관)",
+    "manualSource": "WorkBuddy · 수동 출처",
+    "codeBuddyCli": "CodeBuddy Code(CLI)",
+    "hostSource": "호스트 출처",
+    "selectDirectory": "폴더에서 가져오기",
+    "replaceDirectory": "폴더 변경",
+    "directoryHint": "WorkBuddy 설치 폴더, SKILL.md가 있는 폴더 또는 압축을 푼 전문가 패키지를 선택하세요. 자료 목록에만 추가되며 플러그인은 설치되지 않습니다.",
+    "assetCount": "기능 {{count}}개",
+    "showRemaining": "{{count}}개 더 보기",
+    "collapse": "접기",
+    "workBuddyCompatible": "WorkBuddy 코드 개발 모드에서 읽을 수 있음",
+    "roleImported": "역할 라이브러리에 추가했습니다."
   }
 }

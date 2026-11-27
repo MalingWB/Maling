@@ -11,6 +11,7 @@ import type { GraphNodeVm, GraphVm } from '@/types';
 
 const reactFlowSnapshots = vi.hoisted(() => [] as Array<{
   nodes: Array<{ data: { node: GraphNodeVm; retryPending?: boolean } }>;
+  edges: Array<{ target: string; className: string }>;
   onNodeContextMenu?: (event: { preventDefault: () => void }, node: unknown) => void;
 }>);
 const layoutState = vi.hoisted(() => ({
@@ -82,6 +83,20 @@ let retryResolver: (() => void) | null = null;
 function latestReactFlow() {
   return reactFlowSnapshots[reactFlowSnapshots.length - 1];
 }
+
+it('highlights both running branches without highlighting the queued sibling', () => {
+  const branch = (id: string, current: boolean): GraphNodeVm => ({
+    ...retryableNode, id, nodeId: null, current, status: current ? 'running' : 'pending',
+    runtimeDisplay: { ...retryableNode.runtimeDisplay!, tone: current ? 'running' : 'neutral' },
+  });
+  const branches = [branch('api', true), branch('web', true), branch('install', false)];
+  const view: GraphVm = {
+    nodes: [retryableNode, ...branches], groups: [],
+    edges: branches.map(({ id }) => ({ from: retryableNode.id, to: id, label: 'success' })),
+  };
+  act(() => root!.render(<GraphView graph={view} activeNodeId="api" />));
+  expect(latestReactFlow().edges.filter((edge) => edge.className.includes('workflow-edge-running')).map((edge) => edge.target)).toEqual(['api', 'web']);
+});
 
 function flowNode(node: GraphNodeVm) {
   return { type: 'workflowNode', data: { node } };

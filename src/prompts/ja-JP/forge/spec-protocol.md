@@ -3,47 +3,58 @@
 出力ルール：
 
 1. 返信本文の中で、増分は単一の JSON コードフェンス 1 つだけに出力し、フェンス外に JSON を出力しない；
-2. 本ラウンドで変更されたフィールドのみを含め、Spec 全量の出力は禁止；
+2. 本ラウンドで変更されたフィールドのみを含め、Spec 全量の出力は禁止（基線がまだないとき、たとえば最初のラウンドでは、増分が完全な下書きになります）；
 3. 増分は以下の構造に従います（未知フィールドは無視、欠落フィールドは「本ラウンド不変」）：
 
 ```json
 {
   "removedStageIds": ["削除する stage id"],
-  "name": "収束後のワークフロー名（変更のあったラウンドのみ）",
+  "name": "ワークフロー名（変更のあったラウンドのみ）",
   "intent": "一行のプロセス意図（変更のあったラウンドのみ）",
-  "workflowName": "複数ワークフロー分割時の増分の宛先ワークフロー名",
+  "workflowId": "変更する既存ワークフローの id（複数ある場合は必須）",
+  "workflowName": "対象の新しい名前。workflowId がない場合は新しいワークフローを分割作成",
+  "parallelGroups": [{"id":"checks","branches":[{"id":"api","stages":["test-api"]},{"id":"ui","stages":["test-ui"]}],"maxParallel":3,"onFailure":"end"}],
   "stages": [
     {
       "id": "既存 stage の id（新規 stage では省略）",
       "role": "plan | dev | test | review | accept | custom",
-      "goal": "四要素をカバーするステージ目標",
-      "roleDefinition": "custom ロールの完全な職責本文（role が custom のときのみ；下記のロール鋳造規範を参照）",
-      "profileId": "システムが付与した既鋳造ロールの id——そのまま携帯し、新規作成・書き換え・省略は絶対にしない",
+      "goal": {"input": "要件", "output": "報告書", "boundary": "デプロイしない", "acceptance": "検査に合格"},
+      "roleDefinition": "custom ロールの完全な職責本文（編集可能な custom ロールのみ；下記のカスタムロール規範を参照）",
       "artifact": "成果物名（outputKind が none 以外のとき）",
       "outputKind": "json | markdown | none",
       "schemaHint": { "フィールド": "型の説明" },
       "successCondition": "$.field == value",
-      "onFailure": "retry | manual-check | new-round | end",
+      "onFailure": "retry | manual-check | end | new-round",
       "manualCheck": false
     }
   ],
-  "openQuestions": ["本ラウンドでまだ未収束、引き続き叩くべき質問"]
+  "openQuestions": [
+    { "question": "ユーザーが決めるべき事項", "recommendation": "下書きにすでに埋めた推奨案" }
+  ]
 }
 ```
 
-4. `stages` 内の stage はその stage の**完全な新状態**（フィールドパッチではない）：`id` で既存 stage に合わせて全体置換、`id` なしは新規 stage として追記；
-5. **カスタムロール鋳造規範**（role が custom のとき）：
-   - `role` は `{"custom": {"profileName": "ロール名"}}` と書く。ロール名は簡潔な名詞句で職業を表し、プロセスの工程ではなく、内蔵ロール（開発/テスト/レビュー/計画/受入）との同名混同を避ける；
+4. `stages` 内の stage はその stage の**完全な新状態**（フィールドパッチではない）：`id` で「現在の基線 Spec」の既存 stage に合わせて全体置換。`id` がない、または基線に存在しない `id` は常に新規 stage として追記される——既存 stage の修正には必ずその `id` を付ける。位置では整列しない； エディターの目標を変えない場合は `goal.original` をそのまま引き継ぎます。新規・変更時は上記の四つの固定キーを使い、すべての値をユーザーの言語で記述します。 エディターでロール未設定のステージを引き継ぐ場合は `role: "unassigned"` を保持します。新規ステージには使いません。
+5. **`onFailure`**（ステージが失敗したときの行き先）は次のいずれか：
+   - `"retry"`：同じステージをやり直す（再実行する）；
+   - `"manual-check"`：停止してユーザーの確認を待つ；
+   - `"end"`：ワークフローを終了する；
+   - `"new-round"`：最初のステージから新しいラウンドを始める；
+   - `{"new-round": "stage id"}`：指定したステージから新しいラウンドを始める；
+   - `{"goto": "stage id", "continueSession": true}`：指定したステージに戻る。`continueSession` が true のとき、そのステージは前回のセッションを引き継ぎ、自分の作業を修正できます。
+
+   ジャンプと再開の宛先は、同じワークフローに存在する stage id でなければなりません；
+6. **カスタムロール規範**（role が custom のとき）：
+   - `role` は `{"custom": {"profileName": "ロール名"}}` と書く。ロール名は簡潔な名詞句で職業を表し、プロセスの工程ではなく、組み込みロール（開発/テスト/レビュー/計画/受入）との同名混同を避ける；
    - `roleDefinition` はこのロールが特定のステージから独立した完全な職責本文：職責・作業方法・境界・出力作法——安定した専門人格であり、複数のワークフローで再利用できる；stage の goal を roleDefinition に複製しない；
-   - 基線 Spec の stage が既に `profileId` を持つ場合、そのロールは鋳造済み：ユーザーが対話でロール名や職責を調整するときは `profileName`/`roleDefinition` だけを変更し、その `profileId` を**そのまま携帯する**。システムは id でそのロールをその場で更新し、重複ロールは作らない；
-6. `openQuestions` は毎ラウンド現在の未収束項の全体で置換。すべて収束したら空配列を出力；
-7. `outputKind` が `none` のときは `artifact`/`schemaHint`/`successCondition` を省略；`onFailure` が `manual-check` のときは成果物契約を携帯しない（手動確認と出力検証は相互排他）；
-8. 単一ワークフローの `stages` 上限は 10；分割時は `workflowName` に新しいワークフロー名を指定して増分 stages を格納する。
+   - このワークフローの既存の役割に切り替えるには、その `profileName` を指定します。改名するときは利用する全ステージをまとめて変更します。`profileId` は出力せず、システムが対応付けます。
+   - 編集可能な職務定義がないライブラリ参照は読み取り専用です。名前はそのままにし、`roleDefinition` は省略します。
+7. `openQuestions` は毎ラウンド現在の未収束項の全体で置換します。流れの進み方を実際に変え、ユーザーが決めなければならない事項だけを入れ、各項目に推奨案を付けます。すべて収束したら空配列を出力；
+8. `outputKind` が `none` のときは `artifact`/`schemaHint`/`successCondition` を省略；`onFailure` が `manual-check` のときは成果物契約を携帯しない（手動確認と出力検証は相互排他）；
+9. 単一ワークフローの `stages` 上限は 10；分割時は `workflowName` に新しいワークフロー名を指定して増分 stages を格納する。 同じワークフロー内の独立した分岐は、ワークフローを分割せず `parallelGroups` で表す。構造やグループの方針を変えるときだけグループ全件を指定する。省略は維持、`[]` は全削除。グループの位置は `stages` 内の最初のメンバーで決まる。既存の worker ID を参照し、必要なら先に段階を作成する。各 worker は一つの分岐にのみ属し、分岐内の `stages` 順に実行する。空でない分岐が二つ以上必要で、入れ子は禁止。`maxParallel` は 1–5、通常は 3。分岐内の失敗時は分岐を終了するか、同じ手順または同じ分岐の前の手順を再試行する。手動確認や新ラウンドは禁止。全分岐が合流した後、成功なら一度だけ次へ進み、失敗ならセッションを再利用せずグループ外側の `onFailure` に従う。
+10. ワークフロー名はユーザーの全ワークフローの中で一意でなければなりません。重複すると保存は拒否されます。区別できる名前にして、ユーザーに確認を求めてください；
+11. 「現在の基線 Spec」は各メッセージの実行コンテキストに添付され、Spec の唯一の事実源である。増分を合わせるときはそれを読む。新規 stage に名前を付ける必要はなく、`id` はシステムがマージ後に割り当て、次のラウンドの基線に示される。
 
 Spec フィールドの完全な制約（JSON Schema）：
 
 {{ spec_schema }}
-
-現在の基線 Spec（増分はこれにマージ；新規セッションは空）：
-
-{{ current_spec }}

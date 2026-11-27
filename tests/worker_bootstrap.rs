@@ -1,9 +1,16 @@
 mod support;
+#[path = "support/forge_delivery_case.rs"]
+mod forge_delivery_case;
 
 use camino::Utf8PathBuf;
-use gold_band::app::{App, is_run_continuable};
+use gold_band::app::forge_service::ForgeCompileOutcome;
+use gold_band::app::{App, CreateTaskInput, is_run_continuable};
 use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode, VERSION};
-use gold_band::dsl::WorkflowDsl;
+use gold_band::dsl::{NodeDsl, WorkflowDsl};
+use gold_band::forge::{
+    ForgeSpec, ForgeStage, ForgeWorkflow, OnFailure, SPEC_VERSION, StageOutputKind, StageRole,
+};
+use gold_band::workflow_model_binding::{WorkerModelBinding, migrate_authoring_workflow};
 use gold_band::provider::{
     DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
     ProviderResultPayload, ProviderRunResult, ProviderRunStatus, RuntimeControlIntent, SessionRef,
@@ -966,6 +973,458 @@ fn invalid_output_repair_exhaustion_pauses_as_resumable_runtime_abnormal() {
             .unwrap_or_default()
             .contains("请重新生成符合 schema 的结果")
     );
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+enum ProbeLoad {
+    #[default]
+    Verify,
+    Io,
+    Compute,
+    StopAtAdmission,
+    StopOneAfterPartial,
+    StopAfterJoin,
+    DirtySource,
+    SwitchBranch,
+    AttachDetached,
+    DetachBranch,
+}
+impl ProbeLoad {
+    fn switches_checkout(self) -> bool {
+        matches!(self, Self::SwitchBranch | Self::AttachDetached | Self::DetachBranch)
+    }
+
+    fn recovery(self) -> bool {
+        matches!(
+            self,
+            Self::StopAtAdmission | Self::StopOneAfterPartial | Self::StopAfterJoin
+        )
+    }
+}
+#[derive(Clone, Default)]
+struct BranchProbe {
+    load: ProbeLoad,
+    starts: Arc<Mutex<Vec<std::time::Instant>>>,
+    state: Arc<(
+        Mutex<(usize, usize, Vec<(String, Utf8PathBuf)>)>,
+        std::sync::Condvar,
+    )>,
+    fail_node: Option<&'static str>,
+    conflict: bool,
+}
+impl ProviderAdapter for BranchProbe {
+    fn describe_provider(&self) -> ProviderInfo {
+        RecordingProvider::default().describe_provider()
+    }
+    fn doctor(&self) -> DoctorResult {
+        RecordingProvider::default().doctor()
+    }
+    fn open_session(&self, _: &SessionRef) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn build_continue_command(&self, _: &SessionRef) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+    fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+        let id = req.runtime_context.node_id;
+        let (lock, cv) = self.state.as_ref();
+        let mut state = lock.lock().unwrap();
+        state.0 += 1;
+        state.1 = state.1.max(state.0);
+        state.2.push((id.clone(), req.workspace_dir.clone()));
+        cv.notify_all();
+        if matches!(self.load, ProbeLoad::Verify) {
+            let (s, wait) = cv
+                .wait_timeout_while(state, std::time::Duration::from_secs(15), |s| s.2.len() < 2)
+                .unwrap();
+            anyhow::ensure!(!wait.timed_out(), "two admitted workers never overlapped");
+            drop(s);
+        } else {
+            drop(state);
+        }
+        if id.starts_with("step-") {
+            self.starts.lock().unwrap().push(std::time::Instant::now());
+            match self.load {
+                ProbeLoad::Verify | ProbeLoad::DirtySource | ProbeLoad::SwitchBranch
+                | ProbeLoad::AttachDetached | ProbeLoad::DetachBranch
+                | ProbeLoad::StopAtAdmission
+                | ProbeLoad::StopOneAfterPartial
+                | ProbeLoad::StopAfterJoin => {}
+                ProbeLoad::Io => std::thread::sleep(std::time::Duration::from_millis(250)),
+                ProbeLoad::Compute => {
+                    let mut buf = vec![1u8; 8 * 1024 * 1024];
+                    for i in 0..128 {
+                        buf[i] = i as u8;
+                        std::hint::black_box(blake3::hash(&buf));
+                    }
+                }
+            }
+        }
+        if id.starts_with("step-") {
+            let file = if self.conflict {
+                "conflict.txt".to_string()
+            } else {
+                format!("{id}.txt")
+            };
+            std::fs::write(req.workspace_dir.join(file), &id)?;
+        }
+        lock.lock().unwrap().0 -= 1;
+        let mut result = success_result();
+        result
+            .result_payload
+            .as_mut()
+            .unwrap()
+            .output_artifact
+            .as_mut()
+            .unwrap()
+            .content = serde_json::json!({"pass": self.fail_node != Some(id.as_str())}).to_string();
+        Ok(result)
+    }
+}
+
+fn fixture_git(repo: &camino::Utf8Path, args: &[&str]) -> String {
+    let result = gold_band::git::GitCommandRunner::default().run(repo, args).unwrap();
+    assert!(result.success, "{args:?}: {}", result.stderr);
+    result.stdout
+}
+
+fn static_group_fixture(fail_first: bool, conflict: bool, budget: usize, load: ProbeLoad) -> u128 {
+    let tmp = tempdir().unwrap();
+    let repo = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+    let runner = gold_band::git::GitCommandRunner::default();
+    for args in [
+        vec!["init"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "base",
+        ],
+    ] {
+        let r = runner.run(&repo, &args).unwrap();
+        assert!(r.success, "{}", r.stderr);
+    }
+    let provider = BranchProbe {
+        fail_node: fail_first.then_some("step-0"),
+        conflict,
+        load,
+        ..Default::default()
+    };
+    let app = app_with_provider(repo.clone(), Box::new(provider.clone()));
+    // Without GOLD_BAND_HOME the test storage layer deliberately nests an
+    // isolated test home under this temporary repo. Exclude only that home,
+    // not untracked source files and not the user's global Git configuration.
+    if let Ok(relative) = app.paths.user_gold_band_root.strip_prefix(&repo) {
+        gold_band::git::GitRepositoryService::default().ensure_local_exclude(&repo,&format!("/{}/",relative.as_str().replace('\\', "/"))).unwrap();
+    }
+    if matches!(load, ProbeLoad::DirtySource) {std::fs::write(repo.join("uncommitted-user-file.txt"),"untouched").unwrap();}
+    let task = "task-static";
+    write_dev_only_workflow(&app, task);
+    let profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|p| p.name == "开发")
+        .unwrap()
+        .id;
+    let width = if load.recovery() { 3 } else { 6 };
+    let mut nodes=(0..width).map(|i|serde_json::json!({"type":"worker","provider":"claude-acp","id":format!("step-{i}"),"profile":profile,"output":{"kind":"json","artifact":"implementation-result"},"success_condition":{"path":"pass","equals":true}})).collect::<Vec<_>>();
+    let branches = (0..width)
+        .map(|i| serde_json::json!({"id":format!("b-{i}"),"stages":[format!("step-{i}")]}))
+        .collect::<Vec<_>>();
+    nodes.push(serde_json::json!({"type":"parallel-group","id":"group","maxParallel":budget,"branches":branches}));
+    nodes.push(serde_json::json!({"type":"worker","id":"report","profile":profile,"provider":"claude-acp"}));
+    let workflow = serde_json::json!({"version":"0.1","id":"parallel","entry":"group","control":{"max_attempts":1},"nodes":nodes,"edges":[{"from":"step-0","to":"step-0","on":"failure"},{"from":"group","to":"report","on":"success"},{"from":"group","to":"$end","on":"failure"},{"from":"report","to":"$end","on":"success"}]});
+    std::fs::write(app.paths.workflow_file(task), workflow.to_string()).unwrap();
+    // These callbacks fire after actual durable state transitions. Stop through the
+    // public API, then reconstruct App from disk; there are no production failpoints.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut fork = String::new();
+    let app = if load.switches_checkout() {
+        fork = fixture_git(&repo, &["rev-parse", "HEAD"]);
+        fixture_git(&repo, &["switch", "-c", "source"]);
+        fixture_git(&repo, &["branch", "other"]);
+        for branch in ["source", "other"] {
+            assert_eq!(fixture_git(&repo, &["rev-parse", branch]), fork);
+        }
+        if matches!(load, ProbeLoad::AttachDetached) {
+            fixture_git(&repo, &["switch", "--detach"]);
+        }
+        let temp_repo = repo.clone();
+        app.with_inline_lifecycle_subscriber(Arc::new(move |event| {
+            if matches!(&event, gold_band::app::RuntimeLifecycleEvent::NodeCompleted {node_id, ..} if node_id == "step-0") {
+                fixture_git(&temp_repo, if matches!(load, ProbeLoad::DetachBranch) {
+                    &["switch", "--detach"]
+                } else {
+                    &["switch", "other"]
+                });
+            }
+        }))
+    } else if load.recovery() {
+        let control = app_with_provider(repo.clone(), Box::new(provider.clone()));
+        let stopped = stop.clone();
+        app.with_inline_lifecycle_subscriber(Arc::new(move |event| {
+            use gold_band::app::RuntimeLifecycleEvent::{NodeCompleted, NodeStarted};
+            let selected = match &event {
+                NodeStarted {
+                    metrics_unit_kind, ..
+                } => {
+                    matches!(load, ProbeLoad::StopAtAdmission)
+                        && *metrics_unit_kind
+                            == Some(gold_band::dynamic::DynamicNodeKind::WorkflowInvocation)
+                }
+                NodeCompleted { node_id, .. } => {
+                    matches!(load, ProbeLoad::StopAfterJoin) && node_id == "group"
+                        || matches!(load, ProbeLoad::StopOneAfterPartial) && node_id == "step-1"
+                }
+                _ => false,
+            };
+            if !selected || stopped.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            if matches!(load, ProbeLoad::StopOneAfterPartial) {
+                let graph: gold_band::dynamic::DynamicGraphState =
+                    gold_band::storage::read_json(&control.paths.dynamic_graph_file(
+                        task,
+                        "run-001",
+                        "round-001",
+                        "group",
+                        "attempt-001",
+                    ))
+                    .unwrap();
+                let branch = graph
+                    .nodes
+                    .iter()
+                    .find(|n| n.workflow_id.as_deref() == Some("b-1"))
+                    .unwrap();
+                control
+                    .pause_dynamic_attempt_runtime_state(
+                        task,
+                        "run-001",
+                        "round-001",
+                        "group",
+                        "attempt-001",
+                        &branch.id,
+                        "attempt-001",
+                        PauseReason::ProcessInterrupted,
+                    )
+                    .unwrap();
+            } else {
+                control
+                    .run_pause(task, "run-001", PauseReason::ProcessInterrupted)
+                    .unwrap();
+            }
+        }))
+    } else {
+        app
+    };
+    let start = std::time::Instant::now();
+    let mut execution = app.run_start(task, None);
+    if load.switches_checkout() {
+        let actual = fixture_git(&repo, &["branch", "--show-current"]);
+        assert_eq!(actual, if matches!(load, ProbeLoad::DetachBranch) { "" } else { "other" });
+        let head = fixture_git(&repo, &["rev-parse", "HEAD"]);
+        let source = fixture_git(&repo, &["rev-parse", "source"]);
+        let other = fixture_git(&repo, &["rev-parse", "other"]);
+        let report = provider.state.0.lock().unwrap().2.iter().any(|(id, _)| id == "report");
+        assert!(head == fork && source == fork && other == fork && !report,
+            "advanced the wrong checkout: before source=other={fork}; after HEAD={head}, source={source}, other={other}, report={report}");
+        assert!(!repo.join("step-0.txt").exists());
+        assert_eq!(app.run_status(task, "run-001").unwrap().status, RunStatus::Paused, "{execution:?}");
+        assert!(std::fs::read_to_string(app.paths.run_events_file(task, "run-001")).unwrap().contains("parallel.target-changed"));
+        assert_eq!(provider.state.0.lock().unwrap().2.len(), width, "successor must not run on refusal");
+        fixture_git(&repo, if matches!(load, ProbeLoad::AttachDetached) {
+            &["switch", "--detach"]
+        } else {
+            &["switch", "source"]
+        });
+        let recovered = app_with_provider(repo.clone(), Box::new(provider.clone()));
+        execution = recovered.run_continue(task, "run-001", None, None);
+        assert_eq!(fixture_git(&repo, &["rev-parse", "other"]), fork);
+        if matches!(load, ProbeLoad::AttachDetached) {
+            assert_eq!(fixture_git(&repo, &["rev-parse", "source"]), fork);
+            assert!(fixture_git(&repo, &["branch", "--show-current"]).is_empty());
+        }
+    }
+    if matches!(load,ProbeLoad::DirtySource) {
+        assert_eq!(execution.unwrap().status,RunStatus::Paused);
+        assert!(provider.state.0.lock().unwrap().2.is_empty());
+        assert!(std::fs::read_to_string(app.paths.run_events_file(task,"run-001")).unwrap().contains("parallel.source-dirty"));
+        assert_eq!(std::fs::read_to_string(repo.join("uncommitted-user-file.txt")).unwrap(),"untouched");
+        return 0;
+    }
+    if load.recovery() {
+        assert!(
+            stop.load(std::sync::atomic::Ordering::SeqCst),
+            "{execution:?}"
+        );
+        assert_eq!(
+            app.run_status(task, "run-001").unwrap().status,
+            RunStatus::Paused
+        );
+        let events = provider
+            .state
+            .0
+            .lock()
+            .unwrap()
+            .2
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        if matches!(load, ProbeLoad::StopAtAdmission) {
+            assert!(events.is_empty(), "stop must fence first child launch");
+        } else {
+            assert_eq!(
+                events,
+                vec!["step-0", "step-1", "step-2"],
+                "one stopped branch cannot cancel siblings or start report"
+            );
+        }
+        let recovered = app_with_provider(repo.clone(), Box::new(provider.clone()));
+        execution = recovered.run_continue(task, "run-001", None, None);
+    }
+    let elapsed = start.elapsed().as_millis();
+    let run: RunState = gold_band::storage::read_json(&app.paths.run_file(task, "run-001"))
+        .unwrap_or_else(|err| panic!("{err}: {execution:?}"));
+    let state = provider.state.0.lock().unwrap();
+    assert!(state.1 <= budget, "admission exceeded group budget");
+    if matches!(load, ProbeLoad::Verify) {
+        assert_eq!(
+            state.1, 2,
+            "two admitted workers must overlap: {execution:?}"
+        );
+    }
+    let mut received = state
+        .2
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect::<Vec<_>>();
+    received.sort();
+    let all = ["step-0", "step-1", "step-2", "step-3", "step-4", "step-5"];
+    let mut expected = all[..width].to_vec();
+    if fail_first {
+        expected.push("step-0");
+    } else if !conflict {
+        expected.push("report");
+    }
+    expected.sort();
+    assert_eq!(received, expected, "{execution:?}");
+    let workspaces = state
+        .2
+        .iter()
+        .filter(|(id, _)| id.starts_with("step-"))
+        .map(|(_, cwd)| cwd)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(workspaces.len(), width);
+    assert!(!workspaces.contains(&repo));
+    if conflict {
+        assert_ne!(run.outcome, Some(RunOutcome::Success));
+        assert!(!repo.join("conflict.txt").exists());
+    } else {
+        assert_eq!(
+            run.outcome,
+            Some(if fail_first {
+                RunOutcome::Failure
+            } else {
+                RunOutcome::Success
+            }),
+            "{execution:?}"
+        );
+        for i in 0..width {
+            assert_eq!(repo.join(format!("step-{i}.txt")).exists(), !fail_first);
+        }
+    }
+    let resolved: WorkflowDsl =
+        gold_band::storage::read_json(&app.paths.task_workflow_resolved_file(task)).unwrap();
+    assert_eq!(resolved.entry, "group");
+    if matches!(load, ProbeLoad::Io | ProbeLoad::Compute) {
+        let starts = provider.starts.lock().unwrap();
+        let launch_ms = starts
+            .iter()
+            .map(|t| t.duration_since(start).as_millis())
+            .collect::<Vec<_>>();
+        println!(
+            "load={load:?} budget={budget} elapsed_ms={elapsed} peak_workers={} launch_from_run_start_ms={launch_ms:?} peak_probe_buffer_bytes={}",
+            state.1,
+            if matches!(load, ProbeLoad::Compute) {
+                state.1 * 8 * 1024 * 1024
+            } else {
+                0
+            }
+        );
+    }
+    elapsed
+}
+
+#[test]
+#[ignore = "release-only, 36 runs with real temporary Git worktrees; not provider throughput or process tree RSS"]
+fn static_parallel_group_budget_matrix() {
+    assert!(!cfg!(debug_assertions), "matrix requires --release");
+    for load in [ProbeLoad::Io, ProbeLoad::Compute] {
+        let mut samples = std::collections::BTreeMap::<usize, Vec<u128>>::new();
+        for round in 0..6 {
+            for offset in 0..3 {
+                let budget = [1, 3, 5][(round + offset) % 3];
+                let elapsed = static_group_fixture(false, false, budget, load);
+                if round > 0 {
+                    samples.entry(budget).or_default().push(elapsed);
+                }
+            }
+        }
+        for (budget, mut times) in samples {
+            times.sort_unstable();
+            println!(
+                "load={load:?} budget={budget} median_ms={} worst_ms={} samples={times:?}",
+                times[2], times[4]
+            );
+        }
+    }
+}
+
+#[test]
+fn static_parallel_group_refuses_switched_branch_at_same_commit_then_resumes() {
+    static_group_fixture(false, false, 1, ProbeLoad::SwitchBranch);
+}
+#[test]
+fn static_parallel_group_refuses_attachment_of_detached_target_then_resumes() {
+    static_group_fixture(false, false, 1, ProbeLoad::AttachDetached);
+}
+#[test]
+fn static_parallel_group_refuses_detachment_of_branch_target_then_resumes() {
+    static_group_fixture(false, false, 1, ProbeLoad::DetachBranch);
+}
+
+#[test]
+fn static_parallel_group_requires_clean_source_without_touching_local_edits() { static_group_fixture(false,false,1,ProbeLoad::DirtySource); }
+#[test]
+fn static_parallel_group_recovers_after_admission_before_child_launch() {
+    static_group_fixture(false, false, 1, ProbeLoad::StopAtAdmission);
+}
+#[test]
+fn static_parallel_group_recovers_one_stopped_branch_without_replaying_siblings() {
+    static_group_fixture(false, false, 1, ProbeLoad::StopOneAfterPartial);
+}
+#[test]
+fn static_parallel_group_recovers_delivered_join_before_successor_claim() {
+    static_group_fixture(false, false, 1, ProbeLoad::StopAfterJoin);
+}
+
+#[test]
+fn static_parallel_group_runs_six_isolated_workers_and_reports_once() {
+    static_group_fixture(false, false, 2, ProbeLoad::Verify);
+}
+#[test]
+fn static_parallel_group_drains_siblings_after_branch_retry_exhaustion() {
+    static_group_fixture(true, false, 2, ProbeLoad::Verify);
+}
+#[test]
+fn static_parallel_group_conflict_never_partially_integrates_or_runs_report() {
+    static_group_fixture(false, true, 2, ProbeLoad::Verify);
 }
 
 #[test]
@@ -2401,4 +2860,297 @@ fn error_blocked_run_is_not_continuable() {
     };
 
     assert!(!is_run_continuable(&run));
+}
+
+/// `test` 节点的前 `failures` 次执行判定失败（success_condition 不成立），
+/// 之后的执行与其余节点恒成功。
+#[derive(Clone, Default)]
+struct FlakyStageProvider {
+    invocations: Arc<Mutex<Vec<WorkerInvocation>>>,
+    failures: u32,
+}
+
+impl ProviderAdapter for FlakyStageProvider {
+    fn describe_provider(&self) -> ProviderInfo {
+        MultiAttemptContinueProvider::default().describe_provider()
+    }
+
+    fn doctor(&self) -> DoctorResult {
+        MultiAttemptContinueProvider::default().doctor()
+    }
+
+    fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+        let node_id = req.runtime_context.node_id.clone();
+        let attempt_id = req.runtime_context.attempt_id.clone();
+        let session_mode = req.session_mode;
+        let nth = {
+            let mut invocations = self.invocations.lock().unwrap();
+            let nth = invocations
+                .iter()
+                .filter(|invocation| invocation.runtime_context.node_id == node_id)
+                .count() as u32
+                + 1;
+            invocations.push(req);
+            nth
+        };
+        let success = node_id != "test" || nth > self.failures;
+
+        Ok(ProviderRunResult {
+            status: ProviderRunStatus::Success,
+            exit_code: Some(0),
+            result_payload: Some(ProviderResultPayload {
+                output_artifact: Some(OutputArtifactPayload {
+                    name: format!("{node_id}-result"),
+                    content: format!(r#"{{"result":{success},"reason":"{node_id} {attempt_id}"}}"#),
+                }),
+            }),
+            worker_ref_seed: Some(SessionRef {
+                provider: "claude-acp".to_string(),
+                mode: session_mode,
+                supports_open_session: true,
+                supports_continue_session: true,
+                continue_ref: Some(
+                    serde_json::json!({"sessionId": format!("{node_id}-{attempt_id}")}),
+                ),
+                open_command: Some(format!("claude -c {node_id}-{attempt_id}")),
+            }),
+            stream_path: None,
+            runtime_error: None,
+            runtime_control_output: None,
+        })
+    }
+
+    fn open_session(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn build_continue_command(
+        &self,
+        worker_ref: &gold_band::domain::SessionRef,
+    ) -> anyhow::Result<Option<String>> {
+        Ok(worker_ref.open_command.clone())
+    }
+}
+
+fn judged_stage(id: &str, role: StageRole, on_failure: OnFailure) -> ForgeStage {
+    ForgeStage {
+        id: Some(id.to_string()),
+        role,
+        goal: "<输入>上游产物\n<产出>结构化结论\n<边界>不做部署\n<验收>结论通过".into(),
+        role_definition: None,
+        profile_id: None,
+        artifact: Some(format!("{id}-result")),
+        output_kind: StageOutputKind::Json,
+        schema_hint: Some(serde_json::json!({ "result": "boolean", "reason": "String" })),
+        success_condition: Some("$.result == true".to_string()),
+        on_failure,
+        manual_check: false,
+    }
+}
+
+/// dev → test；test 失败后的去向由调用方给出。
+fn dev_then_test_spec(on_failure: OnFailure) -> ForgeSpec {
+    ForgeSpec {
+        revision: 0,
+        spec_version: SPEC_VERSION.to_string(),
+        name: Some("失败去向验证".to_string()),
+        intent: "验证阶段失败后的重试与回跳".to_string(),
+        source_skills: vec![],
+        workflows: vec![ForgeWorkflow {
+            id: String::new(),
+            parallel_groups: vec![],
+            name: "失败去向验证".to_string(),
+            stages: vec![
+                judged_stage("dev", StageRole::Dev, OnFailure::End),
+                judged_stage("test", StageRole::Test, on_failure),
+            ],
+        }],
+        open_questions: vec![],
+    }
+}
+
+/// Spec 经公共入口编译落库，再按模板建任务并启动。用户在编辑器里选模板建任务后
+/// 启动，走的就是这条链（未绑定的执行槽用配置里的首个 agent，与试运行入口一致）。
+fn start_run_from_forge_spec(app: &App, spec: &ForgeSpec) -> (RunState, u32) {
+    let saved = match app.forge_compile(spec, None, 1).unwrap() {
+        ForgeCompileOutcome::Saved(saved) => saved,
+        ForgeCompileOutcome::Repairable { errors, repair_prompt } => {
+            panic!("expected saved outcome, got repairable: {errors:?} / {repair_prompt}")
+        }
+    };
+    let template = app
+        .workflow_templates()
+        .unwrap()
+        .templates
+        .into_iter()
+        .find(|template| template.id == saved.template_ids[0])
+        .expect("compiled template exists");
+    let max_attempts = template.workflow.control.max_attempts.unwrap();
+
+    let mut workflow = template.workflow.clone();
+    let mut bindings = template.model_bindings.clone();
+    migrate_authoring_workflow(&mut workflow, &mut bindings, None).unwrap();
+    let default_agent = app
+        .config
+        .agents
+        .keys()
+        .next()
+        .map(|id| id.as_str().to_string())
+        .expect("managed agent");
+    for node in &workflow.nodes {
+        let NodeDsl::Worker(worker) = node else {
+            continue;
+        };
+        let Some(slot) = worker.execution_slot_id.clone() else {
+            continue;
+        };
+        if bindings
+            .bindings
+            .iter()
+            .any(|binding| binding.execution_slot_id == slot)
+        {
+            continue;
+        }
+        bindings.bindings.push(WorkerModelBinding {
+            execution_slot_id: slot,
+            agent_id: default_agent.clone(),
+            model_id: None,
+            permission_mode_id: None,
+            auto_accept: false,
+            config_options: Default::default(),
+            model_bound_overrides: Default::default(),
+        });
+    }
+
+    let task = app
+        .create_task_from_requirement_with_bindings(
+            CreateTaskInput {
+                title: Some("失败去向验证".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "Exercise failure routing".to_string(),
+                workflow: workflow.clone(),
+                workflow_template_id: Some(template.id.clone()),
+                origin: None,
+            },
+            workflow,
+            bindings,
+        )
+        .unwrap();
+    (app.run_start(&task.task.id, None).unwrap(), max_attempts)
+}
+
+fn invocations_of(
+    provider: &FlakyStageProvider,
+) -> Vec<(String, String, SessionMode)> {
+    provider
+        .invocations
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|invocation| {
+            (
+                invocation.runtime_context.node_id.clone(),
+                invocation.runtime_context.attempt_id.clone(),
+                invocation.session_mode,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn forge_retry_stage_reruns_in_a_fresh_session_until_it_passes() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let provider = FlakyStageProvider {
+        failures: 2,
+        ..Default::default()
+    };
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
+
+    let (run, _max_attempts) = start_run_from_forge_spec(&app, &dev_then_test_spec(OnFailure::Retry));
+
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    // 前两次失败各触发一次同节点重试；每次重试都是新的 attempt、新的会话，dev 不重跑。
+    assert_eq!(
+        invocations_of(&provider),
+        [
+            ("dev".to_string(), "attempt-001".to_string(), SessionMode::New),
+            ("test".to_string(), "attempt-001".to_string(), SessionMode::New),
+            ("test".to_string(), "attempt-002".to_string(), SessionMode::New),
+            ("test".to_string(), "attempt-003".to_string(), SessionMode::New),
+        ]
+    );
+}
+
+#[test]
+fn forge_retry_stage_fails_the_run_once_the_retry_budget_is_spent() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let provider = FlakyStageProvider {
+        failures: u32::MAX,
+        ..Default::default()
+    };
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
+
+    let (run, max_attempts) = start_run_from_forge_spec(&app, &dev_then_test_spec(OnFailure::Retry));
+
+    // 重试用尽即运行失败：首次执行之外最多再重试 max_attempts 次。
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Failure));
+    let invocations = invocations_of(&provider);
+    assert_eq!(
+        invocations.iter().filter(|(node, _, _)| node == "test").count(),
+        1 + max_attempts as usize
+    );
+    assert_eq!(
+        invocations.iter().filter(|(node, _, _)| node == "dev").count(),
+        1
+    );
+}
+
+#[test]
+fn forge_failure_jump_returns_to_the_target_stage_and_continues_its_session() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let provider = FlakyStageProvider {
+        failures: 2,
+        ..Default::default()
+    };
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
+
+    let (run, _max_attempts) = start_run_from_forge_spec(
+        &app,
+        &dev_then_test_spec(OnFailure::Jump {
+            stage: "dev".to_string(),
+            continue_session: true,
+        }),
+    );
+
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.outcome, Some(RunOutcome::Success));
+
+    // test 失败后跳回 dev：dev 沿用上一次的会话继续，修完再走一遍 test。
+    let dev_sessions: Vec<SessionMode> = invocations_of(&provider)
+        .iter()
+        .filter(|(node, _, _)| node == "dev")
+        .map(|(_, _, mode)| *mode)
+        .collect();
+    assert_eq!(
+        dev_sessions,
+        [
+            SessionMode::New,
+            SessionMode::Continue,
+            SessionMode::Continue
+        ]
+    );
+    assert_eq!(
+        invocations_of(&provider)
+            .iter()
+            .filter(|(node, _, _)| node == "test")
+            .count(),
+        3
+    );
 }

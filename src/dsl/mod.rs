@@ -1,6 +1,6 @@
 use crate::domain::{NodeType, SessionMode};
 use crate::provider::supports_continue_session;
-use anyhow::{Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -181,18 +181,60 @@ pub fn simple_schema_contains_path(schema: &serde_json::Value, path: &[JsonPathS
     true
 }
 
+/// `schema` 是 JSON Schema 而非简化字段表。
+///
+/// 简化字段表是「字段名 → 形状」（字符串是类型名，对象是嵌套字段，数组是 `[元素形状]`），
+/// 字段名可以恰好叫 `items` / `type` / `required` / `properties`。所以不能只看键名：只有当
+/// 关键字位置上的值具有 JSON Schema 才有的形态时才算 JSON Schema。前端工作流编辑器有
+/// 一份等价判定（`web/src/lib/output-schema.ts`），两边的用例表保持一致。
 pub fn looks_like_json_schema(schema: &serde_json::Value) -> bool {
-    schema.as_object().is_some_and(|object| {
-        [
-            "type",
-            "properties",
-            "required",
-            "additionalProperties",
-            "items",
-        ]
-        .iter()
-        .any(|key| object.contains_key(*key))
-    })
+    use serde_json::Value;
+    let Some(object) = schema.as_object() else {
+        return false;
+    };
+    let is_type_name = |value: &Value| {
+        value.as_str().is_some_and(|name| {
+            matches!(
+                name,
+                "object" | "array" | "string" | "number" | "integer" | "boolean" | "null"
+            )
+        })
+    };
+    let has_structure_keyword = |keys: &[&str]| keys.iter().any(|key| object.contains_key(*key));
+    // 简化字段表里不会出现的声明式关键字。
+    if has_structure_keyword(&["$schema", "$ref", "anyOf", "oneOf", "allOf"]) {
+        return true;
+    }
+    // additionalProperties 只可能是布尔或子模式；简化形状里不存在布尔值。
+    if matches!(object.get("additionalProperties"), Some(Value::Bool(_))) {
+        return true;
+    }
+    if let Some(kind) = object.get("type") {
+        // 联合类型：简化形状的数组只取第一个元素当元素形状，多个类型名的数组只会是 JSON Schema。
+        if matches!(kind, Value::Array(types) if types.len() > 1 && types.iter().all(Value::is_string))
+        {
+            return true;
+        }
+        // 旧版基本类型根节点：只有 type 一个键，表示整个输出就是一个基本类型值。
+        if is_type_name(kind) && object.len() == 1 {
+            return true;
+        }
+        // 容器类型与其它结构关键字同时出现。
+        if matches!(kind.as_str(), Some("object" | "array"))
+            && has_structure_keyword(&["properties", "required", "additionalProperties", "items"])
+        {
+            return true;
+        }
+    }
+    // 属性节点：`properties` 的某个值是带 `type` 的子模式（简化形状的嵌套字段不以 type 描述自己）。
+    object
+        .get("properties")
+        .and_then(Value::as_object)
+        .is_some_and(|properties| {
+            properties.values().any(|value| {
+                matches!(value, Value::Object(inner) if inner.get("type").is_some_and(|t| t.is_string() || t.is_array()))
+            })
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +261,32 @@ pub struct WorkflowControl {
 pub enum NodeDsl {
     Worker(WorkerNode),
     AiDynamic(AiDynamicNode),
+    ParallelGroup(ParallelGroupNode),
+}
+
+pub const PARALLEL_GROUP_RESULT: &str = "parallel-group-result";
+pub const MAX_STATIC_PARALLEL: u32 = 5;
+pub const MAX_PARALLEL_GROUP_STAGES: usize = 64;
+pub const DEFAULT_STATIC_PARALLEL: u32 = 3;
+
+fn default_static_parallel() -> u32 {
+    DEFAULT_STATIC_PARALLEL
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ParallelGroupNode {
+    pub id: String,
+    pub branches: Vec<ParallelBranchDsl>,
+    #[serde(default = "default_static_parallel")]
+    pub max_parallel: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParallelBranchDsl {
+    pub id: String,
+    pub stages: Vec<String>,
 }
 
 impl NodeDsl {
@@ -226,6 +294,7 @@ impl NodeDsl {
         match self {
             Self::Worker(node) => &node.id,
             Self::AiDynamic(node) => &node.id,
+            Self::ParallelGroup(node) => &node.id,
         }
     }
 
@@ -233,6 +302,7 @@ impl NodeDsl {
         match self {
             Self::Worker(_) => NodeType::Worker,
             Self::AiDynamic(_) => NodeType::AiDynamic,
+            Self::ParallelGroup(_) => NodeType::ParallelGroup,
         }
     }
 
@@ -240,27 +310,28 @@ impl NodeDsl {
         match self {
             Self::Worker(node) => node.provider.as_deref(),
             Self::AiDynamic(node) => node.bootstrap_provider(),
+            Self::ParallelGroup(_) => None,
         }
     }
 
     pub fn profile(&self) -> Option<&str> {
         match self {
             Self::Worker(node) => node.profile.as_deref(),
-            Self::AiDynamic(_) => None,
+            Self::AiDynamic(_) | Self::ParallelGroup(_) => None,
         }
     }
 
     pub fn goal(&self) -> Option<&str> {
         match self {
             Self::Worker(node) => node.goal.as_deref(),
-            Self::AiDynamic(_) => None,
+            Self::AiDynamic(_) | Self::ParallelGroup(_) => None,
         }
     }
 
     pub fn manual_check_enabled(&self) -> bool {
         match self {
             Self::Worker(node) => node.manual_check.unwrap_or(false),
-            Self::AiDynamic(_) => false,
+            Self::AiDynamic(_) | Self::ParallelGroup(_) => false,
         }
     }
 }
@@ -577,6 +648,13 @@ pub fn workflow_contains_ai_dynamic(workflow: &WorkflowDsl) -> bool {
         .any(|node| matches!(node, NodeDsl::AiDynamic(_)))
 }
 
+pub fn workflow_requires_branch_workspaces(workflow: &WorkflowDsl) -> bool {
+    workflow
+        .nodes
+        .iter()
+        .any(|node| node.node_type().owns_branch_graph())
+}
+
 impl ValidatedWorkflow {
     pub fn get_node(&self, id: &str) -> Option<&NodeDsl> {
         self.nodes_by_id.get(id)
@@ -826,6 +904,195 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn is_portable_component(id: &str) -> bool {
+    let reserved_name = id
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    !id.is_empty()
+        && id.len() <= 128
+        && id.trim() == id
+        && !id.ends_with('.')
+        && !id
+            .chars()
+            .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
+        && !matches!(
+            reserved_name.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+        )
+        && !["COM", "LPT"].iter().any(|p| {
+            reserved_name
+                .strip_prefix(p)
+                .is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
+        })
+}
+
+// A Windows path component compares case-insensitively, without expanding one
+// character into multiple characters (e.g. `ß` is not the path `SS`). Keep the
+// worker ID itself unchanged; only use this key inside one child run's namespace.
+fn portable_component_case_key(id: &str) -> String {
+    id.chars().map(|c| {
+        let mut upper = c.to_uppercase();
+        let first = upper.next().unwrap_or(c);
+        if upper.next().is_none() { first } else { c }
+    }).collect()
+}
+
+fn validate_parallel_groups(
+    workflow: &WorkflowDsl,
+    nodes: &IndexMap<String, NodeDsl>,
+) -> Result<()> {
+    let mut members = BTreeMap::new();
+    for node in &workflow.nodes {
+        let NodeDsl::ParallelGroup(group) = node else {
+            continue;
+        };
+        ensure!(
+            is_portable_component(&group.id),
+            "invalid parallel-group path component"
+        );
+        ensure!(
+            (1..=MAX_STATIC_PARALLEL).contains(&group.max_parallel),
+            "parallel-group `{}` maxParallel must be 1..={MAX_STATIC_PARALLEL}",
+            group.id
+        );
+        ensure!(
+            (2..=MAX_PARALLEL_GROUP_STAGES).contains(&group.branches.len()),
+            "parallel-group `{}` needs 2..={MAX_PARALLEL_GROUP_STAGES} branches",
+            group.id
+        );
+        let mut branch_ids = HashSet::new();
+        let mut count = 0;
+        for branch in &group.branches {
+            ensure!(
+                !branch.id.trim().is_empty() && branch_ids.insert(&branch.id),
+                "parallel-group `{}` requires unique nonempty branch ids",
+                group.id
+            );
+            ensure!(
+                !branch.stages.is_empty(),
+                "branch `{}` has no stages",
+                branch.id
+            );
+            count += branch.stages.len();
+            ensure!(
+                count <= MAX_PARALLEL_GROUP_STAGES,
+                "parallel-group `{}` exceeds its stage limit",
+                group.id
+            );
+            let mut stage_directories = HashSet::new();
+            for (index, id) in branch.stages.iter().enumerate() {
+                ensure!(
+                    is_portable_component(id),
+                    "invalid parallel stage path component"
+                );
+                ensure!(
+                    stage_directories.insert(portable_component_case_key(id)),
+                    "branch `{}` has colliding stage directory `{id}`",
+                    branch.id
+                );
+                ensure!(
+                    matches!(nodes.get(id), Some(NodeDsl::Worker(w)) if !w.manual_check.unwrap_or(false)),
+                    "branch stage `{id}` must be an ordinary worker without manual_check"
+                );
+                ensure!(
+                    members
+                        .insert(id.as_str(), (&group.id, &branch.id, index))
+                        .is_none(),
+                    "branch stage `{id}` has multiple owners"
+                );
+            }
+        }
+    }
+    if members.is_empty() {
+        return Ok(());
+    }
+    ensure!(
+        !members.contains_key(workflow.entry.as_str()),
+        "workflow entry cannot target a branch member"
+    );
+    for edge in &workflow.edges {
+        let source = members.get(edge.from.as_str());
+        let target = members.get(edge.to.as_str());
+        if let Some((group, branch, index)) = source {
+            ensure!(
+                edge.on == EdgeOutcome::Failure
+                    && edge.new_round_entry.is_none()
+                    && workflow.control.max_attempts.is_some()
+                    && target.is_some_and(|(g, b, i)| g == group && b == branch && i <= index),
+                "branch edge `{} -> {}` must be a bounded local failure retry",
+                edge.from,
+                edge.to
+            );
+        } else {
+            ensure!(
+                target.is_none()
+                    && !edge
+                        .new_round_entry
+                        .as_deref()
+                        .is_some_and(|entry| members.contains_key(entry.trim())),
+                "outer edge cannot enter a branch member"
+            );
+        }
+        if matches!(nodes.get(&edge.to), Some(NodeDsl::ParallelGroup(_)))
+            || matches!(nodes.get(&edge.from), Some(NodeDsl::ParallelGroup(_)))
+        {
+            ensure!(
+                edge.session != Some(SessionMode::Continue),
+                "parallel-group has no session to continue"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Compile an owned branch from the frozen executable definition, preserving each worker's
+/// identity, execution configuration and explicit local retry edge.
+impl ParallelBranchDsl {
+    pub fn workflow(&self, parent: &ValidatedWorkflow) -> Result<WorkflowDsl> {
+        let nodes = self
+            .stages
+            .iter()
+            .map(|id| {
+                parent
+                    .get_node(id)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("branch stage `{id}` missing"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let ids = self.stages.iter().collect::<HashSet<_>>();
+        let mut edges = parent
+            .raw
+            .edges
+            .iter()
+            .filter(|edge| ids.contains(&edge.from))
+            .cloned()
+            .collect::<Vec<_>>();
+        for (i, id) in self.stages.iter().enumerate() {
+            edges.push(EdgeDsl {
+                from: id.clone(),
+                to: self
+                    .stages
+                    .get(i + 1)
+                    .cloned()
+                    .unwrap_or_else(|| END_NODE.into()),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            });
+        }
+        Ok(WorkflowDsl {
+            version: parent.raw.version.clone(),
+            id: self.id.clone(),
+            entry: self.stages.first().context("empty branch")?.clone(),
+            control: parent.raw.control.clone(),
+            nodes,
+            edges,
+        })
+    }
+}
+
 fn validate_workflow_with_mode(
     workflow: WorkflowDsl,
     mode: WorkflowValidationMode,
@@ -869,6 +1136,7 @@ fn validate_workflow_with_mode(
         match node {
             NodeDsl::Worker(worker) => validate_worker_node(worker, id, mode)?,
             NodeDsl::AiDynamic(dynamic) => validate_ai_dynamic_node(dynamic, id)?,
+            NodeDsl::ParallelGroup(_) => {}
         }
 
         nodes_by_id.insert(id.to_string(), node.clone());
@@ -879,6 +1147,7 @@ fn validate_workflow_with_mode(
         "entry node not found: {}",
         workflow.entry
     );
+    validate_parallel_groups(&workflow, &nodes_by_id)?;
     let mut edge_outcomes_by_source = HashSet::new();
     let mut has_end_target = false;
     for edge in &workflow.edges {
@@ -962,6 +1231,14 @@ fn validate_workflow_with_mode(
     while let Some(node_id) = pending.pop() {
         if !reachable.insert(node_id.clone()) {
             continue;
+        }
+        if let Some(NodeDsl::ParallelGroup(group)) = nodes_by_id.get(&node_id) {
+            pending.extend(
+                group
+                    .branches
+                    .iter()
+                    .flat_map(|branch| branch.stages.iter().cloned()),
+            );
         }
         workflow
             .edges

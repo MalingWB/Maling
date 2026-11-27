@@ -1202,6 +1202,7 @@ mod tests {
             dynamic_template: false,
             scope: ProfileScope::User,
             is_built_in: false,
+            forged: false,
             created_at: "2026-10-31 00:00:00".into(),
             updated_at: "2026-10-31 00:00:00".into(),
             path: String::new(),

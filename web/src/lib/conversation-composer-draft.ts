@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { revokeAttachmentPreviewUrls, type AttachmentItem } from './attachment-service';
-import type { RemoteTaskAttachmentVm, ScheduledTaskConfig } from '@/types';
+import type { ForgeSourceItemVm, RemoteTaskAttachmentVm, ScheduledTaskConfig } from '@/types';
 import type { ComposerQuote, ComposerWorkspaceFileRef } from './composer-context';
 
 /**
@@ -44,10 +44,12 @@ export interface ConversationComposerRemoteBinding {
  * 普通本地会话。与远程绑定互斥（一次只有一个来源声明）。
  */
 export interface ConversationComposerForgeBinding {
-  /// 源会话 task id（后端据此组装隐藏材料；入口 B 为空）。
+  /// 源会话 task id（后端据此组装隐藏材料；入口 B/C 为空）。
   sourceTaskId?: string;
-  /// 入口 B 的 skill 组合引用（与 sourceTaskId 互斥）。
-  sourceSkills?: { name: string; source: 'built-in' | 'global' | 'project'; directoryPath: string }[];
+  /// 入口 A 的可见分支及可选消息截断点。
+  sourceSession?: import('../types').ForgeSourceSessionVm;
+  /// 入口 B/C 的素材清单（与 sourceTaskId 互斥）。
+  sourceItems?: ForgeSourceItemVm[];
   /// 对话式修改（方案 §5.9）：既有模板 id（反投影为 Spec 初始基线）。
   sourceTemplateId?: string;
   /// 源所属项目（须与 composer 当前项目一致，发送前校验）。
@@ -170,6 +172,7 @@ export interface ConversationComposerDraftContextValue {
 }
 
 export interface ConversationComposerDraftBoundaryHandle {
+  occupied: boolean;
   reset: () => void;
   changeWorkspace: (projectId: string | null) => void;
   /// 会话页「铸造为工作流」入口在 boundary 外触发预填（入口在 run header，composer 在 home）。
@@ -188,10 +191,16 @@ export function useConversationComposerDraft(): ConversationComposerDraftContext
 
 export const ConversationComposerDraftProvider = ConversationComposerDraftContext.Provider;
 
+export function conversationComposerDraftOccupied(draft: ConversationComposerDraftState): boolean {
+  return Boolean(draft.content || draft.attachments.length || draft.workspaceFiles.length || draft.quotes.length
+    || draft.remote || draft.forge || draft.submission.kind !== 'send');
+}
+
 export function createConversationComposerDraftBoundaryHandle(
   owner: ConversationComposerDraftContextValue,
 ): ConversationComposerDraftBoundaryHandle {
   return {
+    occupied: conversationComposerDraftOccupied(owner.draft),
     reset: owner.reset,
     changeWorkspace: owner.changeWorkspace,
     prefillForge: owner.prefillForge,

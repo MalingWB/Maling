@@ -966,6 +966,9 @@ pub struct SkillMeta {
     pub directory_path: String,
     /// SKILL 来源目录标识：".gold-band" 为 Gold-Band 自身管理，".claude"/".codex" 等为对应 agent 目录
     pub agent_source: String,
+    /// Compatibility, not evidence of a WorkBuddy installation or an enabled Skill.
+    #[serde(default)]
+    pub work_buddy_code_mode_readable: bool,
     pub load_warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub synced_agent_types: Vec<String>,
@@ -1093,13 +1096,11 @@ pub fn feishu_scan_auth_config() -> &'static FeishuScanAuthConfig {
         .feishu_scan_auth
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 13;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 14;
 const USE_LOCAL_CLAUDE: bool = false;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
 const CURRENT_CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp@latest";
-const LEGACY_CODEBUDDY_DISPLAY_NAME: &str = "CodeBuddy";
-const CURRENT_CODEBUDDY_DISPLAY_NAME: &str = "WorkBuddy";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -1175,7 +1176,7 @@ impl SettingsConfig {
             migrate_removed_im_notification_preferences(settings);
             migrated = true;
         }
-        if version < 13 {
+        if version < 14 {
             migrate_codebuddy_display_name(settings);
             migrated = true;
         }
@@ -1434,8 +1435,10 @@ fn migrate_codebuddy_display_name(settings: &mut serde_json::Map<String, serde_j
     else {
         return;
     };
-    if display_name.as_str() == Some(LEGACY_CODEBUDDY_DISPLAY_NAME) {
-        *display_name = serde_json::Value::String(CURRENT_CODEBUDDY_DISPLAY_NAME.to_string());
+    if matches!(display_name.as_str(), Some("CodeBuddy" | "WorkBuddy"))
+        && let Some(cli) = crate::agent_catalog::builtin_agent("codebuddy-code")
+    {
+        *display_name = serde_json::Value::String(cli.label.clone());
     }
 }
 
@@ -3701,7 +3704,7 @@ mod tests {
                 .unwrap()
                 .adapter
                 .display_name,
-            "WorkBuddy"
+            "CodeBuddy Code"
         );
 
         let (settings, migrated) = migrate("Custom CodeBuddy");

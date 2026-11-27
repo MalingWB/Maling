@@ -21,11 +21,16 @@ import type { GraphNodeVm, GraphVm } from '../types';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import {
   calculateCenteredViewport,
+  isRuntimeTerminalNode,
+  WORKFLOW_NODE_OUTCOME_HANDLE_RATIO,
+  type WorkflowLayoutSpec,
+  type WorkflowLayoutNodeSpec,
   runtimeEdgeId,
   runtimeGraphEdgeClassName,
   runtimeGraphEdgeDisplayLabel,
   runtimeGraphLayoutSpec,
   runtimeEdgeColor,
+  WORKFLOW_FIT_MAX_ZOOM,
   type WorkflowLayout,
   type WorkflowLayoutRoute,
 } from './workflowGraph';
@@ -47,18 +52,29 @@ import { workflowHandlePositions, type WorkflowLayoutDirection } from '@/compone
 
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 1.4;
-const WORKFLOW_FIT_MAX_ZOOM = 0.88;
 const ACTUAL_FIT_MAX_ZOOM = 0.82;
 
 type GraphMode = 'readonly' | 'interactive';
 
+/**
+ * Node card density. `runtime` (default) is the status card used by execution
+ * graphs. `compact` is a two-line card (name + detail) for space-constrained
+ * embeds such as the workflow blueprint in the side workspace, where the
+ * status card would be scaled down until unreadable.
+ */
+export type GraphDensity = 'runtime' | 'compact';
+
 type WorkflowNodeData = {
   node: GraphNodeVm;
   selected: boolean;
+  /** Marked by the embed as noteworthy (for example changed in the latest turn); a weaker emphasis than `selected`. */
+  highlighted: boolean;
   active: boolean;
   running: boolean;
   mode: GraphMode;
   direction: WorkflowLayoutDirection;
+  compact: boolean;
+  layoutNode: WorkflowLayoutNodeSpec;
   currentLabel: string;
   runningLabel: string;
   retryPendingLabel: string;
@@ -75,6 +91,8 @@ type WorkflowNodeData = {
 interface GraphViewProps {
   graph: GraphVm;
   selectedNodeId?: string | null;
+  /** Nodes the embed marks as noteworthy; unlike `selectedNodeId` it is a set, with a weaker emphasis. */
+  highlightedNodeIds?: ReadonlySet<string>;
   activeNodeId?: string | null;
   onNodeSelect?: (node: GraphNodeVm) => void;
   onNodeOpenDetail?: (node: GraphNodeVm) => void;
@@ -85,6 +103,14 @@ interface GraphViewProps {
   variant?: 'grid' | 'workflow' | 'actual';
   /** Set on the nested fullscreen instance to avoid recursive fullscreen buttons. */
   allowFullscreen?: boolean;
+  /** Node card density; defaults to the runtime status card. */
+  density?: GraphDensity;
+  /**
+   * Fraction of the viewport kept empty around the fitted graph on each side.
+   * Defaults to the surface's own margin; embeds that already sit inside a
+   * padded container pass a smaller one so the graph is not scaled down twice.
+   */
+  fitPadding?: number;
 }
 
 const nodeTypes = {
@@ -96,7 +122,7 @@ const edgeTypes = {
   runtimeEdge: memo(RuntimeEdge),
 };
 
-export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, onNodeOpenDetail, onNodeOpenSession, onNodeOpenLog, onNodeRetry, onNodeContextMenuStart, variant = 'grid', allowFullscreen = true }: GraphViewProps) {
+export function GraphView({ graph, selectedNodeId, highlightedNodeIds, activeNodeId, onNodeSelect, onNodeOpenDetail, onNodeOpenSession, onNodeOpenLog, onNodeRetry, onNodeContextMenuStart, variant = 'grid', allowFullscreen = true, density = 'runtime', fitPadding }: GraphViewProps) {
   const { t } = useTranslation();
   const mode: GraphMode = variant === 'actual' ? 'interactive' : 'readonly';
   const { preference: directionPreference, setPreference: setDirectionPreference } = useWorkflowGraphDirectionPreference();
@@ -134,15 +160,19 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
       setLayoutDirection(next);
     }
   }, [directionPreference, viewportSize.width, viewportSize.height]);
-  const layoutSpec = useMemo(() => runtimeGraphLayoutSpec(graph, (value) => displayStatus(t, value), layoutDirection), [graph, layoutDirection, t]);
+  const compact = density === 'compact';
+  const layoutSpec = useMemo(
+    () => runtimeGraphLayoutSpec(graph, (value) => displayStatus(t, value), layoutDirection, compact),
+    [compact, graph, layoutDirection, t],
+  );
   const layoutState = useWorkflowLayout(layoutSpec);
   const graphLayout = layoutState.layout;
   // The rendered direction follows the finished layout, never the pending
   // target: a flip must not swap handles and anchors while node positions
   // still come from the previous direction's layout (WorkflowEditor contract).
   const renderDirection = graphLayout?.direction ?? layoutDirection;
-  const { nodes, edges } = useMemo(() => createLayoutedGraph(graph, graphLayout, selectedNodeId, activeNodeId, mode, renderDirection, t, retryPendingKeys), [activeNodeId, graph, graphLayout, mode, renderDirection, retryPendingKeys, selectedNodeId, t]);
-  const fitViewOptions = useMemo(() => ({ padding: variant === 'workflow' ? 0.2 : 0.22, maxZoom: variant === 'workflow' ? WORKFLOW_FIT_MAX_ZOOM : ACTUAL_FIT_MAX_ZOOM }), [variant]);
+  const { nodes, edges } = useMemo(() => createLayoutedGraph(graph, layoutSpec, graphLayout, selectedNodeId, highlightedNodeIds, activeNodeId, mode, renderDirection, t, retryPendingKeys, compact), [activeNodeId, compact, graph, graphLayout, layoutSpec, highlightedNodeIds, mode, renderDirection, retryPendingKeys, selectedNodeId, t]);
+  const fitViewOptions = useMemo(() => ({ padding: fitPadding ?? (variant === 'workflow' ? 0.2 : 0.22), maxZoom: variant === 'workflow' ? WORKFLOW_FIT_MAX_ZOOM : ACTUAL_FIT_MAX_ZOOM }), [fitPadding, variant]);
   // `actual` anchors the entry side of the graph: left for a RIGHT flow, top for a DOWN flow.
   const viewportHorizontalAnchor = variant === 'actual' ? (renderDirection === 'DOWN' ? 0.5 : 0.40) : 0.5;
   const viewportVerticalAnchor = variant === 'actual' ? (renderDirection === 'DOWN' ? 0.32 : 0.5) : 0.5;
@@ -242,42 +272,50 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
     return <EmptyState>{t('graph.emptyGraph')}</EmptyState>;
   }
 
+  const caption = (
+    <div className={cn('pointer-events-none rounded-full border bg-card/85 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground shadow-sm backdrop-blur', compact ? 'ml-4 mt-3 shrink-0 self-start' : 'absolute left-4 top-4')}>
+      {mode === 'interactive' ? t('graph.executionGraph') : t('graph.workflowBlueprint')}
+    </div>
+  );
   return (
-    <div ref={setContainerElement} className={cn('relative min-w-0 overflow-hidden rounded-xl border bg-muted/15', variant === 'workflow' && allowFullscreen ? 'h-[360px]' : 'h-full min-h-0')}>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        viewport={viewport}
-        onViewportChange={setViewport}
-        minZoom={Math.min(MIN_ZOOM, centeredViewport?.zoom ?? MIN_ZOOM)}
-        maxZoom={MAX_ZOOM}
-        nodesDraggable={false}
-        nodesConnectable={false}
-        elementsSelectable={mode === 'interactive'}
-        panOnDrag
-        zoomOnScroll
-        zoomOnPinch
-        preventScrolling
-        proOptions={{ hideAttribution: true }}
-        onNodeClick={handleNodeClick}
-        onNodeDoubleClick={handleNodeDoubleClick}
-        onNodeContextMenu={handleNodeContextMenu}
-        onInit={setFlowInstance}
-        className="workflow-graph"
-      >
-        <Background color="var(--border)" gap={28} size={1} />
-        <GraphControls
-          disabled={!flowInstance}
-          onZoomIn={() => { void flowInstance?.zoomIn(); }}
-          onZoomOut={() => { void flowInstance?.zoomOut(); }}
-          onFitView={() => { if (centeredViewport) setViewport(centeredViewport); }}
-          direction={{ preference: directionPreference, onChange: setDirectionPreference }}
-          onFullscreen={allowFullscreen ? () => setFullscreen(true) : undefined}
-          fullscreenActive={fullscreen}
-        />
-      </ReactFlow>
+    <div className={cn('relative flex min-w-0 flex-col overflow-hidden rounded-xl border bg-muted/15', variant === 'workflow' && allowFullscreen ? 'h-[360px]' : 'h-full min-h-0')}>
+      {compact && caption}
+      <div ref={setContainerElement} className="relative min-h-0 flex-1">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          viewport={viewport}
+          onViewportChange={setViewport}
+          minZoom={Math.min(MIN_ZOOM, centeredViewport?.zoom ?? MIN_ZOOM)}
+          maxZoom={MAX_ZOOM}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable={mode === 'interactive'}
+          panOnDrag
+          zoomOnScroll
+          zoomOnPinch
+          preventScrolling
+          proOptions={{ hideAttribution: true }}
+          onNodeClick={handleNodeClick}
+          onNodeDoubleClick={handleNodeDoubleClick}
+          onNodeContextMenu={handleNodeContextMenu}
+          onInit={setFlowInstance}
+          className="workflow-graph"
+        >
+          <Background color="var(--border)" gap={28} size={1} />
+          <GraphControls
+            disabled={!flowInstance}
+            onZoomIn={() => { void flowInstance?.zoomIn(); }}
+            onZoomOut={() => { void flowInstance?.zoomOut(); }}
+            onFitView={() => { if (centeredViewport) setViewport(centeredViewport); }}
+            direction={{ preference: directionPreference, onChange: setDirectionPreference }}
+            onFullscreen={allowFullscreen ? () => setFullscreen(true) : undefined}
+            fullscreenActive={fullscreen}
+          />
+        </ReactFlow>
+      </div>
       {allowFullscreen ? (
         <GraphFullscreenDialog open={fullscreen} onOpenChange={setFullscreen} title={mode === 'interactive' ? t('graph.executionGraph') : t('graph.workflowBlueprint')}>
           <GraphView
@@ -292,13 +330,13 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
             onNodeContextMenuStart={onNodeContextMenuStart}
             variant={variant}
             allowFullscreen={false}
+            density={density}
+            fitPadding={fitPadding}
           />
         </GraphFullscreenDialog>
       ) : null}
       <WorkflowLayoutStatus state={layoutState} />
-      <div className="pointer-events-none absolute left-4 top-4 rounded-full border bg-card/85 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground shadow-sm backdrop-blur">
-        {mode === 'interactive' ? t('graph.executionGraph') : t('graph.workflowBlueprint')}
-      </div>
+      {!compact && caption}
       {menu ? (
         <div
           role="menu"
@@ -343,10 +381,12 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
 
 type WorkflowGroupData = { label: string; width: number; height: number };
 
-function createLayoutedGraph(graph: GraphVm, layout: WorkflowLayout | null, selectedNodeId: string | null | undefined, activeNodeId: string | null | undefined, mode: GraphMode, direction: WorkflowLayoutDirection, t: TFunction, retryPendingKeys: ReadonlySet<string>) {
-  const activeNode = graph.nodes.find((node) => matchesNodeId(node, activeNodeId));
-  const runningActiveNode = activeNode?.runtimeDisplay?.tone === 'running';
-  const activeNodeKey = activeNode?.id ?? activeNode?.nodeId ?? activeNodeId ?? null;
+function createLayoutedGraph(graph: GraphVm, spec: WorkflowLayoutSpec, layout: WorkflowLayout | null, selectedNodeId: string | null | undefined, highlightedNodeIds: ReadonlySet<string> | undefined, activeNodeId: string | null | undefined, mode: GraphMode, direction: WorkflowLayoutDirection, t: TFunction, retryPendingKeys: ReadonlySet<string>, compact = false) {
+  const layoutNodes = new Map(spec.nodes.map(node => [node.id, node]));
+  const badgeEdges = compact ? new Set(spec.edges.filter(edge => edge.labelSize).map(edge => edge.id)) : null;
+  const runningNodes = new Set(graph.nodes.filter((node) =>
+    (node.current || matchesNodeId(node, activeNodeId)) && node.runtimeDisplay?.tone === 'running',
+  ).map((node) => node.id));
   const groups: Node<WorkflowGroupData>[] = [...(layout?.groups ?? [])].map(([id, rect]) => ({
     id: `group:${id}`,
     type: 'workflowGroup',
@@ -363,7 +403,7 @@ function createLayoutedGraph(graph: GraphVm, layout: WorkflowLayout | null, sele
     const displayTone = node.runtimeDisplay?.tone ?? 'neutral';
     const displayIcon = node.runtimeDisplay?.icon ?? 'dot';
     const active = matchesNodeId(node, activeNodeId) || node.current;
-    const running = active && (runningActiveNode || displayTone === 'running');
+    const running = runningNodes.has(node.id);
     return {
       id: node.id,
       type: 'workflowNode',
@@ -371,12 +411,18 @@ function createLayoutedGraph(graph: GraphVm, layout: WorkflowLayout | null, sele
       // A node added after the last finished layout appears once its position is known.
       hidden: !rect,
       data: {
-        node,
+        node: node.id === '$start' ? { ...node, label: t('workflowEditor.nodeLabels.start') }
+          : node.id === '$end' ? { ...node, label: t('workflowEditor.nodeLabels.end') }
+          : node.nodeType === 'parallel-join' ? { ...node, label: t('forge.preview.parallelJoin', { id: node.label }) }
+          : node,
         selected: selectedNodeId === node.id || selectedNodeId === node.nodeId,
+        highlighted: Boolean(highlightedNodeIds?.has(node.id) || (node.nodeId && highlightedNodeIds?.has(node.nodeId))),
         active,
         running,
         mode,
         direction,
+        compact,
+        layoutNode: layoutNodes.get(node.id)!,
         currentLabel: t('graph.current'),
         runningLabel: displayStatus(t, 'running'),
         retryPendingLabel: t(node.status === 'completed' || node.attempts?.some((attempt) => (
@@ -401,14 +447,15 @@ function createLayoutedGraph(graph: GraphVm, layout: WorkflowLayout | null, sele
 
   const edges: Edge[] = graph.edges.map((edge, index) => {
     const id = runtimeEdgeId(edge, index);
-    const activeEdge = Boolean(runningActiveNode && activeNodeKey && edge.to === activeNodeKey);
+    const activeEdge = runningNodes.has(edge.to);
     const color = runtimeEdgeColor(edge, activeEdge);
     const branch = (edge.label?.toLowerCase() ?? '') !== 'success';
-    const label = runtimeGraphEdgeDisplayLabel(edge, (value) => displayStatus(t, value));
+    const label = !badgeEdges || badgeEdges.has(id) ? runtimeGraphEdgeDisplayLabel(edge, (value) => displayStatus(t, value)) : undefined;
     const edgeClassName = runtimeGraphEdgeClassName(activeEdge, branch);
     return {
       id,
       source: edge.from,
+      ...(compact && layoutNodes.get(edge.from)?.sourceHandles === 'split' ? { sourceHandle: edge.label.toLowerCase() === 'failure' ? 'failure' : 'success' } : {}),
       target: edge.to,
       label,
       type: 'runtimeEdge',
@@ -463,7 +510,7 @@ function RuntimeEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targe
 
 /** Group frames share the canvas but carry no runtime node. */
 function isWorkflowNode(node: Node<WorkflowNodeData>) {
-  return node.type === 'workflowNode';
+  return node.type === 'workflowNode' && !(node.data.node.nodeId == null && node.data.node.id.startsWith('$'));
 }
 
 function matchesNodeId(node: GraphNodeVm, id?: string | null) {
@@ -475,8 +522,15 @@ function graphNodeRetryPendingKey(node: Pick<GraphNodeVm, 'roundId' | 'nodeId' |
 }
 
 function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
-  const { node, selected, active, running, mode, direction, currentLabel, runningLabel, retryPendingLabel, retryPending, displayStatusValue, displayTone, displayIcon, statusLabel, artifactLabel, attachmentLabel, iconKey } = data;
+  const { node, selected, highlighted, active, running, mode, direction, compact, currentLabel, runningLabel, retryPendingLabel, retryPending, displayStatusValue, displayTone, displayIcon, statusLabel, artifactLabel, attachmentLabel, iconKey } = data;
   const handlePositions = workflowHandlePositions(direction);
+  if (compact) {
+    const terminal = isRuntimeTerminalNode(node);
+    const handles = <CompactHandles spec={data.layoutNode} direction={direction} terminal={terminal} />;
+    return terminal
+      ? <CompactTerminalNode label={node.label} width={data.layoutNode.width}>{handles}</CompactTerminalNode>
+      : <CompactWorkflowNode node={node} selected={selected} highlighted={highlighted}>{handles}</CompactWorkflowNode>;
+  }
   const hasStatus = Boolean(displayStatusValue);
   const isDynamicNode = (node.nodeType ?? '').startsWith('dynamic-');
   return (
@@ -485,6 +539,7 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
         'relative flex h-[138px] w-[226px] flex-col overflow-hidden rounded-xl border border-border/65 bg-card text-card-foreground shadow-sm transition-shadow',
         isDynamicNode && 'border-accent/35 bg-accent/5',
         selected && 'border-primary/80 bg-primary/5 ring-2 ring-primary/25 shadow-[0_0_0_1px_rgba(245,158,11,0.26),0_10px_28px_rgba(245,158,11,0.12)]',
+        highlighted && !selected && 'border-primary/50 bg-primary/5 ring-1 ring-primary/15',
         active && !running && !selected && 'border-border/80 bg-card shadow-sm',
         running && 'workflow-node-running border-gold-running/70 bg-gold-running/10 shadow-[0_0_0_1px_color-mix(in_srgb,var(--gold-running)_24%,transparent),0_14px_34px_color-mix(in_srgb,var(--gold-running)_16%,transparent)]',
         mode === 'interactive' && 'cursor-pointer hover:border-primary/45 hover:shadow-md',
@@ -527,6 +582,66 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
           </Tooltip>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Compact-density stage card (NODE_WIDTH × NODE_HEIGHT): the node name over one
+ * detail line. `node.detail` supplies the detail when the embed has something
+ * more useful to say than the node id (the workflow blueprint shows the role
+ * and failure policy); otherwise it falls back to `id · type`.
+ */
+function CompactWorkflowNode({ node, selected, highlighted, children }: { node: GraphNodeVm; selected: boolean; highlighted: boolean; children: React.ReactNode }) {
+  const title = node.label;
+  const detail = node.detail?.trim() || `${node.nodeId ?? node.id} · ${node.nodeType}`;
+  return (
+    <div
+      data-graph-density="compact"
+      className={cn(
+        'relative flex h-[66px] w-[220px] items-center overflow-hidden rounded-xl border border-border/65 bg-card text-card-foreground shadow-sm',
+        selected && 'border-primary/80 bg-primary/5 ring-2 ring-primary/25',
+        highlighted && !selected && 'border-primary/50 bg-primary/5 ring-1 ring-primary/15',
+      )}
+    >
+      {children}
+      <div className="min-w-0 flex-1 px-4">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <p className="truncate text-sm font-medium leading-5 text-foreground">{title}</p>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-[360px] whitespace-pre-wrap break-words" sideOffset={6}>{title}</TooltipContent>
+        </Tooltip>
+        <p className="truncate text-xs leading-4 text-muted-foreground">{detail}</p>
+      </div>
+    </div>
+  );
+}
+
+function CompactHandles({ spec, direction, terminal }: { spec: WorkflowLayoutNodeSpec; direction: WorkflowLayoutDirection; terminal: boolean }) {
+  const positions = workflowHandlePositions(direction);
+  const offset = (outcome: 'success' | 'failure') => ({ [direction === 'DOWN' ? 'left' : 'top']: `${100 * WORKFLOW_NODE_OUTCOME_HANDLE_RATIO[outcome]}%` });
+  const className = terminal ? 'opacity-0' : '!size-2 !border-2 !border-card !bg-muted-foreground';
+  return <>
+    <Handle type="target" position={spec.pinBelow ? positions.source : positions.target} isConnectable={false} className={className} style={offset('success')} />
+    {spec.sourceHandles !== 'none' && <Handle type="source" id={spec.sourceHandles === 'split' ? 'success' : undefined} position={positions.source} isConnectable={false} className={className} style={offset('success')} />}
+    {spec.sourceHandles === 'split' && <Handle type="source" id="failure" position={positions.source} isConnectable={false} className={className} style={offset('failure')} />}
+  </>;
+}
+
+/** Start/end markers and fork/join controls share a compact marker shape. */
+function CompactTerminalNode({ label, width, children }: { label: string; width: number; children: React.ReactNode }) {
+  return (
+    <div
+      data-graph-density="compact"
+      className="relative flex h-[44px] items-center justify-center overflow-hidden rounded-full border border-border/65 bg-muted/40 px-4 shadow-sm"
+      style={{ width }}
+    >
+      {children}
+      <Tooltip>
+        <TooltipTrigger asChild><span className="truncate text-xs text-muted-foreground">{label}</span></TooltipTrigger>
+        <TooltipContent>{label}</TooltipContent>
+      </Tooltip>
     </div>
   );
 }

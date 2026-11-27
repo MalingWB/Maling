@@ -3,6 +3,7 @@ import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getAcpRawFrames, getAcpSession, getAgentRegistry, getConversationExecutionPlan, getWorkflowTemplates, preflightConversationExecutionPlanSave, recoverConversationExecutionPlanOperation, saveConversationExecutionPlan } from '@/api';
 import { RawFrameViewer, SystemPromptPanel } from '@/components/acp/ACPChatDialog';
+import type { AcpPromptSubmitResult } from '@/components/acp/ACPChatDialog';
 import { CompactionSummaryWorkspacePanel } from './CompactionSummaryWorkspacePanel';
 import { ForgePreviewPanel } from './ForgePreviewPanel';
 import type { CompactionSummaryWorkspaceResource } from './right-workspace-context';
@@ -81,8 +82,16 @@ interface ConversationRunWorkspaceResourcePanelProps {
   agentRegistry: AgentRegistryVm | null;
   workflowTemplates?: WorkflowTemplateStore | null;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
-  /// 铸造试运行任务创建后,由持有方启动并导航(方案 §5.6)。
+  /// 试运行任务创建后,由持有方启动并导航(方案 §5.6)。
   onForgeTrialSessionStarted?: (projectId: string, taskId: string) => void;
+  /// 预览里的自动修正与「采用推荐」：经当前会话的对话栏发出消息（与手动发送同一条链路）。
+  onForgePrompt?: (prompt: string, promptId?: string) => Promise<AcpPromptSubmitResult>;
+  /// 把一段文字带进当前会话的对话输入框（不发送）。
+  onForgePrefillPrompt?: (text: string) => void;
+  /// 打开已保存的工作流查看。
+  onViewForgeWorkflow?: (templateId: string) => void;
+  /// 当前会话这一轮还在进行：预览里会写草稿的操作等它结束。
+  forgeConversationActive?: boolean;
   /** Fires after an execution-plan save fully committed so the owner can refresh the run projection. */
   onExecutionPlanSaved?: (saved: ExecutionPlanSaveResultVm) => void | Promise<void>;
   onNodeOpenSession?: (node: GraphNodeVm) => void;
@@ -98,6 +107,9 @@ export function conversationRunWorkspacePropsAreEqual(
   if (prev.agentRegistry !== next.agentRegistry) return false;
   if (prev.workflowTemplates !== next.workflowTemplates) return false;
   if (prev.onForgeTrialSessionStarted !== next.onForgeTrialSessionStarted) return false;
+  if (prev.onForgePrompt !== next.onForgePrompt) return false;
+  if (prev.onForgePrefillPrompt !== next.onForgePrefillPrompt) return false;
+  if (prev.onViewForgeWorkflow !== next.onViewForgeWorkflow) return false;
   if (prev.onExecutionPlanSaved !== next.onExecutionPlanSaved) return false;
   if (prev.onNodeOpenSession !== next.onNodeOpenSession) return false;
   if (prev.onNodeRetry !== next.onNodeRetry) return false;
@@ -108,6 +120,8 @@ export function conversationRunWorkspacePropsAreEqual(
     && prev.run.workflowValid === next.run.workflowValid;
   if (prev.resource.kind === 'workflow-view') return sameScope && prev.run.workflowGraph === next.run.workflowGraph;
   if (prev.resource.kind === 'workflow-edit' || prev.resource.kind === 'auto-config') return sameScope;
+  // 预览只订阅轮次收口事件，不跟着流式期间的 run 快照重渲染；只看它真正依赖的「这一轮是否进行中」。
+  if (prev.resource.kind === 'forge-preview') return sameScope && prev.forgeConversationActive === next.forgeConversationActive;
   return prev.run === next.run && prev.resource === next.resource;
 }
 
@@ -118,6 +132,10 @@ function ConversationRunWorkspaceResourcePanelComponent({
   workflowTemplates = null,
   onWorkflowTemplatesChange,
   onForgeTrialSessionStarted,
+  onForgePrompt,
+  onForgePrefillPrompt,
+  onViewForgeWorkflow,
+  forgeConversationActive = false,
   onExecutionPlanSaved,
   onNodeOpenSession,
   onNodeRetry,
@@ -161,6 +179,10 @@ function ConversationRunWorkspaceResourcePanelComponent({
         resource={resource}
         onWorkflowTemplatesChange={onWorkflowTemplatesChange}
         onTrialSessionStarted={onForgeTrialSessionStarted}
+        onSubmitPrompt={onForgePrompt}
+        onPrefillPrompt={onForgePrefillPrompt}
+        onViewWorkflow={onViewForgeWorkflow}
+        conversationActive={forgeConversationActive}
         agentRegistry={agentRegistry}
       />
     );

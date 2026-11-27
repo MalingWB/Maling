@@ -16,8 +16,7 @@ use serde::{Deserialize, Serialize};
 use super::orchestrator::run_prepared_run_foreground;
 use super::{App, CreateTaskInput, DEFAULT_WORKFLOW_TEMPLATE_ID, apply_optional_entry_preference};
 use crate::config::{ConversationAutoConfig, ConversationDirectConfig, ConversationRunMode};
-use crate::forge::spec::ForgeSpec;
-use crate::dsl::{WorkflowDsl, workflow_contains_ai_dynamic};
+use crate::dsl::{WorkflowDsl, workflow_requires_branch_workspaces};
 use crate::git::{GitRepositoryService, GitSourceControlService};
 use crate::provider::{
     PromptWorkspaceFileRef, TaskPromptInput, UserPromptQuote, UserPromptRole,
@@ -141,9 +140,12 @@ pub struct CreateConversationTaskCommand {
     /// 工作流铸造（入口 A）：源会话 task id。置位时任务标记 origin=Forge、
     /// 角色固定为 workflow-forge、源会话材料作为隐藏区段注入（G5 预算）。
     pub forge_source_task_id: Option<String>,
-    /// 工作流铸造（入口 B）：skill 组合引用。语义同上（skill 正文作为
-    /// 隐藏区段注入）；与 forge_source_task_id 互斥。
-    pub forge_source_skills: Option<Vec<crate::app::forge_service::ForgeSkillRef>>,
+    /// 入口 A 的可见会话分支及可选消息截断点。
+    /// 与 composer 预填摘要共用同一个截断点，隐藏材料与用户看到的范围一致。
+    pub forge_source_session: Option<crate::app::forge_service::ForgeSourceSession>,
+    /// 工作流铸造（入口 B/C）：素材清单（skill、plugin command、plugin agent）。
+    /// 语义同上（素材正文作为隐藏区段注入）；与 forge_source_task_id 互斥。
+    pub forge_source_items: Option<Vec<crate::app::forge_service::ForgeSourceItem>>,
     /// 对话式修改（方案 §5.9）：既有模板 id。反投影为 Spec 作为会话初始
     /// 存档基线；与入口 A/B 互斥。
     pub forge_source_template_id: Option<String>,
@@ -170,7 +172,8 @@ impl CreateConversationTaskCommand {
             quotes: Vec::new(),
             first_prompt_hidden_sections: None,
             forge_source_task_id: None,
-            forge_source_skills: None,
+            forge_source_session: None,
+            forge_source_items: None,
             forge_source_template_id: None,
         }
     }
@@ -272,65 +275,61 @@ impl App {
             ),
             "conversation payload cannot be empty"
         );
-        // 工作流铸造（入口 A/B）：固定 Direct 模式、固定 workflow-forge 角色、
-        // 源材料注入隐藏区段（G5 预算内），任务标记 origin=Forge。
-        // A（源会话）、B（skill 组合）、对话式修改（模板反投影）三者互斥。
-        let mut command = command.clone();
-        let mut forge_baseline_spec: Option<ForgeSpec> = None;
-        let forge_origin = if let Some(source_task_id) = command.forge_source_task_id.clone() {
+        // 工作流铸造（入口 A/B/C）：固定 Direct 模式、固定 workflow-forge 角色、
+        // 源材料注入首条 prompt 的隐藏区段（G5 预算内），任务标记 origin=Forge。
+        // A（源会话）、B/C（素材清单）、对话式修改（模板反投影）三者互斥。
+        // 之后每条消息的基线 Spec 由 `forge_baseline_section` 在装配 invocation 时注入。
+        let mut forge_baseline = None;
+        let mut forge_material = None;
+        let forge_origin = if let Some(source_task_id) = command.forge_source_task_id.as_deref() {
             ensure!(
                 command.run_mode == ConversationRunMode::Direct,
                 "forge conversation requires direct run mode"
             );
             ensure!(
-                command.forge_source_skills.is_none() && command.forge_source_template_id.is_none(),
+                command.forge_source_items.is_none() && command.forge_source_template_id.is_none(),
                 "forge sources are mutually exclusive"
             );
-            let material = self.forge_source_material(&source_task_id, None)?;
-            if command.role.is_none() {
-                command.role = Some(self.workflow_forge_role()?);
-            }
-            let sections = command.first_prompt_hidden_sections.take().unwrap_or_default();
-            command.first_prompt_hidden_sections = Some(
-                sections
-                    .into_iter()
-                    .chain(std::iter::once(material.hidden_section))
-                    .collect(),
+            forge_material = Some(
+                self.forge_source_material(source_task_id, command.forge_source_session.as_ref())?
+                    .hidden_section,
             );
             Some(crate::runtime::TaskOrigin::Forge)
-        } else if let Some(skills) = command.forge_source_skills.clone() {
+        } else if let Some(items) = command.forge_source_items.as_deref() {
             ensure!(
                 command.run_mode == ConversationRunMode::Direct,
                 "forge conversation requires direct run mode"
             );
             ensure!(
-                !skills.is_empty() && command.forge_source_template_id.is_none(),
-                "forge skill sources cannot be empty or mixed with other sources"
+                !items.is_empty() && command.forge_source_template_id.is_none(),
+                "forge source items cannot be empty"
             );
-            let section = self.forge_skills_material(&skills)?;
-            if command.role.is_none() {
-                command.role = Some(self.workflow_forge_role()?);
-            }
-            let sections = command.first_prompt_hidden_sections.take().unwrap_or_default();
-            command.first_prompt_hidden_sections =
-                Some(sections.into_iter().chain(std::iter::once(section)).collect());
+            forge_material = Some(self.forge_items_material(items)?);
             Some(crate::runtime::TaskOrigin::Forge)
-        } else if let Some(template_id) = command.forge_source_template_id.clone() {
+        } else if let Some(template_id) = command.forge_source_template_id.as_deref() {
             // 对话式修改（方案 §5.9）：既有模板反投影为 Spec 作为会话初始
             // 基线（存档在建 task 后落盘），修改后重编译走原链路。
             ensure!(
                 command.run_mode == ConversationRunMode::Direct,
                 "forge conversation requires direct run mode"
             );
-            let spec = self.forge_from_workflow(&template_id)?;
-            if command.role.is_none() {
-                command.role = Some(self.workflow_forge_role()?);
-            }
-            forge_baseline_spec = Some(spec);
+            forge_baseline = Some(self.forge_project_source(template_id)?);
             Some(crate::runtime::TaskOrigin::Forge)
         } else {
             None
         };
+        let mut command = command.clone();
+        if forge_origin.is_some() {
+            // Only the backend owns the authoring role and its output protocol. An incoming
+            // role (even one claiming the built-in ID) is never a Forge author identity.
+            command.role = Some(self.workflow_forge_role()?);
+        }
+        if let Some(section) = forge_material {
+            command
+                .first_prompt_hidden_sections
+                .get_or_insert_with(Vec::new)
+                .push(section);
+        }
         let title = conversation_auto_title(
             &command.content,
             self.config.conversation_auto_title_max_chars,
@@ -342,7 +341,7 @@ impl App {
 
         // Git is an authoritative prerequisite for Auto and every workflow that
         // directly contains AI-DYNAMIC. Check before creating either the task or run.
-        if workflow_contains_ai_dynamic(&workflow)
+        if workflow_requires_branch_workspaces(&workflow)
             || command.work_location == ConversationWorkLocation::Worktree
         {
             GitRepositoryService::default().require_worktree(&self.paths.repo_root)?;
@@ -364,11 +363,7 @@ impl App {
         let task_id = summary.task.id.clone();
         // 对话式修改：反投影 Spec 落为会话初始存档（首轮增量的合并基线,
         // 携带既有 profileId 等身份,重编译不产生重复角色）。
-        if let Some(spec) = forge_baseline_spec {
-            crate::forge::archive::save_spec_archive(&self.paths.task_dir(&task_id), &spec)
-                .map_err(|error| anyhow::anyhow!("{}", error.to_string()))?;
-        }
-        let prepared = PreparedConversationTask {
+        let mut prepared = PreparedConversationTask {
             task_id: task_id.clone(),
             task_uuid: summary.task.uuid.clone().or_else(|| Some(task_id.clone())),
             title,
@@ -376,6 +371,10 @@ impl App {
             armed: true,
         };
 
+        if let Some((spec, source)) = forge_baseline {
+            self.seed_forge_source(&task_id, spec, source)?;
+            if let Some(projected) = self.task_show(&task_id)?.title { prepared.title = projected; }
+        }
         let authoring_dir = self.paths.task_dir(&task_id).join("authoring");
         fs::create_dir_all(authoring_dir.as_std_path())?;
         let created_at = chrono::Utc::now().to_rfc3339();
@@ -758,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn forge_skills_conversation_injects_hidden_material() {
+    fn forge_sources_conversation_injects_hidden_material() {
         let (_temp, repo) = git_repo();
         let app = App::with_config(repo, RuntimeConfig::default());
 
@@ -784,10 +783,10 @@ mod tests {
             config_options: Default::default(),
             model_bound_overrides: Default::default(),
         });
-        command.forge_source_skills = Some(vec![crate::app::forge_service::ForgeSkillRef {
-            name: "code-review".to_string(),
+        command.forge_source_items = Some(vec![crate::app::forge_service::ForgeSourceItem {
+            catalog: crate::app::forge_service::ForgeMaterialCatalog::Skill,
             source: crate::config::SkillSource::Project,
-            directory_path: skill_dir.to_string(),
+            asset_id: crate::skill::forge_skill_asset_id(&skill_dir),
         }]);
 
         let prepared = app.prepare_conversation_task(&command).unwrap();
@@ -815,10 +814,10 @@ mod tests {
 
         // 未知 skill 整单失败（不静默丢弃）。
         let mut missing = command.clone();
-        missing.forge_source_skills = Some(vec![crate::app::forge_service::ForgeSkillRef {
-            name: "no-such-skill".to_string(),
+        missing.forge_source_items = Some(vec![crate::app::forge_service::ForgeSourceItem {
+            catalog: crate::app::forge_service::ForgeMaterialCatalog::Skill,
             source: crate::config::SkillSource::Project,
-            directory_path: app.paths.project_skills_dir().join("no-such-skill").to_string(),
+            asset_id: "fixture-unlisted".into(),
         }]);
         assert!(app.prepare_conversation_task(&missing).is_err());
     }
@@ -833,10 +832,10 @@ mod tests {
         spec.workflows[0].stages[0].role = crate::forge::spec::StageRole::Custom {
             profile_name: "联调员".to_string(),
         };
-        let ids = app
-            .forge_compile_and_save(&spec, None)
-            .unwrap();
-        let template_id = ids[0].clone();
+        let template_id = match app.forge_compile(&spec, None, 1).unwrap() {
+            crate::app::forge_service::ForgeCompileOutcome::Saved(saved) => saved.template_ids[0].clone(),
+            _ => panic!("expected saved outcome"),
+        };
 
         // 对话式修改:以该模板发起 Forge 会话。
         let mut command = CreateConversationTaskCommand::new(
@@ -873,13 +872,28 @@ mod tests {
             )
         );
         assert!(custom_stage.profile_id.is_some(), "custom role id projected");
+        // stage id 即源模板的节点 id：重编译时节点按它对齐，用户配置的绑定得以保留。
+        assert_eq!(custom_stage.id.as_deref(), Some("s1"));
+
+        // 修改存量工作流的会话首轮即拿到反投影基线：角色（会话内不变的 system
+        // prompt）只承载协议，不再写死“基线为空”；基线由每条消息的隐藏区段携带。
+        let prompt_input: crate::provider::TaskPromptInput =
+            read_json(&app.paths.task_prompt_input_file(&task_id)).unwrap();
+        let role = prompt_input.role.expect("forge role pinned");
+        assert!(role.content.contains("removedStageIds"), "protocol appended");
+        assert!(!role.content.contains("基线为空"), "{}", role.content);
+        assert!(!role.content.contains("{{"), "unrendered template variable");
+        let baseline = crate::app::forge_service::forge_baseline_section(&app, &task_id)
+            .expect("baseline section for the first turn");
+        assert!(baseline.content.contains("<边界>不做部署"));
+        assert!(baseline.content.contains("\"id\": \"s1\""));
 
         // 互斥:模板源 + skill 源被拒。
         let mut conflicting = command.clone();
-        conflicting.forge_source_skills = Some(vec![crate::app::forge_service::ForgeSkillRef {
-            name: "x".to_string(),
-            source: crate::config::SkillSource::Global,
-            directory_path: app.paths.project_skills_dir().join("x").to_string(),
+        conflicting.forge_source_items = Some(vec![crate::app::forge_service::ForgeSourceItem {
+            catalog: crate::app::forge_service::ForgeMaterialCatalog::Skill,
+            source: crate::config::SkillSource::Project,
+            asset_id: "fixture-unlisted".into(),
         }]);
         assert!(app.prepare_conversation_task(&conflicting).is_err());
     }

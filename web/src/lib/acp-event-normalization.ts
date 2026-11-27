@@ -1,5 +1,9 @@
 import type { AcpSessionVm, AcpUiEventVm } from '@/types';
 
+export function createAcpPromptId() {
+  return `acp-prompt-${crypto.randomUUID()}`;
+}
+
 const scopeSeparator = ':';
 
 type RawObject = Record<string, unknown>;

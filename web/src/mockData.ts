@@ -665,7 +665,7 @@ export const mockAgentRegistry: AgentRegistryVm = {
   ],
   catalog: [
     mockCatalogEntry({ agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', primaryAgentDir: '.claude', configured: true, supportsSystemPrompt: true, defaultDisplayName: 'Claude', defaultArgs: ['-y', '@agentclientprotocol/claude-agent-acp@0.65.0'] }),
-    mockCatalogEntry({ agentType: 'codebuddy-code', label: 'WorkBuddy', iconKey: 'codebuddy-code', primaryAgentDir: '.codebuddy', defaultDisplayName: 'WorkBuddy', defaultArgs: ['-y', '@tencent-ai/codebuddy-code@2.106.7', '--acp'] }),
+    mockCatalogEntry({ agentType: 'codebuddy-code', label: 'CodeBuddy Code', iconKey: 'codebuddy-code', primaryAgentDir: '.codebuddy', defaultDisplayName: 'CodeBuddy Code', defaultArgs: ['-y', '@tencent-ai/codebuddy-code@2.106.7', '--acp'] }),
     mockCatalogEntry({ agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Codex', defaultArgs: ['-y', '@agentclientprotocol/codex-acp@1.1.13'] }),
     mockCatalogEntry({ agentType: 'pi-acp', label: 'Pi', iconKey: 'pi-acp', primaryAgentDir: '.pi/agent', projectPrimaryAgentDir: '.pi', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Pi', defaultArgs: ['-y', 'pi-acp@0.0.33'] }),
     mockCatalogEntry({ agentType: 'deepseek-harness', label: 'DeepSeek Harness', iconKey: 'deepseek-harness', primaryAgentDir: '.dsh', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'DeepSeek Harness', defaultCommand: 'dsh', defaultArgs: ['--profile', 'acp'] }),

@@ -40,7 +40,7 @@ pub(crate) fn resolve_workflow_profiles(
                 worker.profile.as_deref(),
                 language,
             )?,
-            NodeDsl::AiDynamic(_) => {}
+            NodeDsl::AiDynamic(_) | NodeDsl::ParallelGroup(_) => {}
         }
     }
     Ok(ResolvedWorkflowMetadata { profiles })

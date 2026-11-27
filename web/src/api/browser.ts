@@ -28,6 +28,7 @@ function imageActionBlob(input: ImageActionInput): Blob {
   return new Blob([bytes], { type: mime });
 }
 
+const previewConversationKey = (projectId: string | null | undefined, taskId: string, runId?: string) => JSON.stringify([projectId, taskId, runId]);
 const browserConversationRuns = new Map<string, ConversationRunVm>();
 const browserConversationTasks = new Map<string, ConversationTaskRowVm>();
 const browserConversationRunModes = new Map<string, ConversationRunModeVm>();
@@ -2229,6 +2230,7 @@ export const browserApi: RuntimeApi = {
   },
   saveWorkflowTemplate(name: string, workflow: WorkflowDsl, modelBindings = emptyWorkflowModelBindings()) {
     const current = browserPreviewState.getWorkflowTemplates();
+    if (current.templates.some((template) => template.name.trim() === name.trim())) return browserCommandError('workflow-template.duplicate-name', { name: name.trim() });
     let nextWorkflow = workflow;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const workflowId = `workflow-${crypto.randomUUID().replaceAll('-', '')}`;
@@ -2316,7 +2318,7 @@ export const browserApi: RuntimeApi = {
   getRoundDetail(taskId: string, runId: string, roundId: string, selection?: RoundSelection) {
     return Promise.resolve(mockRoundDetail(selection, { taskId, runId, roundId }));
   },
-  startRun(taskId: string) {
+  startRun(_projectId, taskId) {
     return Promise.resolve({ ...mockRunDetail.run, taskId });
   },
   continueRun(_projectId, taskId, runId) {
@@ -2431,7 +2433,7 @@ export const browserApi: RuntimeApi = {
     const runId = `run-rerun-056-${request.expectedAttemptId}`;
     const operationId = `browser-rerun-056-${request.expectedAttemptId}`;
     const attemptId = `attempt-${String(Number.parseInt(request.expectedAttemptId.slice(8), 10) + 1).padStart(3, '0')}`;
-    if (browserConversationRuns.has(runId)) {
+    if (browserConversationRuns.has(previewConversationKey(request.projectId, request.taskId, runId))) {
       return Promise.resolve({
         operationId,
         locator: { projectId: request.projectId, taskId: request.taskId, runId, roundId: request.expectedRoundId, nodeId: request.expectedNodeId, attemptId },
@@ -2495,7 +2497,7 @@ export const browserApi: RuntimeApi = {
         { attemptId, status: 'running', runtimeDisplay: running, current: true, retryable: false },
       ];
       target.sessionTree.selectedSessionKey = `${current.roundId}/${current.nodeId}/${attemptId}`;
-      browserConversationRuns.set(runId, target);
+      browserConversationRuns.set(previewConversationKey(request.projectId, request.taskId, runId), target);
     }
     return Promise.resolve({
       operationId,
@@ -2541,7 +2543,7 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve(entries);
   },
   getAcpSession(_projectId, _taskId, runId, _roundId, _nodeId, _attemptId, query, fallback, _outerNodeId, _outerAttemptId) {
-    const rerunPreview = runId === 'run-056' ? browserFailedWorkflowFixture() : browserConversationRuns.get(runId);
+    const rerunPreview = runId === 'run-056' ? browserFailedWorkflowFixture() : browserConversationRuns.get(previewConversationKey(_projectId, _taskId, runId));
     if (_projectId === 'default' && _taskId === 'mock-task' && rerunPreview
       && (runId === 'run-056' || rerunPreview.rerunOrigin) && !_outerNodeId && !_outerAttemptId) {
       const leaf = rerunPreview.sessionTree.rounds.find((round) => round.roundId === _roundId)
@@ -3356,6 +3358,33 @@ export const browserApi: RuntimeApi = {
       preferences: {},
     });
   },
+  async getGenerationHistoryPage({ projectId, origin, query, cursor, limit = 30 }) {
+    const workspaces = new Map((await this.getConversationWorkspaces()).map(ws => [ws.projectId, ws.name]));
+    const terms = (query ?? '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const pageSize = Math.min(100, Math.max(1, limit));
+    const sortKey = (task: ConversationTaskRowVm) => [Date.parse(task.lastActivityAt ?? '') || 0, Number(task.taskId.match(/\d+$/)?.[0]) || 0, task.projectId, task.taskId] as const;
+    type SortKey = ReturnType<typeof sortKey>;
+    const compare = (a: SortKey, b: SortKey) => b[0] - a[0] || b[1] - a[1] || b[2].localeCompare(a[2]) || b[3].localeCompare(a[3]);
+    if (Array.from(query ?? '').length > 256) return browserCommandError('search.query-invalid');
+    const scope = JSON.stringify([projectId ?? null, origin ?? null, terms]);
+    let after: SortKey | null = null;
+    if (cursor !== undefined) {
+      try {
+        const [savedScope, key] = JSON.parse(cursor);
+        if (savedScope !== scope || !Array.isArray(key) || key.length !== 4 || !Number.isFinite(key[0]) || !Number.isFinite(key[1])
+          || typeof key[2] !== 'string' || typeof key[3] !== 'string') return browserCommandError('conversation.invalid-cursor');
+        after = [key[0], key[1], key[2], key[3]];
+      } catch { return browserCommandError('conversation.invalid-cursor'); }
+    }
+    const tasks = [...browserConversationTasks.values()]
+      .filter(task => workspaces.has(task.projectId) && task.origin && (!origin || task.origin === origin)
+        && (!projectId || task.projectId === projectId) && terms.every(term => task.title.toLowerCase().includes(term))
+        && (!after || compare(sortKey(task), after) > 0))
+      .sort((a, b) => compare(sortKey(a), sortKey(b)));
+    const page = tasks.slice(0, pageSize);
+    return { tasks: page.map(task => ({ ...task, workspaceName: workspaces.get(task.projectId)! })),
+      nextCursor: tasks.length > page.length ? JSON.stringify([scope, sortKey(page[page.length - 1])]) : null, errors: [] };
+  },
   getConversationTaskPage(projectId, cursor, limit = 7) {
     const previewTask: ConversationTaskRowVm = {
       projectId: 'default',
@@ -3382,7 +3411,7 @@ export const browserApi: RuntimeApi = {
     });
   },
   getConversationTaskSummary(projectId, taskId, taskUuid) {
-    const task = browserConversationTasks.get(taskId);
+    const task = browserConversationTasks.get(previewConversationKey(projectId, taskId));
     if (!task || task.projectId !== projectId || (taskUuid && task.taskUuid !== taskUuid)) {
       return Promise.reject({ code: 'task.not-found', params: { taskId } });
     }
@@ -3410,7 +3439,7 @@ export const browserApi: RuntimeApi = {
     });
   },
   getConversationRunSummaryPage(projectId, taskId, cursor, limit = 7) {
-    const task = browserConversationTasks.get(taskId);
+    const task = browserConversationTasks.get(previewConversationKey(projectId, taskId));
     const start = cursor ? Math.max(0, (task?.runs ?? []).findIndex((run) => run.runId === cursor) + 1) : 0;
     const runs = (task?.runs ?? []).slice(start, start + limit);
     return Promise.resolve({
@@ -3423,7 +3452,7 @@ export const browserApi: RuntimeApi = {
     });
   },
   acknowledgeConversationTerminalResult(projectId, taskId, eventId) {
-    const task = browserConversationTasks.get(taskId);
+    const task = browserConversationTasks.get(previewConversationKey(projectId, taskId));
     if (task?.projectId !== projectId) {
       return Promise.resolve({ acknowledged: false, unreadTerminalResult: null });
     }
@@ -3669,7 +3698,7 @@ export const browserApi: RuntimeApi = {
       lastTriggerStatus: finished.status,
       updatedAt: finished.finishedAt ?? now,
     });
-    browserConversationRuns.set(runId, {
+    browserConversationRuns.set(previewConversationKey(projectId, taskId, runId), {
       projectId,
       taskId,
       runId,
@@ -3708,7 +3737,7 @@ export const browserApi: RuntimeApi = {
     if (runId === 'run-051') return Promise.resolve(mockErrorBlockedConversationRun);
     if (runId === 'run-052') return Promise.resolve(browserCompletedConversationRun());
     if (runId === 'run-053') return Promise.resolve(browserQueuedConversationRun());
-    const created = browserConversationRuns.get(runId);
+    const created = browserConversationRuns.get(previewConversationKey(_projectId, _taskId, runId));
     if (created) return Promise.resolve(created);
     const run: ConversationRunVm = {
       projectId: 'default',
@@ -3731,21 +3760,27 @@ export const browserApi: RuntimeApi = {
   validateConversationCreate(_input) {
     return Promise.resolve({ valid: true, missingItems: [] });
   },
-  forgeSourceDigest(_projectId: string, _taskId: string, _after?: string | null) {
+  forgeSourceDigest(_projectId, _taskId, _session) {
     // 浏览器桩:无桌面文件系统,返回空摘要。
     return Promise.resolve({ title: '', markdown: '' });
   },
-  forgeSkillsDigest(_projectId: string, _skills: unknown[]) {
-    return Promise.resolve({ title: '', markdown: '' });
+  forgeItemsDigest(_projectId: string, _items: unknown[]) {
+    return Promise.resolve([]);
+  },
+  importPluginAsset() { return browserCommandError('plugin.asset-unavailable'); },
+  forgetWorkBuddySource() { return browserCommandError('plugin.asset-unavailable'); },
+  selectWorkBuddySource() { return browserCommandError('plugin.asset-unavailable'); },
+  listInstalledPlugins() {
+    return Promise.resolve([]);
   },
   forgeGetSpec(_projectId: string, _taskId: string) {
     return Promise.resolve(null);
   },
   forgeSaveSpec() {
-    return Promise.resolve();
+    return Promise.reject(new Error('forge is desktop-only'));
   },
-  forgeCompile(_spec, _taskId) {
-    return Promise.resolve({ createdTemplateIds: [], templates: { version: '', lastUsedTemplateId: null, lastCreatedWorkflow: null, templates: [] } });
+  forgeCompile() {
+    return Promise.resolve({ status: 'saved', trial: null, templateIds: [], createdCount: 0, updatedCount: 0, templates: { version: '', lastUsedTemplateId: null, lastCreatedWorkflow: null, templates: [] } });
   },
   forgeFromWorkflow(_templateId: string) {
     return Promise.reject(new Error('forge is desktop-only'));
@@ -3753,17 +3788,15 @@ export const browserApi: RuntimeApi = {
   forgeStartTrial() {
     return Promise.reject(new Error('forge is desktop-only'));
   },
-  forgeListSessions(_projectId: string) {
-    return Promise.resolve([]);
-  },
-  forgeCleanupSessions(_projectId: string, _taskIds: string[]) {
-    return Promise.resolve([]);
+  forgeSetStageFailure(_projectId: string, _taskId: string, _stageId: string, _onFailure) {
+    return Promise.reject(new Error('forge is desktop-only'));
   },
   createConversationRun(input) {
     const timestamp = new Date().toISOString();
     const run: ConversationRunVm = {
       projectId: input.projectId,
       taskId: `task-${Date.now()}`,
+      taskUuid: crypto.randomUUID(),
       runId: `run-${Date.now()}`,
       runMode: input.runMode,
       directConfig: input.directConfig,
@@ -3789,6 +3822,8 @@ export const browserApi: RuntimeApi = {
     const task: ConversationTaskRowVm = {
       projectId: run.projectId,
       taskId: run.taskId,
+      taskUuid: run.taskUuid,
+      origin: input.forgeSourceTaskId || input.forgeSourceTemplateId || input.forgeSourceItems?.length ? 'forge' : null,
       title: input.content.slice(0, 12) || 'New Task',
       autoTitle: true,
       runMode: input.runMode,
@@ -3808,62 +3843,68 @@ export const browserApi: RuntimeApi = {
       pinned: false,
       pinnedOrder: null,
     };
-    browserConversationRuns.set(run.runId, run);
-    browserConversationTasks.set(task.taskId, task);
+    browserConversationRuns.set(previewConversationKey(run.projectId, run.taskId, run.runId), run);
+    browserConversationTasks.set(previewConversationKey(task.projectId, task.taskId), task);
     return Promise.resolve({ task, run });
   },
   rerunConversationTask(_projectId, _taskId) {
     return this.createConversationRun({ projectId: _projectId, content: 'Rerun', runMode: 'auto' })
       .then(({ task, run }) => {
-        browserConversationTasks.delete(task.taskId);
+        browserConversationTasks.delete(previewConversationKey(task.projectId, task.taskId));
         const rerun = { ...run, taskId: _taskId };
-        browserConversationRuns.set(rerun.runId, rerun);
+        browserConversationRuns.delete(previewConversationKey(run.projectId, run.taskId, run.runId));
+        browserConversationRuns.set(previewConversationKey(rerun.projectId, rerun.taskId, rerun.runId), rerun);
         return rerun;
       });
   },
-  updateTaskMetadata(projectId, taskId, title) {
-    const current = browserConversationTasks.get(taskId) ?? {
-      projectId,
-      taskId,
-      title,
-      autoTitle: false,
-      runMode: 'workflow' as const,
-      runs: [],
-      runHistoryStatus: 'ready' as const,
-      runsNextCursor: null,
-      pinned: false,
-      pinnedOrder: null,
-    };
+  updateTaskMetadata(projectId, taskId, taskUuid, title) {
+    const current = browserConversationTasks.get(previewConversationKey(projectId, taskId));
+    if (!taskUuid || !current || current.projectId !== projectId || current.taskUuid !== taskUuid) {
+      return Promise.reject({ code: 'conversation.task-not-found', params: { taskId } });
+    }
     const task = { ...current, title, autoTitle: false };
-    browserConversationTasks.set(taskId, task);
+    browserConversationTasks.set(previewConversationKey(projectId, taskId), task);
     return Promise.resolve(task);
   },
-  deleteConversationTask(_projectId, _taskId) {
-    browserConversationTasks.delete(_taskId);
+  deleteConversationTask(projectId, taskId, taskUuid) {
+    const task = browserConversationTasks.get(previewConversationKey(projectId, taskId));
+    if (!taskUuid || !task || task.projectId !== projectId || task.taskUuid !== taskUuid) {
+      return Promise.reject({ code: 'conversation.task-not-found', params: { taskId } });
+    }
+    if (task.latestRun?.status === 'running') return Promise.reject({ code: 'conversation.task-running', params: { taskId } });
+    browserConversationTasks.delete(previewConversationKey(projectId, taskId));
     return this.getConversationSidebarBootstrap();
   },
   setConversationResident(projectId, taskId, resident) {
-    const current = browserConversationTasks.get(taskId);
+    const current = browserConversationTasks.get(previewConversationKey(projectId, taskId));
     if (!current || current.projectId !== projectId || current.runMode !== "direct") return Promise.reject(new Error("conversation.residency-direct-only"));
     const task = { ...current, resident };
-    browserConversationTasks.set(taskId, task);
+    browserConversationTasks.set(previewConversationKey(projectId, taskId), task);
     return Promise.resolve(task);
   },
   pinConversation(_projectId, _taskId) {
-    const task = browserConversationTasks.get(_taskId);
+    const task = browserConversationTasks.get(previewConversationKey(_projectId, _taskId));
     if (task) task.pinned = true;
     return this.getConversationSidebarBootstrap();
   },
   unpinConversation(_projectId, _taskId) {
-    const task = browserConversationTasks.get(_taskId);
+    const task = browserConversationTasks.get(previewConversationKey(_projectId, _taskId));
     if (task) task.pinned = false;
     return this.getConversationSidebarBootstrap();
   },
   reorderPinnedConversations(_pins) {
     return this.getConversationSidebarBootstrap();
   },
-  searchConversationTasks(_query, _limit) {
-    return Promise.resolve([]);
+  searchConversationTasks(query, limit = 20) {
+    const needle = query.trim().toLocaleLowerCase();
+    const matches = [...browserConversationTasks.values()].filter(task =>
+      task.title.toLocaleLowerCase().includes(needle));
+    return Promise.resolve(matches.slice(0, limit).map(task => ({
+      projectId: task.projectId, taskId: task.taskId, taskUuid: task.taskUuid, origin: task.origin,
+      workspaceName: task.projectId === 'default' ? 'Default Workspace' : task.projectId,
+      workspacePath: `/${task.projectId}`, title: task.title, requirementPreview: '', matchPreview: task.title,
+      runMode: task.runMode, agentIdentity: task.agentIdentity, latestRun: task.latestRun, lastActivityAt: task.lastActivityAt,
+    })));
   },
   getConversationRunMode(projectId) {
     const mode = browserConversationRunModes.get(projectId);
@@ -4296,7 +4337,7 @@ export const browserApi: RuntimeApi = {
   },
   listSkills() { return Promise.resolve({ global: [], project: [] }); },
   listProjectSkills(_workspacePath: string) { return Promise.resolve([]); },
-  readSkill(_name: string, _source: string, _workspacePath?: string | null, _directoryPath?: string | null) { return Promise.resolve({ meta: { name: '', description: '', source: 'global' as const, directoryPath: '', agentSource: '.gold-band', loadWarnings: [], syncedAgentTypes: [] }, body: '' }); },
+  readSkill(_name: string, _source: string, _workspacePath?: string | null, _directoryPath?: string | null) { return Promise.resolve({ meta: { assetId: '', name: '', description: '', source: 'global' as const, directoryPath: '', agentSource: '.gold-band', loadWarnings: [], syncedAgentTypes: [] }, body: '' }); },
   writeSkill(_name: string, _source: string, _content: string, _workspacePath?: string | null, _oldName?: string | null, _directoryPath?: string | null, _syncTargets?: string[] | null) { return Promise.resolve({ global: [], project: [] }); },
   deleteSkill(_name: string, _source: string) { return Promise.resolve({ global: [], project: [] }); },
   updateSkillSyncTargets(_name: string, _source: string, _workspacePath: string | null | undefined, _directoryPath: string, _syncTargets: string[]) { return Promise.resolve({ global: [], project: [] }); },

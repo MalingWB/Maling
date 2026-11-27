@@ -80,8 +80,8 @@ interface WorkspaceShellProps {
   onSetResident?: (projectId: string, taskId: string, resident: boolean) => Promise<void>;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
-  onRenameTask: (projectId: string, taskId: string, title: string) => void;
-  onDeleteTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
+  onRenameTask: (projectId: string, taskId: string, taskUuid: string | null | undefined, title: string) => void;
+  onDeleteTask: (projectId: string, taskId: string, taskUuid: string) => void | Promise<void>;
   // 必填：App 恒提供（Shell.onConversationNewInWorkspace），ConversationSidebar/远程任务列表
   // 均要求非空；此前误标可选导致与下游必填声明类型不一致。
   onNewConversationInWorkspace: (projectId: string) => void;
@@ -735,11 +735,6 @@ function WorkspaceShellLayout({
     await fileContentStore.releaseProject(projectId);
     fileExplorerStore.clearProject(projectId);
   }, [onRemoveWorkspace]);
-  const deleteTask = useCallback((projectId: string, taskId: string, taskUuid?: string | null) => {
-    void fileContentStore.flushAll(projectId).then((saved) => {
-      if (saved) onDeleteTask(projectId, taskId, taskUuid);
-    });
-  }, [onDeleteTask]);
   const toggleRightWorkspace = useCallback(() => {
     if (rightWorkspacePresented) {
       setCompactSheetOpen(false);
@@ -753,6 +748,55 @@ function WorkspaceShellLayout({
     [showRightDock],
   );
 
+  const [navigationSheetOpen, setNavigationSheetOpen] = useState(false);
+  const managementRequest = workspaceRevealRequest?.manageOnly ? workspaceRevealRequest : null;
+  useLayoutEffect(() => {
+    if (showLeft) setNavigationSheetOpen(false);
+    else if (managementRequest && !managementRequest.scrollHandled) setNavigationSheetOpen(true);
+  }, [showLeft, managementRequest]);
+  const toggleNavigation = () => {
+    // When the dock cannot fit, present the same navigation without changing dock intent.
+    const wouldCollapse = !showLeft && reduceWorkspaceAutoCollapse(autoCollapseStateRef.current, {
+      ...autoCollapseInputRef.current, availableWidth: shellRef.current?.clientWidth ?? 0, sidebarManuallyCollapsed: false,
+    }).left;
+    if (wouldCollapse) setNavigationSheetOpen(true);
+    else onToggleSidebar();
+  };
+  const closeNavigation = () => {
+    setNavigationSheetOpen(false);
+    if (managementRequest) onRevealHandled?.(managementRequest.requestId);
+  };
+  const sidebar = (
+    <ConversationSidebar
+      vm={vm}
+      active={active}
+      showRemoteTaskManagement={showRemoteTaskManagement}
+      defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
+      workspaceRevealRequest={workspaceRevealRequest}
+      onRetryReveal={onRetryReveal}
+      onRevealHandled={onRevealHandled}
+      onSelect={showLeft ? onSelect : page => { closeNavigation(); onSelect(page); }}
+      onNewConversation={showLeft ? onNewConversation : () => { closeNavigation(); onNewConversation(); }}
+      onSearch={showLeft ? onSearch : () => { closeNavigation(); onSearch(); }}
+      onPauseRun={onPauseRun}
+      onSetResident={onSetResident}
+      onPinTask={onPinTask}
+      onUnpinTask={onUnpinTask}
+      onRenameTask={onRenameTask}
+      onDeleteTask={onDeleteTask}
+      onNewConversationInWorkspace={showLeft ? onNewConversationInWorkspace : id => { closeNavigation(); onNewConversationInWorkspace(id); }}
+      onAddWorkspace={onAddWorkspace}
+      onOpenProjectMemory={showLeft ? openProjectMemory : ws => { closeNavigation(); openProjectMemory(ws); }}
+      onRemoveWorkspace={onRemoveWorkspace ? removeWorkspace : undefined}
+      onRetryBootstrap={onRetryBootstrap}
+      onRequestWorkspaceTasks={onRequestWorkspaceTasks}
+      onRequestPinnedTasks={onRequestPinnedTasks}
+      onRequestRecentTasks={onRequestRecentTasks}
+      onResetWorkspaceTaskPage={onResetWorkspaceTaskPage}
+      onResetRecentTaskPage={onResetRecentTaskPage}
+      onRequestTaskRuns={onRequestTaskRuns}
+    />
+  );
   return (
     <MarkdownLocalImageConfigProvider config={appConfig.workspaceFiles}>
     <WorkspaceFileReferencePresentationProvider value={workspaceFileReferencePresentation}>
@@ -786,7 +830,7 @@ function WorkspaceShellLayout({
         feedbackEnabled={feedbackEnabled}
         platform={platform}
         sidebarCollapsed={sidebarCollapsed || autoCollapse.left}
-        onToggleSidebar={onToggleSidebar}
+        onToggleSidebar={toggleNavigation}
         onOpenPersonalAnalytics={onOpenPersonalAnalytics}
         onOpenReleaseNotes={onOpenReleaseNotes}
         rightWorkspaceOpen={rightWorkspacePresented}
@@ -811,37 +855,7 @@ function WorkspaceShellLayout({
           groupResizeBehavior="preserve-pixel-size"
           className={cn(!showLeft && 'pointer-events-none overflow-hidden')}
         >
-          {showLeft ? (
-            <ConversationSidebar
-              vm={vm}
-              active={active}
-              showRemoteTaskManagement={showRemoteTaskManagement}
-              defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
-              workspaceRevealRequest={workspaceRevealRequest}
-              onRetryReveal={onRetryReveal}
-              onRevealHandled={onRevealHandled}
-              onSelect={onSelect}
-              onNewConversation={onNewConversation}
-              onSearch={onSearch}
-              onPauseRun={onPauseRun}
-              onSetResident={onSetResident}
-              onPinTask={onPinTask}
-              onUnpinTask={onUnpinTask}
-              onRenameTask={onRenameTask}
-              onDeleteTask={deleteTask}
-              onNewConversationInWorkspace={onNewConversationInWorkspace}
-              onAddWorkspace={onAddWorkspace}
-              onOpenProjectMemory={openProjectMemory}
-              onRemoveWorkspace={onRemoveWorkspace ? removeWorkspace : undefined}
-              onRetryBootstrap={onRetryBootstrap}
-              onRequestWorkspaceTasks={onRequestWorkspaceTasks}
-              onRequestPinnedTasks={onRequestPinnedTasks}
-              onRequestRecentTasks={onRequestRecentTasks}
-              onResetWorkspaceTaskPage={onResetWorkspaceTaskPage}
-              onResetRecentTaskPage={onResetRecentTaskPage}
-              onRequestTaskRuns={onRequestTaskRuns}
-            />
-          ) : null}
+          {showLeft ? sidebar : null}
         </ResizablePanel>
         <ResizableHandle
           elementRef={leftSeparatorRef}
@@ -903,6 +917,12 @@ function WorkspaceShellLayout({
           ) : null}
         </ResizablePanel>
       </ResizablePanelGroup>
+      {!showLeft && navigationSheetOpen && <Sheet open onOpenChange={open => { if (!open) closeNavigation(); }}>
+        <SheetContent side="left" className="w-[min(92%,22rem)] gap-0 bg-sidebar p-0" onOpenAutoFocus={event => event.preventDefault()}>
+          <SheetTitle className="sr-only">{t('conversation.sidebar.workspaces')}</SheetTitle>
+          {sidebar}
+        </SheetContent>
+      </Sheet>}
       <Sheet
         open={wantsRight && rightWorkspaceCompact && compactSheetOpen}
         onOpenChange={(open) => {

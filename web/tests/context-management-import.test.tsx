@@ -5,7 +5,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/api', () => ({
-  getProfiles: vi.fn(),
+  getProfiles: vi.fn(), getConversationWorkspaces: vi.fn(), listSkills: vi.fn(),
+  listInstalledPlugins: vi.fn(), listProjectSkills: vi.fn(), importPluginAsset: vi.fn(),
   importProfilesFromFiles: vi.fn(),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
@@ -14,7 +15,7 @@ vi.mock('@/components/prompt-kit/markdown', () => ({
 }));
 
 import { open } from '@tauri-apps/plugin-dialog';
-import { getProfiles, importProfilesFromFiles } from '@/api';
+import { getProfiles, importProfilesFromFiles, getConversationWorkspaces, listSkills, listProjectSkills, listInstalledPlugins, importPluginAsset } from '@/api';
 import i18n from '@/i18n';
 import { ContextManagementPage } from '@/pages/ContextManagementPage';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -44,6 +45,147 @@ afterEach(async () => {
   document.body.replaceChildren();
   vi.resetAllMocks();
   vi.unstubAllGlobals();
+});
+
+async function activateTab(label: string) {
+  const tab = [...host.querySelectorAll<HTMLElement>('[role="tab"]')].find(el => el.textContent === label)!;
+  await act(async () => { tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })); });
+}
+
+describe('plugin imports from standalone context management', () => {
+  it.each(['skill', 'agent'] as const)('refreshes only the %s destination when the user returns', async (kind) => {
+    vi.mocked(getConversationWorkspaces).mockResolvedValue([]);
+    vi.mocked(listInstalledPlugins).mockResolvedValue([{ pluginId: 'tools', providerId: 'workbuddy', provenance: 'manual-directory', source: 'global', name: 'Tools', displayName: 'Tools', description: '', version: '', assets: [{ assetId: 'fixture', name: 'Fixture', description: '', kind, importable: true }] }]);
+    vi.mocked(listSkills).mockResolvedValue({ global: [], project: [] });
+    await activateTab(i18n.t('contextManagement.tabs.skills'));
+    await activateTab('Plugin');
+    const importButton = [...host.querySelectorAll('button')].find(b => b.textContent === i18n.t(kind === 'skill' ? 'plugin.importSkill' : 'plugin.importRole'))!;
+    await act(async () => importButton.click());
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(b => b.textContent === i18n.t('common.confirm'))!;
+    await act(async () => { confirm.click(); confirm.click(); });
+    expect(importPluginAsset).toHaveBeenCalledExactlyOnceWith({ projectId: null, assetId: 'fixture' });
+    expect(listSkills).toHaveBeenCalledTimes(1); expect(getProfiles).toHaveBeenCalledTimes(1);
+    await activateTab(i18n.t('contextManagement.skills.globalTab'));
+    expect(listSkills).toHaveBeenCalledTimes(kind === 'skill' ? 2 : 1);
+    await activateTab(i18n.t('contextManagement.profileManagement'));
+    expect(getProfiles).toHaveBeenCalledTimes(kind === 'agent' ? 2 : 1);
+    expect(listProjectSkills).not.toHaveBeenCalled(); expect(listInstalledPlugins).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('shared Forge materials', () => {
+  const role = { id: 'stored.role-id', name: 'Reviewer', scope: 'user' as const, isBuiltIn: false,
+    summary: '', content: 'private definition', path: '/private/role', dynamicTemplate: false, createdAt: '', updatedAt: '' };
+  const ws = { projectId: 'p1', workspacePath: '/fixture/one', name: 'Fixture' };
+  const box = (name: string) => host.querySelector<HTMLButtonElement>(`[role="checkbox"][aria-label="${i18n.t('contextManagement.skills.forgeSelect', { name })}"]`);
+  const generate = (count: number) => [...host.querySelectorAll('button')].find(b => b.textContent === i18n.t('contextManagement.skills.forgeAction', { count }))!;
+  async function mountForge(extraProfiles: Awaited<ReturnType<typeof getProfiles>>['profiles'] = []) {
+    vi.mocked(getProfiles).mockResolvedValue({ profiles: [role, ...extraProfiles] });
+    const handoff = vi.fn().mockResolvedValue(true);
+    await act(async () => root.render(<TooltipProvider><ContextManagementPage key="forge" agentRegistry={null} onAgentRegistryChange={() => {}} onForgeItems={handoff} /></TooltipProvider>));
+    expect(box(role.name)).not.toBeNull();
+    await act(async () => box(role.name)!.click());
+    return handoff;
+  }
+  it('loads anchor projects only on Role action; a failed handoff keeps selection and a successful retry clears it', async () => {
+    vi.mocked(getConversationWorkspaces).mockResolvedValue([ws]);
+    const handoff = await mountForge();
+    expect(getConversationWorkspaces).not.toHaveBeenCalled();
+    expect(listSkills).not.toHaveBeenCalled();
+    handoff.mockResolvedValueOnce(false);
+    await act(async () => generate(1).click());
+    expect(handoff).toHaveBeenCalledExactlyOnceWith([{ catalog: 'profile', source: 'global', assetId: role.id }], ws.projectId);
+    expect(box(role.name)?.getAttribute('aria-checked')).toBe('true');
+    await act(async () => generate(1).click());
+    expect(generate(0).disabled).toBe(true);
+  });
+  it('sends a built-in Role by its stored ID, never its display name, body or permissions', async () => {
+    vi.mocked(getConversationWorkspaces).mockResolvedValue([ws]);
+    const handoff = await mountForge([{ ...role, scope: 'built-in', isBuiltIn: true, id: 'sys.reviewer' }]);
+    await act(async () => box(role.name)!.click());
+    await activateTab(i18n.t('contextManagement.builtInSectionTitle'));
+    await act(async () => box(role.name)!.click());
+    await act(async () => generate(1).click());
+    expect(handoff).toHaveBeenCalledExactlyOnceWith([{ catalog: 'profile', source: 'built-in', assetId: 'sys.reviewer' }], ws.projectId);
+  });
+  it('enforces the combined material cap without dropping any previous choices', async () => {
+    const extra = Array.from({ length: 32 }, (_, i) => ({ ...role, id: `extra-${i}`, name: `Extra ${i}` }));
+    const handoff = await mountForge(extra);
+    await act(async () => { for (const r of extra.slice(0, 31)) box(r.name)!.click(); });
+    await act(async () => box(extra[31].name)!.click());
+    expect(generate(32).disabled).toBe(false);
+    expect(host.textContent).toContain(i18n.t('contextManagement.skills.forgeLimit', {count:32}));
+    expect(box(extra[31].name)?.getAttribute('aria-checked')).toBe('false');
+    expect(handoff).not.toHaveBeenCalled();
+  });
+  it('does not substitute a different project or clear roles when project lookup fails or returns no projects', async () => {
+    vi.mocked(getConversationWorkspaces).mockRejectedValueOnce({ code: 'app.unexpected', params: {} }).mockResolvedValueOnce([]);
+    const handoff = await mountForge();
+    await act(async () => generate(1).click());
+    expect(generate(1).disabled).toBe(false);
+    await act(async () => generate(1).click());
+    expect(host.textContent).toContain(i18n.t('contextManagement.skills.forgeProjectUnavailable'));
+    expect(generate(1).disabled).toBe(false);
+    expect(handoff).not.toHaveBeenCalled();
+  });
+  it('asks for an anchor for global material and rejects a remembered choice that disappears before confirmation', async () => {
+    const two = { projectId: 'p2', workspacePath: '/fixture/two', name: 'Two' };
+    localStorage.setItem('gold-band:context-management:skill-project-workspace', two.workspacePath);
+    vi.mocked(getConversationWorkspaces).mockResolvedValueOnce([ws, two]).mockResolvedValueOnce([ws]);
+    const handoff = await mountForge();
+    await act(async () => generate(1).click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain(two.name);
+    await act(async () => [...dialog.querySelectorAll('button')].find(b => b.textContent === i18n.t('contextManagement.skills.forgeAnchorConfirm'))!.click());
+    expect(handoff).not.toHaveBeenCalled();
+    expect(host.textContent).toContain(i18n.t('contextManagement.skills.forgeProjectUnavailable'));
+    expect(generate(1).disabled).toBe(false);
+    localStorage.clear();
+  });
+  it('reconciles against complete successful profile reads, never against search or failed refresh', async () => {
+    await mountForge();
+    const search = host.querySelector<HTMLInputElement>('input')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'not a match');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(box(role.name)).toBeNull();
+    expect(generate(1).disabled).toBe(false);
+    const refresh = () => host.querySelector<HTMLButtonElement>(`button[aria-label="${i18n.t('common.refresh')}"]`)!.click();
+    vi.mocked(getProfiles).mockRejectedValueOnce({ code:'app.unexpected', params:{} }).mockResolvedValueOnce({ profiles:[] });
+    await act(async () => refresh());
+    expect(generate(1).disabled).toBe(false);
+    await act(async () => refresh());
+    expect(generate(0).disabled).toBe(true);
+  });
+  it('keeps global Role/Skill/Plugin choices across tab changes and a remembered project', async () => {
+    localStorage.setItem('gold-band:context-management:skill-project-workspace', ws.workspacePath);
+    const two = { projectId: 'p2', workspacePath: '/fixture/two', name: 'Two' };
+    vi.mocked(getConversationWorkspaces).mockResolvedValue([ws, two]);
+    vi.mocked(listProjectSkills).mockImplementation(async path => [{ name: path === ws.workspacePath ? 'Project A' : 'Project B', assetId: 'local-id', source: 'project', description: '', directoryPath: path, agentSource: '', syncedAgentTypes: [], loadWarnings: [] }]);
+    vi.mocked(listSkills).mockResolvedValue({ global: [{ name: 'Audit', assetId: 'skill-a', source: 'global', description: '', directoryPath: '/fixture', agentSource: '', syncedAgentTypes: [], loadWarnings: [] }], project: [] });
+    vi.mocked(listInstalledPlugins).mockResolvedValue([{ pluginId: 'tools', providerId: 'workbuddy', provenance: 'manual-directory', source: 'global', name: 'Tools', displayName: '', description: '', version: '', assets: [{ assetId: 'command-a', name: 'Publish', description: '', kind: 'command', importable: false }] }]);
+    const handoff = await mountForge();
+    await activateTab(i18n.t('contextManagement.tabs.skills'));
+    await act(async () => box('Audit')!.click());
+    await activateTab('Plugin');
+    await act(async () => box('Publish')!.click());
+    await activateTab(i18n.t('contextManagement.skills.projectTab'));
+    await act(async () => box('Project A')!.click());
+    expect(generate(4).disabled).toBe(false);
+    HTMLElement.prototype.scrollIntoView ??= () => {};
+    await act(async () => { host.querySelector(`[role="combobox"][aria-label="${i18n.t('contextManagement.scope')}"]`)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    await act(async () => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(el => el.textContent === two.name)!.click());
+    expect(box('Project A')).toBeNull();
+    expect(box('Project B')?.getAttribute('aria-checked')).toBe('false');
+    expect(generate(3).disabled).toBe(false);
+    await activateTab(i18n.t('contextManagement.profileManagement'));
+    await act(async () => generate(3).click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    await act(async () => [...dialog.querySelectorAll('button')].find(b => b.textContent === i18n.t('contextManagement.skills.forgeAnchorConfirm'))!.click());
+    expect(handoff).toHaveBeenCalledExactlyOnceWith([{catalog:'profile',source:'global',assetId:role.id}, {catalog:'skill',source:'global',assetId:'skill-a'}, {catalog:'plugin',source:'global',assetId:'command-a'}], two.projectId);
+    localStorage.clear();
+  });
 });
 
 async function pickImportFiles() {

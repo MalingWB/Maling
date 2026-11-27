@@ -92,3 +92,18 @@ Control DSL 定义 workflow 的控制面：节点之间如何流转、节点 out
 - `control.max_attempts` 与 `control.max_rounds` 可省略；声明时必须为正整数。
 - 启用 `success_condition` 时必须声明 JSON `output`。
 - `output.artifact` 是当前节点 canonical artifact 的唯一逻辑名来源。
+
+## 9. 固定并行组
+
+作者可以把 `entry` 直接设成 `checks`。画布表现为开始、各条分支、配对的汇合及汇合后的节点；`$entry` 仍只表示从当前入口重开。
+
+```json
+{ "type": "parallel-group", "id": "checks", "maxParallel": 3,
+  "branches": [ { "id": "api", "stages": ["unit", "contract"] }, { "id": "web", "stages": ["ui"] } ] }
+```
+
+这里的 `unit`、`contract`、`ui` 是有独立绑定的 worker；`contract` 等 `unit` 完成，不等 `ui`。一个 worker 只归属一条分支；普通节点仍只有一个成功出口。第一版不嵌套，不在分支内暂停等人工确认、开启整个工作流的新一轮或启动 AI-DYNAMIC。重试必须有预算并留在本分支内。全部分支成功，组的成功边才放行一次；耗尽预算的分支记录失败，不把其他已经成功的分支重跑。
+
+固定分支从同一干净 Git 基线创建隔离工作目录；源目录有未提交变更时不会静默丢弃这些变更。全部成功后按分支声明顺序合成检查点；Git 不支持合并或目标已变化时保留分支现场并提示处理，不报告成功。目标身份包括分叉时的检出分支（或 detached HEAD 状态）及基线提交；即使提交号相同，切到另一条分支也不再属于原目标。下游通过 `parallel-group-result` 清单获取每支结果和终点产物定位，而不是假定所有文件都在同一目录。
+
+分支数是流程定义，并发数是运行预算。默认候选为 3，第一版可在 1–5 范围内配置；6 条分支在上限为 5 时依然合法，第 6 条等到空位才启动。共享可写数据库、端口或账号的测试，必须隔离相关资源或设为串行。并发组不替代已有的 AI-DYNAMIC 调度设置。

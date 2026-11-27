@@ -15,7 +15,7 @@ vi.mock('@/components/ui/scroll-area', () => ({
 }));
 
 import { ConversationSidebar, conversationSidebarRunKey, doesConversationSidebarRunListOwnSelection } from '@/components/conversation/ConversationSidebar';
-import { applyConversationRecentTaskPage, createEmptyConversationSidebar } from '@/lib/conversation-sidebar-loading';
+import { applyConversationRecentTaskPage, applyConversationRunSummaryPage, createEmptyConversationSidebar } from '@/lib/conversation-sidebar-loading';
 import type { ConversationPage, ConversationSidebarVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -40,7 +40,7 @@ function recentSidebar(nextCursor: string | null) {
   }, false);
 }
 
-function mount(vm: ConversationSidebarVm, onSelect: (page: ConversationPage) => void) {
+function mount(vm: ConversationSidebarVm, onSelect: (page: ConversationPage) => void, onDeleteTask = vi.fn()) {
   const container = document.createElement('div');
   document.body.append(container);
   const root: Root = createRoot(container);
@@ -55,7 +55,7 @@ function mount(vm: ConversationSidebarVm, onSelect: (page: ConversationPage) => 
         onPinTask={() => {}}
         onUnpinTask={() => {}}
         onRenameTask={() => {}}
-        onDeleteTask={() => {}}
+        onDeleteTask={onDeleteTask}
         onRetryBootstrap={() => {}}
         onRequestWorkspaceTasks={() => {}}
         onRequestPinnedTasks={() => {}}
@@ -210,6 +210,25 @@ describe('ConversationSidebar recent section', () => {
     }
   });
 
+  it.each([null, 'forge', 'forge-trial'] as const)('manages a no-run %s task only after explicit confirmation', async (origin) => {
+    const vm = recentSidebar(null);
+    vm.recentTasks[1] = { ...vm.recentTasks[1], origin };
+    const remove = vi.fn(), navigate = vi.fn();
+    const { container, root } = mount(vm, navigate, remove);
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('[data-task-id="task-2"] button[aria-label="common.delete"]');
+      expect(trigger).toBeTruthy();
+      await act(async () => trigger!.click());
+      const action = (key: string) => [...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(button => button.textContent === key)!;
+      await act(async () => action('common.close').click());
+      expect(remove).not.toHaveBeenCalled();
+      await act(async () => trigger!.click());
+      await act(async () => action('conversation.sidebar.deleteConfirmAction').click());
+      expect(remove.mock.calls).toEqual([['project-b', 'task-2', 'uuid-2']]);
+      expect(navigate).not.toHaveBeenCalled();
+    } finally { act(() => root.unmount()); }
+  });
+
   it('navigates with the full locator and tolerates rows without a run', () => {
     const onSelect = vi.fn();
     const { container, root } = mount(recentSidebar(null), onSelect);
@@ -242,23 +261,19 @@ describe('ConversationSidebar recent section', () => {
     }
   });
 
-  it('expands and navigates run history on workflow rows like the workspace list', () => {
-    // 2026-11-06: recent rows reuse the workspace task row, so a workflow
-    // conversation opens its run list right in the recent group and selecting
-    // a run navigates with the run locator.
+  it('opens the top-level workflow after history loads and still lets users select a child', () => {
     const onSelect = vi.fn();
     const vm = recentSidebar(null);
-    vm.recentTasks[1] = {
-      ...vm.recentTasks[1],
-      latestRun: { runId: 'run-7', status: 'completed', updatedAt: '2026-10-02T00:00:00Z' } as never,
-      runs: [
-        { runId: 'run-7', status: 'completed', updatedAt: '2026-10-02T00:00:00Z' },
-        { runId: 'run-8', status: 'completed', updatedAt: '2026-10-03T00:00:00Z' },
-      ] as never,
-      runHistoryStatus: 'ready',
-      runsNextCursor: null,
+    const parent = {
+      runId: 'run-7', status: 'completed', startedAt: '2026-10-02T00:00:00Z',
+      updatedAt: '2026-10-02T00:00:00Z', resumable: false,
     };
-    const { container, root } = mount(vm, onSelect);
+    vm.recentTasks[1] = { ...vm.recentTasks[1], latestRun: parent };
+    const hydrated = applyConversationRunSummaryPage(vm, {
+      projectId: 'project-b', taskId: 'task-2', taskUuid: 'uuid-2',
+      runs: [{ ...parent, runId: 'run-8' }, parent], nextCursor: null, errors: [],
+    }, false);
+    const { container, root } = mount(hydrated, onSelect);
     try {
       const row = container.querySelector('[data-conversation-task-row="recent"][data-task-id="task-2"]') as HTMLElement;
       act(() => {

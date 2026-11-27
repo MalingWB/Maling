@@ -335,6 +335,161 @@ pub async fn get_conversation_task_page(
     result
 }
 
+const GENERATION_HISTORY_DEFAULT_LIMIT: usize = 30;
+const GENERATION_HISTORY_MAX_QUERY_CHARS: usize = 256;
+
+#[derive(Serialize, Deserialize)]
+struct GenerationHistoryContinuation {
+    key: gold_band::storage::sqlite::GenerationHistoryCursor,
+    project_id: Option<String>,
+    origin: Option<gold_band::runtime::TaskOrigin>,
+    query: String,
+}
+
+#[tauri::command]
+pub async fn get_generation_history_page(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    origin: Option<gold_band::runtime::TaskOrigin>,
+    query: Option<String>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> CommandResult<crate::view_models_conversation::ConversationRecentTaskPageVm> {
+    use crate::view_models_conversation::{
+        ConversationListItemErrorVm, ConversationRecentTaskPageVm, ConversationRecentTaskRowVm,
+        conversation_task_summary_vm_from_task,
+    };
+    use gold_band::runtime::{TaskState, validate_task_state};
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let app = context.app();
+        let state = app.load_state().map_err(command_error)?;
+        let index = gold_band::storage::sqlite::search_index().ok_or_else(|| {
+            CommandErrorVm::new("search.index-unavailable", serde_json::json!({}))
+        })?;
+        let query = query.as_deref().unwrap_or_default().trim();
+        if query.chars().count() > GENERATION_HISTORY_MAX_QUERY_CHARS {
+            return Err(CommandErrorVm::new(
+                "search.query-invalid",
+                serde_json::json!({"maxLength":GENERATION_HISTORY_MAX_QUERY_CHARS}),
+            ));
+        }
+        let invalid_cursor =
+            || CommandErrorVm::new("conversation.invalid-cursor", serde_json::json!({}));
+        let before: Option<GenerationHistoryContinuation> = cursor
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|_| invalid_cursor())?;
+        if before
+            .as_ref()
+            .is_some_and(|c| c.project_id != project_id || c.origin != origin || c.query != query)
+        {
+            return Err(invalid_cursor());
+        }
+
+        let mut roots = std::collections::BTreeMap::new();
+        let mut owners = std::collections::HashMap::new();
+        let mut errors = Vec::new();
+        for workspace in &state.conversation_workspaces {
+            if project_id
+                .as_ref()
+                .is_some_and(|id| id != &workspace.project_id)
+            {
+                continue;
+            }
+            let paths = GoldBandPaths::new_with_path_config(
+                Utf8PathBuf::from(&workspace.workspace_path),
+                app.paths.storage_path_config(),
+            );
+            if paths.project_id != workspace.project_id {
+                errors.push(ConversationListItemErrorVm {
+                    code: "workspace.identity-mismatch".into(),
+                    params: serde_json::json!({"projectId":workspace.project_id}),
+                });
+                continue;
+            }
+            roots.insert(workspace.project_id.clone(), paths.tasks_dir().to_string());
+            owners.insert(workspace.project_id.as_str(), (workspace, paths));
+        }
+        if project_id.is_some() && roots.is_empty() && errors.is_empty() {
+            return Err(CommandErrorVm::new(
+                "workspace.not-found",
+                serde_json::json!({"projectId":project_id}),
+            ));
+        }
+        let (rows, next) = index
+            .registered_generation_page(
+                &roots,
+                origin,
+                query,
+                before.as_ref().map(|c| &c.key),
+                limit.unwrap_or(GENERATION_HISTORY_DEFAULT_LIMIT),
+            )
+            .map_err(|_| CommandErrorVm::new("search.query-failed", serde_json::json!({})))?;
+        let mut tasks = Vec::with_capacity(rows.len());
+        for row in rows {
+            let (workspace, paths) = &owners[row.key.project_id.as_str()];
+            let id = &row.key.task_id;
+            // SQLite supplies candidates only. Never give a stale match the locator of
+            // its replacement, or read details through an unverified task.json id.
+            let task = gold_band::storage::read_json::<TaskState>(&paths.task_file(id))
+                .ok()
+                .filter(|task| {
+                    validate_task_state(task).is_ok()
+                        && task.id == *id
+                        && task.uuid.as_deref().is_some_and(|uuid| !uuid.is_empty())
+                        && match row.task_uuid.as_deref().filter(|uuid| !uuid.is_empty()) {
+                            Some(indexed) => task.uuid.as_deref() == Some(indexed),
+                            None => query.is_empty(),
+                        }
+                        && task.origin.map(|o| o.as_str()) == Some(row.origin.as_str())
+                        && task.title.as_deref().unwrap_or_default() == row.title
+                        && task.description.as_deref().unwrap_or_default() == row.description
+                });
+            let Some(task) = task else {
+                errors.push(ConversationListItemErrorVm {
+                    code: "conversation.task-summary-unavailable".into(),
+                    params: serde_json::json!({"projectId":workspace.project_id,"taskId":id}),
+                });
+                continue;
+            };
+            let pin = state
+                .conversation_pins
+                .iter()
+                .find(|pin| pin.project_id == workspace.project_id && pin.task_id == *id);
+            tasks.push(ConversationRecentTaskRowVm {
+                workspace_name: workspace.name.clone(),
+                task: conversation_task_summary_vm_from_task(
+                    paths,
+                    &workspace.project_id,
+                    &task,
+                    pin.is_some(),
+                    pin.map(|p| p.order),
+                    None,
+                ),
+            });
+        }
+        let next_cursor = next
+            .map(|key| {
+                serde_json::to_string(&GenerationHistoryContinuation {
+                    key,
+                    project_id,
+                    origin,
+                    query: query.to_string(),
+                })
+            })
+            .transpose()
+            .map_err(|e| command_error(e.into()))?;
+        Ok(ConversationRecentTaskPageVm {
+            tasks,
+            next_cursor,
+            errors,
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn get_conversation_task_summary(
     state: State<'_, DesktopState>,
@@ -1167,6 +1322,7 @@ pub async fn update_task_metadata(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
+    task_uuid: String,
     title: String,
     description: Option<String>,
 ) -> CommandResult<crate::view_models_conversation::ConversationTaskRowVm> {
@@ -1193,6 +1349,7 @@ pub async fn update_task_metadata(
             &workspace_app,
             &resolved_project_id,
             &task_id,
+            &task_uuid,
             &title,
             description.as_deref(),
             pinned,
@@ -1373,93 +1530,105 @@ pub async fn search_conversation_tasks(
     query: String,
     limit: Option<usize>,
 ) -> CommandResult<Vec<crate::view_models_conversation::ConversationSearchResultVm>> {
-    let limit = limit.unwrap_or(50).min(200);
     let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let app_state = app.load_state().unwrap_or_default();
-    let task_roots = conversation_search_task_roots(&app, &app_state);
-    let index = gold_band::storage::sqlite::search_index()
-        .ok_or_else(|| CommandErrorVm::new("search.index-unavailable", serde_json::json!({})))?;
-    let index = index.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        index
-            .search_tasks_in_task_roots(&query, &task_roots, limit)
-            .map(|results| {
-                results
-                    .into_iter()
-                    .filter_map(|result| {
-                        let (project_id, workspace_name) =
-                            extract_project_from_task_path(&result.task_path, &app_state);
-                        let (workspace_path, resolved_project_id) =
-                            workspace_entry_for_project(&app_state, &project_id)?;
-                        let workspace_app = app_for_workspace(&context, &workspace_path).ok()?;
-                        conversation_search_result_for_workspace(
-                            &workspace_app,
-                            resolved_project_id,
-                            workspace_path,
-                            workspace_name,
-                            result,
-                        )
-                    })
-                    .collect()
-            })
-            .map_err(|error| {
-                CommandErrorVm::new(
-                    "search.query-failed",
-                    serde_json::json!({ "message": error.to_string() }),
-                )
-            })
+    spawn_blocking_command(move || {
+        let app = context.app();
+        let app_state = app.load_state().map_err(command_error)?;
+        let index = gold_band::storage::sqlite::search_index().ok_or_else(|| {
+            CommandErrorVm::new("search.index-unavailable", serde_json::json!({}))
+        })?;
+        search_registered_conversation_tasks(
+            &app,
+            &app_state,
+            index,
+            &query,
+            limit.unwrap_or(50).min(200),
+        )
     })
     .await
-    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
 }
 
-fn conversation_search_task_roots(
-    _app: &App,
+fn search_registered_conversation_tasks(
+    app: &App,
     state: &gold_band::config::StateConfig,
-) -> Vec<String> {
-    state
-        .conversation_workspaces
-        .iter()
-        .map(|workspace| {
-            gold_band::storage::GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path))
-                .tasks_dir()
-                .to_string()
+    index: &gold_band::storage::sqlite::SearchIndex,
+    query: &str,
+    limit: usize,
+) -> CommandResult<Vec<crate::view_models_conversation::ConversationSearchResultVm>> {
+    let workspaces = &state.conversation_workspaces;
+    let mut owners = std::collections::HashMap::new();
+    let root_for = |workspace: &ConversationWorkspaceEntry| {
+        GoldBandPaths::new_with_path_config(
+            Utf8PathBuf::from(&workspace.workspace_path),
+            app.paths.storage_path_config(),
+        )
+        .tasks_dir()
+    };
+    for workspace in workspaces {
+        owners.insert(root_for(workspace), (workspace, None));
+    }
+    let roots = owners.keys().map(ToString::to_string).collect::<Vec<_>>();
+    let results = index.search_conversation_task_instances(query, &roots, false, limit)
+    .map_err(|error| {
+        CommandErrorVm::new(
+            "search.query-failed",
+            serde_json::json!({ "message": error.to_string() }),
+        )
+    })?;
+
+    Ok(results
+        .into_iter()
+        .filter_map(|result| {
+            let path = camino::Utf8Path::new(&result.task_path);
+            if path.file_name()? != result.task_id {
+                return None;
+            }
+            let (workspace, workspace_app) = owners.get_mut(path.parent()?)?;
+            let workspace_app = workspace_app.get_or_insert_with(|| {
+                app.with_repo_root(
+                    Utf8PathBuf::from(&workspace.workspace_path),
+                    app.config.clone(),
+                )
+            });
+            conversation_search_result_for_workspace(workspace_app, workspace, result)
         })
-        .collect()
+        .collect())
 }
 
 fn conversation_search_result_for_workspace(
     workspace_app: &App,
-    project_id: String,
-    workspace_path: String,
-    workspace_name: String,
+    workspace: &ConversationWorkspaceEntry,
     result: gold_band::storage::sqlite::TaskSearchResult,
 ) -> Option<crate::view_models_conversation::ConversationSearchResultVm> {
-    let summary = workspace_app.task_summary(&result.task_id).ok()?;
-    let latest_run = summary
-        .latest_run
-        .as_ref()
-        .map(crate::view_models_conversation::conversation_run_summary_vm)?;
+    let task = workspace_app.task_show(&result.task_id).ok()?;
+    // A rename or replacement can commit after the index query. Never label a
+    // fresh task instance with the matched projection of its predecessor.
+    if result.task_uuid.as_deref().is_none_or(str::is_empty) || task.uuid != result.task_uuid
+        || task.title.as_deref().unwrap_or_default() != result.title
+        || task.origin.map(|o| o.as_str()).unwrap_or_default() != result.origin
+    {
+        return None;
+    }
+    let title = crate::view_models_conversation::conversation_task_title(&task);
+    let latest_run = crate::view_models_conversation::latest_conversation_run_summary(
+        &workspace_app.paths,
+        &result.task_id,
+    );
     let metadata =
-        gold_band::storage::read_json::<crate::view_models_conversation::ConversationMetadata>(
-            &Utf8PathBuf::from(&result.task_path)
-                .join("authoring")
-                .join("conversation.json"),
-        )
-        .ok();
+        crate::view_models_conversation::conversation_metadata(workspace_app, &result.task_id);
     Some(
         crate::view_models_conversation::ConversationSearchResultVm {
-            project_id,
-            task_uuid: summary.task.uuid,
-            workspace_path,
-            workspace_name,
+            project_id: workspace.project_id.clone(),
+            task_uuid: task.uuid,
+            workspace_path: workspace.workspace_path.clone(),
+            workspace_name: workspace.name.clone(),
             task_id: result.task_id,
-            title: result.title,
+            origin: task.origin.map(|origin| origin.as_str().to_owned()),
+            title,
             description: Some(result.description),
             requirement_preview: result.requirement_preview,
             match_preview: result.match_preview,
-            latest_run: Some(latest_run),
+            latest_run,
             run_mode: metadata
                 .as_ref()
                 .map(|metadata| metadata.run_mode.clone())
@@ -1475,32 +1644,6 @@ fn conversation_search_result_for_workspace(
             }),
         },
     )
-}
-
-fn extract_project_from_task_path(
-    task_path: &str,
-    state: &gold_band::config::StateConfig,
-) -> (String, String) {
-    // Path structure: .../projects/{project_id}/tasks/{task_id}
-    let path = task_path.replace('\\', "/");
-    let segments: Vec<&str> = path.split('/').collect();
-    let mut project_id = String::new();
-    for i in 0..segments.len().saturating_sub(1) {
-        if segments[i] == "projects" {
-            project_id = segments
-                .get(i + 1)
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-            break;
-        }
-    }
-    let workspace_name = state
-        .conversation_workspaces
-        .iter()
-        .find(|workspace| project_ids_match(&workspace.project_id, &project_id))
-        .map(|w| w.name.clone())
-        .unwrap_or(project_id.clone());
-    (project_id, workspace_name)
 }
 
 fn persist_last_conversation_workspace(app: &App, project_id: &str) -> CommandResult<()> {
@@ -2108,13 +2251,26 @@ pub async fn sync_conversation_workspace(
     .await
 }
 
+/// Trusted process-side destination, never supplied by the webview.
+#[derive(Clone)]
+pub struct ConversationTaskTrash(pub fn(&std::path::Path) -> anyhow::Result<()>);
+
+impl Default for ConversationTaskTrash {
+    fn default() -> Self {
+        Self(|path| Ok(trash::delete(path)?))
+    }
+}
+
 #[tauri::command]
 pub async fn delete_conversation_task(
     state: State<'_, DesktopState>,
+    trash: State<'_, ConversationTaskTrash>,
     project_id: String,
     task_id: String,
+    task_uuid: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
+    let trash = trash.inner().0;
     let conversation_attention_write_lock = state.conversation_attention_write_lock();
     spawn_blocking_command(move || {
         let app = context.app();
@@ -2129,79 +2285,72 @@ pub async fn delete_conversation_task(
             ));
         };
         let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
-        let task_dir = workspace_app.paths.task_dir(&task_id);
-        if !task_dir.exists() {
+        if workspace_app.paths.project_id != normalized_project_id {
             return Err(CommandErrorVm::new(
-                "conversation.task-not-found",
-                serde_json::json!({ "taskId": task_id }),
+                "workspace.not-found",
+                serde_json::json!({ "projectId": project_id }),
             ));
         }
-        if let Ok(runs) = workspace_app.run_list(&task_id)
-            && runs
-                .iter()
-                .any(|run| run.status == gold_band::domain::RunStatus::Running)
-        {
-            return Err(CommandErrorVm::new(
-                "conversation.task-running",
-                serde_json::json!({ "taskId": task_id }),
-            ));
-        }
-        let task_uuid = workspace_app
-            .task_show(&task_id)
-            .ok()
-            .and_then(|task| task.uuid);
-        gold_band::acp::client::close_direct_conversation(&normalized_project_id, &task_id)
-            .map_err(command_error)?;
-        {
-            let _memory_guard = gold_band::memory::lock_project(
-                &workspace_app.paths,
-                &workspace_app.paths.project_id,
-            )
-            .map_err(|error| CommandErrorVm {
-                code: error.code.into(),
-                params: error.params,
-            })?;
-            if !task_dir.exists() {
-                return Err(CommandErrorVm::new(
-                    "conversation.task-not-found",
-                    serde_json::json!({ "taskId": task_id }),
-                ));
-            }
-            trash::delete(task_dir.as_std_path()).map_err(|error| {
+        workspace_app
+            .with_task_deletion_guard(&task_id, &task_uuid, |task_dir| {
+                gold_band::acp::client::close_direct_conversation(&normalized_project_id, &task_id)
+                    .map_err(command_error)?;
+                // Memory writers share this cross-process lock. Do not hold it while
+                // closing an ACP reader, checking all runs or updating projections.
+                {
+                    let _memory = gold_band::memory::lock_project(&workspace_app.paths, &normalized_project_id)
+                        .map_err(|error| CommandErrorVm { code: error.code.into(), params: error.params })?;
+                    let missing = || CommandErrorVm::new("conversation.task-not-found", serde_json::json!({"taskId":task_id}));
+                    let (_, current) = workspace_app.checked_task_locator(&task_id).map_err(|_| missing())?;
+                    if current.uuid.as_deref() != Some(task_uuid.as_str()) { return Err(missing()); }
+                    trash(task_dir.as_std_path()).map_err(|error| {
+                        CommandErrorVm::new(
+                            "conversation.task-delete-failed",
+                            serde_json::json!({ "taskId": task_id, "message": error.to_string() }),
+                        )
+                    })?;
+                }
+                gold_band::storage::sqlite::delete_task(task_dir);
+                crate::metrics::mark_task_metrics_deleted_best_effort(
+                    normalized_project_id.clone(),
+                    task_uuid.clone(),
+                );
+                {
+                    let _attention_guard =
+                        conversation_attention_write_lock.lock().map_err(|_| {
+                            CommandErrorVm::new(
+                                "conversation.attention-write-lock-failed",
+                                serde_json::json!({ "taskId": task_id }),
+                            )
+                        })?;
+                    remove_task_attention(&workspace_app, &task_id).map_err(command_error)?;
+                }
+                // 清 pin 经 with_state 原子 RMW（StateConfig 唯一读改写入口）：与远程来源后台写入并发互不覆盖。
+                app.with_state(|state| {
+                    let before = state.conversation_pins.len();
+                    state
+                        .conversation_pins
+                        .retain(|p| p.project_id != normalized_project_id || p.task_id != task_id);
+                    (
+                        state.conversation_pins.len() != before,
+                        conversation_sidebar_bootstrap_for_state(state),
+                    )
+                })
+                .map_err(command_error)?
+            })
+            .map_err(|error| {
+                let code = match error.downcast_ref::<gold_band::app::TaskDeletionError>() {
+                    Some(gold_band::app::TaskDeletionError::NotFound) => {
+                        "conversation.task-not-found"
+                    }
+                    Some(gold_band::app::TaskDeletionError::Running) => "conversation.task-running",
+                    None => "conversation.task-delete-failed",
+                };
                 CommandErrorVm::new(
-                    "conversation.task-delete-failed",
+                    code,
                     serde_json::json!({ "taskId": task_id, "message": error.to_string() }),
                 )
-            })?;
-        }
-        gold_band::storage::sqlite::delete_task(&task_dir);
-        if let Some(task_uuid) = task_uuid {
-            crate::metrics::mark_task_metrics_deleted_best_effort(
-                workspace_app.paths.project_id.clone(),
-                task_uuid,
-            );
-        }
-        {
-            let _attention_guard = conversation_attention_write_lock.lock().map_err(|_| {
-                CommandErrorVm::new(
-                    "conversation.attention-write-lock-failed",
-                    serde_json::json!({ "taskId": task_id }),
-                )
-            })?;
-            remove_task_attention(&workspace_app, &task_id).map_err(command_error)?;
-        }
-        // 清 pin 经 with_state 原子 RMW（StateConfig 唯一读改写入口）：与远程来源后台写入并发互不覆盖。
-        app.with_state(|state| {
-            let before = state.conversation_pins.len();
-            state
-                .conversation_pins
-                .retain(|p| p.project_id != normalized_project_id || p.task_id != task_id);
-            (
-                state.conversation_pins.len() != before,
-                conversation_sidebar_bootstrap_for_state(state),
-            )
-        })
-        .map_err(command_error)?
+            })?
     })
     .await
 }
@@ -2755,7 +2904,7 @@ fn base64_value(byte: u8) -> Option<u8> {
 mod tests {
     use super::{
         MaterializeAttachmentFileInput, base64_encode, conversation_project_app,
-        conversation_search_result_for_workspace, conversation_search_task_roots,
+        search_registered_conversation_tasks,
         decode_execution_history_cursor, delete_scheduled_execution_history_items,
         encode_execution_history_cursor, execution_history_vm, materialize_attachment_files_to_dir,
         message_attachment_content_from_attempt_dir, runtime_workspace_entry_for_project,
@@ -2768,7 +2917,7 @@ mod tests {
     use gold_band::domain::{RunOutcome, RunStatus, VERSION};
     use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState};
     use gold_band::scheduler::occurrence::ScheduledErrorCode;
-    use gold_band::storage::{sqlite::TaskSearchResult, write_json};
+    use gold_band::storage::{GoldBandPaths, sqlite::SearchIndex, write_json};
     use uuid::Uuid;
 
     #[test]
@@ -3097,29 +3246,59 @@ mod tests {
     }
 
     #[test]
-    fn conversation_search_result_contains_latest_run_for_navigation() {
-        let root = Utf8PathBuf::from_path_buf(
-            std::env::temp_dir()
-                .join("gold-band-conversation-search-test")
-                .join(Uuid::new_v4().to_string()),
-        )
-        .unwrap();
-        std::fs::create_dir_all(root.as_std_path()).unwrap();
-        let app = App::new(root.clone());
+    fn conversation_search_scopes_registered_roots_and_navigates_to_root_or_no_run() {
+        use crate::view_models_conversation::{
+            ConversationWorkspaceSource, ConversationWorkspaceVm,
+            conversation_sidebar_vm_from_sources,
+        };
+        use gold_band::runtime::{BranchWorkspaceOwner, RunWorktreeState, TaskOrigin};
+
+        let temp = tempfile::tempdir().unwrap();
+        let dir = camino::Utf8Path::from_path(temp.path()).unwrap();
+        let paths = gold_band::storage::StoragePathConfig {
+            app_key: "search-test",
+            config_dir_name: ".search-test",
+            home_env_var: "GOLD_BAND_CONVERSATION_SEARCH_FIXTURE_HOME",
+        };
+        assert!(std::env::var_os(paths.home_env_var).is_none());
+        let make_app = |name: &str| {
+            // A workspace/home may itself contain a directory called `projects`.
+            let repo = dir.join("projects").join(name);
+            std::fs::create_dir_all(&repo).unwrap();
+            assert!(
+                GoldBandPaths::new_with_path_config(&repo, paths)
+                    .user_gold_band_root
+                    .starts_with(dir)
+            );
+            App::with_config_and_path_config(repo, Default::default(), paths)
+        };
+        let app = make_app("first");
+        let other = make_app("second");
+        let hidden = make_app("unregistered");
+        let index = SearchIndex::open(&dir.join("search.db")).unwrap();
+        let add = |app: &App, id: &str, origin| {
+            write_json(
+                &app.paths.task_file(id),
+                &TaskState {
+                    forge_naming: None,
+                    version: VERSION.to_string(),
+                    id: id.to_owned(),
+                    title: Some("Searchable".to_owned()),
+                    description: None,
+                    uuid: Some(format!("{}-{id}", app.paths.project_id)),
+                    origin,
+                },
+            )
+            .unwrap();
+            index.index_task_with_retry(&app.paths.task_dir(id), id);
+        };
         let task_id = "task-001";
         let run_id = "run-001";
-        write_json(
-            &app.paths.task_file(task_id),
-            &TaskState {
-                version: VERSION.to_string(),
-                id: task_id.to_string(),
-                title: Some("Searchable conversation".to_string()),
-                description: None,
-                uuid: Some("search-task-uuid".to_string()),
-                origin: None,
-            },
-        )
-        .unwrap();
+        add(&app, "task-003", None);
+        add(&other, task_id, Some(TaskOrigin::Forge));
+        add(&hidden, task_id, Some(TaskOrigin::Forge));
+        add(&app, task_id, Some(TaskOrigin::ForgeTrial));
+        add(&app, "task-002", Some(TaskOrigin::Forge));
         write_json(
             &app.paths.run_file(task_id, run_id),
             &RunState {
@@ -3150,52 +3329,97 @@ mod tests {
         )
         .unwrap();
 
-        let result = conversation_search_result_for_workspace(
-            &app,
-            "project-a".to_string(),
-            root.to_string(),
-            "Project A".to_string(),
-            TaskSearchResult {
-                task_id: task_id.to_string(),
-                task_path: app.paths.task_dir(task_id).to_string(),
-                title: "Searchable conversation".to_string(),
-                description: String::new(),
-                requirement_preview: "find a file".to_string(),
-                match_preview: "find a file".to_string(),
-                origin: String::new(),
-            },
-        )
-        .unwrap();
+        let mut child: RunState =
+            gold_band::storage::read_json(&app.paths.run_file(task_id, run_id)).unwrap();
+        child.id = "run-002".to_owned();
+        child.updated_at = "2026-07-25T00:01:00Z".to_owned();
+        child.worktree = Some(RunWorktreeState {
+            path: dir.join("child"),
+            branch: "branch".to_owned(),
+            fork_commit: "abc".to_owned(),
+            graph_owner: Some(BranchWorkspaceOwner {
+                run_id: run_id.to_owned(),
+                round_id: "round-001".to_owned(),
+                group_id: "parallel".to_owned(),
+                group_attempt_id: "attempt-001".to_owned(),
+                branch_node_id: "branch".to_owned(),
+            }),
+        });
+        write_json(&app.paths.run_file(task_id, &child.id), &child).unwrap();
 
-        assert_eq!(result.project_id, "project-a");
-        assert_eq!(result.task_uuid.as_deref(), Some("search-task-uuid"));
-        assert_eq!(result.workspace_path, root.as_str());
-        assert_eq!(result.latest_run.unwrap().run_id, run_id);
-        let _ = std::fs::remove_dir_all(root.as_std_path());
-    }
-
-    #[test]
-    fn conversation_search_scope_contains_only_sidebar_workspaces() {
-        let app = make_test_app();
-        let mut state = gold_band::config::StateConfig::default();
-        state
-            .conversation_workspaces
-            .push(gold_band::config::ConversationWorkspaceEntry {
-                project_id: "sidebar-workspace".to_string(),
-                workspace_path: "/path/to/sidebar-workspace".to_string(),
-                name: "Sidebar workspace".to_string(),
-                added_at: "2026-07-24T00:00:00Z".to_string(),
-            });
-
-        let roots = conversation_search_task_roots(&app, &state);
-
-        assert_eq!(roots.len(), 1);
-        assert_eq!(
-            roots[0],
-            gold_band::storage::GoldBandPaths::new(Utf8PathBuf::from("/path/to/sidebar-workspace"))
-                .tasks_dir()
-                .to_string()
+        let mut state = StateConfig::default();
+        for workspace in [&app, &other] {
+            state
+                .conversation_workspaces
+                .push(ConversationWorkspaceEntry {
+                    project_id: workspace.paths.project_id.clone(),
+                    workspace_path: workspace.paths.repo_root.to_string(),
+                    name: "Same name".to_owned(),
+                    added_at: "2026-07-24T00:00:00Z".to_owned(),
+                });
+        }
+        let project_id = app.paths.project_id.clone();
+        let global = search_registered_conversation_tasks(&app, &state, &index, "Searchable", 10).unwrap();
+        assert_eq!(global.len(), 4);
+        assert!(
+            global
+                .iter()
+                .any(|hit| hit.project_id == other.paths.project_id && hit.task_id == task_id)
         );
+        assert!(
+            global
+                .iter()
+                .any(|hit| hit.task_id == "task-003" && hit.origin.is_none())
+        );
+        let results: Vec<_> = global.iter().filter(|hit| hit.project_id == project_id && hit.origin.is_some()).collect();
+        assert_eq!(results.len(), 2);
+        let trial = results.iter().find(|hit| hit.task_id == task_id).unwrap();
+        assert_eq!(trial.task_uuid, Some(format!("{project_id}-{task_id}")));
+        assert_eq!(trial.origin.as_deref(), Some("forge-trial"));
+        assert_eq!(trial.latest_run.as_ref().unwrap().run_id, run_id);
+        let draft = results
+            .iter()
+            .find(|hit| hit.task_id == "task-002")
+            .unwrap();
+        assert_eq!(draft.origin.as_deref(), Some("forge"));
+        assert!(draft.latest_run.is_none());
+
+        // Reuse the same registered path, numeric ID, title, and origin before reindexing.
+        let draft_id = &draft.task_id;
+        let mut instance = app.task_show(draft_id).unwrap();
+        instance.description = Some("supersededcontent".to_owned());
+        write_json(&app.paths.task_file(draft_id), &instance).unwrap();
+        index.index_task_with_retry(&app.paths.task_dir(draft_id), draft_id);
+        let search_body = |query: &str| {
+            search_registered_conversation_tasks(&app, &state, &index, query, 10).unwrap()
+        };
+        assert_eq!(search_body("supersededcontent").len(), 1);
+        instance.uuid = Some("replacement-uuid".to_owned());
+        instance.description = Some("replacementcontent".to_owned());
+        write_json(&app.paths.task_file(draft_id), &instance).unwrap();
+        assert!(search_body("supersededcontent").is_empty());
+        index.index_task_with_retry(&app.paths.task_dir(draft_id), draft_id);
+        let replacement = search_body("replacementcontent");
+        assert_eq!(replacement.len(), 1);
+        assert_eq!(replacement[0].task_uuid, instance.uuid);
+
+        let sidebar = conversation_sidebar_vm_from_sources(
+            &state,
+            &[ConversationWorkspaceSource {
+                workspace: ConversationWorkspaceVm {
+                    project_id: project_id.clone(),
+                    workspace_path: app.paths.repo_root.to_string(),
+                    name: "Same name".to_owned(),
+                },
+                app,
+            }],
+        );
+        let row = sidebar.tasks_by_workspace[&project_id]
+            .iter()
+            .find(|row| row.task_id == task_id)
+            .unwrap();
+        assert_eq!(row.latest_run.as_ref().unwrap().run_id, run_id);
+        assert_eq!(row.runs.len(), 2);
     }
 
     #[test]
@@ -3363,17 +3587,6 @@ mod tests {
 
     // ── Workspace resolution tests ──
 
-    fn temp_repo_root() -> Utf8PathBuf {
-        let mut root = std::env::temp_dir();
-        root.push(format!("gold-band-workspace-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        Utf8PathBuf::from_path_buf(root).unwrap()
-    }
-
-    fn make_test_app() -> gold_band::app::App {
-        gold_band::app::App::new(temp_repo_root())
-    }
-
     #[test]
     fn workspace_entry_does_not_implicitly_resolve_desktop_context() {
         let state = gold_band::config::StateConfig::default();
@@ -3418,29 +3631,6 @@ mod tests {
         let result = super::workspace_entry_for_project(&state, "D--Projects-code-ai-claude-code");
 
         assert!(result.is_none());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn indexed_legacy_task_path_does_not_use_a_runtime_alias() {
-        let mut state = gold_band::config::StateConfig::default();
-        state
-            .conversation_workspaces
-            .push(gold_band::config::ConversationWorkspaceEntry {
-                project_id: "d--projects-code-ai-claude-code".to_string(),
-                workspace_path: "D:\\Projects\\code\\ai\\claude code".to_string(),
-                name: "claude code".to_string(),
-                added_at: "2025-01-01T00:00:00Z".to_string(),
-            });
-        let task_path = "C:\\Users\\user\\.gold-band\\projects\\D--Projects-code-ai-claude-code\\tasks\\task-053";
-
-        let (indexed_project_id, workspace_name) =
-            super::extract_project_from_task_path(task_path, &state);
-        let resolved = super::workspace_entry_for_project(&state, &indexed_project_id);
-
-        assert_eq!(indexed_project_id, "D--Projects-code-ai-claude-code");
-        assert_eq!(workspace_name, indexed_project_id);
-        assert!(resolved.is_none());
     }
 
     #[test]
@@ -3566,3 +3756,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "conversation_management_tests.rs"]
+mod management_tests;

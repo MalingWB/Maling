@@ -5,6 +5,7 @@
  * edge-label space and group containment.
  */
 import { Position } from '@xyflow/react';
+import { availableId, parallelMembers } from '../lib/workflow-parallel';
 import type { ELK, ElkExtendedEdge, ElkNode, ElkPort, LayoutOptions } from 'elkjs/lib/elk-api';
 import type { GraphNodeVm, GraphEdgeVm, GraphVm, WorkflowDsl, WorkflowEdgeDsl } from '../types';
 
@@ -16,6 +17,12 @@ export const TERMINAL_NODE_MAX_WIDTH = 260;
 export const TERMINAL_NODE_HEIGHT = 44;
 /** Runtime graph nodes use a taller card for status badges. */
 export const RUNTIME_NODE_HEIGHT = 138;
+/** Gap between two consecutive layers (stages) of a chain. */
+export const LAYER_SPACING = 32;
+/** Empty margin the layout keeps around the whole graph. */
+export const LAYOUT_PADDING = 40;
+/** Largest zoom a fitted `workflow`-variant graph is shown at; an embed sizes its canvas so the graph lands near it. */
+export const WORKFLOW_FIT_MAX_ZOOM = 0.88;
 
 /** Source handles of a node that can fail sit at these fractions of its height. */
 export const WORKFLOW_NODE_OUTCOME_HANDLE_RATIO = { success: 0.34, failure: 0.66 } as const;
@@ -99,6 +106,8 @@ export interface WorkflowLayoutEdgeSpec {
   from: string;
   to: string;
   outcome: WorkflowLayoutOutcome;
+  /** Optional inline badge footprint; the compact blueprint reserves space for outcome labels. */
+  labelSize?: { width: number; height: number };
 }
 
 export interface WorkflowLayoutGroupSpec {
@@ -164,7 +173,7 @@ const ELK_LAYOUT_OPTIONS: LayoutOptions = {
   // node's 50% target port — violating the "success main chain keeps one
   // column/row" contract (task-workflow.md).
   'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
-  'elk.layered.spacing.nodeNodeBetweenLayers': '32',
+  'elk.layered.spacing.nodeNodeBetweenLayers': String(LAYER_SPACING),
   'elk.spacing.nodeNode': '48',
   'elk.layered.spacing.edgeNodeBetweenLayers': '24',
   'elk.spacing.edgeNode': '24',
@@ -173,7 +182,7 @@ const ELK_LAYOUT_OPTIONS: LayoutOptions = {
   'elk.spacing.edgeLabel': '4',
   'elk.edgeLabels.placement': 'CENTER',
   'elk.layered.edgeLabels.centerLabelPlacementStrategy': 'MEDIAN_LAYER',
-  'elk.padding': '[top=40,left=40,bottom=40,right=40]',
+  'elk.padding': `[top=${LAYOUT_PADDING},left=${LAYOUT_PADDING},bottom=${LAYOUT_PADDING},right=${LAYOUT_PADDING}]`,
 };
 const ELK_GROUP_PADDING = '[top=40,left=20,bottom=20,right=20]';
 // Semi-interactive crossing minimization keeps the in-layer order implied by
@@ -298,12 +307,9 @@ export function buildElkGraph(spec: WorkflowLayoutSpec): ElkNode {
       id: edge.id,
       sources: [outPortId(source, edge.outcome)],
       targets: [inPortId(edge.to)],
-      // Edge labels are NOT attached to ELK: the inline label dummy rarely
-      // lands on the port line, and the orthogonal router then detours every
-      // edge through it — an S-shaped 5px jog that reads as squiggly lines.
-      // Labels are placed by the app at the route's half-length point instead
-      // (readElkLayout).
-      labels: [],
+      // Reserve badge space only where the projection requests it. Execution
+      // and authoring graphs keep their existing straight, midpoint-labelled routes.
+      labels: edge.labelSize ? [{ text: edge.outcome, ...edge.labelSize, layoutOptions: { 'elk.edgeLabels.placement': 'CENTER' } }] : [],
       layoutOptions: {
         // Keep the success spine straight; failure / retry edges may bend.
         'elk.layered.priority.straightness': priority,
@@ -452,11 +458,42 @@ export interface AuthoringNodeInfo {
   terminal: boolean;
 }
 
+/** Expand the declared membership for layout only. Neither joins nor links are DSL entities. */
+export function authoringParallelTopology(workflow: WorkflowDsl, startId: string) {
+  const taken = new Set([...workflow.nodes.map(n => n.id), startId, END_NODE, NEW_ROUND_NODE]);
+  const members = parallelMembers(workflow.nodes);
+  const joinByGroup = new Map<string, string>();
+  const groupByJoin = new Map<string, string>();
+  const links: Array<WorkflowLayoutEdgeSpec & { groupId: string }> = [];
+  const order = workflowSuccessTopologyOrder(workflow);
+  const items: AuthoringNodeInfo[] = [];
+  const emitted = new Set<string>();
+  const emit = (id: string) => { if (!emitted.has(id)) { emitted.add(id); items.push({id, terminal: false}); } };
+  for (const n of [...workflow.nodes].sort((a, b) => order.get(a.id)! - order.get(b.id)!)) {
+    if (members.has(n.id) && n.type !== 'parallel-group') continue;
+    emit(n.id);
+    if (n.type !== 'parallel-group') continue;
+    const join = availableId(taken, `$join-${n.id}`);
+    taken.add(join);
+    groupByJoin.set(join, n.id);
+    joinByGroup.set(n.id, join);
+    for (const [bi, branch] of n.branches.entries()) {
+      let from = n.id;
+      for (const [si, to] of [...branch.stages, join].entries()) {
+        if (taken.has(to) && to !== join) emit(to);
+        links.push({id: `parallel:${JSON.stringify([n.id, bi, si])}`, from, to, groupId:n.id, outcome:'other'});
+        from = to;
+      }
+    }
+    emit(join);
+  }
+  return { items, links, joinByGroup, groupByJoin, members };
+}
+
 /** Collect terminal pseudo-nodes and build the full authoring node list. */
 export function collectAuthoringNodes(workflow: WorkflowDsl): AuthoringNodeInfo[] {
-  const terminalIds = [END_NODE, NEW_ROUND_NODE].filter((tid) =>
-    workflow.edges.some((e) => e.to === tid),
-  );
+  const terminalIds = workflow.edges.some((edge) => edge.to === NEW_ROUND_NODE)
+    ? [END_NODE, NEW_ROUND_NODE] : [END_NODE];
   return [
     ...workflow.nodes.map((n) => ({ id: n.id, terminal: false })),
     ...terminalIds.map((id) => ({ id, terminal: true })),
@@ -538,32 +575,45 @@ export function runtimeEdgeId(edge: Pick<GraphEdgeVm, 'from' | 'to'>, index: num
   return `${edge.from}-${edge.to}-${index}`;
 }
 
+/** Terminals mirror the authoring contract: `$end` is a passive sink and the new-round node pins back to the entry row. */
+export function isRuntimeTerminalNode(node: Pick<GraphNodeVm, 'id' | 'nodeType'>): boolean {
+  return node.id === END_NODE || node.id === NEW_ROUND_NODE || node.nodeType === 'terminal';
+}
+
 /**
  * Runtime layout input. Status, traversal counts and blocked reasons are excluded
- * so status refreshes never re-run layout; edge labels never enter the spec —
- * they ride the route's half-length point and cannot churn the cache.
+ * so status refreshes never re-run layout. Execution labels ride the route's
+ * midpoint; the compact blueprint reserves badge footprints for decisions only.
  */
-export function runtimeGraphLayoutSpec(graph: GraphVm, translate: (value: string) => string, direction: WorkflowLayoutDirection = 'RIGHT'): WorkflowLayoutSpec {
+export function runtimeGraphLayoutSpec(
+  graph: GraphVm,
+  translate: (value: string) => string,
+  direction: WorkflowLayoutDirection = 'RIGHT',
+  compact = false,
+): WorkflowLayoutSpec {
   const order = runtimeNodeOrder(graph.nodes);
   const nodes = [...graph.nodes].sort((a, b) => order.get(a.id)! - order.get(b.id)!);
   const nodeIds = new Set(nodes.map((node) => node.id));
-  // Terminals mirror the authoring contract: $end is a passive sink and the
-  // new-round node pins back to the entry row, so its long backward edge
-  // never crowds the tail layer and push the spine off its track.
-  const isTerminal = (node: GraphNodeVm) => node.id === END_NODE
-    || node.id === NEW_ROUND_NODE
-    || node.nodeType === 'terminal';
-  const hasIncoming = (id: string) => graph.edges.some((edge) => edge.to === id && nodeIds.has(edge.from));
-  const entryNodeId = nodes.find((node) => !isTerminal(node) && !hasIncoming(node.id))?.id ?? null;
+  const isTerminal = isRuntimeTerminalNode;
+  const sources = new Set<string>(), targets = new Set<string>(), failureSources = new Set<string>();
+  for (const edge of graph.edges) {
+    if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) continue;
+    sources.add(edge.from);
+    targets.add(edge.to);
+    if (edge.label.toLowerCase() === 'failure') failureSources.add(edge.from);
+  }
+  const entryNodeId = nodes.find((node) => !targets.has(node.id) && (compact ? sources.has(node.id) : !isTerminal(node)))?.id ?? null;
   return {
     direction,
     nodes: nodes.map((node) => {
       const terminal = isTerminal(node);
       return {
         id: node.id,
-        width: terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH,
-        height: terminal ? TERMINAL_NODE_HEIGHT : RUNTIME_NODE_HEIGHT,
-        sourceHandles: terminal ? 'none' : 'single',
+        width: terminal ? (compact ? terminalNodeWidth(node.label) : TERMINAL_NODE_WIDTH) : NODE_WIDTH,
+        height: terminal ? TERMINAL_NODE_HEIGHT : compact ? NODE_HEIGHT : RUNTIME_NODE_HEIGHT,
+        sourceHandles: compact
+          ? failureSources.has(node.id) ? 'split' : sources.has(node.id) ? 'single' : 'none'
+          : terminal ? 'none' : 'single',
         ...(node.id === NEW_ROUND_NODE && entryNodeId ? { pinBelow: entryNodeId } : {}),
         groupId: node.dynamicGroupId ?? null,
       };
@@ -571,11 +621,14 @@ export function runtimeGraphLayoutSpec(graph: GraphVm, translate: (value: string
     edges: graph.edges.flatMap((edge, index) => {
       if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) return [];
       const label = edge.label?.toLowerCase() ?? '';
+      const badge = compact && (label !== 'success' || failureSources.has(edge.from))
+        ? runtimeGraphEdgeDisplayLabel(edge, translate) : undefined;
       return [{
         id: runtimeEdgeId(edge, index),
         from: edge.from,
         to: edge.to,
         outcome: label === 'failure' ? 'failure' : label === 'success' ? 'success' : 'other',
+        ...(badge ? { labelSize: { width: estimateLabelWidth(badge, 11, 18), height: WORKFLOW_EDGE_LABEL_HEIGHT } } : {}),
       }];
     }),
     groups: (graph.groups ?? []).map((group) => ({ id: group.id, parentId: group.parentGroupId ?? null })),

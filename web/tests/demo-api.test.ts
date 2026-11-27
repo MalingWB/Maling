@@ -8,6 +8,11 @@ import { mcpAgentSupportStatus } from '../src/lib/mcp-agent-compatibility';
 import { configuredSkillAgents, skillSourceAgents } from '../src/lib/skill-agent-display';
 
 describe('public demo runtime', () => {
+  it('keeps generation history scoped to the curated read-only dataset', async () => {
+    const api = createDemoApi();
+    await expect(api.getGenerationHistoryPage({})).resolves.toEqual({ tasks: [], nextCursor: null, errors: [] });
+    await expect(api.getGenerationHistoryPage({ origin: 'forge-trial', query: 'review' })).resolves.toEqual({ tasks: [], nextCursor: null, errors: [] });
+  });
   it('passes the selected locator to ACP without loading session bodies in the demo shell', () => {
     const source = readFileSync('marketing/demo/DemoApp.tsx', 'utf8');
     expect(source).toContain('next.sessionTree.selectedSessionKey =');

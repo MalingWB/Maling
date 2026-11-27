@@ -330,6 +330,7 @@ fn output_artifact_for_predecessor(
             .as_ref()
             .map(|output| output.artifact.as_str()),
         NodeDsl::AiDynamic(_) => Some(AI_DYNAMIC_RESULT_ARTIFACT),
+        NodeDsl::ParallelGroup(_) => Some(crate::dsl::PARALLEL_GROUP_RESULT),
     }?;
     let path = app.paths.artifact_file(
         task_id,
@@ -390,7 +391,7 @@ fn predecessor_context_from_trace_ref(
     .ok();
     let branch_reason = match node_dsl {
         NodeDsl::Worker(worker) => output_contract_reason(worker),
-        NodeDsl::AiDynamic(_) => None,
+        NodeDsl::AiDynamic(_) | NodeDsl::ParallelGroup(_) => None,
     };
     PromptPredecessorContext {
         round_id: trace_ref.round_id.clone(),
@@ -646,8 +647,8 @@ pub(crate) fn build_worker_invocation(
             worker.config_options.clone(),
             worker.provider.clone(),
         ),
-        NodeDsl::AiDynamic(_) => {
-            bail!("ai-dynamic nodes must be executed by the dynamic orchestrator")
+        NodeDsl::AiDynamic(_) | NodeDsl::ParallelGroup(_) => {
+            bail!("graph nodes must be executed by the orchestrator")
         }
     };
     let profile_entry = profile
@@ -672,6 +673,9 @@ pub(crate) fn build_worker_invocation(
     let mut task_instruction = task_instruction;
     let mut profile_content = profile_content;
     let mut extra_hidden_sections = first_prompt_hidden_sections(app, task_id, session_mode);
+    // Forge 铸造会话（RawAgent worker 节点）：当前基线 Spec 随**每条**消息注入。角色是会话内
+    // 不变的 system prompt，只承载协议规则；逐轮变化的基线属 user prompt 区，不内联进角色。
+    extra_hidden_sections.extend(super::forge_service::forge_baseline_section(app, task_id));
     // M5-cg 产出侧门禁：completion-output 块的产出资格在装配时按节点身份判定（sink > 标记
     // 声明 > 禁止），判定数据 = 模型所见的同一份 goal / 角色正文 + 手头的工作流结构，零反查
     // （喂给模型的正文含标记 ⇔ 判定为 Staged）。经桌面壳解析器渲染按节点协议变体注入，仅
@@ -2218,7 +2222,7 @@ mod tests {
         let NodeDsl::Worker(worker) = &mut workflow.raw.nodes[0] else {
             panic!("expected worker node");
         };
-        worker.goal = Some("参考 $upstream.completion-output 继续执行".to_string());
+        worker.goal = Some("参考 $upstream.completion-output 继续执行".into());
         workflow
             .nodes_by_id
             .insert("dev".to_string(), workflow.raw.nodes[0].clone());
@@ -2268,7 +2272,7 @@ mod tests {
         let NodeDsl::Worker(worker) = &mut workflow.raw.nodes[0] else {
             panic!("expected worker node");
         };
-        worker.goal = Some("等待 $upstream.completion-output 注入".to_string());
+        worker.goal = Some("等待 $upstream.completion-output 注入".into());
         workflow
             .nodes_by_id
             .insert("dev".to_string(), workflow.raw.nodes[0].clone());
@@ -2473,6 +2477,285 @@ mod tests {
         // fail-open：文件损坏 → 空区段，不阻断执行。
         std::fs::write(sections_file.as_std_path(), "not json").unwrap();
         assert!(load_first_prompt_hidden_sections(&app, task_id).is_empty());
+    }
+
+    #[test]
+    fn forge_sessions_carry_the_baseline_spec_on_every_turn() {
+        use crate::app::forge_service::{FORGE_BASELINE_SECTION_TITLE, CreateForgeTaskInput};
+        use crate::forge::spec::{ForgeSpec, ForgeStage, ForgeWorkflow, OnFailure, SPEC_VERSION, StageOutputKind, StageRole};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        let baseline = ForgeSpec {
+            revision: 0,
+            spec_version: SPEC_VERSION.to_string(),
+            name: Some("接口开发".to_string()),
+            intent: "从会话到工作流".to_string(),
+            source_skills: vec![],
+            workflows: vec![ForgeWorkflow {
+                id: String::new(),
+                parallel_groups: vec![],
+                name: "接口开发".to_string(),
+                stages: vec![ForgeStage {
+                    id: Some("s1".to_string()),
+                    role: StageRole::Dev,
+                    role_definition: None,
+                    profile_id: None,
+                    goal: "<输入>会话上下文\n<产出>结构化产物\n<边界>不做部署\n<验收>产物过 schema".into(),
+                    artifact: Some("result".to_string()),
+                    output_kind: StageOutputKind::Json,
+                    schema_hint: None,
+                    success_condition: Some("$.ok == true".to_string()),
+                    on_failure: OnFailure::Retry,
+                    manual_check: false,
+                }],
+            }],
+            open_questions: vec![],
+        };
+        let forge_task = |initial_spec: Option<ForgeSpec>, title: &str| {
+            app.create_forge_task(CreateForgeTaskInput {
+                title: Some(title.to_string()),
+                requirement_content: "把这个流程铸造成工作流".to_string(),
+                agent_type: "claude-acp".to_string(),
+                workflow: None,
+                initial_spec,
+            })
+            .expect("forge task")
+            .task
+            .id
+        };
+        let with_baseline = forge_task(Some(baseline), "有基线的铸造会话");
+        let without_baseline = forge_task(None, "尚无基线的铸造会话");
+        // 普通任务：与铸造会话同构，只是不带 Forge 来源标记。
+        let mut ordinary_state = app.task_show(&with_baseline).expect("forge task state");
+        ordinary_state.id = "task-ordinary".to_string();
+        ordinary_state.origin = None;
+        crate::storage::write_json(
+            &app.paths.task_file(&ordinary_state.id),
+            &ordinary_state,
+        )
+        .unwrap();
+        let ordinary = ordinary_state.id;
+        for task_id in [&with_baseline, &without_baseline, &ordinary] {
+            let run = run_state_for(task_id);
+            std::fs::create_dir_all(app.paths.task_dir(task_id).as_std_path()).unwrap();
+            crate::storage::write_json(&app.paths.run_file(task_id, "run-001"), &run).unwrap();
+        }
+
+        let baseline_sections = |task_id: &str, mode: SessionMode| {
+            build_worker_invocation(
+                &app,
+                task_id,
+                "run-001",
+                &attachment_test_round(),
+                "attempt-001",
+                &attachment_test_workflow(),
+                "dev",
+                mode,
+                mode_session(mode),
+                Some("继续".to_string()),
+                None,
+                None,
+                PromptVisibility::Visible,
+                if mode == SessionMode::New {
+                    UserPromptRenderMode::RequirementTask
+                } else {
+                    UserPromptRenderMode::UserMessage
+                },
+                Vec::new(),
+                None,
+                None,
+            )
+            .expect("invocation should build")
+            .extra_hidden_sections
+            .into_iter()
+            .filter(|section| section.title == FORGE_BASELINE_SECTION_TITLE)
+            .collect::<Vec<_>>()
+        };
+
+        // 有存档的铸造会话：首条消息与追问都带基线（修改存量工作流的会话首轮就要看到它）。
+        for mode in [SessionMode::New, SessionMode::Continue] {
+            let sections = baseline_sections(&with_baseline, mode);
+            assert_eq!(sections.len(), 1, "baseline missing on {mode:?}");
+            let content = &sections[0].content;
+            assert!(content.contains("当前基线 Spec"), "{content}");
+            assert!(content.contains("\"id\": \"s1\""), "{content}");
+            assert!(content.contains("<边界>不做部署"), "{content}");
+        }
+        // 尚无存档、非 Forge 任务：不注入。
+        for (task_id, mode) in [
+            (&without_baseline, SessionMode::New),
+            (&without_baseline, SessionMode::Continue),
+            (&ordinary, SessionMode::New),
+            (&ordinary, SessionMode::Continue),
+        ] {
+            assert!(
+                baseline_sections(task_id, mode).is_empty(),
+                "unexpected baseline for {task_id} on {mode:?}"
+            );
+        }
+    }
+
+    /// 为一次已启动的 attempt 落齐运行态文件（run / 工作流快照 / round / node），
+    /// 供直接走 `prepare_acp_prompt_for_attempt` 的测试使用。
+    fn seed_started_attempt(app: &App, task_id: &str) {
+        let workflow = attachment_test_workflow();
+        std::fs::create_dir_all(app.paths.task_dir(task_id).as_std_path()).unwrap();
+        crate::storage::write_json(&app.paths.run_file(task_id, "run-001"), &run_state_for(task_id))
+            .unwrap();
+        crate::storage::write_json(&app.paths.workflow_snapshot_file(task_id, "run-001"), &workflow.raw)
+            .unwrap();
+        crate::storage::write_json(
+            &app.paths.round_file(task_id, "run-001", "round-001"),
+            &attachment_test_round(),
+        )
+        .unwrap();
+        crate::storage::write_json(
+            &app.paths.node_file(task_id, "run-001", "round-001", "dev", "attempt-001"),
+            &NodeState {
+                version: VERSION.to_string(),
+                acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: "dev".to_string(),
+                node_type: crate::domain::NodeType::Worker,
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                status: RunStatus::Running,
+                outcome: None,
+                started_at: "2026-07-01T00:00:00Z".to_string(),
+                finished_at: None,
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: std::collections::BTreeMap::from([(
+                    "provider".to_string(),
+                    serde_json::json!("claude-acp"),
+                )]),
+                uuid: None,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn forge_follow_up_prompts_carry_the_baseline_through_the_direct_entry() {
+        use crate::app::forge_service::CreateForgeTaskInput;
+        use crate::forge::spec::{
+            ForgeSpec, ForgeStage, ForgeWorkflow, OnFailure, SPEC_VERSION, StageOutputKind,
+            StageRole,
+        };
+
+        // 真机回归：Direct 会话的追问不走首次执行的装配路径，而是
+        // `prepare_acp_prompt_for_attempt`——它在装配后会清空任务级隐藏区段，基线 Spec
+        // 曾因此只在首条消息上送达，模型在修正轮里看不到「当前基线 Spec」。
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        let baseline = ForgeSpec {
+            revision: 0,
+            spec_version: SPEC_VERSION.to_string(),
+            name: Some("接口开发".to_string()),
+            intent: "从会话到工作流".to_string(),
+            source_skills: vec![],
+            workflows: vec![ForgeWorkflow {
+                id: String::new(),
+                parallel_groups: vec![],
+                name: "接口开发".to_string(),
+                stages: vec![ForgeStage {
+                    id: Some("s1".to_string()),
+                    role: StageRole::Dev,
+                    role_definition: None,
+                    profile_id: None,
+                    goal: "<输入>会话上下文\n<产出>结构化产物\n<边界>不做部署\n<验收>产物过 schema".into(),
+                    artifact: Some("result".to_string()),
+                    output_kind: StageOutputKind::Json,
+                    schema_hint: None,
+                    success_condition: Some("$.ok == true".to_string()),
+                    on_failure: OnFailure::Retry,
+                    manual_check: false,
+                }],
+            }],
+            open_questions: vec![],
+        };
+        let forge_task = |initial_spec: Option<ForgeSpec>, title: &str| {
+            app.create_forge_task(CreateForgeTaskInput {
+                title: Some(title.to_string()),
+                requirement_content: "把这个流程铸造成工作流".to_string(),
+                agent_type: "claude-acp".to_string(),
+                workflow: None,
+                initial_spec,
+            })
+            .expect("forge task")
+            .task
+            .id
+        };
+        let with_baseline = forge_task(Some(baseline), "有基线的铸造会话");
+        let without_baseline = forge_task(None, "尚无基线的铸造会话");
+        let mut ordinary_state = app.task_show(&with_baseline).expect("forge task state");
+        ordinary_state.id = "task-ordinary".to_string();
+        ordinary_state.origin = None;
+        crate::storage::write_json(&app.paths.task_file(&ordinary_state.id), &ordinary_state)
+            .unwrap();
+        for task_id in [&with_baseline, &without_baseline, &ordinary_state.id] {
+            seed_started_attempt(&app, task_id);
+        }
+
+        let follow_up = |task_id: &str| {
+            app.prepare_acp_prompt_for_attempt(
+                task_id,
+                "run-001",
+                "round-001",
+                "dev",
+                "attempt-001",
+                "把第一阶段的边界改一下".to_string(),
+                None,
+                None,
+            )
+            .expect("follow-up prompt should build")
+            .prompt
+            .user_prompt
+        };
+
+        let prompt = follow_up(&with_baseline);
+        assert!(prompt.contains("把第一阶段的边界改一下"));
+        // 基线在追问里以隐藏区段送达：引导语 + 当前存档（含 stage id 与目标）。
+        assert!(prompt.contains("当前基线 Spec"), "{prompt}");
+        assert!(prompt.contains("\"id\": \"s1\""), "{prompt}");
+        assert!(prompt.contains("<边界>不做部署"), "{prompt}");
+        // 尚无存档的铸造会话、普通会话：不注入。
+        assert!(!follow_up(&without_baseline).contains("当前基线 Spec"));
+        assert!(!follow_up(&ordinary_state.id).contains("当前基线 Spec"));
+    }
+
+    fn mode_session(mode: SessionMode) -> Option<serde_json::Value> {
+        (mode == SessionMode::Continue)
+            .then(|| serde_json::json!({ "acpSessionId": "session-001" }))
+    }
+
+    fn run_state_for(task_id: &str) -> crate::runtime::RunState {
+        crate::runtime::RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-07-01T00:00:00Z".to_string(),
+            updated_at: "2026-07-01T00:00:00Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("dev".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            rerun: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        }
     }
 
     /// 桩协议解析器：恒返回指定身份区段（记录调用，验证注入路径与加载策略）。

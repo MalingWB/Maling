@@ -3599,7 +3599,8 @@ fn scheduled_create_input(
         role: None,
         quotes: definition.content_snapshot.quotes.clone(),
         forge_source_task_id: None,
-        forge_source_skills: None,
+        forge_source_items: None,
+        forge_source_session: None,
         forge_source_template_id: None,
     })
 }
@@ -4043,7 +4044,8 @@ mod tests {
     fn scheduled_continue_prompt_keeps_workspace_file_references_and_quotes() {
         let input = crate::view_models_conversation::ConversationCreateInputVm {
             forge_source_task_id: None,
-            forge_source_skills: None,
+            forge_source_items: None,
+            forge_source_session: None,
             forge_source_template_id: None,
             project_id: "project-a".to_string(),
             content: "检查状态".to_string(),

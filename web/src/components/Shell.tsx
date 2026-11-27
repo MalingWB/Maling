@@ -38,8 +38,8 @@ export interface ShellProps {
   onConversationNew: () => void;
   onConversationSearch: () => void;
   onConversationPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
-  onConversationRenameTask: (projectId: string, taskId: string, title: string) => void;
-  onConversationDeleteTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
+  onConversationRenameTask: (projectId: string, taskId: string, taskUuid: string | null | undefined, title: string) => void;
+  onConversationDeleteTask: (projectId: string, taskId: string, taskUuid: string) => void | Promise<void>;
   onConversationSetResident?: (projectId: string, taskId: string, resident: boolean) => Promise<void>;
   onConversationPinTask: (projectId: string, taskId: string) => void;
   onConversationUnpinTask: (projectId: string, taskId: string) => void;
@@ -182,25 +182,25 @@ function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFram
           onOpenReleaseNotes={onOpenReleaseNotes}
           updateAction={titleBarUpdateAction}
         />
-        <div className="flex min-h-0 flex-1 bg-sidebar">
+        <div className="@container/workbench flex min-h-0 flex-1 bg-sidebar">
           <div
             className={cn(
               'shrink-0 overflow-hidden transition-[width] duration-250 ease-out',
-              sidebarCollapsed && 'pointer-events-none',
+              sidebarCollapsed ? 'pointer-events-none w-0' : 'w-12 @2xl/workbench:w-64',
             )}
-            style={{ width: sidebarCollapsed ? 0 : 256 }}
+            inert={sidebarCollapsed}
           >
             <aside
               data-theme-role="sidebar"
               className={cn(
-                'flex min-h-0 h-full w-64 flex-col gap-5 bg-sidebar px-5 py-7 text-sidebar-foreground transition-opacity duration-200 ease-out',
+                'flex min-h-0 h-full w-full flex-col gap-5 bg-sidebar px-1 @2xl/workbench:px-5 py-7 text-sidebar-foreground transition-opacity duration-200 ease-out',
                 sidebarCollapsed ? 'opacity-0' : 'opacity-100',
               )}
             >
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="outline" className="h-auto justify-between gap-3 border-sidebar-border bg-transparent p-3 text-left hover:bg-sidebar-accent" onClick={onChooseWorkspace}>
-                    <span className="min-w-0">
+                  <Button variant="outline" className="h-auto justify-center gap-3 border-sidebar-border bg-transparent p-2 @2xl/workbench:justify-between @2xl/workbench:p-3 text-left hover:bg-sidebar-accent" onClick={onChooseWorkspace}>
+                    <span className="sr-only min-w-0 @2xl/workbench:not-sr-only">
                       <span className="block truncate text-xs text-muted-foreground">{needsWorkspace ? t('common.workspace') : (repoRoot ?? t('common.workspace'))}</span>
                       <small className="mt-1 block text-xs font-semibold text-primary">{t('common.selectWorkspace')}</small>
                     </span>
@@ -238,16 +238,16 @@ function handleNavLinkClick(event: React.MouseEvent<HTMLAnchorElement>, onClick?
 
 function ShellNavButton({ active, disabled, href, icon, label, trailing, onClick }: { active?: boolean; disabled?: boolean; href?: string; icon: React.ReactNode; label: string; trailing?: React.ReactNode; onClick?: () => void }) {
   const className = cn(
-    'h-10 justify-between rounded-lg px-3 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+    'relative h-10 justify-center rounded-lg px-1 @2xl/workbench:justify-between @2xl/workbench:px-3 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
     active && 'bg-sidebar-accent text-sidebar-accent-foreground',
   );
   const content = (
     <>
       <span className="flex items-center gap-3">
         <span className="[&_svg]:size-4">{icon}</span>
-        <span className="text-sm">{label}</span>
+        <span className="sr-only text-sm @2xl/workbench:not-sr-only">{label}</span>
       </span>
-      {trailing ? <span className="flex items-center text-xs">{trailing}</span> : null}
+      {trailing ? <span className="absolute top-1 right-1 flex items-center text-xs @2xl/workbench:static">{trailing}</span> : null}
     </>
   );
   const button = href && !disabled ? (
@@ -258,7 +258,7 @@ function ShellNavButton({ active, disabled, href, icon, label, trailing, onClick
     <Button variant="ghost" disabled={disabled} className={className} data-theme-role="navigation-item" data-selected={active} onClick={onClick}>{content}</Button>
   );
 
-  if (!disabled) return button;
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>{button}</TooltipTrigger>

@@ -6,6 +6,35 @@ import { browserApi } from '../../src/api/browser';
 import { canonicalizeConversationPageIdentity, conversationPageMatchesRun } from '../../src/lib/conversation-navigation';
 
 describe('browserApi', () => {
+  it('isolates equal task/run IDs across projects in generation history, paging and mutations', async () => {
+    vi.resetModules();
+    const { browserApi } = await import('../../src/api/browser');
+    const workspaces = vi.spyOn(browserApi, 'getConversationWorkspaces').mockResolvedValue(['a', 'b'].map(projectId => ({ projectId, workspacePath: `/${projectId}`, name: `WS ${projectId}` })));
+    const timestamp = vi.spyOn(Date, 'now').mockReturnValue(1800000000123);
+    try {
+      const input = { content: 'Flow review', runMode: 'direct' as const, forgeSourceTemplateId: 'fixture' };
+      const a = await browserApi.createConversationRun({ ...input, projectId: 'a' });
+      const b = await browserApi.createConversationRun({ ...input, projectId: 'b' });
+      await browserApi.createConversationRun({ ...input, projectId: 'unregistered' });
+      expect(a.task.taskId).toBe(b.task.taskId);
+      expect(a.run.runId).toBe(b.run.runId);
+      expect((await browserApi.getConversationRun('a', a.task.taskId, a.run.runId)).taskUuid).toBe(a.task.taskUuid);
+      expect((await browserApi.getConversationRun('b', b.task.taskId, b.run.runId)).taskUuid).toBe(b.task.taskUuid);
+      const first = await browserApi.getGenerationHistoryPage({ limit: 1 });
+      expect(first.tasks).toHaveLength(1);
+      expect(first.nextCursor).toBeTruthy();
+      await expect(browserApi.getGenerationHistoryPage({ projectId: 'a', cursor: first.nextCursor! })).rejects.toMatchObject({ code: 'conversation.invalid-cursor' });
+      await expect(browserApi.getGenerationHistoryPage({ cursor: 'not-json' })).rejects.toMatchObject({ code: 'conversation.invalid-cursor' });
+      const second = await browserApi.getGenerationHistoryPage({ limit: 1, cursor: first.nextCursor! });
+      expect(second.nextCursor).toBeNull();
+      expect([first.tasks[0].workspaceName, second.tasks[0].workspaceName].sort()).toEqual(['WS a', 'WS b']);
+      await browserApi.updateTaskMetadata('a', a.task.taskId, a.task.taskUuid, 'Renamed flow');
+      await expect(browserApi.deleteConversationTask('b', b.task.taskId, a.task.taskUuid!)).rejects.toMatchObject({ code: 'conversation.task-not-found' });
+      expect((await browserApi.getGenerationHistoryPage({ query: ' REVIEW flow ' })).tasks.map(t => t.projectId)).toEqual(['b']);
+      expect((await browserApi.getGenerationHistoryPage({ projectId: 'a', origin: 'forge' })).tasks[0].title).toBe('Renamed flow');
+      expect((await browserApi.getGenerationHistoryPage({ origin: 'forge-trial' })).tasks).toEqual([]);
+    } finally { workspaces.mockRestore(); timestamp.mockRestore(); }
+  });
   it('resolves the ErrorBlocked preview deep link to its canonical run identity', async () => {
     const run = await browserApi.getConversationRun('default', 'mock-task', 'run-051');
     const page = canonicalizeConversationPageIdentity({

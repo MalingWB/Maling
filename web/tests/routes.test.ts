@@ -10,6 +10,19 @@ describe('desktop entry routing', () => {
     });
   });
 
+  it('round-trips global generation history without a workspace or template locator', () => {
+    const path = '/chat/forge-history';
+    const route = routeFromPath(path);
+    expect(route.conversationPage).toEqual({ kind: 'forge-history' });
+    expect(pathFromRoute(route.module, route.taskPage, route.conversationPage)).toBe(path);
+  });
+
+  it('opens the saved template by ID without changing the workspace run mode', () => {
+    const page = { kind: 'run-mode-management', templateId: '发布/二版' } as const;
+    const url = pathFromRoute('task-orchestration', taskListPage, page);
+    expect(routeFromPath(url).conversationPage).toEqual(page);
+  });
+
   it('keeps the explicit conversation home route stable', () => {
     expect(routeFromPath('/chat')).toMatchObject({
       uiMode: 'conversation',

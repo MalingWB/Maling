@@ -1,3 +1,4 @@
+import type { ConversationComposerRemoteBinding } from '@/lib/conversation-composer-draft';
 import { listen } from '@tauri-apps/api/event';
 import { applyAgentDiagnosticUpdate, applyAgentModelConfigUpdate, AGENT_MODEL_CONFIG_UPDATED_EVENT, type AgentModelConfigUpdate } from '@/lib/agent-diagnostic-update';
 import { setChannelAppName } from '@/lib/channel-app-name';
@@ -13,7 +14,7 @@ import {
   createTask,
   deleteConversationTask,
   forgeSourceDigest,
-  forgeSkillsDigest,
+  forgeItemsDigest,
   forgeFromWorkflow,
   getAgentRegistry,
   getConversationRun,
@@ -153,6 +154,9 @@ import {
   type ConversationComposerDraftBoundaryHandle,
 } from '@/components/conversation/ConversationComposerDraftBoundary';
 import { ConversationRunPage } from './pages/ConversationRunPage';
+import { usePresentedTaskHeader } from './hooks/use-presented-task-header';
+import { ForgeHistoryPage } from './pages/ForgeHistoryPage';
+import { fileContentStore } from './components/workspace/files/file-content-store';
 import { ConversationSearchDialog } from './components/conversation/ConversationSearchDialog';
 import {
   prioritizeConversationSidebarWorkspace,
@@ -161,7 +165,6 @@ import {
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
 import { RemoteTaskManagementPage } from './pages/RemoteTaskManagementPage';
 import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
-import { ForgeSessionHistoryPage } from './pages/ForgeSessionHistoryPage';
 import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
 import { scheduledTriggerTarget } from './lib/scheduled-task-navigation';
 import { PersonalAnalyticsPage } from './pages/PersonalAnalyticsPage';
@@ -212,6 +215,7 @@ import {
   sentAttachmentPreviewAliasKey,
 } from '@/components/workspace/right-workspace-context';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
+import { forgeItemsPrefillMarkdown } from '@/lib/forge-items';
 import {
   beginConversationSessionSelection,
   canonicalizeConversationPageIdentity,
@@ -250,6 +254,7 @@ import {
   applyConversationRunSummaryPage,
   applyConversationSidebarBootstrap as mergeConversationSidebarBootstrap,
   applyConversationTaskPage,
+  applyConversationTaskTitle,
   beginConversationPinnedTaskLoad,
   beginConversationRunHistoryLoad,
   beginConversationSidebarBootstrap,
@@ -282,6 +287,7 @@ import type {
   ConversationTaskActivityVm,
   ConversationTaskRowVm,
   ConversationPage,
+  ConversationCreateInput,
   ConversationRunModeVm,
   ConversationWorkLocation,
   ConversationRunVm,
@@ -319,7 +325,7 @@ import type {
   WallpaperFitPreference,
   WallpaperPreferencesVm,
   GitCapabilityVm,
-  ForgeSkillRefVm,
+  ForgeSourceItemVm,
 } from './types';
 
 export function workflowRepairTargetFromMissingItems(
@@ -546,6 +552,7 @@ export function App() {
     return conversationRunFlights.run(key, () => getConversationRun(...args), true);
   }, [conversationRunFlights]);
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
+  const { header: presentedTaskHeader, observe: observePresentedTask } = usePresentedTaskHeader(conversationRun, conversationSidebar, conversationSidebarFlights);
   const [conversationReadViewport, setConversationReadViewport] = useState<{ key: string; atBottom: boolean } | null>(null);
   const [notificationForeground, setNotificationForeground] = useState(() => !document.hidden && document.hasFocus());
   const conversationReadKey = conversationRun
@@ -740,41 +747,6 @@ export function App() {
       : current);
   }, []);
 
-  const revealConversationSidebarTask = useCallback(async (target: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>) => {
-    const requestId = ++workspaceRevealRequestIdRef.current;
-    const found = findConversationTask(conversationSidebarRef.current, target.projectId, target.taskId);
-    const existing = found && (!target.taskUuid || found.taskUuid === target.taskUuid) ? found : null;
-    const request = { ...target, requestId };
-    setWorkspaceRevealRequest(existing ? request : { ...request, status: 'loading' });
-    try {
-      const task = existing ?? await conversationSidebarFlights.run(
-        `summary:${target.projectId}:${target.taskUuid ?? target.taskId}`,
-        () => getConversationTaskSummary(target.projectId, target.taskId, target.taskUuid),
-      );
-      if (workspaceRevealRequestIdRef.current !== requestId) return;
-      setConversationSidebar((current) => {
-        if (workspaceRevealRequestIdRef.current !== requestId) return current;
-        const next = locateConversationSidebarTask(current, task);
-        conversationSidebarRef.current = next;
-        return next;
-      });
-      setWorkspaceRevealRequest((current) => current?.requestId === requestId
-        ? { ...current, taskUuid: task.taskUuid, status: undefined }
-        : current);
-    } catch {
-      if (workspaceRevealRequestIdRef.current !== requestId) return;
-      setWorkspaceRevealRequest((current) => current?.requestId === requestId ? { ...current, status: 'error' } : current);
-    }
-  }, [conversationSidebarFlights]);
-
-  const retryConversationSidebarReveal = useCallback(() => {
-    if (workspaceRevealRequest?.taskId) void revealConversationSidebarTask({
-      projectId: workspaceRevealRequest.projectId,
-      taskId: workspaceRevealRequest.taskId,
-      taskUuid: workspaceRevealRequest.taskUuid,
-    });
-  }, [workspaceRevealRequest, revealConversationSidebarTask]);
-
   const applyConversationSidebarBootstrap = useCallback((bootstrap: ConversationSidebarBootstrapVm, projectId?: string | null) => {
     // The workspace identity set changed: every in-flight page load (workspace,
     // pinned, recent) paginates a voided premise and must no-op, and the
@@ -805,6 +777,7 @@ export function App() {
         const page = await getConversationTaskPage(projectId, cursor, CONVERSATION_TASK_PAGE_SIZE);
         if (!conversationSidebarFlights.isCurrent(flightKey, generation)) return page;
         setConversationSidebar((current) => {
+          if (!conversationSidebarFlights.isCurrent(flightKey, generation)) return current;
           const next = applyConversationTaskPage(current, page, append);
           conversationSidebarRef.current = next;
           return next;
@@ -813,6 +786,7 @@ export function App() {
       } catch (error) {
         if (!conversationSidebarFlights.isCurrent(flightKey, generation)) throw error;
         setConversationSidebar((current) => {
+          if (!conversationSidebarFlights.isCurrent(flightKey, generation)) return current;
           const next = failConversationWorkspaceTaskLoad(current, projectId);
           conversationSidebarRef.current = next;
           return next;
@@ -959,13 +933,55 @@ export function App() {
     loadConversationWorkspaceTasks,
   ]);
 
+  const revealConversationSidebarTask = useCallback(async (target: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>, manageOnly = false) => {
+    const requestId = ++workspaceRevealRequestIdRef.current;
+    const found = findConversationTask(conversationSidebarRef.current, target.projectId, target.taskId);
+    const existing = found && (!target.taskUuid || found.taskUuid === target.taskUuid) ? found : null;
+    const request = { ...target, requestId, manageOnly };
+    setWorkspaceRevealRequest(existing ? request : { ...request, status: 'loading' });
+    try {
+      // Workbench search can enter conversation mode before its workspace bootstrap.
+      if (!conversationSidebarRef.current.workspaces.some(ws => ws.projectId === target.projectId)) {
+        const bootstrap = await loadConversationSidebarBootstrap();
+        if (workspaceRevealRequestIdRef.current !== requestId) return;
+        if (!bootstrap.workspaces.some(ws => ws.projectId === target.projectId)) throw new Error('workspace.not-found');
+      }
+      const task = existing ?? await conversationSidebarFlights.run(
+        `summary:${target.projectId}:${target.taskUuid ?? target.taskId}`,
+        () => getConversationTaskSummary(target.projectId, target.taskId, target.taskUuid),
+      );
+      if (workspaceRevealRequestIdRef.current !== requestId) return;
+      setConversationSidebar((current) => {
+        if (workspaceRevealRequestIdRef.current !== requestId) return current;
+        const next = locateConversationSidebarTask(current, task);
+        conversationSidebarRef.current = next;
+        return next;
+      });
+      setWorkspaceRevealRequest((current) => current?.requestId === requestId
+        ? { ...current, taskUuid: task.taskUuid, status: undefined }
+        : current);
+    } catch {
+      if (workspaceRevealRequestIdRef.current !== requestId) return;
+      setWorkspaceRevealRequest((current) => current?.requestId === requestId ? { ...current, status: 'error' } : current);
+    }
+  }, [conversationSidebarFlights, loadConversationSidebarBootstrap]);
+
+  const retryConversationSidebarReveal = useCallback(() => {
+    if (workspaceRevealRequest?.taskId) void revealConversationSidebarTask({
+      projectId: workspaceRevealRequest.projectId,
+      taskId: workspaceRevealRequest.taskId,
+      taskUuid: workspaceRevealRequest.taskUuid,
+    }, workspaceRevealRequest.manageOnly);
+  }, [workspaceRevealRequest, revealConversationSidebarTask]);
+
   const applyConversationTask = useCallback((task: ConversationTaskRowVm) => {
+    observePresentedTask(task);
     setConversationSidebar((current) => {
       const next = applyConversationTaskSnapshot(current, task);
       conversationSidebarRef.current = next;
       return next;
     });
-  }, []);
+  }, [observePresentedTask]);
 
   const handleConversationSetResident = useCallback(async (projectId: string, taskId: string, resident: boolean) => {
     setError(null);
@@ -1069,6 +1085,11 @@ export function App() {
     ? presentedConversationPage.projectId
     : effectiveWorkspaceId;
   const defaultProjectId = draftWorkspace?.projectId ?? 'default';
+  // 铸造入口解析挂靠项目时读取的“当前值”，与 composer 在首页使用的项目一致。事件回调的
+  // 闭包只捕获它创建那一帧的 render 变量——应用刚启动、侧边栏还没加载时 defaultProjectId
+  // 还是占位 'default'——所以回调里经 ref 取调用时的值。
+  const forgeAnchorProjectIdRef = useRef(defaultProjectId);
+  forgeAnchorProjectIdRef.current = draftConversationWorkspaceId ?? effectiveWorkspaceId;
   const workbenchProjectId = conversationSidebar.workspaces.find(
     (workspace) => workspace.workspacePath === bootstrap?.repoRoot,
   )?.projectId ?? defaultProjectId;
@@ -1097,39 +1118,55 @@ export function App() {
     composerDraftRef.current?.changeWorkspace(projectId);
     setDraftConversationWorkspaceId(projectId);
   }, []);
-  /// 入口 B(方案 §5.1):skill 组合 → 摘要预填 composer + 绑定 skills 源;
-  /// composer 切到挂靠项目(Project 源 skill 在该项目域下解析),用户补充后
-  /// 手动发送,完整 skill 正文由后端注入隐藏区段。
-  const handleForgeSkills = useCallback(async (skills: ForgeSkillRefVm[], anchorProjectId: string) => {
+  // Roles, Skills and Plugin assets are materials, never execution authority. Only an
+  // explicit Direct configuration from the anchor project may take the automatic run path.
+  const forgeItemsPending = useRef(false);
+  const forgeSourcePendingNavigation = useRef<number | null>(null);
+  async function handleForgeItems(items: ForgeSourceItemVm[], anchorProjectId: string) {
+    if (forgeItemsPending.current) return false;
+    const navigation = conversationNavigationRequestRef.current;
+    const sourcePath = window.location.pathname;
+    const stillAtSource = () => sourcePath === window.location.pathname && navigation === conversationNavigationRequestRef.current;
+    forgeItemsPending.current = true;
+    setBusy(true);
     try {
-      const digest = await forgeSkillsDigest(anchorProjectId, skills);
-      selectDraftConversationWorkspace(anchorProjectId);
-      composerDraftRef.current?.prefillForge(
-        `${t('forge.skillPrefill.intro')}\n\n${digest.markdown}`,
-        {
-          sourceSkills: skills,
-          sourceProjectId: anchorProjectId,
-          title: digest.title,
-        },
-      );
-      onSelectConversation({ kind: 'conversation-home' });
-    } catch (err) {
-      setError(displayAppError(t, err));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectDraftConversationWorkspace]);
+      const [summary, mode] = await Promise.all([forgeItemsDigest(anchorProjectId, items), loadConversationRunMode(anchorProjectId)]);
+      if (!stillAtSource()) return false;
+      if (!mode) { setError(t('contextManagement.skills.forgeModeUnavailable')); return false; }
+      const content = `${t('forge.itemsPrefill.intro')}
+
+${forgeItemsPrefillMarkdown(t, summary)}`;
+      // Without an explicit Direct agent selection, let the person choose one rather than spending a different provider's quota.
+      if (!mode.directConfig?.agentType) {
+        const draft = composerDraftRef.current;
+        if (!draft) return false;
+        if (draft.occupied) { setError(t('acp.promptQueue.editDraftOccupied')); return false; }
+        selectDraftConversationWorkspace(anchorProjectId);
+        draft.prefillForge(content, { sourceItems: items, sourceProjectId: anchorProjectId, title: t('forge.itemsPrefill.title', { count: items.length }) });
+        onSelectConversation({ kind: 'conversation-home' });
+        return true;
+      }
+      const error = await submitConversationInput({ projectId: anchorProjectId, runMode: 'direct', directConfig: mode.directConfig,
+        content, forgeSourceItems: items, workLocation: 'main' }, null, [], true);
+      if (error !== null) { setError(error); return false; }
+      return true;
+    } catch (err) { if (stillAtSource()) setError(displayAppError(t, err)); return false; }
+    finally { forgeItemsPending.current = false; setBusy(false); }
+  }
   /// 对话式修改(方案 §5.9):既有模板反投影 → 预填修改引导,发送时后端以
   /// 反投影 Spec 作为会话初始存档基线(带既有角色身份,重编译不重复)。
-  const handleForgeTemplate = useCallback(async (templateId: string, templateName: string) => {
+  const handleForgeTemplate = useCallback(async (templateId: string, templateName: string, saveAsCopy: boolean) => {
     try {
       const spec = await forgeFromWorkflow(templateId);
       const stageCount = (spec.workflows ?? []).reduce((sum, wf) => sum + (wf.stages?.length ?? 0), 0);
-      selectDraftConversationWorkspace(activeWorkspaceIdRef.current ?? defaultProjectId);
+      // 挂靠项目在调用时解析（见 forgeAnchorProjectIdRef），与 composer 当前项目一致。
+      const anchorProjectId = activeWorkspaceIdRef.current ?? forgeAnchorProjectIdRef.current;
+      selectDraftConversationWorkspace(anchorProjectId);
       composerDraftRef.current?.prefillForge(
-        t('forge.modifyPrefill.intro', { name: templateName, count: stageCount }),
+        t(saveAsCopy ? 'forge.modifyPrefill.builtinIntro' : 'forge.modifyPrefill.intro', { name: templateName, count: stageCount }),
         {
           sourceTemplateId: templateId,
-          sourceProjectId: activeWorkspaceIdRef.current ?? defaultProjectId,
+          sourceProjectId: anchorProjectId,
           title: templateName,
         },
       );
@@ -1446,7 +1483,7 @@ export function App() {
     void subscribeConversationRunStateUpdates((event) => {
       if (!active) return;
       const currentSidebar = conversationSidebarRef.current;
-      const task = findConversationTask(currentSidebar, event.projectId, event.taskId);
+      const task = findConversationTask(currentSidebar, event.projectId, event.taskId, event.taskUuid);
       if (!event.taskUuid) return;
       const activeProjectId = activeWorkspaceIdRef.current
         ?? currentSidebar.lastActiveWorkspaceId
@@ -1461,13 +1498,13 @@ export function App() {
       } else if (refreshTarget?.kind === 'task-runs') {
         void loadConversationRunHistory(refreshTarget.task, null, true).catch(() => {});
       }
-      if (!task || task.taskUuid !== event.taskUuid) return;
+      conversationRunStateRefreshRef.current?.(event);
+      if (!task) return;
       setConversationSidebar((current) => {
         const next = applyConversationSidebarRunStateUpdate(current, event);
         if (next !== current) conversationSidebarRef.current = next;
         return next;
       });
-      conversationRunStateRefreshRef.current?.(event);
     }).then((unlisten) => {
       if (active) dispose = unlisten;
       else unlisten();
@@ -1867,7 +1904,7 @@ export function App() {
       const currentRun = conversationRunRef.current;
       const isCurrentRun = event.runId === runId;
       const isSuccessorRun = currentRun?.rerunSuccessorRunId === event.runId;
-      if (event.projectId !== projectId || event.taskUuid !== taskUuid || (!isCurrentRun && !isSuccessorRun)) return;
+      if (event.projectId !== projectId || event.taskId !== taskId || event.taskUuid !== taskUuid || (!isCurrentRun && !isSuccessorRun)) return;
       if (!isCurrentRun) {
         // Retryability of a sealed source depends on its active successor. Reload
         // the source without adopting the successor's session locator.
@@ -2723,6 +2760,73 @@ export function App() {
     if (target) onSelectConversation(target);
   };
 
+  async function renameTask(projectId: string, taskId: string, taskUuid: string | null | undefined, title: string) {
+    const updated = await updateTaskMetadata(projectId, taskId, taskUuid, title);
+    observePresentedTask(updated);
+    setConversationSidebar(current => {
+      const next = applyConversationTaskTitle(current, updated);
+      conversationSidebarRef.current = next;
+      return next;
+    });
+    return updated;
+  }
+
+  function renameTaskFromConversation(projectId: string, taskId: string, taskUuid: string | null | undefined, title: string) {
+    setError(null);
+    void renameTask(projectId, taskId, taskUuid, title).catch(err => setError(displayAppError(t, err)));
+  }
+
+  async function deleteTask(projectId: string, taskId: string, taskUuid: string) {
+    if (!await fileContentStore.flushAll(projectId)) throw new Error(t('common.windowCloseSaveFailedTitle'));
+    cancelConversationSidebarReveal();
+    const deletionTarget = { projectId, taskId, taskUuid };
+    invalidateConversationSidebarLoad(`workspace:${projectId}`);
+    invalidateConversationSidebarLoad(`runs:${projectId}:${taskUuid ?? taskId}`);
+    invalidateConversationSidebarLoad('pinned');
+    invalidateConversationSidebarLoad('recent');
+    invalidateConversationSidebarLoad('bootstrap');
+    if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
+      conversationNavigationRequestRef.current += 1;
+    }
+    setError(null);
+    return deleteConversationTask(projectId, taskId, taskUuid)
+      .then((sidebarBootstrap) => {
+        conversationWorkspaceStore.deleteConversation(projectId, taskId, taskUuid);
+        if (taskUuid) {
+          conversationRunCache.deleteTask({ projectId, taskId, taskUuid });
+        }
+        setConversationSidebar((current) => {
+          const next = removeConversationSidebarTask(current, projectId, taskId, taskUuid);
+          conversationSidebarRef.current = next;
+          return next;
+        });
+        applyConversationSidebarBootstrap(sidebarBootstrap);
+        if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
+          conversationNavigationRequestRef.current += 1;
+          conversationRunRef.current = null;
+          conversationSelectedSessionKeyRef.current = null;
+          conversationSessionFollowRef.current = {
+            runKey: null,
+            mode: 'auto',
+            selectedSessionKey: null,
+            version: conversationSessionFollowRef.current.version + 1,
+          };
+          setConversationRun(null);
+          const homePage: ConversationPage = { kind: 'conversation-home' };
+          conversationPageRef.current = homePage;
+          setConversationPage(homePage);
+          pushRoute(primaryModule, taskPage, homePage);
+        }
+      })
+      .catch((err) => {
+        const currentPage = conversationPageRef.current;
+        if (conversationPageTargetsTask(currentPage, deletionTarget)) {
+          setConversationPage({ ...currentPage });
+        }
+        throw new Error(displayAppError(t, err));
+      });
+  }
+
   const content = uiMode === 'conversation'
     ? renderConversationContent()
     : shouldRenderWorkspacePicker(uiMode, workspacePickerOpen)
@@ -2806,11 +2910,7 @@ export function App() {
     },
     onConversationSearch: () => setConversationSearchOpen(true),
     onConversationRetrySidebar: () => { void loadConversationSidebarBootstrap().catch(() => {}); },
-    onConversationRequestWorkspaceTasks: (projectId, cursor) => {
-      // The failure state itself is already contained in the sidebar page
-      // status, and manual sidebar buttons swallow the rejection.
-      return loadConversationWorkspaceTasks(projectId, cursor);
-    },
+    onConversationRequestWorkspaceTasks: loadConversationWorkspaceTasks,
     onConversationRequestPinnedTasks: (cursor) => {
       void loadConversationPinnedTasks(cursor).catch(() => undefined);
     },
@@ -2841,61 +2941,8 @@ export function App() {
       void loadConversationRunHistory(task, cursor).catch(() => {});
     },
     onConversationPauseRun: onConversationPauseRun,
-    onConversationRenameTask: (projectId, taskId, title) => {
-      setError(null);
-      updateTaskMetadata(projectId, taskId, title)
-        .then(applyConversationTask)
-        .catch((err) => setError(displayAppError(t, err)));
-    },
-    onConversationDeleteTask: (projectId, taskId, taskUuid) => {
-      cancelConversationSidebarReveal();
-      const deletionTarget = { projectId, taskId, taskUuid };
-      invalidateConversationSidebarLoad(`workspace:${projectId}`);
-      invalidateConversationSidebarLoad(`runs:${projectId}:${taskUuid ?? taskId}`);
-      invalidateConversationSidebarLoad('pinned');
-      invalidateConversationSidebarLoad('recent');
-      invalidateConversationSidebarLoad('bootstrap');
-      if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
-        conversationNavigationRequestRef.current += 1;
-      }
-      setError(null);
-      deleteConversationTask(projectId, taskId)
-        .then((sidebarBootstrap) => {
-          conversationWorkspaceStore.deleteConversation(projectId, taskId);
-          if (taskUuid) {
-            conversationRunCache.deleteTask({ projectId, taskId, taskUuid });
-          }
-          setConversationSidebar((current) => {
-            const next = removeConversationSidebarTask(current, projectId, taskId);
-            conversationSidebarRef.current = next;
-            return next;
-          });
-          applyConversationSidebarBootstrap(sidebarBootstrap);
-          if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
-            conversationNavigationRequestRef.current += 1;
-            conversationRunRef.current = null;
-            conversationSelectedSessionKeyRef.current = null;
-            conversationSessionFollowRef.current = {
-              runKey: null,
-              mode: 'auto',
-              selectedSessionKey: null,
-              version: conversationSessionFollowRef.current.version + 1,
-            };
-            setConversationRun(null);
-            const homePage: ConversationPage = { kind: 'conversation-home' };
-            conversationPageRef.current = homePage;
-            setConversationPage(homePage);
-            pushRoute(primaryModule, taskPage, homePage);
-          }
-        })
-        .catch((err) => {
-          const currentPage = conversationPageRef.current;
-          if (conversationPageTargetsTask(currentPage, deletionTarget)) {
-            setConversationPage({ ...currentPage });
-          }
-          setError(displayAppError(t, err));
-        });
-    },
+    onConversationRenameTask: renameTaskFromConversation,
+    onConversationDeleteTask: deleteTask,
     onConversationSetResident: handleConversationSetResident,
     onConversationPinTask: (projectId, taskId) => {
       invalidateConversationSidebarLoad('pinned');
@@ -3059,10 +3106,9 @@ export function App() {
         onOpenChange={setConversationSearchOpen}
         onSelectResult={(result) => {
           const page = conversationPageForSearchResult(result);
-          if (page) {
-            onSelectConversation(page);
-            if (page.kind === 'conversation-run') void revealConversationSidebarTask(page);
-          }
+          if (page) onSelectConversation(page);
+          else if (uiMode !== 'conversation') onSelectConversation({ kind: 'conversation-home' });
+          void revealConversationSidebarTask({ projectId: result.projectId, taskId: result.taskId, taskUuid: result.taskUuid }, !page);
         }}
       />
     </Shell>
@@ -3071,6 +3117,108 @@ export function App() {
     </AvatarPreferencesProvider>
     </WorkflowGraphDirectionProvider>
   );
+
+  async function submitConversationInput(input: ConversationCreateInput, remote?: ConversationComposerRemoteBinding | null, sentAttachments?: readonly { id: string; name: string }[], assetEntry = false) {
+    const nextMode: ConversationRunModeVm = input.runMode === 'direct'
+      ? {
+        mode: 'direct',
+        directConfig: input.directConfig ?? conversationRunMode.directConfig,
+        directPreferences: input.directConfig
+          ? {
+            ...conversationRunMode.directPreferences,
+            [input.directConfig.agentType]: input.directConfig,
+          }
+          : conversationRunMode.directPreferences,
+      }
+      : input.runMode === 'auto'
+        ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
+        : {
+          mode: 'workflow',
+          workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId,
+          optionalEntryPreferences: conversationRunMode.optionalEntryPreferences,
+        };
+    setBusy(true);
+    if (!assetEntry) void updateConversationRunMode(nextMode, input.projectId);
+    try {
+      const validation = await validateConversationCreate(input);
+      if (!validation.valid) {
+        setWorkflowRepairTarget(workflowRepairTargetFromMissingItems(validation.missingItems));
+        return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
+      }
+      // draft 带远程绑定 = 远程任务「点击执行」后的发送：复用本地建会话链 + 叠加远程来源簿记；
+      // 否则普通本地新建会话。二者返回同一 ConversationCreateResultVm（task+run），后续导航/侧栏刷新完全复用。
+      setWorkflowRepairTarget(null);
+      const { task, run } = remote
+        ? await startRemoteConversationRun(input, remote.remoteTaskId, remote.workspaceId)
+        : await createConversationRun(input);
+      applyConversationTask(task);
+      const conversationScope = createConversationWorkspaceScope({
+        projectId: run.projectId,
+        taskId: run.taskId,
+        taskUuid: run.taskUuid,
+        runId: run.runId,
+      });
+      if (!assetEntry) conversationWorkspaceStore.promoteDraft(
+        createDraftConversationWorkspaceScope(input.projectId),
+        conversationScope,
+      );
+      for (const attachment of sentAttachments ?? []) {
+        conversationWorkspaceStore.aliasDraftAttachmentPreview(
+          conversationScope.key,
+          attachment.id,
+          sentAttachmentPreviewAliasKey({
+            assetKind: 'input-attachment',
+            locator: {
+              projectId: run.projectId,
+              taskId: run.taskId,
+              taskUuid: run.taskUuid,
+              runId: run.runId,
+              roundId: '',
+              nodeId: '',
+              attemptId: '',
+              branchId: '',
+            },
+            name: attachment.name,
+          }),
+        );
+      }
+      rememberConversationWorkspace(run.projectId);
+      updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null, run);
+      applyConversationRunSnapshot(run, 'create');
+      if (!assetEntry) resetConversationComposerDraft(composerDraftRef.current);
+      setConversationPage({
+        kind: 'conversation-run',
+        projectId: run.projectId,
+        taskId: run.taskId,
+        taskUuid: run.taskUuid,
+        runId: run.runId,
+      });
+      pushRoute('task-orchestration', taskListPage, {
+        kind: 'conversation-run',
+        projectId: run.projectId,
+        taskId: run.taskId,
+        taskUuid: run.taskUuid,
+        runId: run.runId,
+      });
+      return null;
+    } catch (err) {
+      const gitRequirementDetailsValue = gitRequirementDetails(err);
+      if (gitRequirementDetailsValue) {
+        setGitRequirement({
+          ...gitRequirementDetailsValue,
+          runKind: input.workLocation === 'worktree'
+            ? 'worktree'
+            : input.runMode === 'auto' ? 'auto' : 'workflow',
+          projectId: input.projectId,
+        });
+        return displayAppError(t, err);
+      }
+      return displayAppError(t, err);
+    } finally {
+      setBusy(false);
+    }
+
+  }
 
   function renderConversationContent() {
     const conversationPage = presentedConversationPage;
@@ -3090,11 +3238,21 @@ export function App() {
         />
       );
     }
+    if (conversationPage.kind === 'forge-history') {
+      return <ForgeHistoryPage
+        workspaces={conversationSidebar.workspaces}
+        onOpen={row => {
+          if (row.taskUuid && row.latestRun) onSelectConversation({ kind: 'conversation-run', projectId: row.projectId, taskId: row.taskId, taskUuid: row.taskUuid, runId: row.latestRun.runId });
+        }}
+        onRename={(row, title) => renameTask(row.projectId, row.taskId, row.taskUuid, title)}
+        onDelete={row => row.taskUuid ? deleteTask(row.projectId, row.taskId, row.taskUuid) : Promise.reject({ code: 'conversation.task-not-found', params: { taskId: row.taskId } })}
+      />;
+    }
     if (conversationPage.kind === 'agents') {
       return <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />;
     }
     if (conversationPage.kind === 'contexts') {
-      return <ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} onForgeSkills={handleForgeSkills} />;
+      return <ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} onForgeItems={handleForgeItems} />;
     }
     if (conversationPage.kind === 'settings') {
       return (
@@ -3149,106 +3307,7 @@ export function App() {
           workLocation={conversationWorkLocation}
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
-          onSubmit={async (input, remote, sentAttachments) => {
-            const nextMode: ConversationRunModeVm = input.runMode === 'direct'
-              ? {
-                mode: 'direct',
-                directConfig: input.directConfig ?? conversationRunMode.directConfig,
-                directPreferences: input.directConfig
-                  ? {
-                    ...conversationRunMode.directPreferences,
-                    [input.directConfig.agentType]: input.directConfig,
-                  }
-                  : conversationRunMode.directPreferences,
-              }
-              : input.runMode === 'auto'
-                ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
-                : {
-                  mode: 'workflow',
-                  workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId,
-                  optionalEntryPreferences: conversationRunMode.optionalEntryPreferences,
-                };
-            setBusy(true);
-            void updateConversationRunMode(nextMode, input.projectId);
-            try {
-              const validation = await validateConversationCreate(input);
-              if (!validation.valid) {
-                setWorkflowRepairTarget(workflowRepairTargetFromMissingItems(validation.missingItems));
-                return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
-              }
-              // draft 带远程绑定 = 远程任务「点击执行」后的发送：复用本地建会话链 + 叠加远程来源簿记；
-              // 否则普通本地新建会话。二者返回同一 ConversationCreateResultVm（task+run），后续导航/侧栏刷新完全复用。
-              setWorkflowRepairTarget(null);
-              const { task, run } = remote
-                ? await startRemoteConversationRun(input, remote.remoteTaskId, remote.workspaceId)
-                : await createConversationRun(input);
-              applyConversationTask(task);
-              const conversationScope = createConversationWorkspaceScope({
-                projectId: run.projectId,
-                taskId: run.taskId,
-                taskUuid: run.taskUuid,
-                runId: run.runId,
-              });
-              conversationWorkspaceStore.promoteDraft(
-                createDraftConversationWorkspaceScope(input.projectId),
-                conversationScope,
-              );
-              for (const attachment of sentAttachments ?? []) {
-                conversationWorkspaceStore.aliasDraftAttachmentPreview(
-                  conversationScope.key,
-                  attachment.id,
-                  sentAttachmentPreviewAliasKey({
-                    assetKind: 'input-attachment',
-                    locator: {
-                      projectId: run.projectId,
-                      taskId: run.taskId,
-                      taskUuid: run.taskUuid,
-                      runId: run.runId,
-                      roundId: '',
-                      nodeId: '',
-                      attemptId: '',
-                      branchId: '',
-                    },
-                    name: attachment.name,
-                  }),
-                );
-              }
-              rememberConversationWorkspace(run.projectId);
-              updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null, run);
-              applyConversationRunSnapshot(run, 'create');
-              resetConversationComposerDraft(composerDraftRef.current);
-              setConversationPage({
-                kind: 'conversation-run',
-                projectId: run.projectId,
-                taskId: run.taskId,
-                taskUuid: run.taskUuid,
-                runId: run.runId,
-              });
-              pushRoute('task-orchestration', taskListPage, {
-                kind: 'conversation-run',
-                projectId: run.projectId,
-                taskId: run.taskId,
-                taskUuid: run.taskUuid,
-                runId: run.runId,
-              });
-              return null;
-            } catch (err) {
-              const gitRequirementDetailsValue = gitRequirementDetails(err);
-              if (gitRequirementDetailsValue) {
-                setGitRequirement({
-                  ...gitRequirementDetailsValue,
-                  runKind: input.workLocation === 'worktree'
-                    ? 'worktree'
-                    : input.runMode === 'auto' ? 'auto' : 'workflow',
-                  projectId: input.projectId,
-                });
-                return displayAppError(t, err);
-              }
-              return displayAppError(t, err);
-            } finally {
-              setBusy(false);
-            }
-          }}
+          onSubmit={submitConversationInput}
           onCreateScheduledTask={async (input) => {
             await createScheduledTask(input);
           }}
@@ -3321,6 +3380,7 @@ export function App() {
           agentRegistry={agentRegistry}
           workflowTemplates={conversationWorkflowTemplates}
           repairTarget={workflowRepairTarget}
+          openTemplateId={conversationPage.templateId}
           onProjectChange={(projectId) => {
             selectDraftConversationWorkspace(projectId);
             void loadConversationRunMode(projectId);
@@ -3356,20 +3416,13 @@ export function App() {
         />
       );
     }
-    if (conversationPage.kind === 'forge-sessions') {
-      return <ForgeSessionHistoryPage projectId={activeWorkspaceIdRef.current ?? defaultProjectId} />;
-    }
     if (conversationPage.kind === 'conversation-run') {
       if (isConversationRunNavigationLoading(conversationPage, conversationRun) || !conversationRun) {
         return (
           <BrandLoadingState label={t('conversation.runtime.loadingSession')} />
         );
       }
-      const sidebarTask = findConversationTask(
-        conversationSidebar,
-        conversationPage.projectId,
-        conversationPage.taskId,
-      );
+      const sidebarTask = presentedTaskHeader;
       const taskTitle = sidebarTask?.title ?? conversationPage.taskId;
       const runWorkspaceName = conversationSidebar.workspaces.find(
         (workspace) => workspace.projectId === conversationRun.projectId,
@@ -3422,33 +3475,50 @@ export function App() {
               .catch((err) => setError(displayAppError(t, err)));
           }}
           onEditWorkflow={() => {}}
-          onForgeWorkflow={async (fromTimestamp) => {
+          onForgeWorkflow={async (sourceSession) => {
             const sourceRun = conversationRun;
-            if (!sourceRun) return;
+            const navigation = conversationNavigationRequestRef.current;
+            if (!sourceRun || !composerDraftRef.current || forgeSourcePendingNavigation.current === navigation) return;
+            if (composerDraftRef.current.occupied) {
+              setError(t('acp.promptQueue.editDraftOccupied'));
+              return;
+            }
+            const sourcePath = window.location.pathname;
+            const stillAtSource = () => window.location.pathname === sourcePath && shouldCommitConversationNavigation(
+              navigation, conversationNavigationRequestRef.current, conversationPageRef.current, sourceRun,
+            );
+            forgeSourcePendingNavigation.current = navigation;
             try {
-              // 入口 A（方案 §5）：读取源会话摘要预填 composer，绑定 forge 后由用户补充并
-              // 手动发送——发送走 create_conversation_run（forgeSourceTaskId），后端固定角色、
-              // 注入隐藏材料并标记 origin=Forge。fromTimestamp 为右键"从此处铸造"
-              // 变体（§5.1）：截断为该消息之后的上下文。
-              const digest = await forgeSourceDigest(sourceRun.projectId, sourceRun.taskId, fromTimestamp ?? null);
-              composerDraftRef.current?.prefillForge(
+              const digest = await forgeSourceDigest(sourceRun.projectId, sourceRun.taskId, sourceSession);
+              if (!stillAtSource() || !composerDraftRef.current) return;
+              if (composerDraftRef.current.occupied) {
+                setError(t('acp.promptQueue.editDraftOccupied'));
+                return;
+              }
+              selectDraftConversationWorkspace(sourceRun.projectId);
+              composerDraftRef.current.prefillForge(
                 `${t('forge.prefill.intro')}\n\n${digest.markdown || digest.title}`,
                 {
                   sourceTaskId: sourceRun.taskId,
+                  // 截断点随绑定一起走：隐藏材料与用户看到的预填摘要范围一致。
+                  sourceSession,
                   sourceProjectId: sourceRun.projectId,
                   title: digest.title || taskTitle,
                 },
               );
               onSelectConversation({ kind: 'conversation-home' });
             } catch (err) {
-              setError(displayAppError(t, err));
+              if (stillAtSource()) setError(displayAppError(t, err));
+            } finally {
+              if (forgeSourcePendingNavigation.current === navigation) forgeSourcePendingNavigation.current = null;
             }
           }}
+          onViewForgeWorkflow={(templateId) => onSelectConversation({ kind: 'run-mode-management', templateId })}
           onForgeTrialSessionStarted={(projectId, taskId) => {
             // 试运行任务是工作流型任务(origin=ForgeTrial,首节点截断工作流,无会话
             // 元数据):走 start_run(工作流任务标准启动)而非会话 rerun,启动后导航
             // 到试运行会话(方案 §5.6)。
-            startRun(taskId)
+            startRun(projectId, taskId)
               .then((run) => {
                 rememberConversationWorkspace(projectId);
                 onSelectConversation({
@@ -3510,12 +3580,7 @@ export function App() {
             });
           }}
           onAutoFollowChange={handleConversationAutoFollowChange}
-          onTitleChange={(title) => {
-            setError(null);
-            updateTaskMetadata(conversationPage.projectId, conversationPage.taskId, title)
-              .then(applyConversationTask)
-              .catch((err) => setError(displayAppError(t, err)));
-          }}
+          onTitleChange={(title) => renameTaskFromConversation(conversationPage.projectId, conversationPage.taskId, conversationRun.taskUuid, title)}
         />
       );
     }
@@ -3583,7 +3648,7 @@ export function App() {
             roundId,
           })}
           onRefresh={() => void refresh('manual')}
-          onStartRun={(taskId) => runAction(() => startRun(taskId))}
+          onStartRun={(taskId) => runAction(() => startRun(undefined, taskId))}
           onContinueRun={(taskId, runId) => void runAction(() => continueRun(undefined, taskId, runId))}
           onStopRun={onStopRun}
           onSaveWorkflow={onSaveTaskWorkflow}

@@ -1,11 +1,11 @@
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from "../ui/context-menu";
-import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Hammer, Settings, BookOpen, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { History, Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Settings, BookOpen, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStableCallbacks } from '@/hooks/use-stable-callbacks';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
 import { saveConversationPreference } from '../../api';
-import { CONVERSATION_TASK_PAGE_SIZE } from '@/lib/conversation-sidebar-loading';
+import { CONVERSATION_SIDEBAR_TASK_WINDOW, CONVERSATION_TASK_PAGE_SIZE } from '@/lib/conversation-sidebar-loading';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { useReadOnlyExperience } from '@/components/ReadOnlyExperience';
@@ -21,6 +21,9 @@ import { formatCompactRelativeTime } from '@/lib/datetime';
 import { useConversationTaskActive } from '@/lib/conversation-sidebar-activity';
 import { AcpProcessingSpinner } from '@/components/acp/AcpProcessingSpinner';
 import { ResidentPin } from '@/components/conversation/ResidentPin';
+
+import { ConversationTaskDeleteDialog } from './ConversationTaskDeleteDialog';
+import { ConversationOriginBadge } from './ConversationOriginBadge';
 
 export const conversationSidebarActivityIconClass = 'animate-pulse';
 
@@ -43,9 +46,9 @@ export type ConversationSidebarNavigationKey =
   | 'quick-chat'
   | 'agents'
   | 'contexts'
+  | 'forge-history'
   | 'run-mode-management'
   | 'scheduled-tasks'
-  | 'forge-sessions'
   | null;
 
 export function conversationSidebarNavigationKey(page: ConversationPage): ConversationSidebarNavigationKey {
@@ -55,9 +58,9 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
       return 'quick-chat';
     case 'agents':
     case 'contexts':
+    case 'forge-history':
     case 'run-mode-management':
     case 'scheduled-tasks':
-    case 'forge-sessions':
       return page.kind;
     case 'scheduled-task-detail':
       return 'scheduled-tasks';
@@ -72,8 +75,7 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
 export function isConversationSidebarMoreNavigationActive(page: ConversationPage): boolean {
   return page.kind === 'remote-tasks'
     || page.kind === 'scheduled-tasks'
-    || page.kind === 'scheduled-task-detail'
-    || page.kind === 'forge-sessions';
+    || page.kind === 'scheduled-task-detail';
 }
 
 interface ConversationSidebarProps {
@@ -90,8 +92,8 @@ interface ConversationSidebarProps {
   onSetResident?: (projectId: string, taskId: string, resident: boolean) => Promise<void>;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
-  onRenameTask: (projectId: string, taskId: string, title: string) => void;
-  onDeleteTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
+  onRenameTask: (projectId: string, taskId: string, taskUuid: string | null | undefined, title: string) => void;
+  onDeleteTask: (projectId: string, taskId: string, taskUuid: string) => void | Promise<void>;
   onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
@@ -237,8 +239,8 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     const request = workspaceRevealRequest;
     const viewport = conversationViewportRef.current;
     if (!request?.taskId || !viewport || pendingTaskRevealRef.current !== request.requestId
-      || workspacesCollapsed || !expandedWorkspaces[request.projectId] || active.kind !== 'conversation-run'
-      || active.projectId !== request.projectId || active.taskId !== request.taskId) return;
+      || workspacesCollapsed || !expandedWorkspaces[request.projectId]
+      || (!request.manageOnly && (active.kind !== 'conversation-run' || active.projectId !== request.projectId || active.taskId !== request.taskId))) return;
     const row = [...viewport.querySelectorAll<HTMLElement>('[data-conversation-task-row="workspace"]')]
       .find((element) => element.dataset.projectId === request.projectId && element.dataset.taskId === request.taskId
         && (!request.taskUuid || !element.dataset.taskUuid || element.dataset.taskUuid === request.taskUuid));
@@ -249,6 +251,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     const visibleTop = bounds.top + (header?.getBoundingClientRect().height ?? 0);
     if (rowBounds.top < visibleTop) viewport.scrollTop += rowBounds.top - visibleTop;
     else if (rowBounds.bottom > bounds.bottom) viewport.scrollTop += rowBounds.bottom - bounds.bottom;
+    if (request.manageOnly) row.focus({ preventScroll: true });
     pendingTaskRevealRef.current = null;
     onRevealHandled?.(request.requestId);
     // workspacesCollapsed is a dependency because the reveal first expands the
@@ -431,8 +434,8 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     pin: (task) => onPinTask(task.projectId, task.taskId),
     unpin: (task) => onUnpinTask(task.projectId, task.taskId),
     setResident: async (task, resident) => { await onSetResident?.(task.projectId, task.taskId, resident); },
-    rename: (task, title) => onRenameTask(task.projectId, task.taskId, title),
-    remove: (task) => onDeleteTask(task.projectId, task.taskId, task.taskUuid),
+    rename: (task, title) => onRenameTask(task.projectId, task.taskId, task.taskUuid, title),
+    remove: (task) => task.taskUuid ? onDeleteTask(task.projectId, task.taskId, task.taskUuid) : undefined,
     pauseRun: (task, runId) => onPauseRun?.(task.projectId, task.taskId, runId),
   });
 
@@ -466,7 +469,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           {!readOnly && <SidebarButton
             icon={<Search className="size-4" />}
             label={t('conversation.sidebar.search')}
-            onClick={onSearch}
+            onClick={() => onSearch()}
           />}
         </div>
 
@@ -494,6 +497,13 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             icon={<Route className="size-3.5" />}
             label={t('conversation.sidebar.runModeManagement')}
             onClick={() => onSelect({ kind: 'run-mode-management' })}
+          />
+          <SidebarButton
+            compact
+            active={activeNavigationKey === 'forge-history'}
+            icon={<History className="size-3.5" />}
+            label={t('forge.history.title')}
+            onClick={() => onSelect({ kind: 'forge-history' })}
           />
           <Collapsible open={moreNavigationOpen} onOpenChange={setMoreNavigationOpen}>
             <CollapsibleTrigger asChild>
@@ -536,16 +546,6 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 onClick={() => {
                   setMoreNavigationOpen(true);
                   onSelect({ kind: 'scheduled-tasks' });
-                }}
-              />
-              <SidebarButton
-                compact
-                active={active.kind === 'forge-sessions'}
-                icon={<Hammer className="size-3.5" />}
-                label={t('forge.history.title')}
-                onClick={() => {
-                  setMoreNavigationOpen(true);
-                  onSelect({ kind: 'forge-sessions' });
                 }}
               />
             </CollapsibleContent>
@@ -805,7 +805,8 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     ) : null}
                     {vm.workspaceTaskPages[ws.projectId]?.status === 'ready'
                       && !vm.workspaceTaskPages[ws.projectId]?.nextCursor
-                      && (vm.tasksByWorkspace[ws.projectId] ?? []).length >= CONVERSATION_TASK_PAGE_SIZE ? (
+                      && (vm.tasksByWorkspace[ws.projectId] ?? []).length >= CONVERSATION_TASK_PAGE_SIZE
+                      && (vm.tasksByWorkspace[ws.projectId] ?? []).length < CONVERSATION_SIDEBAR_TASK_WINDOW ? (
                       <div className="pl-7 pr-3 py-1 text-xs text-muted-foreground/70">{t('conversation.sidebar.allConversationsShown')}</div>
                     ) : null}
                   </div>
@@ -1053,7 +1054,7 @@ interface TaskRowCommands {
   unpin: (task: ConversationTaskRowVm) => void;
   setResident: (task: ConversationTaskRowVm, resident: boolean) => Promise<void>;
   rename: (task: ConversationTaskRowVm, title: string) => void;
-  remove: (task: ConversationTaskRowVm) => void;
+  remove: (task: ConversationTaskRowVm) => void | Promise<void>;
   pauseRun: (task: ConversationTaskRowVm, runId: string) => void | Promise<void>;
 }
 
@@ -1155,17 +1156,11 @@ const TaskRow = memo(function TaskRow({
     setDeleteOpen(true);
   };
 
-  const confirmDelete = () => {
-    setDeleteOpen(false);
-    onDelete?.();
-  };
-
-  // Recent rows without a run have nowhere to navigate: render them as static
-  // rows without hover/cursor affordances or hover actions (parity with the
-  // former RecentTaskRow, commit cd214297).
+  // A runless task remains manageable but has no run to navigate to.
   const deadRecentRow = scope === 'recent' && !task.latestRun;
   const taskRow = (
     <div
+      tabIndex={-1}
       data-conversation-task-row={scope}
       data-project-id={task.projectId}
       data-task-id={task.taskId}
@@ -1234,6 +1229,7 @@ const TaskRow = memo(function TaskRow({
         ) : (
           <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-sm">
             {task.scheduledTaskId ? <AlarmClock className="size-3 shrink-0 text-foreground" aria-label={t('scheduled.conversationMarker')} /> : null}
+            {task.origin && <ConversationOriginBadge origin={task.origin} />}
             <span className="truncate">{task.title}</span>
             {residencyPending ? <Loader2 className="size-3 shrink-0 animate-spin" aria-label={t("common.loading")} /> : null}
             {task.runMode === "direct" && task.resident ? <Tooltip><TooltipTrigger asChild><span className="inline-flex shrink-0" aria-label={t("conversation.sidebar.resident")}><ResidentPin /></span></TooltipTrigger><TooltipContent>{t("conversation.sidebar.resident")}</TooltipContent></Tooltip> : null}
@@ -1249,7 +1245,6 @@ const TaskRow = memo(function TaskRow({
           </span>
         ) : null}
       </div>
-      {deadRecentRow ? null : (
       <span data-demo-task-actions={readOnly || undefined} className="hidden shrink-0 items-center gap-1 group-hover:flex group-focus-within:flex">
         {(
           <Tooltip>
@@ -1290,7 +1285,7 @@ const TaskRow = memo(function TaskRow({
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="inline-flex">
-                <Button disabled={readOnly} aria-label={t('common.delete')} variant="ghost" size="icon" className="size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={openDeleteDialog}>
+                <Button disabled={readOnly || !task.taskUuid} aria-label={t('common.delete')} variant="ghost" size="icon" className="size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={openDeleteDialog}>
                   <Trash2 className="size-3" />
                 </Button>
               </span>
@@ -1299,7 +1294,6 @@ const TaskRow = memo(function TaskRow({
           </Tooltip>
         )}
       </span>
-      )}
     </div>
   );
 
@@ -1382,22 +1376,7 @@ const TaskRow = memo(function TaskRow({
         </div>
       ) : null}
     </div>
-    <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{t('conversation.sidebar.deleteConfirmTitle')}</AlertDialogTitle>
-          <AlertDialogDescription>
-            {t('conversation.sidebar.deleteConfirmDescription', { title: task.title })}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
-          <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={confirmDelete}>
-            {t('conversation.sidebar.deleteConfirmAction')}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    {deleteOpen && <ConversationTaskDeleteDialog title={task.title} onConfirm={onDelete} onClose={() => setDeleteOpen(false)} />}
     </>
   );
 });
@@ -1425,6 +1404,7 @@ function SidebarButton({
           : 'h-6.5 justify-start gap-2.5 rounded-lg px-2.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
         active && 'bg-sidebar-accent text-sidebar-accent-foreground',
       )}
+      aria-current={active ? 'page' : undefined}
       onClick={onClick}
     >
       {/* The span keeps svgs out of direct-child position so the Button base's
@@ -1457,6 +1437,8 @@ export interface ConversationSidebarWorkspaceRevealRequest {
   taskUuid?: string | null;
   status?: 'loading' | 'error';
   scrollHandled?: boolean;
+  /** No run to open: reveal and focus the task itself for management. */
+  manageOnly?: boolean;
 }
 
 export function reconcileConversationSidebarExpandedWorkspaces(

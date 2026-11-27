@@ -14,9 +14,12 @@ export function findConversationTask(
   sidebar: ConversationSidebarVm,
   projectId: string,
   taskId: string,
+  taskUuid?: string | null,
 ) {
-  return sidebar.tasksByWorkspace[projectId]?.find((task) => sameTask(task, projectId, taskId))
-    ?? sidebar.pinnedTasks.find((task) => sameTask(task, projectId, taskId))
+  const matches = (task: ConversationTaskRowVm) => sameTask(task, projectId, taskId) && (!taskUuid || task.taskUuid === taskUuid);
+  return sidebar.tasksByWorkspace[projectId]?.find(matches)
+    ?? sidebar.pinnedTasks.find(matches)
+    ?? sidebar.recentTasks?.find(matches)
     ?? null;
 }
 
@@ -24,6 +27,8 @@ export function applyConversationTaskSnapshot(
   sidebar: ConversationSidebarVm,
   task: ConversationTaskRowVm,
 ): ConversationSidebarVm {
+  // 生成会话与试运行会话（任务行带 origin）和其他会话走同一条路径：创建后立即出现在
+  // 工作空间与近期会话里，靠任务行上的 origin 区分。
   const workspaceTasks = sidebar.tasksByWorkspace[task.projectId] ?? [];
   const taskIndex = workspaceTasks.findIndex((candidate) => sameTask(candidate, task.projectId, task.taskId));
   const existing = taskIndex >= 0
@@ -83,6 +88,7 @@ function sameConversationRecentTaskRow(
     && left.taskId === right.taskId
     && left.taskUuid === right.taskUuid
     && left.title === right.title
+    && left.origin === right.origin
     && left.runMode === right.runMode
     && left.lastActivityAt === right.lastActivityAt
     && left.workspaceName === right.workspaceName

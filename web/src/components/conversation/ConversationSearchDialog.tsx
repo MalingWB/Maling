@@ -9,6 +9,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { conversationSearchHighlightSegments } from '@/lib/conversation-search';
 
+import { ConversationOriginBadge } from './ConversationOriginBadge';
+
 interface ConversationSearchDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -80,10 +82,10 @@ export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }:
       setFailed(false);
       return;
     }
+    setLoading(true);
+    setFailed(false);
     let active = true;
     const timer = setTimeout(async () => {
-      setLoading(true);
-      setFailed(false);
       try {
         const data = await searchConversationTasks(trimmed, 20);
         if (active) setResults(data);
@@ -177,7 +179,10 @@ export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }:
                     <span className={`size-2 shrink-0 rounded-full ${statusColor(result.latestRun?.outcome)}`} />
                   )}
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium">{result.title}</div>
+                    <div className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+                      {result.origin && <ConversationOriginBadge origin={result.origin} />}
+                      <span className="truncate">{result.title}</span>
+                    </div>
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <div className="truncate text-xs text-muted-foreground">
@@ -188,7 +193,7 @@ export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }:
                     </Tooltip>
                   </div>
                   {result.workspaceName ? (
-                    <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-micro text-muted-foreground">
+                    <span className="max-w-[35%] truncate rounded-full bg-muted px-2 py-0.5 text-ui-micro text-muted-foreground">
                       {result.workspaceName}
                     </span>
                   ) : null}

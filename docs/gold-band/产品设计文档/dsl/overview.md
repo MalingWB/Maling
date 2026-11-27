@@ -5,7 +5,8 @@ Gold Band DSL 是一份面向 runtime 的最小工作流描述规范：外层 wo
 
 ## 2. 当前主结构
 - 节点：支持 `worker` 与 `ai-dynamic`。`worker` 是普通 agent 节点；`ai-dynamic` 是可嵌入普通 workflow 的复合动态编排节点。
-- 边：顺序、分支、循环，可指向节点、`$end` 或 `$new-round`。
+- 固定并行（本次改造）：`parallel-group` 引用作者选定的普通 worker，分支内部串行，组内并发，组的出口是一次全员汇合。与 AI-DYNAMIC 临时规划新节点不同。运行与画布的共同起点是 `entry`；固定「开始」只表达入口关系，不是占用模型的 worker。见 [控制规范](control.md#9-固定并行组)。
+- 边：顺序、按结果分流、循环，可指向节点、`$end` 或 `$new-round`。同一个 worker 上画两条 success 边不是并行。
 - 节点能力：`goal`、`provider`、`profile`、`output`、`success_condition`、`manual_check`、`permission_mode`。
 - `ai-dynamic` 能力：动态控制限制、显式 allowed workflow 列表、merge agent、acceptance agent；其内部节点不写入外层 round trace。
 - 结果判定：默认 provider 成功即节点成功；开启 AI 输出验证时由 `output` + `success_condition` 判定；开启人工 check 时由用户确认 success/failure。

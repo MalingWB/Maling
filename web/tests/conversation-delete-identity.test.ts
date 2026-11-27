@@ -17,16 +17,4 @@ describe('conversation task deletion identity wiring', () => {
     );
   });
 
-  it('forwards the canonical task UUID through the workspace shell', () => {
-    const source = fs.readFileSync(
-      path.resolve(process.cwd(), 'web/src/components/workspace/WorkspaceShell.tsx'),
-      'utf8',
-    );
-    const deletion = source.match(
-      /const deleteTask = useCallback\([\s\S]*?\}, \[onDeleteTask\]\);/u,
-    )?.[0] ?? '';
-
-    expect(deletion).toContain('taskUuid?: string | null');
-    expect(deletion).toContain('onDeleteTask(projectId, taskId, taskUuid)');
-  });
 });

@@ -532,7 +532,8 @@ impl ScheduledTaskService {
             role: None,
             quotes: input.quotes.clone(),
             forge_source_task_id: None,
-            forge_source_skills: None,
+            forge_source_items: None,
+            forge_source_session: None,
             forge_source_template_id: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
@@ -726,7 +727,8 @@ impl ScheduledTaskService {
             role: None,
             quotes: effective_quotes,
             forge_source_task_id: None,
-            forge_source_skills: None,
+            forge_source_items: None,
+            forge_source_session: None,
             forge_source_template_id: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
@@ -1604,7 +1606,7 @@ mod tests {
                             config_options: BTreeMap::new(),
                             model_bound_overrides: Default::default(),
                         }),
-                        NodeDsl::AiDynamic(_) => None,
+                        NodeDsl::AiDynamic(_) | NodeDsl::ParallelGroup(_) => None,
                     })
                     .collect();
                 app.update_built_in_workflow_template_bindings(

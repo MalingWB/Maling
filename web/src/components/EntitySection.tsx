@@ -4,6 +4,10 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
+export function AssetCardGrid({ children }: { children: ReactNode }) {
+  return <div data-slot="asset-card-grid" className="grid min-w-0 grid-cols-[repeat(auto-fill,minmax(min(100%,20rem),1fr))] items-start gap-3 p-4">{children}</div>;
+}
+
 export interface EntitySectionTabOption<TTab extends string> {
   value: TTab;
   label: ReactNode;

@@ -624,4 +624,83 @@ describe('right workspace resource model', () => {
     expect(store.peekShellState(conversation).requestedOpen).toBe(true);
     expect(store.peekShellState(siblingConversation).requestedOpen).toBe(false);
   });
+
+  it('keeps the open tabs when a conversation scope refines its identity', () => {
+    // 回归：deep link 进入会话页时 task uuid 先未知、后由运行数据补齐，scope 键随之从
+    // 占位键变为真实键。这是同一会话的身份细化，不是切换会话——已经打开的页签
+    //（例如自动打开的铸造预览）不能跟着旧键一起消失。
+    const store = new ConversationWorkspaceStore();
+    const pending = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    const resolved = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', taskUuid: 'task-uuid-1', runId: 'run-1' });
+    expect(pending.key).not.toBe(resolved.key);
+    const preview: RightWorkspaceResource = {
+      kind: 'forge-preview',
+      key: 'forge-preview:project-1:task-1',
+      scopeKey: pending.key,
+      title: '铸造预览',
+      attention: false,
+      projectId: 'project-1',
+      taskId: 'task-1',
+    };
+    const file: RightWorkspaceResource = {
+      kind: 'file-browser',
+      key: fileBrowserWorkspaceResourceKey('project-1', 'D:/repo'),
+      scopeKey: pending.key,
+      projectId: 'project-1',
+      title: 'repo',
+      attention: false,
+      root: MAIN_WORKSPACE_TAB_ROOT,
+      selectedFile: {
+        key: 'file',
+        scopeKey: pending.key,
+        locator: { projectId: 'project-1', canonicalPath: 'D:/repo/README.md', relativePath: 'README.md', scope: 'workspace' },
+        target: null,
+        targetRevision: 0,
+      },
+    } as RightWorkspaceResource;
+    store.save(pending, { tabs: [preview, file], activeTabKey: preview.key });
+    store.openWorkspace(pending, { explicit: true });
+
+    expect(store.carryOver(pending, resolved)).toBe(true);
+
+    expect(store.has(pending)).toBe(false);
+    expect(store.restore(resolved)).toEqual({
+      tabs: [{ ...preview, scopeKey: resolved.key }, { ...file, scopeKey: resolved.key, selectedFile: { ...file.selectedFile, scopeKey: resolved.key } }],
+      activeTabKey: preview.key,
+    });
+    expect(store.peekShellState(resolved).requestedOpen).toBe(true);
+    // 身份再次变化（例如运行快照短暂不带 uuid）时同样带走，方向不限。
+    expect(store.carryOver(resolved, pending)).toBe(true);
+    expect(store.restore(pending).tabs.map((tab) => tab.scopeKey)).toEqual([pending.key, pending.key]);
+  });
+
+  it('carries tabs over only between scopes of the same conversation and never over the target', () => {
+    const store = new ConversationWorkspaceStore();
+    const pending = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    const sameConversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', taskUuid: 'task-uuid-1', runId: 'run-1' });
+    const otherTask = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-2', taskUuid: 'task-uuid-2', runId: 'run-1' });
+    const otherRun = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', taskUuid: 'task-uuid-1', runId: 'run-2' });
+    const otherProject = createConversationWorkspaceScope({ projectId: 'project-2', taskId: 'task-1', taskUuid: 'task-uuid-1', runId: 'run-1' });
+    const draft = createDraftConversationWorkspaceScope('project-1');
+    store.save(pending, { tabs: [{ ...agent('pending-agent'), scopeKey: pending.key }], activeTabKey: agent('pending-agent').key });
+
+    expect(store.carryOver(pending, pending)).toBe(false);
+    expect(store.carryOver(pending, otherTask)).toBe(false);
+    expect(store.carryOver(pending, otherRun)).toBe(false);
+    expect(store.carryOver(pending, otherProject)).toBe(false);
+    expect(store.carryOver(pending, draft)).toBe(false);
+    expect(store.carryOver(draft, pending)).toBe(false);
+    expect(store.has(pending)).toBe(true);
+    for (const target of [otherTask, otherRun, otherProject]) expect(store.has(target)).toBe(false);
+
+    // 目标 scope 已经有自己的内容时不覆盖。
+    store.save(sameConversation, { tabs: [{ ...agent('resolved-agent'), scopeKey: sameConversation.key }], activeTabKey: agent('resolved-agent').key });
+    expect(store.carryOver(pending, sameConversation)).toBe(false);
+    expect(store.restore(sameConversation).tabs.map((tab) => tab.key)).toEqual([agent('resolved-agent').key]);
+    expect(store.restore(pending).tabs.map((tab) => tab.key)).toEqual([agent('pending-agent').key]);
+
+    // 源 scope 没有内容时无事发生。
+    expect(store.carryOver(otherTask, otherRun)).toBe(false);
+    expect(store.has(otherRun)).toBe(false);
+  });
 });

@@ -26,6 +26,13 @@ pub enum RunOutcome {
 pub enum NodeType {
     Worker,
     AiDynamic,
+    ParallelGroup,
+}
+
+impl NodeType {
+    pub fn owns_branch_graph(self) -> bool {
+        matches!(self, Self::AiDynamic | Self::ParallelGroup)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

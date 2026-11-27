@@ -111,6 +111,22 @@ describe('ConversationSidebar workspaces group', () => {
     }
   });
 
+  it('opens global generation history from fixed navigation without expanding a workspace', () => {
+    const onSelect = vi.fn();
+    const { container, root } = mount(sidebarVm(), { onSelect, active: { kind: 'forge-history' } });
+    try {
+      const fixed = container.querySelector('[data-conversation-sidebar-region="fixed-navigation"]')!;
+      const button = [...fixed.querySelectorAll('button')].find(item => item.textContent === 'forge.history.title');
+      expect(button).toBeDefined();
+      expect(button!.closest('[data-conversation-sidebar-more-content]')).toBeNull();
+      expect(button!.getAttribute('aria-current')).toBe('page');
+      act(() => button!.click());
+      expect(onSelect).toHaveBeenCalledExactlyOnceWith({ kind: 'forge-history' });
+      act(() => container.querySelector<HTMLElement>('[data-conversation-sidebar-heading="workspaces"]')!.click());
+      expect(container.querySelector('[data-conversation-workspace-group] button[aria-pressed]')).toBeNull();
+    } finally { act(() => root.unmount()); }
+  });
+
   it('honors a persisted expanded preference on mount', () => {
     const { container, root } = mount(sidebarVm({ 'workspaces.collapsed': false }));
     try {

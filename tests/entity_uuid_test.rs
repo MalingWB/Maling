@@ -8,6 +8,7 @@ use gold_band::runtime::{LastExecutedNode, NodeState, RoundState, RunState, Task
 #[test]
 fn task_state_uuid_roundtrip() {
     let task = TaskState {
+        forge_naming: None,
         version: "1".into(),
         id: "task-001".into(),
         title: Some("Test Task".into()),

@@ -7,6 +7,84 @@ fn parse_workflow(json: &str) -> WorkflowDsl {
 }
 
 #[test]
+fn static_parallel_group_owns_worker_branches_without_duplicate_success_edges() {
+    let definition = serde_json::json!({
+        "version":"0.1", "id":"parallel", "entry":"checks",
+        "nodes":[
+            {"id":"checks", "type":"parallel-group", "branches":[{"id":"checks-a", "stages":["lint"]}, {"id":"checks-b", "stages":["test"]}], "maxParallel":2},
+            {"id":"lint", "type":"worker", "executionSlotId":"lint-slot"},
+            {"id":"test", "type":"worker", "executionSlotId":"test-slot"}
+        ],
+        "edges":[{"from":"checks", "on":"success", "to":"$end"}]
+    });
+    let workflow: WorkflowDsl = serde_json::from_value(definition).expect("static group node type");
+    validate_authoring_workflow(workflow.clone()).expect("members are reachable through ownership");
+    assert!(
+        validate_workflow(workflow).is_err(),
+        "member workers still need executable bindings"
+    );
+}
+
+#[test]
+fn static_parallel_group_rejects_ownership_escapes_and_unbounded_retries() {
+    use serde_json::json;
+    let base = json!({"version":"0.1","id":"wf","entry":"g","control":{"max_attempts":1},"nodes":[{"type":"parallel-group","id":"g","branches":[{"id":"a","stages":["x","y"]},{"id":"b","stages":["z"]}]},{"type":"worker","id":"x","provider":"claude-acp"},{"type":"worker","id":"y","provider":"claude-acp"},{"type":"worker","id":"z","provider":"claude-acp"}],"edges":[{"from":"g","on":"success","to":"$end"},{"from":"y","on":"failure","to":"x"}]});
+    let valid = validate_workflow(serde_json::from_value(base.clone()).unwrap()).unwrap();
+    let gold_band::dsl::NodeDsl::ParallelGroup(group) = valid.get_node("g").unwrap() else {
+        panic!("expected group")
+    };
+    assert_eq!(group.max_parallel, 3);
+    let branch = group.branches[0].workflow(&valid).unwrap();
+    let frozen = validate_workflow(branch).unwrap();
+    assert_eq!(frozen.raw.entry, "x");
+    assert_eq!(frozen.raw.edges.len(), 3);
+    for (pointer, value) in [
+        ("/entry", json!("x")),
+        ("/nodes/0/branches/1/id", json!("a")),
+        ("/nodes/0/branches/1/stages", json!([])),
+        ("/nodes/0/branches/1/stages/0", json!("x")),
+        ("/nodes/0/branches/0/stages/0", json!("g")),
+        ("/edges/1/to", json!("z")),
+        ("/edges/1/to", json!("$new-round")),
+        ("/edges/1/on", json!("success")),
+        ("/edges/0/to", json!("x")),
+        ("/control", json!({})),
+    ] {
+        let mut bad = base.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            validate_authoring_workflow(serde_json::from_value(bad).unwrap()).is_err(),
+            "{pointer}"
+        );
+    }
+    for budget in [0, 6] {
+        let mut bad = base.clone();
+        bad["nodes"][0]["maxParallel"] = json!(budget);
+        assert!(validate_workflow(serde_json::from_value(bad).unwrap()).is_err());
+    }
+}
+
+#[test]
+fn static_parallel_group_rejects_case_aliases_only_within_the_same_child() {
+    use serde_json::json;
+    let mut definition = json!({
+        "version":"0.1", "id":"fixture", "entry":"g",
+        "nodes":[{"type":"parallel-group","id":"g","branches":[
+            {"id":"one","stages":["Test","test"]}, {"id":"two","stages":["Review"]}]},
+            {"type":"worker","id":"Test","provider":"claude-acp"},
+            {"type":"worker","id":"test","provider":"claude-acp"},
+            {"type":"worker","id":"Review","provider":"claude-acp"}],
+        "edges":[{"from":"g","on":"success","to":"$end"}]
+    });
+    let ambiguous: WorkflowDsl = serde_json::from_value(definition.clone()).unwrap();
+    assert!(validate_workflow(ambiguous).is_err(), "same-child stage directories alias");
+    definition["nodes"][0]["branches"][0]["stages"] = json!(["Test", "Review"]);
+    definition["nodes"][0]["branches"][1]["stages"] = json!(["test"]);
+    validate_workflow(serde_json::from_value(definition).unwrap())
+        .expect("distinct child runs do not share node directories");
+}
+
+#[test]
 fn validates_basic_workflow() {
     let workflow = parse_workflow(
         r#"{
@@ -741,4 +819,63 @@ fn rejects_continue_to_new_round_target() {
     );
 
     assert!(validate_workflow(workflow).is_err());
+}
+
+/// 单 worker 工作流，output.schema 取给定的 JSON 文本。
+fn worker_with_output_schema(schema: &str) -> WorkflowDsl {
+    let json = format!(
+        r#"{{
+            "version": "0.1",
+            "id": "worker-validation",
+            "entry": "review",
+            "control": {{ "max_attempts": 1 }},
+            "nodes": [
+                {{
+                    "id": "review",
+                    "type": "worker",
+                    "provider": "claude-acp",
+                    "output": {{ "kind": "json", "artifact": "review-result", "schema": {schema} }}
+                }}
+            ],
+            "edges": [ {{ "from": "review", "to": "$end", "on": "success" }} ]
+        }}"#
+    );
+    parse_workflow(&json)
+}
+
+#[test]
+fn accepts_simplified_schema_fields_named_like_json_schema_keywords() {
+    // 回归：简化字段表是「字段名 → 形状」，字段名可以恰好叫 items / type / required。
+    // 旧判定只看键名，把 Forge 对话产出的 `items` 字段当成了 JSON Schema。
+    for schema in [
+        r#"{ "items": "数组，每项一条核对结果", "complete": "boolean" }"#,
+        r#"{ "items": [{ "name": "string", "status": "string" }], "total": "number" }"#,
+        r#"{ "type": "string", "level": "string", "message": "string" }"#,
+        r#"{ "required": "boolean", "properties": { "name": "string" } }"#,
+        r#"{ "additionalProperties": { "key": "string" } }"#,
+        r#"{ "type": "string", "items": "string" }"#,
+    ] {
+        validate_workflow(worker_with_output_schema(schema))
+            .unwrap_or_else(|error| panic!("{schema} should validate: {error}"));
+    }
+}
+
+#[test]
+fn still_rejects_legacy_json_schema_output_constraints() {
+    for schema in [
+        r#"{ "type": "object", "properties": { "result": { "type": "boolean" } }, "required": ["result"] }"#,
+        r#"{ "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" } } } }"#,
+        r#"{ "properties": { "result": { "type": "boolean" } } }"#,
+        r#"{ "type": "object", "additionalProperties": false }"#,
+        r#"{ "type": "object", "required": ["result"] }"#,
+        r#"{ "type": ["string", "null"] }"#,
+        r#"{ "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object" }"#,
+        // 旧版基本类型根节点：整个输出就是一个字符串/布尔值，简化字段表不这样表达。
+        r#"{ "type": "boolean" }"#,
+    ] {
+        assert!(
+            validate_workflow(worker_with_output_schema(schema)).is_err(),
+            "{schema} should be rejected as JSON Schema"
+        );
+    }
 }

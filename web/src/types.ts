@@ -1519,7 +1519,14 @@ export interface WorkflowControlDsl {
   max_rounds?: number | null;
 }
 
-export type WorkflowNodeDsl = WorkflowWorkerNodeDsl | WorkflowAiDynamicNodeDsl;
+export type WorkflowNodeDsl = WorkflowWorkerNodeDsl | WorkflowAiDynamicNodeDsl | WorkflowParallelGroupNodeDsl;
+
+export interface WorkflowParallelGroupNodeDsl {
+  type: 'parallel-group';
+  id: string;
+  branches: { id: string; stages: string[] }[];
+  maxParallel: number;
+}
 
 export interface WorkflowWorkerNodeDsl {
   type: 'worker';
@@ -1905,6 +1912,8 @@ export interface GraphNodeVm {
   continueFromNodeId?: string | null;
   dynamicSummary?: DynamicSummaryVm | null;
   dynamicGroupId?: string | null;
+  /// 节点的补充说明（紧凑卡片第二行）；缺省显示 `节点 id · 类型`。
+  detail?: string | null;
 }
 
 export interface GraphAttemptVm {
@@ -2627,9 +2636,9 @@ export type ConversationPage =
       outerNodeId?: string;
       outerAttemptId?: string;
     }
-  | { kind: 'run-mode-management'; projectId?: string; taskId?: string; taskUuid?: string; runId?: string }
+  | { kind: 'forge-history' }
+  | { kind: 'run-mode-management'; templateId?: string; projectId?: string; taskId?: string; taskUuid?: string; runId?: string }
   | { kind: 'remote-tasks' }
-  | { kind: 'forge-sessions' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
   | { kind: 'scheduled-tasks' }
@@ -2842,6 +2851,7 @@ export interface ConversationTaskRowVm {
   projectId: string;
   taskId: string;
   taskUuid?: string | null;
+  origin?: 'forge' | 'forge-trial' | null;
   title: string;
   autoTitle: boolean;
   runMode: 'direct' | 'auto' | 'workflow';
@@ -2980,6 +2990,14 @@ export interface ConversationPinnedTaskPageVm {
 /** Cross-workspace recent row: the shared task row plus the owning workspace name. */
 export interface ConversationRecentTaskRowVm extends ConversationTaskRowVm {
   workspaceName: string;
+}
+
+export interface GenerationHistoryQuery {
+  projectId?: string;
+  origin?: NonNullable<ConversationTaskRowVm['origin']>;
+  query?: string;
+  cursor?: string;
+  limit?: number;
 }
 
 export interface ConversationRecentTaskPageVm {
@@ -3357,11 +3375,43 @@ export interface ForgeSourceDigestVm {
   markdown: string;
 }
 
+/// Backend-owned material locator. Labels, paths and document bodies are not write inputs.
+export type ForgeSourceItemVm = { assetId: string } & (
+  | { catalog: 'profile'; source: 'built-in' | 'global' }
+  | { catalog: 'skill' | 'plugin'; source: 'built-in' | 'global' | 'project' }
+);
+
+/// 素材的结构化摘要（composer 预填；文案由前端按界面语言拼装）。
+export interface ForgeSourceSummaryVm {
+  name: string;
+  source: 'built-in' | 'global' | 'project';
+  kind: 'role' | 'skill' | 'command' | 'agent';
+  origin?: string | null;
+  description: string;
+}
+
+/// 阶段失败后的去向。`new-round` 回到流程起点，`{ 'new-round': stage }` 从指定阶段
+/// 开始下一轮；`goto` 跳回指定阶段，`continueSession` 表示沿用它上一次的会话。
+export type ForgeOnFailureVm =
+  | 'retry'
+  | 'manual-check'
+  | 'end'
+  | 'new-round'
+  | { 'new-round': string }
+  | { goto: string; continueSession?: boolean };
+
+export interface ForgeQuestionVm {
+  question: string;
+  /// 待澄清项的推荐答案：用户可以直接采用，不必自己组织语言。
+  recommendation?: string | null;
+}
+
 /// Forge Spec（后端 serde camelCase 投影;role 的 custom 变体为对象）。
 export interface ForgeStageVm {
+  /// stage 的稳定身份：修改既有 stage 时按它对齐，也是编译后的节点 id。
   id?: string;
-  role: string | { custom: { 'profile-name': string } };
-  goal: string;
+  role: string | { custom: { profileName: string } };
+  goal: string | Record<'input' | 'output' | 'boundary' | 'acceptance', string> | { original: string | null };
   /// custom 角色的完整职责正文(与 goal 分离;对话反哺的可编辑面)。
   roleDefinition?: string | null;
   /// 已铸造角色的 profile id(系统回填;重编译按 id 原地更新)。
@@ -3370,50 +3420,95 @@ export interface ForgeStageVm {
   outputKind: 'json' | 'markdown' | 'none';
   schemaHint?: unknown;
   successCondition?: string | null;
-  onFailure: 'retry' | 'manual-check' | 'new-round' | 'end';
+  onFailure: ForgeOnFailureVm;
   manualCheck: boolean;
 }
 
+export interface ForgeParallelGroupVm {
+  id: string;
+  branches: Array<{ id: string; stages: string[] }>;
+  maxParallel: number;
+  onFailure: ForgeOnFailureVm;
+}
+
 export interface ForgeWorkflowVm {
+  parallelGroups?: ForgeParallelGroupVm[];
+  id?: string;
   name: string;
   stages: ForgeStageVm[];
 }
 
 export interface ForgeSpecVm {
+  revision?: number;
   specVersion: string;
   name?: string | null;
   intent: string;
   /// 后端 skip_serializing_if 空时不序列化,前端按可选契约兜底。
   sourceSkills?: string[];
   workflows?: ForgeWorkflowVm[];
-  openQuestions?: string[];
+  /// 后端统一序列化为对象；字符串形态只在旧存档里出现。
+  openQuestions?: Array<string | ForgeQuestionVm>;
 }
 
-export interface ForgeCompileResultVm {
-  createdTemplateIds: string[];
-  templates: WorkflowTemplateStore;
+/// Spec 校验错误的结构化投影：前端按 `code` 本地化，`context` 是错误的字段明细。
+export interface ForgeErrorVm {
+  code: string;
+  context: Record<string, unknown>;
+}
+
+/// `forge_compile` 的结果：落库成功，或 Spec 可修正（未落库任何模板）。
+export interface ForgeTrialInfo {
+  templateId: string;
+  revision: string;
+  group: { branches: number; cap: number } | null;
+}
+
+export type ForgeCompileOutcomeVm =
+  | {
+    status: 'saved';
+    trial: ForgeTrialInfo | null;
+    spec?: ForgeSpecVm | null;
+    /// 与 Spec.workflows 下标对齐的模板 id。
+    templateIds: string[];
+    createdCount: number;
+    updatedCount: number;
+    templates: WorkflowTemplateStore;
+  }
+  | {
+    status: 'repairable';
+    errors: ForgeErrorVm[];
+    /// 交回铸造对话的修正提示词：首行是用户可见的进行态提示，其余在隐藏区段内。
+    repairPrompt: string;
+  };
+
+/// 已安装的 Claude Code plugin 及其可铸造素材（入口 C）。
+export interface InstalledPluginAssetVm {
+  importable: boolean;
+  kind: 'skill' | 'command' | 'agent';
+  name: string;
+  description: string;
+  assetId: string;
+}
+
+export interface InstalledPluginVm {
+  providerId: string;
+  provenance: 'host-inventory' | 'manual-directory' | 'desktop-bundled' | 'desktop-registry';
+  canForget?: boolean;
+  unavailable?: boolean;
+  name: string;
+  displayName: string;
+  description: string;
+  version: string;
+  pluginId: string;
+  /// 只有项目 `.claude/skills/` 下的 plugin 属于项目，其余均为用户级。
+  source: 'global' | 'project';
+  assets: InstalledPluginAssetVm[];
 }
 
 export interface ForgeSessionCreatedVm {
   projectId: string;
   taskId: string;
   title?: string | null;
-}
-
-export interface ForgeSpecSummaryVm {
-  name: string;
-  intent: string;
-  stageCount: number;
-  workflowCount: number;
-  openQuestionCount: number;
-}
-
-export interface ForgeSessionEntryVm {
-  taskId: string;
-  title?: string | null;
-  origin: 'forge' | 'forge-trial';
-  specSummary?: ForgeSpecSummaryVm | null;
-  updatedAt: string;
 }
 
 export interface ConversationQueuedPromptDraftVm {
@@ -3522,6 +3617,18 @@ export interface ConversationAutoConfigVm {
   activeTemplateName?: string | null;
 }
 
+export interface ForgeSourceSessionVm {
+  taskUuid?: string | null;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  branchId: string;
+  after?: { eventId: string; eventSeq: number };
+}
+
 export interface ConversationCreateInput {
   projectId: string;
   content: string;
@@ -3539,8 +3646,10 @@ export interface ConversationCreateInput {
   /// 工作流铸造（入口 A）：源会话 task id。后端固定 workflow-forge 角色、
   /// 注入源会话隐藏材料并标记 origin=Forge。
   forgeSourceTaskId?: string;
-  /// 工作流铸造（入口 B）：skill 组合引用（与入口 A 互斥）。
-  forgeSourceSkills?: ForgeSkillRefVm[];
+  /// 入口 A 的可见分支及可选消息截断点。
+  forgeSourceSession?: ForgeSourceSessionVm;
+  /// 工作流铸造（入口 B/C）：素材清单（与入口 A 互斥）。
+  forgeSourceItems?: ForgeSourceItemVm[];
   /// 对话式修改（方案 §5.9）：既有模板 id,反投影为 Spec 初始基线。
   forgeSourceTemplateId?: string;
 }
@@ -3574,6 +3683,7 @@ export interface WorkflowRepairTarget {
 }
 
 export interface ConversationSearchResultVm {
+  origin?: ConversationTaskRowVm['origin'];
   projectId: string;
   taskUuid?: string | null;
   workspacePath: string;
@@ -3627,6 +3737,9 @@ export interface ToolInfo {
 }
 
 export interface SkillMetaVm {
+  /** Directory-format compatibility, not an installation or a sync target. */
+  workBuddyCodeModeReadable?: boolean;
+  assetId: string;
   name: string;
   description: string;
   source: 'built-in' | 'global' | 'project';
@@ -3634,13 +3747,6 @@ export interface SkillMetaVm {
   agentSource: string;
   loadWarnings: string[];
   syncedAgentTypes: string[];
-}
-
-/// 工作流铸造入口 B 的 skill 引用（与后端 ForgeSkillRef 对齐）。
-export interface ForgeSkillRefVm {
-  name: string;
-  source: 'built-in' | 'global' | 'project';
-  directoryPath: string;
 }
 
 export interface SyncStatusEntryVm {

@@ -1404,8 +1404,8 @@ pub fn validate_workspace_state(state: &WorkspaceState) -> Result<()> {
                 "main workspace must be user-owned"
             );
             ensure!(
-                state.branch.is_none(),
-                "main workspace branch is not runtime-owned"
+                state.branch.as_deref().is_none_or(crate::git::GitCheckoutHead::is_ref_identity),
+                "main workspace integration target must be a fully qualified Git ref or detached HEAD"
             );
             ensure!(
                 state.parent_workspace_id.is_none(),

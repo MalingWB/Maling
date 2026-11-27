@@ -2,6 +2,7 @@ import { forwardRef, useImperativeHandle, type ReactNode } from 'react';
 import {
   ConversationComposerDraftProvider,
   createConversationComposerDraftBoundaryHandle,
+  conversationComposerDraftOccupied,
   useConversationComposerDraftOwner,
   type ConversationComposerDraftBoundaryHandle,
 } from '@/lib/conversation-composer-draft';
@@ -15,11 +16,12 @@ export const ConversationComposerDraftBoundary = forwardRef<
   ConversationComposerDraftBoundaryProps
 >(function ConversationComposerDraftBoundary({ children }, ref) {
   const owner = useConversationComposerDraftOwner();
+  const occupied = conversationComposerDraftOccupied(owner.draft);
 
   useImperativeHandle(
     ref,
     () => createConversationComposerDraftBoundaryHandle(owner),
-    [owner.changeWorkspace, owner.reset],
+    [occupied, owner.changeWorkspace, owner.prefillForge, owner.reset],
   );
 
   return (

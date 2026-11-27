@@ -23,6 +23,8 @@ export const GITHUB_OPERATION_UPDATED_EVENT = 'gold-band://github-operation-upda
 export const ACP_SESSION_UPDATED_EVENT = 'gold-band://acp-session-updated';
 export const CONVERSATION_RUN_STATE_UPDATED_EVENT = 'gold-band://conversation-run-state-updated';
 export const CONVERSATION_TERMINAL_RESULT_UPDATED_EVENT = 'gold-band://conversation-terminal-result-updated';
+// 铸造会话一轮结束且 Spec 增量提取完成（与 Rust 侧 commands_forge.rs 的事件常量对应）。
+export const FORGE_TURN_SETTLED_EVENT = 'gold-band://forge-turn-settled';
 
 // ── 干预 / 退出 / 工作区文件 ──
 export const INTERVENTION_NAVIGATE_EVENT = 'gold-band://intervention-navigate';

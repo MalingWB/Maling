@@ -62,7 +62,7 @@ function validate(workflow: WorkflowDsl) {
 }
 
 describe('WorkflowEditor new round entry validation', () => {
-  it('derives the saved entry from the only node without ordinary incoming edges', () => {
+  it('reports a node unreachable from the declared entry instead of rewriting the entry', () => {
     const validation = validate({
       version: '0.1',
       id: 'derived-entry',
@@ -75,8 +75,9 @@ describe('WorkflowEditor new round entry validation', () => {
       ],
     });
 
-    expect(validation.valid).toBe(true);
-    expect(validation.sanitizedWorkflow.entry).toBe('plan');
+    expect(validation.valid).toBe(false);
+    expect(validation.issues[0]).toMatchObject({ nodeId: 'plan' });
+    expect(validation.sanitizedWorkflow.entry).toBe('dev');
   });
 
   it('accepts a failure back edge into the initial entry node', () => {
@@ -91,6 +92,25 @@ describe('WorkflowEditor new round entry validation', () => {
         { from: 'test', to: 'accept', on: 'success' },
         { from: 'test', to: 'dev', on: 'failure' },
         { from: 'accept', to: '$end', on: 'success' },
+      ],
+    });
+
+    expect(validation.valid).toBe(true);
+    expect(validation.sanitizedWorkflow.entry).toBe('dev');
+  });
+
+  it('does not count a failure self-loop (retry in place) as an incoming edge', () => {
+    const validation = validate({
+      version: '0.1',
+      id: 'retry-self-loop-entry',
+      entry: 'dev',
+      control: {},
+      nodes: [worker('dev'), worker('test')],
+      edges: [
+        { from: 'dev', to: 'test', on: 'success' },
+        { from: 'dev', to: 'dev', on: 'failure' },
+        { from: 'test', to: '$end', on: 'success' },
+        { from: 'test', to: 'test', on: 'failure' },
       ],
     });
 
@@ -132,7 +152,7 @@ describe('WorkflowEditor new round entry validation', () => {
     expect(validation.valid).toBe(false);
     expect(validation.issues[0].message).toContain('validationEntryCandidateMultiple');
     expect(validation.issues[0].nodeIds).toEqual(['plan', 'dev']);
-    expect(validation.sanitizedWorkflow.entry).toBe('');
+    expect(validation.sanitizedWorkflow.entry).toBe('dev');
   });
 
   it('rejects workflows without any node lacking ordinary incoming edges', () => {
@@ -151,7 +171,7 @@ describe('WorkflowEditor new round entry validation', () => {
 
     expect(validation.valid).toBe(false);
     expect(validation.issues[0].message).toContain('validationEntryCandidateMissing');
-    expect(validation.sanitizedWorkflow.entry).toBe('');
+    expect(validation.sanitizedWorkflow.entry).toBe('plan');
   });
 
   it('requires new_round_entry on edges targeting new round', () => {

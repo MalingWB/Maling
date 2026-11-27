@@ -69,7 +69,7 @@ fn in_memory_settings_cannot_override_builtin_launch() {
 #[test]
 fn missing_custom_launch_is_isolated_to_the_execution_boundary() {
     let (settings, migrated) = SettingsConfig::from_json_value_with_migration(serde_json::json!({
-        "settingsSchemaVersion": 13,
+        "settingsSchemaVersion": gold_band::config::CURRENT_SETTINGS_SCHEMA_VERSION,
         "agents": {
             "claude-acp": {
                 "adapter": { "displayName": "Claude", "env": {} }
@@ -102,7 +102,7 @@ fn doctor_reports_missing_custom_launch_as_unavailable() {
     let temp = tempfile::tempdir().unwrap();
     let repo_root = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let (settings, _) = SettingsConfig::from_json_value_with_migration(serde_json::json!({
-        "settingsSchemaVersion": 13,
+        "settingsSchemaVersion": gold_band::config::CURRENT_SETTINGS_SCHEMA_VERSION,
         "agents": {
             "registry-agent": {
                 "adapter": { "displayName": "Registry Agent", "env": {} }

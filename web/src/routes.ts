@@ -22,9 +22,9 @@ export function routeFromPath(pathname: string): AppRoute {
     if (segments[1] === 'personal-analytics') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'personal-analytics' } };
     if (segments[1] === 'agents') return { uiMode: 'conversation', module: 'agent-management', taskPage: taskListPage, conversationPage: { kind: 'agents' } };
     if (segments[1] === 'contexts') return { uiMode: 'conversation', module: 'knowledge-base', taskPage: taskListPage, conversationPage: { kind: 'contexts' } };
-    if (segments[1] === 'run-modes') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'run-mode-management' } };
+    if (segments[1] === 'forge-history') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'forge-history' } };
+    if (segments[1] === 'run-modes') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'run-mode-management', ...(segments[2] === 'templates' && segments[3] ? { templateId: segments[3] } : {}) } };
     if (segments[1] === 'remote-tasks') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'remote-tasks' } };
-    if (segments[1] === 'forge-sessions') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'forge-sessions' } };
     if (segments[1] === 'scheduled-tasks') {
       if (segments[2] === 'new') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-task-create' } };
       return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-tasks' } };
@@ -95,15 +95,15 @@ export function pathFromRoute(module: PrimaryModule, taskPage: TaskPage, convers
     if (conversationPage.kind === 'personal-analytics') return '/chat/personal-analytics';
     if (conversationPage.kind === 'agents') return '/chat/agents';
     if (conversationPage.kind === 'contexts') return '/chat/contexts';
+    if (conversationPage.kind === 'forge-history') return '/chat/forge-history';
     if (conversationPage.kind === 'run-mode-management') {
       if (conversationPage.projectId && conversationPage.taskId && conversationPage.runId) {
         const base = `/chat/projects/${encodeURIComponent(conversationPage.projectId)}/tasks/${encodeURIComponent(conversationPage.taskId)}/runs/${encodeURIComponent(conversationPage.runId)}/mode`;
         return conversationPage.taskUuid ? `${base}/${encodeURIComponent(conversationPage.taskUuid)}` : base;
       }
-      return '/chat/run-modes';
+      return conversationPage.templateId ? `/chat/run-modes/templates/${encodeURIComponent(conversationPage.templateId)}` : '/chat/run-modes';
     }
     if (conversationPage.kind === 'remote-tasks') return '/chat/remote-tasks';
-    if (conversationPage.kind === 'forge-sessions') return '/chat/forge-sessions';
     if (conversationPage.kind === 'scheduled-tasks') return '/chat/scheduled-tasks';
     if (conversationPage.kind === 'scheduled-task-create') return '/chat/scheduled-tasks/new';
     if (conversationPage.kind === 'scheduled-task-detail') {

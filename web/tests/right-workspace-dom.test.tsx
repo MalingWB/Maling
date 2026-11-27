@@ -272,6 +272,58 @@ describe('right workspace DOM lifecycle', () => {
     }
   });
 
+  it('keeps the rendered tab in place when the conversation scope refines its identity', async () => {
+    // deep link 进入会话页时 task uuid 先未知、后补齐：scope 键变化是身份细化，
+    // 已渲染的 Tab（如自动打开的铸造预览）必须留在原处，不能被卸载重建。
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = new ConversationWorkspaceStore();
+    const pending = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    const resolved = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', taskUuid: 'task-uuid-1', runId: 'run-1' });
+    const preview = {
+      kind: 'forge-preview' as const,
+      key: 'forge-preview:project-1:task-1',
+      scopeKey: pending.key,
+      title: 'Forge preview',
+      attention: false,
+      projectId: 'project-1',
+      taskId: 'task-1',
+    };
+    store.save(pending, { tabs: [preview], activeTabKey: preview.key });
+    store.openWorkspace(pending, { explicit: true });
+
+    function PreviewHost() {
+      const workspace = useRightWorkspace();
+      useEffect(() => workspace.registerResourceRenderer('forge-preview', (active) => (
+        <output data-preview-scope={active.scopeKey}>{active.key}</output>
+      )), [workspace.registerResourceRenderer]);
+      return <>{workspace.tabs.map((tab) => workspace.renderResource(tab))}</>;
+    }
+
+    try {
+      await act(async () => {
+        root.render(<RightWorkspaceProvider scope={pending} store={store}><PreviewHost /></RightWorkspaceProvider>);
+      });
+      const before = container.querySelector('output');
+      expect(before?.textContent).toBe('forge-preview:project-1:task-1');
+      expect(before?.dataset.previewScope).toBe(pending.key);
+
+      await act(async () => {
+        root.render(<RightWorkspaceProvider scope={resolved} store={store}><PreviewHost /></RightWorkspaceProvider>);
+      });
+      const after = container.querySelector('output');
+      // 同一个 DOM 节点原地更新：Tab 的组件实例与交互状态都还在。
+      expect(after).toBe(before);
+      expect(after?.dataset.previewScope).toBe(resolved.key);
+      expect(store.has(pending)).toBe(false);
+      expect(store.peekShellState(resolved).requestedOpen).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
+
   it('restores shell presentation and promotes draft content into the created conversation', async () => {
     const container = document.createElement('div');
     document.body.append(container);

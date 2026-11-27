@@ -97,7 +97,7 @@ use commands_conversation::{
     get_conversation_execution_plan, get_conversation_pinned_task_page,
     get_conversation_recent_task_page, get_conversation_run, get_conversation_run_mode,
     get_conversation_run_summary_page, get_conversation_sidebar_bootstrap,
-    get_conversation_task_page, get_conversation_task_summary, get_conversation_workspaces,
+    get_conversation_task_page, get_generation_history_page, get_conversation_task_summary, get_conversation_workspaces,
     get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
     list_scheduled_execution_history, list_scheduled_tasks, materialize_conversation_attachments,
     pin_conversation, preflight_conversation_execution_plan_save,
@@ -350,6 +350,7 @@ fn run() -> anyhow::Result<()> {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(DesktopState::new(context))
+        .manage(commands_conversation::ConversationTaskTrash::default())
         .manage(desktop_lifecycle::DesktopLifecycleCoordinator::default())
         .manage(notifications::PendingInterventionNavigations::default())
         .manage(git_state_monitor::GitStateMonitorRuntime::default())
@@ -550,15 +551,18 @@ fn run() -> anyhow::Result<()> {
             remote_image_trust::revoke_remote_image_host,
             get_task_list,
             commands_forge::forge_create_session,
+            commands_forge::forge_items_digest,
             commands_forge::forge_source_digest,
-            commands_forge::forge_skills_digest,
+            commands_forge::list_installed_plugins,
+            commands_forge::select_workbuddy_source,
+            commands_forge::forget_workbuddy_source,
+            commands_forge::import_plugin_asset,
             commands_forge::forge_get_spec,
             commands_forge::forge_save_spec,
             commands_forge::forge_compile,
             commands_forge::forge_from_workflow,
             commands_forge::forge_start_trial,
-            commands_forge::forge_list_sessions,
-            commands_forge::forge_cleanup_sessions,
+            commands_forge::forge_set_stage_failure,
             get_profiles,
             get_profile,
             create_profile,
@@ -720,6 +724,7 @@ fn run() -> anyhow::Result<()> {
             save_desktop_ui_mode,
             get_conversation_sidebar_bootstrap,
             get_conversation_task_page,
+            get_generation_history_page,
             get_conversation_task_summary,
             get_conversation_pinned_task_page,
             get_conversation_recent_task_page,

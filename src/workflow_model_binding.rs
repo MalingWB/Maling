@@ -347,7 +347,7 @@ pub fn migrate_authoring_workflow(
         .iter()
         .filter_map(|node| match node {
             NodeDsl::Worker(worker) => worker.execution_slot_id.clone(),
-            NodeDsl::AiDynamic(_) => None,
+            NodeDsl::AiDynamic(_) | NodeDsl::ParallelGroup(_) => None,
         })
         .collect::<BTreeSet<_>>();
     bindings.retain(|slot, _| active_slots.contains(slot));

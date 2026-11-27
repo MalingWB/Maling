@@ -20,23 +20,8 @@ pub fn init_search_index(
 ) -> Result<Arc<SearchIndex>, rusqlite::Error> {
     let index = Arc::new(SearchIndex::open(db_path)?);
 
-    // If the DB is empty (first run), backfill from existing files in a
-    // background thread so startup is not delayed.
-    if index.is_empty() {
-        let index_clone = index.clone();
-        let projects_dir = projects_dir.to_path_buf();
-        std::thread::spawn(move || {
-            index_clone.backfill_from_disk(&projects_dir);
-        });
-    } else if index.needs_task_activity_backfill() {
-        let index_clone = index.clone();
-        let projects_dir = projects_dir.to_path_buf();
-        std::thread::spawn(move || {
-            index_clone.backfill_task_activities_from_disk(&projects_dir);
-        });
-    }
-
     let _ = SEARCH_INDEX.set(index.clone());
+    index.start_maintenance(projects_dir);
     Ok(index)
 }
 
@@ -142,6 +127,33 @@ pub const SEARCH_INDEX_SCHEMA_VERSION: i32 = 7;
 const SEARCH_INDEX_ALTER_ONLY_SCHEMA_VERSION: i32 = 6;
 const SEARCH_INDEX_FULL_REBUILD_SCHEMA_VERSION: i32 = 5;
 const UNTRACKED_TASK_ACTIVITY_AT: &str = "1970-01-01T00:00:00Z";
+const LEGACY_TASK_PROJECTION_REPAIR: &str = "legacy-task-uuid-and-forge-title";
+const GENERATION_ORIGINS_SQL: &str = "origin IN ('forge','forge-trial')";
+const GENERATION_TIME_SQL: &str = "coalesce(CAST(round((julianday(updated_at)-2440587.5)*86400000) AS INTEGER), -9223372036854775808)";
+const GENERATION_SEQUENCE_SQL: &str = "CAST(substr(task_id,6) AS INTEGER)";
+fn generation_root_expression() -> &'static str {
+    if cfg!(windows) { "substr(task_path,1,length(task_path)-length(task_id)-1) COLLATE NOCASE" }
+    else { "substr(task_path,1,length(task_path)-length(task_id)-1)" }
+}
+
+pub const GENERATION_HISTORY_PAGE_CAP: usize = 100;
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+pub struct GenerationHistoryCursor {
+    activity_millis: i64,
+    sequence: i64,
+    pub project_id: String,
+    pub task_id: String,
+}
+
+pub struct GenerationHistoryCandidate {
+    pub key: GenerationHistoryCursor,
+    /// An unverified legacy row may locate a canonical header for browsing only.
+    pub task_uuid: Option<String>,
+    pub origin: String,
+    pub title: String,
+    pub description: String,
+}
 
 /// Best-effort SQLite search index for cross-session prompt/timeline retrieval.
 ///
@@ -234,14 +246,13 @@ impl SearchIndex {
         // 结构化检测缺列 + ALTER ADD COLUMN:带常量默认值,元数据操作不
         // 重写行;与版本号无关,幂等。置于主键迁移之后,避免被表重建覆盖。
         if tasks_table_exists {
-            let origin_column_exists = {
-                let mut stmt = conn.prepare("PRAGMA table_info(tasks)")?;
-                let columns = stmt
-                    .query_map([], |row| row.get::<_, String>(1))?
-                    .collect::<Result<Vec<_>, _>>()?;
-                columns.iter().any(|name| name == "origin")
-            };
-            if !origin_column_exists {
+            let mut stmt = conn.prepare("PRAGMA table_info(tasks)")?;
+            let columns = stmt.query_map([], |row| row.get::<_, String>(1))?.collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            if !columns.iter().any(|name| name == "task_uuid") {
+                conn.execute_batch("ALTER TABLE tasks ADD COLUMN task_uuid TEXT;")?;
+            }
+            if !columns.iter().any(|name| name == "origin") {
                 conn.execute_batch(
                     "ALTER TABLE tasks ADD COLUMN origin TEXT NOT NULL DEFAULT '';",
                 )?;
@@ -285,6 +296,7 @@ impl SearchIndex {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS tasks (
                 task_id      TEXT NOT NULL,
+                task_uuid    TEXT,
                 task_path    TEXT NOT NULL PRIMARY KEY,
                 title        TEXT NOT NULL DEFAULT '',
                 description  TEXT NOT NULL DEFAULT '',
@@ -292,6 +304,10 @@ impl SearchIndex {
                 origin       TEXT NOT NULL DEFAULT '',
                 created_at   TEXT NOT NULL DEFAULT '',
                 updated_at   TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS index_maintenance (
+                name TEXT PRIMARY KEY, after_path TEXT
             );
 
             CREATE TABLE IF NOT EXISTS sessions (
@@ -361,6 +377,11 @@ impl SearchIndex {
                 VALUES (new.rowid, new.title, new.description, new.requirement_text);
             END;",
         )?;
+        // No FTS or session rebuild: this index covers only the two generation origins.
+        conn.execute_batch(&format!("CREATE INDEX IF NOT EXISTS tasks_generation_page ON tasks ({}, {GENERATION_TIME_SQL} DESC, {GENERATION_SEQUENCE_SQL} DESC, task_id DESC) WHERE {GENERATION_ORIGINS_SQL}", generation_root_expression()))?;
+        // Cross-root browsing seeks by time/sequence before the project tie-break.
+        // The root-first partial index above remains the seek path for a selected project.
+        conn.execute_batch(&format!("CREATE INDEX IF NOT EXISTS tasks_generation_global_page ON tasks ({GENERATION_TIME_SQL} DESC, {GENERATION_SEQUENCE_SQL} DESC) WHERE {GENERATION_ORIGINS_SQL}"))?;
         if task_schema_migrated || rebuild_task_fts {
             conn.execute("INSERT INTO tasks_fts(tasks_fts) VALUES('rebuild')", [])?;
         }
@@ -375,10 +396,296 @@ impl SearchIndex {
 
     fn is_empty(&self) -> bool {
         let conn = self.conn.lock().expect("search index lock poisoned");
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
-            .unwrap_or(0);
-        count == 0
+        conn.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM tasks) AND NOT EXISTS(SELECT 1 FROM sessions)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false)
+    }
+
+    fn start_maintenance(self: &Arc<Self>, projects_dir: &Utf8Path) -> std::thread::JoinHandle<()> {
+        let empty = self.is_empty();
+        let index = Arc::clone(self);
+        let projects = projects_dir.to_owned();
+        std::thread::spawn(move || {
+            if empty {
+                index.backfill_from_disk(&projects);
+            } else if index.needs_task_activity_backfill() {
+                index.backfill_task_activities_from_disk(&projects);
+            }
+            if let Err(error) = index.repair_generation_history(&projects) {
+                warn!(%error, "sqlite generation history repair did not complete");
+            }
+        })
+    }
+
+    /// One cursor for the upgrade, not a second copy of history. NULL means complete.
+    /// Keep only one page of locators; release the DB connection before touching files.
+    fn repair_generation_history(&self, projects_dir: &Utf8Path) -> anyhow::Result<()> {
+        if !projects_dir.try_exists()? {
+            return Ok(());
+        }
+        let root = projects_dir.canonicalize_utf8()?;
+        let cursor = {
+            let conn = self.conn.lock().expect("search index lock poisoned");
+            conn.execute(
+                "INSERT OR IGNORE INTO index_maintenance(name,after_path) VALUES (?1,'')",
+                [LEGACY_TASK_PROJECTION_REPAIR],
+            )?;
+            conn.query_row(
+                "SELECT after_path FROM index_maintenance WHERE name=?1",
+                [LEGACY_TASK_PROJECTION_REPAIR],
+                |r| r.get::<_, Option<String>>(0),
+            )?
+        };
+        let Some(mut after) = cursor else {
+            return Ok(());
+        };
+        let mut blocked = false;
+        loop {
+            let rows = {
+                let conn = self.conn.lock().expect("search index lock poisoned");
+                let mut stmt = conn.prepare("SELECT task_path, task_id, task_uuid FROM tasks WHERE task_path > ?1 ORDER BY task_path LIMIT 64")?;
+                stmt.query_map([&after], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+            };
+            let mut progress = None;
+            for (path, id, indexed_uuid) in &rows {
+                if let Err(error) = self.repair_generation_task(
+                    projects_dir,
+                    &root,
+                    Utf8Path::new(path),
+                    id,
+                    indexed_uuid.as_deref(),
+                ) {
+                    // Continue this pass, but leave the durable cursor before the first failure.
+                    blocked = true;
+                    warn!(%id, %error, "legacy generation metadata not repaired");
+                }
+                if !blocked {
+                    progress = Some(path);
+                }
+            }
+            if progress.is_some() || (rows.is_empty() && !blocked) {
+                let conn = self.conn.lock().expect("search index lock poisoned");
+                if conn.execute(
+                    "UPDATE index_maintenance SET after_path=?1 WHERE name=?2 AND after_path=?3",
+                    params![progress, LEGACY_TASK_PROJECTION_REPAIR, after],
+                )? == 0
+                {
+                    return Ok(()); // Another maintenance pass advanced the checkpoint.
+                }
+            }
+            let Some((last, _, _)) = rows.into_iter().last() else {
+                break;
+            };
+            after = last;
+        }
+        Ok(())
+    }
+
+    fn repair_generation_task(
+        &self,
+        projects: &Utf8Path,
+        root: &Utf8Path,
+        dir: &Utf8Path,
+        id: &str,
+        indexed_uuid: Option<&str>,
+    ) -> anyhow::Result<()> {
+        use crate::runtime::ForgeNaming;
+        let Some(project) = dir.parent().and_then(Utf8Path::parent) else {
+            return Ok(());
+        };
+        let Some(project_id) = project.file_name() else {
+            return Ok(());
+        };
+        // Indexed locators aren't authoring authority. Reject other roots, aliases and links.
+        if project.parent() != Some(projects)
+            || dir != project.join("tasks").join(id)
+            || dir.file_name() != Some(id)
+            || id.contains(['/', '\\', ':'])
+        {
+            return Ok(());
+        }
+        let file = dir.join("task.json");
+        let expected = root.join(project_id).join("tasks").join(id);
+        let read = || -> anyhow::Result<Option<TaskState>> {
+            let canonical = match file.canonicalize_utf8() {
+                Ok(path) => path,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(e.into()),
+            };
+            anyhow::ensure!(
+                canonical == expected.join("task.json"),
+                "noncanonical task path"
+            );
+            let task: TaskState = read_json(&canonical)?;
+            anyhow::ensure!(task.id == id, "task locator mismatch");
+            Ok(Some(task))
+        };
+        let Some(first) = read()? else { return Ok(()) };
+        let mut indexed_uuid = indexed_uuid;
+        if let Some(stale) = indexed_uuid.filter(|uuid| Some(*uuid) != first.uuid.as_deref()) {
+            // This row is demonstrably another instance. Preserve its text for raw search,
+            // but withdraw its navigation identity even when replacement sources are unreadable.
+            let changed = self.conn.lock().expect("search index lock poisoned").execute(
+                "UPDATE tasks SET task_uuid=NULL WHERE task_path=?1 AND task_id=?2 AND task_uuid=?3",
+                params![dir.as_str(), id, stale],
+            )?;
+            if changed == 0 { return Ok(()); }
+            indexed_uuid = None;
+        }
+        if first.origin.is_none() {
+            // This only writes the rebuildable projection. CAS rejects a concurrent
+            // canonical writer's index update; do not allocate a lock shard per ordinary task.
+            return self.repair_task_search_identity(dir, &expected, &first, indexed_uuid);
+        }
+        let key = crate::execution_plan::authoring_lock_key(project_id, id);
+        let _guard = crate::execution_plan::acquire_plan_write_wait(&key)?;
+        let Some(mut task) = read()? else {
+            return Ok(());
+        };
+        let Some(origin) = task.origin else {
+            return Ok(());
+        };
+        // Origin is independently knowable, even if an old draft or title metadata is corrupt.
+        self.conn
+            .lock()
+            .expect("search index lock poisoned")
+            .execute(
+                "UPDATE tasks SET origin=?1 WHERE task_path=?2 AND task_id=?3 AND origin<>?1 AND (task_uuid IS NULL OR task_uuid IS ?4)",
+                params![origin.as_str(), dir.as_str(), id, task.uuid],
+            )?;
+        if origin == TaskOrigin::Forge && task.forge_naming.is_none() {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Ownership {
+                title_auto_generated: bool,
+            }
+            #[derive(Deserialize)]
+            struct ArchivedName {
+                name: Option<String>,
+            }
+            fn optional<T: serde::de::DeserializeOwned>(
+                path: Utf8PathBuf,
+            ) -> anyhow::Result<Option<T>> {
+                match path.canonicalize_utf8() {
+                    Ok(canonical) => {
+                        anyhow::ensure!(canonical == path, "noncanonical authoring path");
+                        let reader = std::io::BufReader::new(std::fs::File::open(&canonical)?);
+                        Ok(Some(serde_json::from_reader(reader)?))
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(e) => Err(e.into()),
+                }
+            }
+            let metadata: Option<Ownership> =
+                optional(expected.join("authoring/conversation.json"))?;
+            let naming = ForgeNaming::from_legacy_title(
+                task.title.clone(),
+                metadata.map(|m| m.title_auto_generated),
+            );
+            if matches!(naming, ForgeNaming::Automatic { .. }) {
+                let draft: Option<ArchivedName> =
+                    optional(crate::forge::archive::spec_archive_path(&expected))?;
+                task.title = naming.effective_title(
+                    task.title.as_deref(),
+                    draft.as_ref().and_then(|d| d.name.as_deref()),
+                );
+            }
+            task.forge_naming = Some(naming);
+            crate::storage::write_json(&expected.join("task.json"), &task)?;
+        }
+        // Never INSERT/resurrect a deleted row. Touch FTS only when the title changed;
+        // preserve requirement/description/activity even if their source files are unavailable.
+        if indexed_uuid != task.uuid.as_deref() {
+            return self.repair_task_search_identity(dir, &expected, &task, indexed_uuid);
+        }
+        let conn = self.conn.lock().expect("search index lock poisoned");
+        let title = task.title.as_deref().unwrap_or("");
+        conn.execute(
+            "UPDATE tasks SET title=?1 WHERE task_path=?2 AND task_id=?3 AND title<>?1 AND task_uuid IS ?4",
+            params![title, dir.as_str(), id, indexed_uuid],
+        )?;
+        Ok(())
+    }
+
+    /// Don't attach a new identity to an old preview merely because its path/title match.
+    /// Reconstruct the *complete* searchable inputs for one row before publishing the UUID.
+    fn repair_task_search_identity(
+        &self,
+        dir: &Utf8Path,
+        canonical: &Utf8Path,
+        task: &TaskState,
+        indexed_uuid: Option<&str>,
+    ) -> anyhow::Result<()> {
+        use std::io::Read;
+        const MAX_REPAIR_BODY_BYTES: u64 = 1024 * 1024;
+        let Some(uuid) = task.uuid.as_deref().filter(|id| !id.trim().is_empty()) else {
+            return Ok(());
+        };
+        if indexed_uuid == Some(uuid) {
+            return Ok(());
+        }
+        let path = canonical.join("authoring").join("requirement.md");
+        anyhow::ensure!(
+            path.canonicalize_utf8()? == path,
+            "noncanonical requirement"
+        );
+        let mut body = String::new();
+        std::fs::File::open(&path)?
+            .take(MAX_REPAIR_BODY_BYTES + 1)
+            .read_to_string(&mut body)?;
+        anyhow::ensure!(
+            body.len() as u64 <= MAX_REPAIR_BODY_BYTES,
+            "requirement exceeds startup repair budget"
+        );
+        // The ordinary-task path has no authoring writes. If the source changed while
+        // sampling, leave it for the current writer or another maintenance pass.
+        let task_file = canonical.join("task.json");
+        anyhow::ensure!(
+            task_file.canonicalize_utf8()? == task_file,
+            "noncanonical task"
+        );
+        let current: TaskState = read_json(&task_file)?;
+        anyhow::ensure!(
+            current.id == task.id
+                && current.uuid == task.uuid
+                && current.title == task.title
+                && current.description == task.description
+                && current.origin == task.origin,
+            "task changed during index repair"
+        );
+        let conn = self.conn.lock().expect("search index lock poisoned");
+        let Some(bytes) = conn.query_row("SELECT octet_length(requirement_text) FROM tasks WHERE task_path=?1 AND task_id=?2 AND task_uuid IS ?3", params![dir.as_str(),task.id,indexed_uuid], |r| r.get::<_,u64>(0)).optional()? else { return Ok(()) };
+        anyhow::ensure!(
+            bytes <= MAX_REPAIR_BODY_BYTES,
+            "indexed requirement exceeds startup repair budget"
+        );
+        let title = task.title.as_deref().unwrap_or("");
+        let description = task.description.as_deref().unwrap_or("");
+        let origin = task.origin.map(|o| o.as_str()).unwrap_or("");
+        let fields = params![
+            uuid,
+            origin,
+            title,
+            description,
+            body,
+            dir.as_str(),
+            task.id,
+            indexed_uuid
+        ];
+        if conn.execute("UPDATE tasks SET task_uuid=?1,origin=?2 WHERE task_path=?6 AND task_id=?7 AND task_uuid IS ?8 AND title=?3 AND description=?4 AND requirement_text=?5", fields)? == 0 {
+            conn.execute("UPDATE tasks SET task_uuid=?1,origin=?2,title=?3,description=?4,requirement_text=?5 WHERE task_path=?6 AND task_id=?7 AND task_uuid IS ?8", fields)?;
+        }
+        Ok(())
     }
 
     fn needs_task_activity_backfill(&self) -> bool {
@@ -435,7 +742,15 @@ impl SearchIndex {
                 let Some(task_id) = file_name(&task_dir) else {
                     continue;
                 };
-                self.index_task(&task_dir, task_id)?;
+                let metadata = read_task_activity_metadata(&task_dir);
+                let activity = metadata
+                    .as_ref()
+                    .and_then(|m| m.last_activity_at.as_deref().or(m.created_at.as_deref()));
+                self.index_task_activity(
+                    &task_dir,
+                    task_id,
+                    activity.unwrap_or(UNTRACKED_TASK_ACTIVITY_AT),
+                )?;
             }
         }
         Ok(())
@@ -453,7 +768,16 @@ impl SearchIndex {
             transaction.execute("DELETE FROM tasks", [])?;
             transaction.commit()?;
         }
-        self.backfill_from_disk_strict(projects_dir)
+        self.backfill_from_disk_strict(projects_dir)?;
+        // An explicit rebuild can discover files that weren't indexed during the upgrade.
+        self.conn
+            .lock()
+            .expect("search index lock poisoned")
+            .execute(
+                "DELETE FROM index_maintenance WHERE name=?1",
+                [LEGACY_TASK_PROJECTION_REPAIR],
+            )?;
+        self.repair_generation_history(projects_dir)
     }
 
     fn backfill_from_disk_strict(&self, projects_dir: &Utf8Path) -> anyhow::Result<()> {
@@ -676,49 +1000,6 @@ impl SearchIndex {
 
     // ── search ──────────────────────────────────────────────────
 
-    /// 按时间序返回一个 task 的全部用户 prompt 文本（Forge 源会话材料用；
-    /// `per_prompt_cap` 截断单条，SQL 层完成避免加载超长正文）。
-    /// `after_timestamp` 置位时只取其后消息（右键"从此处铸造"截断）。
-    pub fn prompts_for_task(
-        &self,
-        task_id: &str,
-        per_prompt_cap: usize,
-        after_timestamp: Option<&str>,
-    ) -> Result<Vec<String>, rusqlite::Error> {
-        let conn = self.conn.lock().expect("search index lock poisoned");
-        let sql = match after_timestamp {
-            Some(_) => {
-                "SELECT substr(sp.text, 1, ?2)
-                 FROM session_prompts sp
-                 JOIN sessions s ON s.attempt_path = sp.attempt_path
-                 WHERE s.task_id = ?1 AND sp.timestamp > ?3
-                 ORDER BY sp.timestamp, sp.id"
-            }
-            None => {
-                "SELECT substr(sp.text, 1, ?2)
-                 FROM session_prompts sp
-                 JOIN sessions s ON s.attempt_path = sp.attempt_path
-                 WHERE s.task_id = ?1
-                 ORDER BY sp.timestamp, sp.id"
-            }
-        };
-        let mut stmt = conn.prepare(sql)?;
-        let rows: Vec<_> = match after_timestamp {
-            Some(after) => stmt
-                .query_map(
-                    params![task_id, per_prompt_cap as i64, after],
-                    |row| row.get::<_, String>(0),
-                )?
-                .collect::<Result<Vec<_>, _>>()?,
-            None => stmt
-                .query_map(params![task_id, per_prompt_cap as i64], |row| {
-                    row.get::<_, String>(0)
-                })?
-                .collect::<Result<Vec<_>, _>>()?,
-        };
-        Ok(rows)
-    }
-
     pub fn search_prompts(
         &self,
         query: &str,
@@ -921,10 +1202,11 @@ impl SearchIndex {
         let updated_at = latest_task_activity(existing_activity_at, incoming_activity_at)
             .unwrap_or(UNTRACKED_TASK_ACTIVITY_AT);
         conn.execute(
-            "INSERT INTO tasks (task_id, task_path, title, description, requirement_text, origin, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+            "INSERT INTO tasks (task_id, task_path, title, description, requirement_text, origin, created_at, updated_at, task_uuid)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
              ON CONFLICT(task_path) DO UPDATE SET
                 task_id=excluded.task_id,
+                task_uuid=excluded.task_uuid,
                 title=excluded.title,
                 description=excluded.description,
                 requirement_text=excluded.requirement_text,
@@ -938,7 +1220,8 @@ impl SearchIndex {
                 requirement_text,
                 origin,
                 created_at,
-                updated_at
+                updated_at,
+                task.as_ref().and_then(|t| t.uuid.as_deref()),
             ],
         )?;
         Ok(())
@@ -976,22 +1259,129 @@ impl SearchIndex {
         rows.collect()
     }
 
+    /// Keyset over the registered task roots, not over all tasks in the user's home.
+    /// The SQL limit bounds canonical header/run-summary reads even for a stale index.
+    pub fn registered_generation_page(
+        &self,
+        roots: &std::collections::BTreeMap<String, String>,
+        origin: Option<TaskOrigin>,
+        query: &str,
+        before: Option<&GenerationHistoryCursor>,
+        limit: usize,
+    ) -> Result<
+        (
+            Vec<GenerationHistoryCandidate>,
+            Option<GenerationHistoryCursor>,
+        ),
+        rusqlite::Error,
+    > {
+        if roots.is_empty() {
+            return Ok((Vec::new(), None));
+        }
+        let limit = limit.clamp(1, GENERATION_HISTORY_PAGE_CAP);
+        let normalized = normalize_for_search(query);
+        let terms: Vec<_> = normalized.split_whitespace().collect();
+        let trigram = !terms.is_empty() && terms.iter().all(|term| term.chars().count() >= 3);
+        // Drive selective text queries from FTS. The short-term fallback searches only
+        // managed header fields, never the requirement body. All user text is bound data.
+        let (search, text) = if trigram {
+            (
+                " AND t.rowid IN (SELECT rowid FROM tasks_fts WHERE tasks_fts MATCH ?3)",
+                format!(
+                    "{{title description}} : ({})",
+                    compile_literal_fts_query(&terms)
+                ),
+            )
+        } else if !terms.is_empty() {
+            (
+                " AND NOT EXISTS (SELECT 1 FROM json_each(?3) term WHERE instr(lower(t.title),term.value)=0 AND instr(lower(t.description),term.value)=0)",
+                serde_json::json!(terms).to_string(),
+            )
+        } else {
+            ("", String::new())
+        };
+        let verified_instance = if terms.is_empty() { "" } else { "AND task_uuid IS NOT NULL AND task_uuid<>''" };
+        let scope = generation_root_expression();
+        let from = if roots.len() == 1 {
+            "roots CROSS JOIN tasks t INDEXED BY tasks_generation_page"
+        } else if trigram {
+            "tasks t JOIN roots"
+        } else {
+            "tasks t INDEXED BY tasks_generation_global_page CROSS JOIN roots"
+        };
+        let seek = if before.is_some() {
+            format!(
+                " AND {GENERATION_TIME_SQL} <= ?4 AND ({GENERATION_TIME_SQL}, {GENERATION_SEQUENCE_SQL}, project_id, task_id) < (?4, ?5, ?6, ?7)"
+            )
+        } else {
+            String::new()
+        };
+        let tie = if roots.len() == 1 {
+            ""
+        } else {
+            "project_id DESC,"
+        };
+        let sql = format!("WITH roots(project_id, root) AS MATERIALIZED (SELECT key, value FROM json_each(?1))
+            SELECT project_id,task_id,{GENERATION_TIME_SQL},{GENERATION_SEQUENCE_SQL},task_uuid,origin,title,description
+            FROM {from} ON {scope} = roots.root
+            WHERE {GENERATION_ORIGINS_SQL} AND (?2 IS NULL OR origin=?2) {verified_instance}
+              AND task_id GLOB 'task-[0-9]*' AND substr(task_id,6) NOT GLOB '*[^0-9]*'
+              AND substr(task_path,-length(task_id)-1) = ?9 || task_id {search} {seek}
+            ORDER BY {GENERATION_TIME_SQL} DESC,{GENERATION_SEQUENCE_SQL} DESC,{tie}task_id DESC LIMIT ?8");
+        let roots_json = serde_json::json!(roots).to_string();
+        let conn = self.conn.lock().expect("search index lock poisoned");
+        let mut stmt = conn.prepare(&sql)?;
+        let result = stmt.query_map(
+            params![
+                roots_json,
+                origin.map(|o| o.as_str()),
+                text,
+                before.map(|key| key.activity_millis),
+                before.map(|key| key.sequence),
+                before.map(|key| &key.project_id),
+                before.map(|key| &key.task_id),
+                (limit + 1) as i64,
+                std::path::MAIN_SEPARATOR_STR
+            ],
+            |row| {
+                Ok(GenerationHistoryCandidate {
+                    key: GenerationHistoryCursor {
+                        project_id: row.get(0)?,
+                        task_id: row.get(1)?,
+                        activity_millis: row.get(2)?,
+                        sequence: row.get(3)?,
+                    },
+                    task_uuid: row.get(4)?,
+                    origin: row.get(5)?,
+                    title: row.get(6)?,
+                    description: row.get(7)?,
+                })
+            },
+        )?;
+        let mut rows = result.collect::<Result<Vec<_>, _>>()?;
+        let next = (rows.len() > limit).then(|| rows[limit - 1].key.clone());
+        rows.truncate(limit);
+        Ok((rows, next))
+    }
+
     // ── task search ────────────────────────────────────────────
 
     pub fn delete_task(&self, task_dir: &Utf8Path) -> Result<(), rusqlite::Error> {
         let task_path = task_dir.to_string();
         let conn = self.conn.lock().expect("search index lock poisoned");
         let tx = conn.unchecked_transaction()?;
-        tx.execute(
-            "DELETE FROM session_prompts WHERE attempt_path IN (
-                SELECT attempt_path FROM sessions WHERE attempt_path LIKE (?1 || '%')
-            )",
-            params![&task_path],
-        )?;
-        tx.execute(
-            "DELETE FROM sessions WHERE attempt_path LIKE (?1 || '%')",
-            params![&task_path],
-        )?;
+        // The prefix includes the directory separator and is compared literally: task-100
+        // is not task-1000, and `%` / `_` in a workspace path are ordinary characters.
+        let (prefix, scope) = if cfg!(windows) {
+            (format!("{}/", task_path.replace('\\', "/").trim_end_matches('/')),
+             "substr(replace(attempt_path, char(92), '/'), 1, length(?1)) = ?1 COLLATE NOCASE")
+        } else {
+            (format!("{}/", task_path.trim_end_matches('/')),
+             "substr(attempt_path, 1, length(?1)) = ?1")
+        };
+        tx.execute(&format!("DELETE FROM session_prompts WHERE attempt_path IN (
+            SELECT attempt_path FROM sessions WHERE {scope})"), [&prefix])?;
+        tx.execute(&format!("DELETE FROM sessions WHERE {scope}"), [&prefix])?;
         tx.execute(
             "DELETE FROM tasks WHERE task_path = ?1",
             params![&task_path],
@@ -1005,7 +1395,7 @@ impl SearchIndex {
         query: &str,
         limit: usize,
     ) -> Result<Vec<TaskSearchResult>, rusqlite::Error> {
-        self.search_tasks_with_scope(query, None, limit)
+        self.search_tasks_with_scope(query, None, false, false, limit)
     }
 
     /// Search tasks whose indexed path belongs to one of the supplied task roots.
@@ -1022,13 +1412,38 @@ impl SearchIndex {
             return Ok(Vec::new());
         }
 
-        self.search_tasks_with_scope(query, Some(task_roots), limit)
+        self.search_tasks_with_scope(query, Some(task_roots), false, false, limit)
+    }
+
+    pub fn search_generation_tasks_in_task_root(
+        &self,
+        query: &str,
+        root: &Utf8Path,
+        limit: usize,
+    ) -> Result<Vec<TaskSearchResult>, rusqlite::Error> {
+        self.search_tasks_with_scope(query, Some(&[root.to_string()]), true, false, limit)
+    }
+
+    /// Unlike diagnostic index lookups, navigation may only return verified task instances.
+    pub fn search_conversation_task_instances(
+        &self,
+        query: &str,
+        roots: &[String],
+        generation_only: bool,
+        limit: usize,
+    ) -> Result<Vec<TaskSearchResult>, rusqlite::Error> {
+        if roots.is_empty() || (generation_only && roots.len() != 1) {
+            return Ok(Vec::new());
+        }
+        self.search_tasks_with_scope(query, Some(roots), generation_only, true, limit)
     }
 
     fn search_tasks_with_scope(
         &self,
         query: &str,
         task_roots: Option<&[String]>,
+        generation_only: bool,
+        verified_instances_only: bool,
         limit: usize,
     ) -> Result<Vec<TaskSearchResult>, rusqlite::Error> {
         let normalized = normalize_for_search(query);
@@ -1063,11 +1478,15 @@ impl SearchIndex {
             })
             .collect::<Vec<_>>()
             .join(" OR ");
-        let scope_clause = if scope_sql.is_empty() {
+        let scope_clause = if generation_only {
+            // The public generation query always supplies exactly one project.
+            format!(" AND {GENERATION_ORIGINS_SQL} AND {} = rtrim(?{}, '/\\')", generation_root_expression(), query_parameter_count + 1)
+        } else if scope_sql.is_empty() {
             String::new()
         } else {
             format!(" AND ({scope_sql})")
         };
+        let instance_clause = if verified_instances_only { " AND t.task_uuid IS NOT NULL AND t.task_uuid <> ''" } else { "" };
         let limit_parameter = query_parameter_count + task_path_prefixes.len() + 1;
         let (from_and_match, order_by) = if use_trigram {
             (
@@ -1106,9 +1525,9 @@ impl SearchIndex {
             "SELECT t.task_id, t.task_path, t.title, t.description,
                     substr(t.requirement_text, 1, 500),
                     t.requirement_text,
-                    t.origin
+                    t.origin, t.task_uuid
              {from_and_match}
-             {scope_clause}
+             {scope_clause} {instance_clause}
              {order_by}
              LIMIT ?{limit_parameter}"
         );
@@ -1133,6 +1552,7 @@ impl SearchIndex {
             let requirement_text: String = row.get(5)?;
             results.push(TaskSearchResult {
                 task_id: row.get(0)?,
+                task_uuid: row.get(7)?,
                 task_path: row.get(1)?,
                 match_preview: task_match_preview(&title, &description, &requirement_text, &terms),
                 title,
@@ -1420,6 +1840,7 @@ pub struct PromptSearchResult {
 #[serde(rename_all = "camelCase")]
 pub struct TaskSearchResult {
     pub task_id: String,
+    pub task_uuid: Option<String>,
     pub task_path: String,
     pub title: String,
     pub description: String,
@@ -1659,6 +2080,168 @@ mod tests {
     }
 
     #[test]
+    fn startup_repairs_v6_generation_history_without_rewriting_drafts_or_search_bodies() {
+        use crate::runtime::ForgeNaming;
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let db = root.join("search.db");
+        let projects = root.join("projects");
+        let tasks = projects.join("project-a").join("tasks");
+        let index = Arc::new(SearchIndex::open(&db).unwrap());
+        let draft = br#"{"name":"Saved workflow","futureField":42}"#;
+        for (id, origin) in [
+            ("task-1", "forge"),
+            ("task-2", "forge"),
+            ("task-3", "forge-trial"),
+        ] {
+            let dir = tasks.join(id);
+            crate::storage::write_json(
+                &dir.join("task.json"),
+                &serde_json::json!({
+                    "id":id, "version":"1", "title":"Original title", "origin":origin,
+                    "uuid": (id == "task-1").then_some("original-forge-uuid")
+                }),
+            )
+            .unwrap();
+            if origin == "forge" {
+                std::fs::create_dir_all(dir.join("forge")).unwrap();
+                std::fs::write(crate::forge::archive::spec_archive_path(&dir), draft).unwrap();
+            }
+            index.conn.lock().unwrap().execute(
+                "INSERT INTO tasks(task_path,task_id,title,requirement_text) VALUES(?1,?2,'Original title','Preserved search body')",
+                params![dir.as_str(), id],
+            ).unwrap();
+        }
+        let auto = tasks.join("task-1");
+        let metadata = auto.join("authoring/conversation.json");
+        // A damaged item is retried after restart without hiding the other rows.
+        std::fs::create_dir_all(metadata.parent().unwrap()).unwrap();
+        std::fs::write(&metadata, b"{").unwrap();
+        std::fs::write(
+            auto.join("authoring/requirement.md"),
+            "Preserved search body",
+        )
+        .unwrap();
+        index.conn.lock().unwrap().execute_batch("DROP INDEX tasks_generation_page; ALTER TABLE tasks DROP COLUMN origin; ALTER TABLE tasks DROP COLUMN task_uuid; PRAGMA user_version=6;").unwrap();
+        drop(index);
+        let index = Arc::new(SearchIndex::open(&db).unwrap());
+        assert!(
+            !index.is_empty(),
+            "tasks without sessions are not an empty DB"
+        );
+        assert_eq!(
+            index
+                .search_tasks("Preserved search body", 8)
+                .unwrap()
+                .len(),
+            3
+        );
+        index.start_maintenance(&projects).join().unwrap();
+        let manual: TaskState = read_json(&tasks.join("task-2/task.json")).unwrap();
+        assert_eq!(manual.title.as_deref(), Some("Original title"));
+        assert_eq!(manual.forge_naming, Some(ForgeNaming::Manual));
+        assert_eq!(
+            index
+                .search_generation_tasks_in_task_root("Original title", &tasks, 8)
+                .unwrap()
+                .len(),
+            3
+        );
+        drop(index);
+
+        std::fs::write(&metadata, br#"{"titleAutoGenerated":true}"#).unwrap();
+        let index = Arc::new(SearchIndex::open(&db).unwrap());
+        index.start_maintenance(&projects).join().unwrap();
+        index.start_maintenance(&projects).join().unwrap();
+        let repaired: TaskState = read_json(&auto.join("task.json")).unwrap();
+        assert_eq!(
+            repaired.forge_naming,
+            Some(ForgeNaming::Automatic {
+                fallback: Some("Original title".into())
+            })
+        );
+        assert_eq!(repaired.title.as_deref(), Some("Saved workflow"));
+        assert_eq!(
+            std::fs::read(crate::forge::archive::spec_archive_path(&auto)).unwrap(),
+            draft
+        );
+        assert_eq!(
+            index
+                .search_conversation_task_instances("Saved workflow", &[tasks.to_string()], true, 8)
+                .unwrap()[0]
+                .task_uuid
+                .as_deref(),
+            Some("original-forge-uuid")
+        );
+        assert_eq!(
+            index
+                .search_generation_tasks_in_task_root("Preserved search body", &tasks, 8)
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn legacy_uuids_publish_only_after_searchable_inputs_match_the_current_task() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let projects = root.join("projects");
+        let tasks = projects.join("project-a").join("tasks");
+        let index = Arc::new(SearchIndex::open(&root.join("search.db")).unwrap());
+        for (id, indexed_id, indexed_body, body) in [
+            (
+                "task-1",
+                None,
+                "Unchanged requirement",
+                Some("Unchanged requirement"),
+            ),
+            (
+                "task-2",
+                Some("replaced-uuid"),
+                "Retired requirement",
+                Some("Current requirement"),
+            ),
+            ("task-3", Some("also-replaced"), "Unverified requirement", None),
+        ] {
+            let dir = tasks.join(id);
+            crate::storage::write_json(
+                &dir.join("task.json"),
+                &serde_json::json!({
+                    "id":id,"version":"1","uuid":format!("current-{id}"),"title":"Same title"
+                }),
+            )
+            .unwrap();
+            if let Some(body) = body {
+                std::fs::create_dir_all(dir.join("authoring")).unwrap();
+                std::fs::write(dir.join("authoring/requirement.md"), body).unwrap();
+            }
+            index.conn.lock().unwrap().execute("INSERT INTO tasks(task_path,task_id,task_uuid,title,requirement_text,updated_at) VALUES(?1,?2,?3,'Same title',?4,'2025-01-01T00:00:00Z')",params![dir.as_str(),id,indexed_id,indexed_body]).unwrap();
+        }
+        // An old row and its replacement have the same locator, title and origin.
+        index.start_maintenance(&projects).join().unwrap();
+        let verified = |text| {
+            index
+                .search_conversation_task_instances(text, &[tasks.to_string()], false, 8)
+                .unwrap()
+        };
+        assert_eq!(
+            verified("Unchanged requirement")[0].task_uuid.as_deref(),
+            Some("current-task-1")
+        );
+        assert!(verified("Retired requirement").is_empty());
+        assert_eq!(
+            verified("Current requirement")[0].task_uuid.as_deref(),
+            Some("current-task-2")
+        );
+        assert!(verified("Unverified requirement").is_empty());
+        assert_eq!(
+            index.search_tasks("Unverified requirement", 8).unwrap()[0].task_uuid,
+            None
+        );
+    }
+
+    #[test]
     fn task_origin_indexed_and_returned_by_search() {
         let dir = tempdir().unwrap();
         let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
@@ -1669,6 +2252,7 @@ mod tests {
         crate::storage::write_json(
             &task_dir.join("task.json"),
             &TaskState {
+                forge_naming: None,
                 version: crate::domain::VERSION.to_string(),
                 id: "t1".to_string(),
                 title: Some("Forge Session".to_string()),
@@ -1716,6 +2300,7 @@ mod tests {
             crate::storage::write_json(
                 &task_dir.join("task.json"),
                 &TaskState {
+                    forge_naming: None,
                     version: crate::domain::VERSION.to_string(),
                     id: "task-001".to_string(),
                     title: Some(title.to_string()),
@@ -1744,6 +2329,31 @@ mod tests {
         let remaining = index.search_tasks("shared", 10).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].task_path, task_b.as_str());
+    }
+
+    #[test]
+    fn deleting_task_sessions_respects_literal_component_boundaries() {
+        let dir = tempdir().unwrap();
+        let root = camino::Utf8PathBuf::from_path_buf(dir.path().into()).unwrap();
+        let index = SearchIndex::open(&root.join("search.db")).unwrap();
+        let target = root.join("a_%").join("task-100");
+        let sibling = root.join("a_%").join("task-1000");
+        let peer = root.join("aZZ").join("task-100");
+        for dir in [&target, &sibling, &peer] {
+            let path = dir.join("runs").join("attempt");
+            let conn = index.conn.lock().unwrap();
+            conn.execute("INSERT INTO sessions(attempt_path,task_id,run_id,round_id,node_id,attempt_id) VALUES (?1,?2,'r','round','n','a')", params![path.as_str(),dir.file_name()]).unwrap();
+            conn.execute("INSERT INTO session_prompts(id,attempt_path,text) VALUES ('p',?1,'synthetic')", [path.as_str()]).unwrap();
+        }
+        index.delete_task(&target).unwrap();
+        let conn = index.conn.lock().unwrap();
+        for table in ["sessions","session_prompts"] {
+            let sql = format!("SELECT COUNT(*) FROM {table} WHERE attempt_path=?1");
+            for (dir, count) in [(&target,0), (&sibling,1), (&peer,1)] {
+                let path = dir.join("runs").join("attempt");
+                assert_eq!(conn.query_row(&sql,[path.as_str()], |r| r.get::<_, i64>(0)).unwrap(), count);
+            }
+        }
     }
 
     #[test]
@@ -1836,6 +2446,7 @@ mod tests {
             crate::storage::write_json(
                 &task_dir.join("task.json"),
                 &TaskState {
+                    forge_naming: None,
                     version: crate::domain::VERSION.to_string(),
                     id: format!("task-{number:03}"),
                     title: Some("Needle".to_string()),
@@ -1855,6 +2466,7 @@ mod tests {
         crate::storage::write_json(
             &included_task.join("task.json"),
             &TaskState {
+                forge_naming: None,
                 version: crate::domain::VERSION.to_string(),
                 id: "task-001".to_string(),
                 title: Some("Needle in sidebar workspace".to_string()),
@@ -1893,6 +2505,7 @@ mod tests {
             crate::storage::write_json(
                 &task_dir.join("task.json"),
                 &TaskState {
+                    forge_naming: None,
                     version: crate::domain::VERSION.to_string(),
                     id: task_id.to_string(),
                     title: Some(task_id.to_string()),
@@ -1966,6 +2579,7 @@ mod tests {
         crate::storage::write_json(
             &task_dir.join("task.json"),
             &TaskState {
+                forge_naming: None,
                 version: crate::domain::VERSION.to_string(),
                 id: "task-001".to_string(),
                 title: Some("Indexed title".to_string()),
@@ -2027,6 +2641,7 @@ mod tests {
         crate::storage::write_json(
             &mixed_task.join("task.json"),
             &TaskState {
+                forge_naming: None,
                 version: crate::domain::VERSION.to_string(),
                 id: "task-001".to_string(),
                 title: Some("随便用askUserQuestion".to_string()),
@@ -2051,6 +2666,7 @@ mod tests {
         crate::storage::write_json(
             &hello_task.join("task.json"),
             &TaskState {
+                forge_naming: None,
                 version: crate::domain::VERSION.to_string(),
                 id: "task-002".to_string(),
                 title: Some("你好".to_string()),

@@ -1,3 +1,6 @@
+#[path = "parallel_group.rs"]
+mod parallel_group;
+
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -80,7 +83,7 @@ use crate::provider::{
 };
 use crate::runtime::{
     CurrentNodeRetryReadiness, NodeState, RoundState, RoundTraceStep, RunState, RunWorktreeState,
-    RuntimeAttemptLocator, RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState,
+    RuntimeAttemptLocator, RuntimeExecutionPhase, RuntimeExecutionState, WorkerRefState,
     canonical_trace_for_round, current_node_retry_readiness, direct_retry_successor,
     validate_round_state, validate_run_state, validate_worker_ref_state, write_node_state,
 };
@@ -658,7 +661,7 @@ fn output_schema_for_node<'a>(
 ) -> Option<&'a serde_json::Value> {
     match workflow.get_node(node_id)? {
         crate::dsl::NodeDsl::Worker(worker) => worker.output.as_ref()?.schema.as_ref(),
-        crate::dsl::NodeDsl::AiDynamic(_) => None,
+        crate::dsl::NodeDsl::AiDynamic(_) | crate::dsl::NodeDsl::ParallelGroup(_) => None,
     }
 }
 
@@ -1254,21 +1257,55 @@ fn prepare_run_from_workflow(
     model_bindings: WorkflowModelBindings,
     auto_config: Option<crate::config::ConversationAutoConfig>,
 ) -> Result<PreparedRun> {
+    prepare_run_snapshot(
+        app,
+        task_id,
+        workflow,
+        worktree_fork_commit,
+        model_bindings,
+        auto_config,
+        RunSnapshotScope::Task,
+    )
+}
+
+#[derive(PartialEq, Eq)]
+enum RunSnapshotScope {
+    Task,
+    Branch(Option<RunWorktreeState>),
+}
+
+fn prepare_run_snapshot(
+    app: &App,
+    task_id: &str,
+    workflow: WorkflowDsl,
+    worktree_fork_commit: Option<String>,
+    model_bindings: WorkflowModelBindings,
+    auto_config: Option<crate::config::ConversationAutoConfig>,
+    scope: RunSnapshotScope,
+) -> Result<PreparedRun> {
+    let task_uuid = app.task_show(task_id)?.uuid;
     let validated = validate_workflow_snapshot(workflow)?;
-    if worktree_fork_commit.is_none() && workflow_contains_ai_dynamic(&validated.raw) {
+    if worktree_fork_commit.is_none()
+        && crate::dsl::workflow_requires_branch_workspaces(&validated.raw)
+    {
         GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
     app.validate_workflow_agents(&validated)?;
     let resolved_profiles =
         resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
-    write_json(
-        &app.paths.task_workflow_resolved_file(task_id),
-        &validated.raw,
-    )?;
-    write_json(&app.paths.task_provenance_file(task_id), &resolved_profiles)?;
+    // No deletion/replacement between the first write and publication of the running run.
+    let key = crate::execution_plan::authoring_lock_key(&app.paths.project_id, task_id);
+    let admission = crate::execution_plan::acquire_dispatch_read(&key)?;
+    anyhow::ensure!(app.task_show(task_id)?.uuid == task_uuid, "conversation.task-not-found");
+    if scope == RunSnapshotScope::Task {
+        write_json(
+            &app.paths.task_workflow_resolved_file(task_id),
+            &validated.raw,
+        )?;
+        write_json(&app.paths.task_provenance_file(task_id), &resolved_profiles)?;
+    }
 
     let (run_id, run_dir) = reserve_next_run_dir(&app.paths.runs_dir(task_id))?;
-    let task_uuid = read_json::<TaskState>(&app.paths.task_file(task_id))?.uuid;
     let run_uuid = generate_uuid();
     let mut prepared = PreparedRun {
         data: None,
@@ -1278,7 +1315,10 @@ fn prepare_run_from_workflow(
     let round_id = "round-001".to_string();
     let attempt_id = "attempt-001".to_string();
     let now = now_rfc3339_like();
-    let worktree = if let Some(fork_commit) = worktree_fork_commit {
+    let creating_worktree = worktree_fork_commit.is_some();
+    let worktree = if let RunSnapshotScope::Branch(worktree) = scope {
+        worktree
+    } else if let Some(fork_commit) = worktree_fork_commit {
         Some(conversation_run_worktree_state(
             app,
             task_uuid.as_deref(),
@@ -1288,7 +1328,6 @@ fn prepare_run_from_workflow(
     } else {
         None
     };
-    let creating_worktree = worktree.is_some();
 
     let execution_locator = RuntimeAttemptLocator {
         round_id: round_id.clone(),
@@ -1332,6 +1371,7 @@ fn prepare_run_from_workflow(
     }
     validate_run_state(&run)?;
     write_json(&app.paths.run_file(task_id, &run_id), &run)?;
+    drop(admission);
     prepared.runtime_candidate = runtime_candidate;
     if let Some(auto_config) = auto_config {
         crate::execution_plan::publish_initial_auto(&app.paths, task_id, &run_id, auto_config)
@@ -1475,6 +1515,7 @@ fn conversation_run_worktree_state(
     let short_id = digest.as_str()[..16].to_string();
     RunWorktreeState {
         path: app.paths.conversation_worktrees_dir().join(&short_id),
+        graph_owner: None,
         branch: format!("gold-band/conversation/{short_id}"),
         fork_commit,
     }
@@ -1490,6 +1531,10 @@ fn prepare_run_worktree_background(
     let Some(worktree) = run.worktree.clone() else {
         return Ok(true);
     };
+    if worktree.graph_owner.is_some() {
+        run_workspace_dir(app, task_id, &run.id)?;
+        return Ok(true);
+    }
     if run
         .rerun
         .as_ref()
@@ -1601,6 +1646,9 @@ pub(crate) fn run_workspace_dir(app: &App, task_id: &str, run_id: &str) -> Resul
     let Some(worktree) = run.worktree else {
         return Ok(app.paths.repo_root.clone());
     };
+    if let Some(owner) = &worktree.graph_owner {
+        return parallel_group::owned_workspace(app, task_id, run_id, &worktree, owner);
+    }
     let expected_root = app.paths.conversation_worktrees_dir();
     let canonical_root = Utf8PathBuf::from_path_buf(std::fs::canonicalize(
         expected_root.as_std_path(),
@@ -1819,7 +1867,9 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
                 return Ok(false);
             }
             mark_dynamic_node_paused(&mut graph.nodes[target_index], reason, None);
-            refresh_dynamic_current_leaf_ids(&mut graph);
+            // A paused branch relinquishes its slot. Unrelated pending branches
+            // must be admitted before deciding that the whole graph is paused.
+            refresh_dynamic_ready_nodes(&mut graph);
             let has_active_leaf = dynamic_graph_has_active_leaf(&graph);
             if has_active_leaf {
                 graph.run.status = DynamicRunStatus::Running;
@@ -1846,6 +1896,11 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
                 outer_attempt_id,
                 &mut graph,
             )?;
+            if let Some(child_id) = graph.nodes[target_index].child_run_id.as_deref() {
+                // Child launch/continue also commits under this graph lock.
+                // Fence the linked child generation before admitting its resume.
+                app.run_pause(task_id, child_id, reason)?;
+            }
             if has_active_leaf {
                 if let Some(dynamic_attempt_id) = expected_dynamic_attempt_id {
                     stop_dynamic_resume_target(
@@ -1996,7 +2051,7 @@ fn run_continue_with_launch_signal(
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow_snapshot(workflow)?;
-    if workflow_contains_ai_dynamic(&validated.raw) {
+    if crate::dsl::workflow_requires_branch_workspaces(&validated.raw) {
         GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
     app.validate_workflow_agents(&validated)?;
@@ -2005,11 +2060,99 @@ fn run_continue_with_launch_signal(
     let mut run = app.run_status(task_id, run_id)?;
     let current = current_attempt_state(app, task_id, &run)?;
     let (mut round, mut node) = current;
+    let (expected_execution_id, resume_metrics_context) = if expected_execution_id.is_none()
+        && node.node_type == crate::domain::NodeType::ParallelGroup
+        && is_run_continuable(&run)
+    {
+        let id = next_runtime_execution_id();
+        let metrics = commit_fixed_run_continue(app, task_id, run_id, &round, &mut node, &id)?;
+        run = app.run_status(task_id, run_id)?;
+        (Some(id), Some(metrics))
+    } else {
+        (expected_execution_id, resume_metrics_context)
+    };
     if let Some(expected_execution_id) = expected_execution_id.as_deref() {
         ensure!(
             node.runtime_execution_id.as_deref() == Some(expected_execution_id),
             "runtime continue execution was superseded before launch"
         );
+    }
+    if has_pending_control_transition(&node) {
+        // A crash or stop between the durable ALL result and the outer cursor
+        // advance must deliver the pending transition, not restart the group.
+        if expected_execution_id.is_none() {
+            commit_fixed_run_continue(
+                app,
+                task_id,
+                run_id,
+                &round,
+                &mut node,
+                &next_runtime_execution_id(),
+            )?;
+        }
+        run = app.run_status(task_id, run_id)?;
+        round.status = RunStatus::Running;
+        let key = crate::execution_plan::lock_key(&app.paths, task_id, run_id);
+        let (next, workflow, profiles) = crate::execution_plan::with_dispatch_read(&key, || {
+            let workflow = validate_workflow_snapshot(load_run_workflow(app, task_id, run_id)?)?;
+            let profiles =
+                resolve_workflow_profiles(&app.paths, &workflow.raw, app.config.desktop_language)?;
+            let decision = decide_next_step(&workflow, &run, &round, &node);
+            let next = apply_control_decision(
+                app,
+                task_id,
+                &workflow,
+                &profiles,
+                &mut run,
+                &mut round,
+                &node,
+                decision,
+                node.runtime_execution_id.as_deref(),
+            )?;
+            Ok::<_, anyhow::Error>((next, workflow, profiles))
+        })
+        .map_err(|error| anyhow!(error))??;
+        let mut launch = launch;
+        notify_runtime_continue_started(&mut launch, &run);
+        if let Some(mut next) = next {
+            let prompt = AcpInvocationPromptState::workflow_transition(
+                app.config.desktop_language,
+                next.session_mode,
+                next.continue_ref,
+            );
+            drive_from_node_with_initial_session(
+                app,
+                task_id,
+                &workflow,
+                &profiles,
+                &mut run,
+                &mut round,
+                &mut next.node,
+                prompt.session_mode,
+                prompt.continue_ref,
+                prompt.resume_prompt,
+                prompt.resume_prompt_id,
+                prompt.prompt_display,
+                prompt.user_prompt_render_mode,
+                prompt.input_attachment_paths,
+                prompt.runtime_control_intent,
+                None,
+                None,
+                None,
+                None,
+                prompt.model_override,
+                prompt.permission_mode_override,
+                None,
+                None,
+            )?;
+        } else if run.status != RunStatus::Running {
+            app.finish_runtime_candidate_best_effort(
+                task_id,
+                run_id,
+                run.execution.recovery_candidate_token.as_deref(),
+            );
+        }
+        return app.run_status(task_id, run_id);
     }
     let claimed_runtime_resume = expected_execution_id.is_some()
         && run.status == RunStatus::Running
@@ -2071,7 +2214,7 @@ fn run_continue_with_launch_signal(
                 bail!("current attempt is waiting for manual check");
             }
             match validated.get_node(&node.node_id) {
-                Some(NodeDsl::AiDynamic(_)) => {
+                Some(NodeDsl::AiDynamic(_) | NodeDsl::ParallelGroup(_)) => {
                     let parent_continue_input = input.clone();
                     let mut prompt_state = AcpInvocationPromptState::runtime_control_resume(
                         app.config.desktop_language,
@@ -2229,7 +2372,7 @@ fn run_continue_dynamic_inner(
     ensure!(
         matches!(
             validated.get_node(outer_node_id),
-            Some(NodeDsl::AiDynamic(_))
+            Some(NodeDsl::AiDynamic(_) | NodeDsl::ParallelGroup(_))
         ),
         "node `{outer_node_id}` is not an AI-DYNAMIC node"
     );
@@ -2973,6 +3116,17 @@ pub(crate) fn run_continue_foreground(
 }
 
 // Owns the fixed-run admission transition separately from provider launch.
+// The current attempt owns a committed result, but the outer cursor has not
+// claimed a successor yet. This also applies to an ordinary worker in a branch.
+fn has_pending_control_transition(node: &NodeState) -> bool {
+    node.status == RunStatus::Completed
+        && !node.manual_check_pending
+        && matches!(
+            node.outcome,
+            Some(NodeOutcome::Success | NodeOutcome::Failure)
+        )
+}
+
 fn commit_fixed_run_continue(
     app: &App,
     task_id: &str,
@@ -3022,8 +3176,8 @@ fn commit_fixed_run_continue(
             &node.attempt_id,
         ))?;
         ensure!(
-            node.status == RunStatus::Paused
-                && node.outcome.is_none()
+            (node.status == RunStatus::Paused && node.outcome.is_none()
+                || has_pending_control_transition(node))
                 && !node.manual_check_pending,
             "current attempt is not resumable by continue"
         );
@@ -3035,12 +3189,13 @@ fn commit_fixed_run_continue(
         let attempt_dir =
             app.paths
                 .attempt_dir(task_id, run_id, &round.id, &node.node_id, &node.attempt_id);
-        let resume_phase =
-            if crate::provider::post_turn_projection_checkpoint_is_finalizing(&attempt_dir)? {
-                RuntimeExecutionPhase::FinalizingArtifact
-            } else {
-                RuntimeExecutionPhase::StartingNode
-            };
+        let resume_phase = if has_pending_control_transition(node) {
+            RuntimeExecutionPhase::Transitioning
+        } else if crate::provider::post_turn_projection_checkpoint_is_finalizing(&attempt_dir)? {
+            RuntimeExecutionPhase::FinalizingArtifact
+        } else {
+            RuntimeExecutionPhase::StartingNode
+        };
         // A losing continue must reject before it can replace another execution's
         // recovery token. Retry uses this same attempt lock for its locator CAS.
         runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
@@ -3224,7 +3379,7 @@ pub(crate) fn run_recover_completed_background(
     let _continue_lease = FixedRunContinueLease::acquire(app, task_id, run_id)?;
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow_snapshot(workflow)?;
-    if workflow_contains_ai_dynamic(&validated.raw) {
+    if crate::dsl::workflow_requires_branch_workspaces(&validated.raw) {
         GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
     app.validate_workflow_agents(&validated)?;
@@ -3985,7 +4140,7 @@ pub(crate) fn retry_current_node(
     drop(plan);
     let validated = validate_workflow_snapshot(workflow)
         .map_err(|error| retry_state_error(task_id, run_id, &error.into()))?;
-    if workflow_contains_ai_dynamic(&validated.raw) {
+    if crate::dsl::workflow_requires_branch_workspaces(&validated.raw) {
         GitRepositoryService::default()
             .require_worktree(&app.paths.repo_root)
             .map_err(|error| retry_state_error(task_id, run_id, &error))?;
@@ -4515,7 +4670,7 @@ fn emit_run_metrics_fact(
         .map(|round| round.index);
     let is_auto = current_node_state
         .as_ref()
-        .is_some_and(|node| node.node_type == crate::domain::NodeType::AiDynamic);
+        .is_some_and(|node| node.node_type.owns_branch_graph());
     let is_intermediate = matches!(
         event_type,
         super::observability::LifecycleEventType::ExecutionPaused
@@ -5682,7 +5837,7 @@ struct DynamicExecutionContext<'a> {
     /// Derived feedback from the outer workflow edge that opened this Round.
     /// It is transient and is projected only to the internal bootstrap turn.
     outer_new_round_trigger: Option<PromptPredecessorContext>,
-    dynamic: &'a AiDynamicNode,
+    ai: Option<&'a AiDynamicNode>,
     // UUIDs from the outer run/round/node — used for metrics reporting
     task_uuid: Option<&'a str>,
     run_uuid: Option<&'a str>,
@@ -5694,6 +5849,12 @@ struct DynamicExecutionContext<'a> {
 }
 
 impl<'a> DynamicExecutionContext<'a> {
+    // Only proposal-driven workers have an AI control plane. Static graph jobs are
+    // frozen child workflows and never enter proposal/agent dispatch.
+    fn ai_policy(&self) -> &'a AiDynamicNode {
+        self.ai.expect("AI policy required for dynamic worker")
+    }
+
     fn with_dynamic<'b>(&'b self, dynamic: &'b AiDynamicNode) -> DynamicExecutionContext<'b> {
         DynamicExecutionContext {
             app: self.app,
@@ -5704,7 +5865,7 @@ impl<'a> DynamicExecutionContext<'a> {
             outer_attempt_id: self.outer_attempt_id,
             outer_runtime_execution_id: self.outer_runtime_execution_id.clone(),
             outer_new_round_trigger: self.outer_new_round_trigger.clone(),
-            dynamic,
+            ai: Some(dynamic),
             task_uuid: self.task_uuid,
             run_uuid: self.run_uuid,
             round_uuid: self.round_uuid,
@@ -6359,10 +6520,12 @@ fn dynamic_worker_model_required_from_proposal(
     ctx: &DynamicExecutionContext<'_>,
     provider: &str,
 ) -> bool {
-    match &ctx.dynamic.agent_strategy {
-        AiDynamicAgentStrategy::Dynamic { .. } => dynamic_requires_model_in_proposal(ctx.dynamic),
+    match &ctx.ai_policy().agent_strategy {
+        AiDynamicAgentStrategy::Dynamic { .. } => {
+            dynamic_requires_model_in_proposal(ctx.ai_policy())
+        }
         AiDynamicAgentStrategy::Fixed { .. } => {
-            dynamic_model_for_provider(ctx.dynamic, provider).is_none()
+            dynamic_model_for_provider(ctx.ai_policy(), provider).is_none()
                 && !provider_model_option_values(ctx, provider).is_empty()
         }
     }
@@ -6372,13 +6535,15 @@ fn dynamic_agent_task_model_required_from_proposal(
     ctx: &DynamicExecutionContext<'_>,
     provider: &str,
 ) -> bool {
-    if dynamic_acceptance_model(ctx.dynamic).is_some() {
+    if dynamic_acceptance_model(ctx.ai_policy()).is_some() {
         return false;
     }
-    match &ctx.dynamic.agent_strategy {
-        AiDynamicAgentStrategy::Dynamic { .. } => dynamic_requires_model_in_proposal(ctx.dynamic),
+    match &ctx.ai_policy().agent_strategy {
+        AiDynamicAgentStrategy::Dynamic { .. } => {
+            dynamic_requires_model_in_proposal(ctx.ai_policy())
+        }
         AiDynamicAgentStrategy::Fixed { .. } => {
-            dynamic_model_for_provider(ctx.dynamic, provider).is_none()
+            dynamic_model_for_provider(ctx.ai_policy(), provider).is_none()
                 && !provider_model_option_values(ctx, provider).is_empty()
         }
     }
@@ -6488,7 +6653,7 @@ fn validate_dynamic_proposed_model(
 }
 
 fn dynamic_any_worker_model_required_from_proposal(ctx: &DynamicExecutionContext<'_>) -> bool {
-    match &ctx.dynamic.agent_strategy {
+    match &ctx.ai_policy().agent_strategy {
         AiDynamicAgentStrategy::Fixed { provider, .. } => {
             dynamic_worker_model_required_from_proposal(ctx, provider)
         }
@@ -6499,7 +6664,7 @@ fn dynamic_any_worker_model_required_from_proposal(ctx: &DynamicExecutionContext
 }
 
 fn dynamic_model_policy_summary(ctx: &DynamicExecutionContext<'_>) -> String {
-    match &ctx.dynamic.agent_strategy {
+    match &ctx.ai_policy().agent_strategy {
         AiDynamicAgentStrategy::Fixed {
             provider, model, ..
         } => {
@@ -6515,7 +6680,7 @@ fn dynamic_model_policy_summary(ctx: &DynamicExecutionContext<'_>) -> String {
             }
         }
         AiDynamicAgentStrategy::Dynamic { .. } => {
-            if let Some(model) = dynamic_acceptance_model(ctx.dynamic) {
+            if let Some(model) = dynamic_acceptance_model(ctx.ai_policy()) {
                 format!(
                     "Select a provider only for workers. Runtime uses each worker provider's configured model; `merge` / `acceptance` always use the bootstrap Agent and configured acceptance model `{model}`. Do not output provider for merge / acceptance, and do not output `model`."
                 )
@@ -6527,7 +6692,7 @@ fn dynamic_model_policy_summary(ctx: &DynamicExecutionContext<'_>) -> String {
 }
 
 fn dynamic_model_policy_summary_zh_cn(ctx: &DynamicExecutionContext<'_>) -> String {
-    match &ctx.dynamic.agent_strategy {
+    match &ctx.ai_policy().agent_strategy {
         AiDynamicAgentStrategy::Fixed {
             provider, model, ..
         } => {
@@ -6541,7 +6706,7 @@ fn dynamic_model_policy_summary_zh_cn(ctx: &DynamicExecutionContext<'_>) -> Stri
             }
         }
         AiDynamicAgentStrategy::Dynamic { .. } => {
-            if let Some(model) = dynamic_acceptance_model(ctx.dynamic) {
+            if let Some(model) = dynamic_acceptance_model(ctx.ai_policy()) {
                 format!(
                     "只为 worker 选择 provider。worker 使用该 provider 预先配置的模型；merge / acceptance 固定使用初始分发 Agent 和验收模型 `{model}`。不要为 merge / acceptance 输出 provider，也不要输出 `model`。"
                 )
@@ -6566,7 +6731,7 @@ fn dynamic_completion_schema_policy(
     let provider_ids = dynamic_available_provider_ids(ctx);
     let mut model_names = Vec::new();
     let node_model_required = dynamic_any_worker_model_required_from_proposal(ctx);
-    let agent_task_model_required = match &ctx.dynamic.agent_strategy {
+    let agent_task_model_required = match &ctx.ai_policy().agent_strategy {
         AiDynamicAgentStrategy::Fixed { provider, .. } => {
             dynamic_agent_task_model_required_from_proposal(ctx, provider)
         }
@@ -6583,11 +6748,11 @@ fn dynamic_completion_schema_policy(
         }
     }
     DynamicCompletionSchemaPolicy {
-        provider_required: dynamic_requires_provider_in_proposal(ctx.dynamic),
+        provider_required: dynamic_requires_provider_in_proposal(ctx.ai_policy()),
         node_model_required,
         agent_task_model_required,
         agent_task_model_visible: matches!(
-            ctx.dynamic.agent_strategy,
+            ctx.ai_policy().agent_strategy,
             AiDynamicAgentStrategy::Fixed { .. }
         ),
         provider_ids,
@@ -6626,8 +6791,8 @@ fn dynamic_output_contract(
     let schema_text = render_template(
         prompt_by_language(language, AI_DYNAMIC_OUTPUT_PROTOCOL),
         serde_json::json!({
-            "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
-            "provider_required_in_proposal": dynamic_requires_provider_in_proposal(ctx.dynamic),
+            "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.ai_policy()),
+            "provider_required_in_proposal": dynamic_requires_provider_in_proposal(ctx.ai_policy()),
             "model_required_in_proposal": dynamic_any_worker_model_required_from_proposal(ctx),
             "model_policy": match language {
                 DesktopLanguage::ZhCn => dynamic_model_policy_summary_zh_cn(ctx),
@@ -7731,13 +7896,14 @@ fn unregister_dynamic_resume_driver(key: &str, driver_id: &str) -> Vec<DynamicRe
     failed
 }
 
-fn execute_ai_dynamic_node(
+fn execute_branch_graph(
     app: &App,
     task_id: &str,
     run: &RunState,
     round: &RoundState,
     attempt_id: &str,
-    dynamic: &AiDynamicNode,
+    graph_node: &NodeDsl,
+    workflow: &ValidatedWorkflow,
     outer_new_round_trigger: Option<PromptPredecessorContext>,
     mut outer_node: NodeState,
     parent_continue_input: Option<ConversationPromptInput>,
@@ -7753,7 +7919,10 @@ fn execute_ai_dynamic_node(
         outer_attempt_id: attempt_id,
         outer_runtime_execution_id: outer_node.runtime_execution_id.clone(),
         outer_new_round_trigger,
-        dynamic,
+        ai: match graph_node {
+            NodeDsl::AiDynamic(ai) => Some(ai),
+            _ => None,
+        },
         task_uuid: run.task_uuid.as_deref(),
         run_uuid: run.uuid.as_deref(),
         round_uuid: round.uuid.as_deref(),
@@ -7765,7 +7934,13 @@ fn execute_ai_dynamic_node(
     let mut graph = {
         let state_lock = dynamic_state_lock(&ctx)?;
         let _guard = state_lock.lock();
-        let mut graph = load_or_create_dynamic_graph(&ctx)?;
+        let mut graph = load_or_create_graph(
+            &ctx,
+            match graph_node {
+                NodeDsl::ParallelGroup(group) => Some((group, workflow)),
+                _ => None,
+            },
+        )?;
         if let Some(resume) = ctx.resume_override.as_ref() {
             let key = dynamic_state_lock_key(
                 &ctx.app.paths.runtime_root,
@@ -7800,8 +7975,12 @@ fn execute_ai_dynamic_node(
         ctx.outer_attempt_id,
         RuntimeExecutionPhase::RunningNode,
     )?;
-    ensure_dynamic_required_model_catalogs(&ctx, &mut graph)?;
-    drive_dynamic_graph(&ctx, &mut graph)?;
+    if ctx.ai.is_some() {
+        ensure_dynamic_required_model_catalogs(&ctx, &mut graph)?;
+    }
+    if graph.run.status != DynamicRunStatus::Completed {
+        drive_dynamic_graph(&ctx, &mut graph)?;
+    }
 
     match (graph.run.status, graph.run.outcome) {
         (DynamicRunStatus::Completed, Some(RunOutcome::Success)) => {
@@ -8176,7 +8355,15 @@ fn resume_paused_dynamic_graph(
     Ok(())
 }
 
+#[cfg(test)]
 fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<DynamicGraphState> {
+    load_or_create_graph(ctx, None)
+}
+
+fn load_or_create_graph(
+    ctx: &DynamicExecutionContext<'_>,
+    static_group: Option<(&crate::dsl::ParallelGroupNode, &ValidatedWorkflow)>,
+) -> Result<DynamicGraphState> {
     let graph_path = ctx.app.paths.dynamic_graph_file(
         ctx.task_id,
         ctx.run_id,
@@ -8191,11 +8378,16 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         if reconcile_closed_dynamic_group_workspaces(ctx, &mut graph) {
             persist_dynamic_graph(ctx, &mut graph)?;
         }
+        if let Some((group, _)) = static_group {
+            parallel_group::validate_members(group, &graph)?;
+            if graph.run.outcome == Some(RunOutcome::Success) {
+                parallel_group::release(ctx, &mut graph)?;
+            }
+        }
         validate_dynamic_workspace_catalog(&graph)?;
         return Ok(graph);
     }
 
-    let snapshots = freeze_allowed_workflow_snapshots(ctx.app, ctx.dynamic)?;
     let now = now_rfc3339_like();
     let dynamic_run_id = "dynamic-run-001".to_string();
     let run_workspace = run_workspace_dir(ctx.app, ctx.task_id, ctx.run_id)?;
@@ -8219,6 +8411,10 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         created_at: now.clone(),
         updated_at: now.clone(),
     };
+    if let Some((group, workflow)) = static_group {
+        return parallel_group::create_graph(ctx, group, workflow, main_workspace);
+    }
+    let snapshots = freeze_allowed_workflow_snapshots(ctx.app, ctx.ai_policy())?;
     let bootstrap = DynamicNodeState {
         version: VERSION.to_string(),
         acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
@@ -8240,11 +8436,11 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         depth: 0,
         depends_on: Vec::new(),
         workspace_id: main_workspace.id.clone(),
-        provider: ctx.dynamic.bootstrap_provider().map(ToOwned::to_owned),
+        provider: ctx.ai_policy().bootstrap_provider().map(ToOwned::to_owned),
         profile: None,
-        permission_mode: dynamic_control_permission_mode(ctx.dynamic),
-        auto_accept: dynamic_control_auto_accept(ctx.dynamic),
-        model: ctx.dynamic.bootstrap_model().map(ToOwned::to_owned),
+        permission_mode: dynamic_control_permission_mode(ctx.ai_policy()),
+        auto_accept: dynamic_control_auto_accept(ctx.ai_policy()),
+        model: ctx.ai_policy().bootstrap_model().map(ToOwned::to_owned),
         session_mode: SessionMode::New,
         continue_from_node_id: None,
         workflow_id: None,
@@ -8267,7 +8463,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         pause_reason: None,
         started_at: now.clone(),
         updated_at: now,
-        control: ctx.dynamic.control.clone(),
+        control: ctx.ai_policy().control.clone(),
         allowed_workflow_snapshots: snapshots,
         current_node_ids: vec![bootstrap.id.clone()],
     };
@@ -8377,10 +8573,19 @@ fn drive_dynamic_graph(
                 }),
             );
         }
-        if advance_dynamic_groups(ctx, graph)?.changed {
+        if ctx.ai.is_none()
+            && graph
+                .nodes
+                .iter()
+                .all(|n| n.status == DynamicNodeStatus::Completed)
+        {
+            parallel_group::join(ctx, graph)?;
+            return Ok(());
+        }
+        if ctx.ai.is_some() && advance_dynamic_groups(ctx, graph)?.changed {
             continue;
         }
-        if dynamic_graph_completed(graph) {
+        if ctx.ai.is_some() && dynamic_graph_completed(graph) {
             let workspace_ids = graph
                 .workspaces
                 .iter()
@@ -8872,10 +9077,20 @@ fn launch_ready_dynamic_nodes(
     tx: &mpsc::Sender<DynamicExecutionMessage>,
     launch_resume_overrides: &mut Vec<DynamicResumeOverride>,
 ) -> Result<Vec<String>> {
+    // Parent/leaf resume can re-arm several paused branches together. Enforce
+    // the bound at admission too, not just during Pending -> Ready promotion.
+    let slots = (graph.run.control.max_parallel as usize).saturating_sub(
+        graph
+            .nodes
+            .iter()
+            .filter(|node| node.status == DynamicNodeStatus::Running)
+            .count(),
+    );
     let ready_ids = graph
         .nodes
         .iter()
         .filter(|node| node.status == DynamicNodeStatus::Ready)
+        .take(slots)
         .map(|node| node.id.clone())
         .collect::<Vec<_>>();
     let mut launched_node_ids = Vec::new();
@@ -8899,6 +9114,9 @@ fn launch_ready_dynamic_nodes(
                 "state": dynamic_timing_data(graph),
             }),
         );
+        if ctx.ai.is_none() {
+            parallel_group::ensure_workspace(ctx, graph, index)?;
+        }
         let Some((node_clone, resume_override)) =
             persist_dynamic_node_running_and_ack(ctx, graph, index, launch_resume_overrides)?
         else {
@@ -8912,7 +9130,7 @@ fn launch_ready_dynamic_nodes(
         let round_id = ctx.round_id.to_string();
         let outer_node_id = ctx.outer_node_id.to_string();
         let outer_attempt_id = ctx.outer_attempt_id.to_string();
-        let dynamic = ctx.dynamic.clone();
+        let dynamic = ctx.ai.cloned();
         let tx = tx.clone();
         let task_uuid = ctx.task_uuid.map(|s| s.to_string());
         let run_uuid = ctx.run_uuid.map(|s| s.to_string());
@@ -8941,7 +9159,7 @@ fn launch_ready_dynamic_nodes(
                     &outer_attempt_id,
                     outer_runtime_execution_id,
                     outer_new_round_trigger,
-                    &dynamic,
+                    dynamic.as_ref(),
                     node_clone,
                     task_uuid.as_deref(),
                     run_uuid.as_deref(),
@@ -9065,7 +9283,7 @@ fn persist_paused_dynamic_leaf_or_graph(
     reason: &str,
 ) -> Result<bool> {
     graph.nodes[index].pause_reason = Some(pause_reason);
-    refresh_dynamic_current_leaf_ids(graph);
+    refresh_dynamic_ready_nodes(graph);
     let has_active_leaf = dynamic_graph_has_active_leaf(graph);
     if has_active_leaf {
         graph.run.status = DynamicRunStatus::Running;
@@ -9302,19 +9520,19 @@ fn accept_dynamic_completion_proposal(
                     &ctx.app.paths,
                     ctx.task_id,
                     ctx.run_id,
-                    ctx.dynamic.id.as_str(),
+                    ctx.ai_policy().id.as_str(),
                 ) {
                     Ok(Some(node)) => node,
-                    Ok(None) => ctx.dynamic.clone(),
+                    Ok(None) => ctx.ai_policy().clone(),
                     Err(error) if error.code() == crate::execution_plan::error::NOT_FOUND => {
-                        ctx.dynamic.clone()
+                        ctx.ai_policy().clone()
                     }
                     Err(error) => return Err(anyhow!(error)),
                 };
             materialize(latest_dynamic)
         })??
     } else {
-        materialize(ctx.dynamic.clone())?
+        materialize(ctx.ai_policy().clone())?
     };
     append_dynamic_event(
         ctx,
@@ -9398,6 +9616,11 @@ fn dynamic_node_uses_completion_contract(kind: DynamicNodeKind) -> bool {
 }
 
 fn mark_dynamic_graph_paused_in_memory(graph: &mut DynamicGraphState, pause_reason: PauseReason) {
+    // Stop may arrive after the graph delivered its barrier but before the
+    // outer cursor advances. Never revoke a durably delivered outcome.
+    if graph.run.status == DynamicRunStatus::Completed {
+        return;
+    }
     refresh_dynamic_current_leaf_ids(graph);
     graph.run.status = DynamicRunStatus::Paused;
     graph.run.phase = DynamicRunPhase::Executing;
@@ -9484,7 +9707,7 @@ fn execute_dynamic_node_job(
     outer_attempt_id: &str,
     outer_runtime_execution_id: Option<String>,
     outer_new_round_trigger: Option<PromptPredecessorContext>,
-    dynamic: &AiDynamicNode,
+    dynamic: Option<&AiDynamicNode>,
     node: DynamicNodeState,
     task_uuid: Option<&str>,
     run_uuid: Option<&str>,
@@ -9564,7 +9787,7 @@ fn execute_dynamic_node_job(
         outer_attempt_id,
         outer_runtime_execution_id,
         outer_new_round_trigger,
-        dynamic,
+        ai: dynamic,
         task_uuid,
         run_uuid,
         round_uuid,
@@ -10717,7 +10940,7 @@ fn execute_dynamic_workflow_invocation(
             ))
         })?;
     ensure!(
-        ctx.dynamic.control.allow_nested_dynamic || !snapshot.contains_ai_dynamic,
+        !snapshot.contains_ai_dynamic || ctx.ai.is_some_and(|ai| ai.control.allow_nested_dynamic),
         "workflow invocation `{}` references a nested AI-DYNAMIC snapshot",
         node.id
     );
@@ -10736,11 +10959,15 @@ fn execute_dynamic_workflow_invocation(
     )?;
     refresh_dynamic_leaf_runtime_execution(ctx, &mut node)?;
     prepare_dynamic_attempt_dirs(ctx, &node, &attempt_id)?;
-    let child_workflow = workflow_with_dynamic_invocation_task(
-        ctx.app.config.desktop_language,
-        snapshot.workflow.clone(),
-        &node.task,
-    );
+    let child_workflow = if ctx.ai.is_none() {
+        snapshot.workflow.clone()
+    } else {
+        workflow_with_dynamic_invocation_task(
+            ctx.app.config.desktop_language,
+            snapshot.workflow.clone(),
+            &node.task,
+        )
+    };
     let child_workflow_path = ctx
         .app
         .paths
@@ -10771,64 +10998,97 @@ fn execute_dynamic_workflow_invocation(
             let _continue_lease =
                 FixedRunContinueLease::acquire(&child_app, ctx.task_id, child_run_id)?;
             let child_run = child_app.run_status(ctx.task_id, child_run_id)?;
-            let (round, mut child_node) =
-                current_attempt_state(&child_app, ctx.task_id, &child_run)?;
-            let execution_id = next_runtime_execution_id();
-            let resume_metrics = {
-                let lock = dynamic_state_lock(ctx)?;
-                let _guard = lock.lock();
-                current_dynamic_child_launch_graph(ctx, &node)?;
-                commit_fixed_run_continue(
+            if child_run.status == RunStatus::Completed {
+                child_run
+            } else {
+                ensure!(
+                    child_run.status == RunStatus::Paused,
+                    "child execution is still running; recover it before resuming the branch"
+                );
+                let (round, mut child_node) =
+                    current_attempt_state(&child_app, ctx.task_id, &child_run)?;
+                let execution_id = next_runtime_execution_id();
+                let resume_metrics = {
+                    let lock = dynamic_state_lock(ctx)?;
+                    let _guard = lock.lock();
+                    current_dynamic_child_launch_graph(ctx, &node)?;
+                    commit_fixed_run_continue(
+                        &child_app,
+                        ctx.task_id,
+                        child_run_id,
+                        &round,
+                        &mut child_node,
+                        &execution_id,
+                    )?
+                };
+                let (prompt_id, input) =
+                    if let Some(resume) = ctx.resume_override.as_ref().filter(|resume| {
+                        resume.node_id == node.id && resume.attempt_id == attempt_id
+                    }) {
+                        (resume.prompt_id.clone(), resume.prompt_display.clone())
+                    } else {
+                        (
+                            ctx.parent_continue_prompt_id.clone(),
+                            ctx.parent_continue_input.clone(),
+                        )
+                    };
+                if let Err(error) = run_continue_with_launch_signal(
                     &child_app,
                     ctx.task_id,
                     child_run_id,
-                    &round,
-                    &mut child_node,
-                    &execution_id,
-                )?
-            };
-            let (prompt_id, input) = if let Some(resume) = ctx
-                .resume_override
-                .as_ref()
-                .filter(|resume| resume.node_id == node.id && resume.attempt_id == attempt_id)
-            {
-                (resume.prompt_id.clone(), resume.prompt_display.clone())
-            } else {
-                (
-                    ctx.parent_continue_prompt_id.clone(),
-                    ctx.parent_continue_input.clone(),
-                )
-            };
-            if let Err(error) = run_continue_with_launch_signal(
-                &child_app,
-                ctx.task_id,
-                child_run_id,
-                prompt_id,
-                input,
-                Vec::new(),
-                None,
-                None,
-                None,
-                Some(execution_id.clone()),
-                Some(resume_metrics),
-            ) {
-                let _ = child_app.pause_attempt_runtime_state_if_active_execution(
-                    ctx.task_id,
-                    child_run_id,
-                    &round.id,
-                    &child_node.node_id,
-                    &child_node.attempt_id,
-                    &execution_id,
-                    normalize_runtime_error(&error).pause_reason_after_retry_boundary(),
-                );
-                return Err(error);
+                    prompt_id,
+                    input,
+                    Vec::new(),
+                    None,
+                    None,
+                    None,
+                    Some(execution_id.clone()),
+                    Some(resume_metrics),
+                ) {
+                    let _ = child_app.pause_attempt_runtime_state_if_active_execution(
+                        ctx.task_id,
+                        child_run_id,
+                        &round.id,
+                        &child_node.node_id,
+                        &child_node.attempt_id,
+                        &execution_id,
+                        normalize_runtime_error(&error).pause_reason_after_retry_boundary(),
+                    );
+                    return Err(error);
+                }
+                child_app.run_status(ctx.task_id, child_run_id)?
             }
-            child_app.run_status(ctx.task_id, child_run_id)?
         }
         None => {
             // Preflight may do I/O. Keep it outside the parent graph lock.
-            let prepared =
-                child_app.prepare_run(ctx.task_id, Some(child_workflow_path.as_path()))?;
+            let prepared = prepare_run_snapshot(
+                &child_app,
+                ctx.task_id,
+                child_workflow,
+                None,
+                WorkflowModelBindings::default(),
+                None,
+                RunSnapshotScope::Branch(if ctx.ai.is_none() {
+                    let workspace = dynamic_workspace(graph, &node.workspace_id)?;
+                    Some(RunWorktreeState {
+                        path: workspace.path.clone(),
+                        branch: workspace
+                            .branch
+                            .clone()
+                            .context("static branch has no Git branch")?,
+                        fork_commit: workspace.fork_commit.clone(),
+                        graph_owner: Some(crate::runtime::BranchWorkspaceOwner {
+                            run_id: ctx.run_id.into(),
+                            round_id: ctx.round_id.into(),
+                            group_id: ctx.outer_node_id.into(),
+                            group_attempt_id: ctx.outer_attempt_id.into(),
+                            branch_node_id: node.id.clone(),
+                        }),
+                    })
+                } else {
+                    None
+                }),
+            )?;
             let child_run_id = prepared.run().id.clone();
             let accepted = {
                 let lock = dynamic_state_lock(ctx)?;
@@ -10929,6 +11189,12 @@ fn execute_dynamic_workflow_invocation(
             "status": child_run.status,
         }),
     )?;
+    if ctx.ai.is_none() {
+        return Ok(DynamicExecutionResult {
+            node,
+            proposals: Vec::new(),
+        });
+    }
     if node.outcome != Some(NodeOutcome::Success) {
         bail!("child workflow invocation `{}` failed", node.id);
     }
@@ -12129,7 +12395,7 @@ fn dynamic_resolved_proposal_provider<'a>(
     ctx: &'a DynamicExecutionContext<'_>,
     proposed: Option<&'a str>,
 ) -> Option<&'a str> {
-    dynamic_fixed_provider(ctx.dynamic).or_else(|| normalized_dynamic_provider(proposed))
+    dynamic_fixed_provider(ctx.ai_policy()).or_else(|| normalized_dynamic_provider(proposed))
 }
 
 fn validate_dynamic_node_spec(
@@ -12333,7 +12599,7 @@ fn validate_dynamic_node_spec(
     match spec.kind {
         DynamicNodeSpecKind::Worker => {
             let proposed_provider = normalized_dynamic_provider(spec.provider.as_deref());
-            if dynamic_fixed_provider(ctx.dynamic).is_some() && proposed_provider.is_some() {
+            if dynamic_fixed_provider(ctx.ai_policy()).is_some() && proposed_provider.is_some() {
                 errors.push(dynamic_validation_error(
                     "dynamic.node.provider.unsupported",
                     format!(
@@ -12363,7 +12629,7 @@ fn validate_dynamic_node_spec(
                             }),
                         ));
                     } else if let Some(permission_mode) =
-                        dynamic_permission_mode_for_provider(ctx.dynamic, provider)
+                        dynamic_permission_mode_for_provider(ctx.ai_policy(), provider)
                     {
                         if let Some(error) = validate_dynamic_permission_mode(
                             ctx,
@@ -12405,7 +12671,7 @@ fn validate_dynamic_node_spec(
                     }
                     if let Some(profile) = spec.profile.as_deref() {
                         let allowed = ctx
-                            .dynamic
+                            .ai_policy()
                             .allowed_profiles
                             .iter()
                             .map(|item| item.as_str())
@@ -12540,7 +12806,7 @@ fn validate_dynamic_agent_task_spec(
             }),
         ));
     }
-    let resolved_provider = dynamic_control_provider(ctx.dynamic);
+    let resolved_provider = dynamic_control_provider(ctx.ai_policy());
     if ctx.app.provider_for_id(resolved_provider).is_err() {
         errors.push(dynamic_validation_error(
             &format!("dynamic.{name}.provider.unknown"),
@@ -12550,7 +12816,7 @@ fn validate_dynamic_agent_task_spec(
                 "stage": name,
             }),
         ));
-    } else if let Some(permission_mode) = dynamic_control_permission_mode(ctx.dynamic)
+    } else if let Some(permission_mode) = dynamic_control_permission_mode(ctx.ai_policy())
         && let Some(error) = validate_dynamic_permission_mode(
             ctx,
             resolved_provider,
@@ -12580,7 +12846,7 @@ fn validate_dynamic_agent_task_spec(
         .filter(|model| !model.is_empty());
     if let Some(model) = proposed_model
         && matches!(
-            ctx.dynamic.agent_strategy,
+            ctx.ai_policy().agent_strategy,
             AiDynamicAgentStrategy::Dynamic { .. }
         )
     {
@@ -12598,7 +12864,7 @@ fn validate_dynamic_agent_task_spec(
             }),
         ));
     } else if matches!(
-        ctx.dynamic.agent_strategy,
+        ctx.ai_policy().agent_strategy,
         AiDynamicAgentStrategy::Fixed { .. }
     ) && let Some(error) = validate_dynamic_proposed_model(
         ctx,
@@ -12648,8 +12914,8 @@ fn dynamic_agent_task_spec_with_resolved_provider(
     ctx: &DynamicExecutionContext<'_>,
     mut spec: DynamicAgentTaskSpec,
 ) -> Result<DynamicAgentTaskSpec> {
-    spec.provider = dynamic_control_provider(ctx.dynamic).to_string();
-    spec.model = match &ctx.dynamic.agent_strategy {
+    spec.provider = dynamic_control_provider(ctx.ai_policy()).to_string();
+    spec.model = match &ctx.ai_policy().agent_strategy {
         AiDynamicAgentStrategy::Fixed { model, .. } => model.clone().or_else(|| {
             spec.model
                 .as_deref()
@@ -12658,7 +12924,7 @@ fn dynamic_agent_task_spec_with_resolved_provider(
                 .map(str::to_string)
         }),
         AiDynamicAgentStrategy::Dynamic { .. } => {
-            dynamic_acceptance_model(ctx.dynamic).map(ToOwned::to_owned)
+            dynamic_acceptance_model(ctx.ai_policy()).map(ToOwned::to_owned)
         }
     };
     Ok(spec)
@@ -12930,15 +13196,15 @@ fn dynamic_node_state_from_spec(
     });
     let model = provider
         .as_deref()
-        .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
+        .and_then(|provider| dynamic_model_for_provider(ctx.ai_policy(), provider))
         .or(spec.model.clone());
     let permission_mode = provider
         .as_deref()
-        .and_then(|provider| dynamic_permission_mode_for_provider(ctx.dynamic, provider));
+        .and_then(|provider| dynamic_permission_mode_for_provider(ctx.ai_policy(), provider));
     let auto_accept = provider
         .as_deref()
-        .map(|provider| dynamic_auto_accept_for_provider(ctx.dynamic, provider))
-        .unwrap_or_else(|| dynamic_control_auto_accept(ctx.dynamic));
+        .map(|provider| dynamic_auto_accept_for_provider(ctx.ai_policy(), provider))
+        .unwrap_or_else(|| dynamic_control_auto_accept(ctx.ai_policy()));
     let node = DynamicNodeState {
         version: VERSION.to_string(),
         acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
@@ -13303,7 +13569,7 @@ fn create_dynamic_merge_node(
     let id = unique_dynamic_node_id(graph, &format!("{}-merge", group.id));
     let task = group.merge.task.clone();
     let (provider, model, permission_mode, auto_accept) =
-        resolve_unstarted_control_plane(ctx.dynamic, &group.merge);
+        resolve_unstarted_control_plane(ctx.ai_policy(), &group.merge);
     let node = DynamicNodeState {
         version: VERSION.to_string(),
         acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
@@ -13359,7 +13625,7 @@ fn create_dynamic_acceptance_node(
     let id = unique_dynamic_node_id(graph, &format!("{}-accept", group.id));
     let task = group.acceptance.task.clone();
     let (provider, model, permission_mode, auto_accept) =
-        resolve_unstarted_control_plane(ctx.dynamic, &group.acceptance);
+        resolve_unstarted_control_plane(ctx.ai_policy(), &group.acceptance);
     let node = DynamicNodeState {
         version: VERSION.to_string(),
         acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
@@ -13528,7 +13794,7 @@ pub(crate) fn prepare_dynamic_acp_prompt(
         outer_attempt_id,
         outer_runtime_execution_id: None,
         outer_new_round_trigger: None,
-        dynamic,
+        ai: Some(dynamic),
         task_uuid: None,
         run_uuid: None,
         round_uuid: None,
@@ -13741,15 +14007,15 @@ fn build_dynamic_worker_invocation(
         .provider
         .as_deref()
         .filter(|provider| !provider.trim().is_empty())
-        .or(Some(dynamic_control_provider(ctx.dynamic)))
+        .or(Some(dynamic_control_provider(ctx.ai_policy())))
         .and_then(|provider| diagnostics.get(provider))
         .and_then(|snapshot| snapshot.capabilities.as_ref());
     let session_config = crate::acp::session_config::invocation_session_config(
         session_mode == SessionMode::Continue,
         crate::acp::session_config::InvocationSessionConfig {
-            model: resolve_dynamic_invocation_model(ctx.dynamic, node),
+            model: resolve_dynamic_invocation_model(ctx.ai_policy(), node),
             permission_mode: node.permission_mode.clone(),
-            config_options: dynamic_config_options_for_invocation(ctx.dynamic, node),
+            config_options: dynamic_config_options_for_invocation(ctx.ai_policy(), node),
         },
         crate::acp::events::read_continued_session_config(continue_ref.as_ref()),
         model_override,
@@ -14133,7 +14399,7 @@ fn dynamic_repair_reference_summary(
 }
 
 fn dynamic_available_provider_ids(ctx: &DynamicExecutionContext<'_>) -> Vec<String> {
-    match &ctx.dynamic.agent_strategy {
+    match &ctx.ai_policy().agent_strategy {
         AiDynamicAgentStrategy::Fixed { provider, .. } => vec![provider.clone()],
         AiDynamicAgentStrategy::Dynamic {
             available_agents, ..
@@ -14158,8 +14424,8 @@ fn dynamic_allowed_values_for_error(
         .and_then(|value| value.as_str())
         .unwrap_or_default();
     if error.code.contains(".profile.") || field == "profile" {
-        if !ctx.dynamic.allowed_profiles.is_empty() {
-            return ctx.dynamic.allowed_profiles.clone();
+        if !ctx.ai_policy().allowed_profiles.is_empty() {
+            return ctx.ai_policy().allowed_profiles.clone();
         }
         return available_profile_refs(ctx)
             .into_iter()
@@ -14242,7 +14508,7 @@ fn dynamic_task_instruction(
 }
 
 fn dynamic_user_tips_instruction(ctx: &DynamicExecutionContext<'_>) -> Option<String> {
-    ctx.dynamic
+    ctx.ai_policy()
         .global_goal()
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -15068,7 +15334,7 @@ fn allowed_workflow_snapshot_summary(snapshots: &[AllowedWorkflowSnapshot]) -> S
 }
 
 fn available_provider_summary(ctx: &DynamicExecutionContext<'_>) -> String {
-    match &ctx.dynamic.agent_strategy {
+    match &ctx.ai_policy().agent_strategy {
         AiDynamicAgentStrategy::Fixed {
             provider, model, ..
         } => {
@@ -15127,7 +15393,7 @@ fn available_profile_refs(ctx: &DynamicExecutionContext<'_>) -> Vec<(String, Str
     match ctx.app.profiles() {
         Ok(list) => {
             let allowed = ctx
-                .dynamic
+                .ai_policy()
                 .allowed_profiles
                 .iter()
                 .map(|profile| profile.as_str())
@@ -15359,17 +15625,17 @@ fn dynamic_hidden_sections(
         "has_siblings": projection.has_siblings,
         "has_output_contract": has_output_contract,
         "allowed_workflow_snapshots": allowed_workflow_snapshot_summary(&graph.run.allowed_workflow_snapshots),
-        "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.dynamic),
-        "bootstrap_provider": ctx.dynamic.bootstrap_provider().unwrap_or("none"),
-        "agent_routing_prompt": dynamic_agent_routing_prompt(ctx.dynamic).unwrap_or("none"),
+        "agent_strategy_mode": dynamic_agent_strategy_mode(ctx.ai_policy()),
+        "bootstrap_provider": ctx.ai_policy().bootstrap_provider().unwrap_or("none"),
+        "agent_routing_prompt": dynamic_agent_routing_prompt(ctx.ai_policy()).unwrap_or("none"),
         "acceptance_model_policy": match ctx.app.config.desktop_language {
-            DesktopLanguage::ZhCn => match dynamic_acceptance_model(ctx.dynamic) {
+            DesktopLanguage::ZhCn => match dynamic_acceptance_model(ctx.ai_policy()) {
                 Some(model) => format!(
                     "`merge` / `acceptance` 固定使用验收模型 `{model}`；这两个 spec 不要输出 `model`。"
                 ),
                 None => "未单独配置验收模型；`merge` / `acceptance` 与普通动态节点沿用同一套模型规则。".to_string(),
             },
-            _ => match dynamic_acceptance_model(ctx.dynamic) {
+            _ => match dynamic_acceptance_model(ctx.ai_policy()) {
                 Some(model) => format!(
                     "`merge` / `acceptance` use the configured acceptance model `{model}`; those specs must not output `model`."
                 ),
@@ -15476,10 +15742,19 @@ fn prepare_dynamic_attempt_dirs(
 }
 
 fn dynamic_worktree_short_id(ctx: &DynamicExecutionContext<'_>, workspace_id: &str) -> String {
+    scoped_worktree_short_id(
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        workspace_id,
+    )
+}
+
+fn scoped_worktree_short_id(round: &str, node: &str, attempt: &str, workspace_id: &str) -> String {
     let mut hasher = DefaultHasher::new();
-    ctx.round_id.hash(&mut hasher);
-    ctx.outer_node_id.hash(&mut hasher);
-    ctx.outer_attempt_id.hash(&mut hasher);
+    round.hash(&mut hasher);
+    node.hash(&mut hasher);
+    attempt.hash(&mut hasher);
     workspace_id.hash(&mut hasher);
     format!("dyn-{:016x}", hasher.finish())
 }
@@ -16737,13 +17012,14 @@ fn drive_from_node_with_initial_session(
                             permission_mode_override.clone(),
                         )
                     }),
-                NodeDsl::AiDynamic(dynamic) => execute_ai_dynamic_node(
+                NodeDsl::AiDynamic(_) | NodeDsl::ParallelGroup(_) => execute_branch_graph(
                     app,
                     task_id,
                     run,
                     round,
                     &current_attempt_id,
-                    dynamic,
+                    current_node_dsl,
+                    active_workflow.as_ref(),
                     outer_new_round_trigger.clone(),
                     node.clone(),
                     parent_continue_input.clone(),
@@ -16955,7 +17231,7 @@ fn drive_from_node_with_initial_session(
         }
 
         if node.status == RunStatus::Paused {
-            let pause_reason = if node.node_type == crate::domain::NodeType::AiDynamic {
+            let pause_reason = if node.node_type.owns_branch_graph() {
                 let graph = load_dynamic_graph(
                     &app.paths.dynamic_graph_file(
                         task_id,
@@ -19824,7 +20100,7 @@ mod tests {
     fn dynamic_workflow_child_fixture(
         app: &App,
     ) -> (DynamicGraphState, DynamicNodeState, Utf8PathBuf) {
-        let mut task: TaskState = read_json(&app.paths.task_file("task-retry")).unwrap();
+        let mut task: crate::runtime::TaskState = read_json(&app.paths.task_file("task-retry")).unwrap();
         task.id = "task-006".to_string();
         write_json(&app.paths.task_file(&task.id), &task).unwrap();
         write_test_outer_run(&app);
@@ -21258,7 +21534,8 @@ mod tests {
         write_workflow_retry_fixture(&app, "attempt-001", PauseReason::RuntimeAbnormal);
         write_json(
             &app.paths.task_file("task-retry"),
-            &TaskState {
+            &crate::runtime::TaskState {
+                forge_naming: None,
                 version: VERSION.to_string(),
                 id: "task-retry".to_string(),
                 title: None,
@@ -21860,7 +22137,7 @@ mod tests {
             outer_attempt_id: "attempt-001",
             outer_runtime_execution_id: None,
             outer_new_round_trigger: None,
-            dynamic,
+            ai: Some(dynamic),
             task_uuid: None,
             run_uuid: None,
             round_uuid: None,

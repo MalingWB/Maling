@@ -96,22 +96,35 @@ describe('ConversationComposer draft cross-page retention', () => {
     expect(next.forge).toBeNull();
   });
 
-  it('prefillForge carries skill sources through the binding (entry B)', () => {
+  it('prefillForge carries skill and plugin sources through the binding (entries B/C)', () => {
     const next = conversationComposerDraftReducer(createInitialConversationComposerDraft(), {
       type: 'prefillForge',
-      content: '基于以下选中的 skill 铸造工作流',
+      content: '基于以下选中的素材铸造工作流',
       forge: {
-        sourceSkills: [
-          { name: 'code-review', source: 'global', directoryPath: '/home/u/.claude/skills/code-review' },
-          { name: 'write-tests', source: 'project', directoryPath: '/repo/.gold-band/skills/write-tests' },
+        sourceItems: [
+          { catalog: 'skill', source: 'global', assetId: 'fixture-review' },
+          { catalog: 'skill', source: 'project', assetId: 'fixture-tests' },
+          { catalog: 'plugin', source: 'global', assetId: 'fixture-release' },
+          { catalog: 'plugin', source: 'global', assetId: 'fixture-inline' },
         ],
         sourceProjectId: 'project-a',
-        title: '从 2 个 skill 铸造工作流',
+        title: '从 4 项素材铸造工作流',
       },
     });
-    expect(next.forge?.sourceSkills).toHaveLength(2);
+    expect(next.forge?.sourceItems).toHaveLength(4);
     expect(next.forge?.sourceTaskId).toBeUndefined();
     expect(next.forge?.sourceProjectId).toBe('project-a');
+  });
+
+  it('prefillForge carries the truncation point of entry A next to the source task', () => {
+    const next = conversationComposerDraftReducer(createInitialConversationComposerDraft(), {
+      type: 'prefillForge',
+      content: '基于以下源会话铸造工作流',
+      forge: { sourceTaskId: 'task-001', sourceSession: { runId: 'r', roundId: 'round', nodeId: 'n', attemptId: 'a', branchId: 'root', after: { eventId: 'item', eventSeq: 9 } }, sourceProjectId: 'project-a', title: '源会话' },
+    });
+    // 截断点与来源会话同生命周期：解除铸造绑定即一并丢弃。
+    expect(next.forge?.sourceSession?.after).toEqual({ eventId: 'item', eventSeq: 9 });
+    expect(conversationComposerDraftReducer(next, { type: 'clearForge' }).forge).toBeNull();
   });
 
   it('remote prefill clears the forge binding', () => {
@@ -422,13 +435,16 @@ describe('ConversationComposer draft cross-page retention', () => {
       changeWorkspace,
       prefill: vi.fn(),
       clearRemote: vi.fn(),
+      prefillForge: vi.fn(),
+      clearForge: vi.fn(),
       enterScheduledTask: vi.fn(),
       setScheduledTaskConfig: vi.fn(),
       exitScheduledTask: vi.fn(),
       reset,
     });
 
-    expect(Object.keys(handle)).toEqual(['reset', 'changeWorkspace', 'prefillForge']);
+    expect(handle.occupied).toBe(false);
+    expect(handle.changeWorkspace).toBe(changeWorkspace);
 
     resetConversationComposerDraft(handle);
     expect(reset).toHaveBeenCalledTimes(1);

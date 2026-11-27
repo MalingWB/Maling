@@ -1183,6 +1183,35 @@
       "completion": {
         "repair-exhausted": "節點輸出經 {{repairAttempts}} 次修復仍不符合協定，工作流已暫停。"
       }
+    },
+    "forge": {
+      "missing-goal": "階段「{{stage}}」還沒有目標",
+      "missing-goal-element": "階段「{{stage}}」的目標缺少「{{element}}」",
+      "missing-success-condition": "階段「{{stage}}」的 JSON 產物還沒有成功條件",
+      "empty-stages": "工作流「{{workflow}}」還沒有階段",
+      "too-many-stages": "工作流「{{workflow}}」有 {{count}} 個階段，超過上限 {{limit}}",
+      "missing-name": "工作流還沒有名稱",
+      "compile-failed": "工作流結構未通過檢查：{{detail}}",
+      "unresolved-questions": "還有問題待對話確認",
+      "invalid-spec": "產生草稿格式有誤：{{detail}}",
+      "unknown-failure-target": "階段「{{stage}}」的失敗目標「{{target}}」不存在",
+      "role-id-conflict": "階段 {{stages}} 為「{{role}}」參照了不同角色",
+      "role-definition-conflict": "階段 {{stages}} 對「{{role}}」的職責定義不一致",
+      "unavailable-role": "{{stage}} 參照的角色「{{role}}」已無法使用",
+      "readonly-role": "階段「{{stage}}」參照的角色「{{role}}」為唯讀",
+      "target-unavailable": "原工作流程已刪除、遭取代或無法繼續修改。你可以將草稿另存為新的工作流程。",
+      "source-session-unavailable": "無法讀取所選對話的訊息。請重新開啟來源對話後再試一次。",
+      "stale-message": "所選訊息已變更。請回到來源對話，重新選取起始訊息。",
+      "revision-conflict": "草稿已更新。請確認最新內容後再儲存。",
+      "duplicate-workflow-name": "已有名為「{{name}}」的工作流，請換一個名稱"
+    },
+    "workflow-template": {
+      "duplicate-name": "已有名為「{{name}}」的工作流，請換一個名稱"
+    },
+    "plugin": {
+      "asset-unavailable": "素材已變更或無法讀取，請重新整理後再試。",
+      "bundle-unreadable": "無法完整匯入此 Skill，請檢查檔案編碼、數量與大小。",
+      "role-exists": "角色「{{name}}」已存在，未覆寫。"
     }
   },
   "status": {
@@ -1366,6 +1395,7 @@
   },
   "contextManagement": {
     "title": "上下文管理",
+    "forgeRoleHint": "勾選的角色僅供產生工作流程時參考，不會授予執行權限。",
     "profileManagement": "角色管理",
     "profileHint": "角色以 Markdown 檔案儲存，工作流節點透過全域唯一 ID 引用。",
     "addProfile": "新增角色",
@@ -1522,11 +1552,20 @@
         "title": "從遠端同步 SKILL",
         "workspace": "工作區"
       },
-      "forgeAction": "從 skill 生成工作流（{{count}}）",
+      "forgeLimit": "最多可選擇 {{count}} 項素材。",
+      "forgeModeUnavailable": "無法讀取專案的執行設定，請再試一次。",
+      "forgeProjectUnavailable": "沒有可用的專案。請先新增或重新開啟專案，再試一次。",
+      "forgeAction": "從所選素材生成工作流（{{count}}）",
       "forgeSelect": "選擇 {{name}}",
       "forgeAnchorTitle": "選擇掛靠專案",
-      "forgeAnchorInfo": "鑄造會話與試執行將掛靠所選專案；生成的工作流範本全專案通用。",
-      "forgeAnchorConfirm": "開始鑄造"
+      "forgeAnchorInfo": "產生會話與試執行將掛靠所選專案；生成的工作流範本全專案通用。",
+      "forgeAnchorConfirm": "開始產生",
+      "plugins": {
+        "tab": "Plugin",
+        "loading": "正在讀取外掛來源…",
+        "empty": "此範圍內沒有外掛或手動來源。",
+        "noAssets": "沒有可作為素材的 skill、command 或 agent"
+      }
     },
     "importProfile": "匯入角色",
     "importSettingsDescription": "從資料夾批次匯入，或直接選擇角色 Markdown 檔案匯入，缺少的名稱和摘要會自動補上。",
@@ -1684,12 +1723,27 @@
     "noRunsForFilter": "沒有符合篩選條件的 Run",
     "openRoundA11y": "查看 {{runId}} 的 {{roundId}}",
     "sourceTag": {
-      "forged": "鑄造",
+      "forged": "產生",
       "imported": "匯入",
       "manual": "手動"
     }
   },
   "workflowEditor": {
+    "parallel": {
+      "insert": "新增平行分支",
+      "fork": "平行分岔",
+      "join": "匯合",
+      "cap": "同時執行的分支數",
+      "addStep": "新增步驟",
+      "addBranch": "新增分支",
+      "afterJoin": "在匯合後新增步驟",
+      "up": "上移 {{id}}",
+      "down": "下移 {{id}}",
+      "remove": "刪除 {{id}}",
+      "invalid": "請檢查 {{id}}：同時執行數須為 1–5，至少需要兩個非空且識別碼不重複的分支。每組最多 64 個一般步驟，不得重複使用步驟或啟用人工審核。",
+      "invalidEntry": "開始不能直接指向分支內的步驟。",
+      "invalidEdge": "無法連接 {{from}} 與 {{to}}：只能在同一分支內有限次重試，分岔及匯合不能延續工作階段。"
+    },
     "title": "工作流編輯器",
     "subtitle": "透過畫布建立節點和邊，並為每個節點綁定 Agent。",
     "canvas": "畫布",
@@ -1716,7 +1770,8 @@
     "profileCatalogLoadFailed": "角色目錄載入失敗",
     "profileCatalogRetry": "重新載入",
     "selectHint": "選擇畫布中的節點或邊進行設定。",
-    "terminalSelectionHint": "終點節點無需設定，可透過畫布上方的刪除操作移除。",
+    "startSelectionHint": "將開始連到第一個要執行的節點。",
+    "terminalSelectionHint": "此控制節點不會建立工作階段。",
     "currentSelection": "目前選擇",
     "currentSelectionHelp": "節點和邊的設定優先顯示在這裡。",
     "workflowSettings": "工作流設定",
@@ -1886,6 +1941,7 @@
     "validationTerminalEdgeSource": "終止節點 {{node}} 不能作為邊的來源。",
     "validationContinueTerminalTarget": "第 {{index}} 條邊的 continue session 不能指向終止節點。",
     "nodeLabels": {
+      "start": "開始",
       "plan": "方案",
       "dev": "開發",
       "review": "審查",
@@ -3150,8 +3206,10 @@
       "removeRemoteBinding": "解除任務綁定",
       "remoteAttachmentHint": "遠端任務附件，發送時自動下載並附加",
       "remoteBindingTag": "{{source}} · {{title}}",
-      "forgeBindingTag": "鑄造 · {{title}}",
-      "removeForgeBinding": "解除鑄造綁定"
+      "forgeBindingTag": "產生 · {{title}}",
+      "removeForgeBinding": "解除產生綁定",
+      "forgeProjectMismatch": "產生來源屬於其他專案，請切換回該專案，或移除輸入框中的產生標記後再傳送",
+      "forgeRequiresDirect": "產生對話需要使用 Direct 模式，請切換後再傳送"
     },
     "branchPicker": {
       "label": "分支",
@@ -3543,17 +3601,17 @@
   },
   "forge": {
     "entry": {
-      "action": "鑄造為工作流",
-      "fromHere": "從此處鑄造"
+      "action": "產生工作流",
+      "fromHere": "從這裡產生工作流"
     },
     "prefill": {
-      "intro": "基於以下源會話鑄造工作流，可補充要求後傳送："
+      "intro": "基於以下源會話產生工作流，可補充要求後傳送："
     },
     "preview": {
-      "title": "鑄造預覽",
-      "open": "開啟鑄造預覽",
-      "loading": "正在讀取鑄造草稿…",
-      "empty": "尚未產出鑄造草稿——對話收斂後此處展示階段與契約。",
+      "title": "工作流預覽",
+      "open": "開啟工作流預覽",
+      "loading": "正在讀取產生草稿…",
+      "empty": "對話開始梳理流程後，這裡會同步顯示各個階段。",
       "openQuestions": "待釐清",
       "outputKind": {
         "json": "JSON 產物",
@@ -3565,9 +3623,15 @@
         "retry": "自動重試",
         "manual-check": "人工複核",
         "new-round": "開啟新一輪",
-        "end": "終止"
+        "end": "終止",
+        "jump": "跳至階段",
+        "new-round-from": "從指定階段重啟",
+        "jump-detail": "跳至「{{stage}}」",
+        "jump-continue-detail": "返回「{{stage}}」並繼續對話",
+        "new-round-from-detail": "從「{{stage}}」開始新一輪"
       },
       "role": {
+        "unassigned": "無角色",
         "dev": "開發",
         "test": "測試",
         "review": "審查",
@@ -3575,11 +3639,19 @@
         "accept": "驗收"
       },
       "outputKindLabel": "產物形態",
+      "startGroupTrial": "試跑第一個平行群組",
+      "trialChanged": "工作流程或執行綁定已更新，尚未開始試跑。請重新確認後再試跑。",
+      "groupTrialScope": "將試跑全部 {{branches}} 個分支，最多同時執行 {{cap}} 個；匯合後停止。",
+      "parallelFork": "平行 · {{id}}（最多 {{cap}} 個分支）",
+      "parallelJoin": "匯合 · {{id}}",
+      "parallelBranch": "{{group}} · 分支 {{branch}}",
       "onFailureLabel": "失敗策略",
-      "compile": "編譯為範本",
-      "compileHint": "Spec 收斂後編譯為帶產物契約的工作流範本",
-      "compileBlocked": "仍有待釐清項,收斂後可編譯",
-      "startTrial": "試執行首節點",
+      "copyName": "「{{name}}」的新名稱",
+      "saveCopy": "另存為新工作流程",
+      "compile": "儲存為工作流",
+      "compileHint": "各階段在對話中確認完畢後，即可編譯為工作流範本",
+      "compileBlocked": "回答待釐清的問題後即可儲存。",
+      "startTrial": "試執行第一步",
       "startTrialHint": "以範本建立真實任務,跑通首個節點即停",
       "compiledCount": "已建立 {{count}} 個工作流範本",
       "bindingMissing": "尚未設定可用的模型綁定,試執行前請先在設定中完成綁定",
@@ -3588,42 +3660,123 @@
         "output": "產出",
         "boundary": "邊界",
         "acceptance": "驗收"
-      }
-    },
-    "history": {
-      "title": "鑄造歷史",
-      "subtitle": "鑄造與試執行會話不進入預設會話清單,在此統一查看和清理。",
-      "loading": "正在讀取鑄造會話…",
-      "loadFailed": "鑄造會話讀取失敗",
-      "empty": "當前專案沒有鑄造會話",
-      "sessionBadge": "鑄造",
-      "trialBadge": "試執行",
-      "noSpec": "尚未產出鑄造草稿",
-      "stageCount": "{{count}} 個階段",
-      "openQuestionCount": "{{count}} 項待釐清",
-      "openQuestionHint": "仍有未收斂項,會話繼續拷問後收斂",
-      "cleanupUnfinished": "清理未完成鑄造",
-      "cleanupSelected": "清理所選（{{count}}）",
-      "cleanupConfirmTitle": "確認清理鑄造會話",
-      "cleanupConfirmDescription": "將刪除 {{count}} 個會話的任務目錄（含對話記錄與鑄造草稿存檔）,此操作無法復原。",
-      "cleanupConfirmAction": "清理",
-      "selectSession": "選擇 {{title}}"
-    },
-    "skillPrefill": {
-      "intro": "基於以下選中的 skill 鑄造工作流，可補充要求後傳送："
-    },
-    "report": {
-      "title": "升級對照",
-      "before": "鑄造前",
-      "beforeFallback": "一段自然語言對話",
-      "after": "鑄造後",
-      "capabilityStages": "{{count}} 個階段自動銜接,每步做什麼、交什麼都已寫清",
-      "capabilitySchema": "{{count}} 項產物帶格式約定,機器自動核對是否合格",
-      "capabilityFailure": "{{count}} 處失敗自動處理（重試或轉入人工確認）,不會悄悄爛掉",
-      "capabilityResume": "中途斷了可以從斷點繼續,不用從頭再來"
+      },
+      "compiledUpdated": "已更新原工作流範本",
+      "compiledMixed": "已建立 {{created}} 個、更新 {{updated}} 個工作流範本",
+      "loadFailed": "產生草稿讀取失敗",
+      "stageOrdinal": "第 {{index}} 個階段",
+      "deltaInvalid": "上一輪回覆裡的 Spec 增量格式有誤，沒有應用。可以讓它重新輸出。",
+      "untitled": "未命名工作流",
+      "adoptRecommendation": "採用建議",
+      "adoptAll": "全部採用",
+      "adoptSent": "已傳送",
+      "adoptUnavailable": "未能傳送，請在對話中回覆。",
+      "recommendationLabel": "建議",
+      "adoptMessage": "關於「{{question}}」，我採用建議：{{recommendation}}",
+      "adoptAllMessage": "採用以下建議：{{items}}",
+      "adoptAllItem": "{{index}}. {{question}}：{{recommendation}}",
+      "savedCreated": "已建立「{{name}}」",
+      "savedUpdated": "已更新「{{name}}」",
+      "viewWorkflow": "檢視工作流",
+      "keepAdjusting": "繼續調整",
+      "keepAdjustingPrompt": "我想調整這個工作流：",
+      "staleAfterEdit": "草稿已修改，儲存後可試執行新版。",
+      "changedBadge": "本輪修改",
+      "modifyStage": "修改此階段",
+      "modifyStagePrompt": "我想修改第 {{index}} 步「{{name}}」：",
+      "technicalDetails": "技術細節",
+      "roleDefinition": "角色職責",
+      "failureTargetLabel": "返回階段",
+      "restartTargetLabel": "新一輪起點",
+      "failureTargetPlaceholder": "選擇階段",
+      "continueSessionLabel": "沿用上次對話",
+      "conversationActiveHint": "本輪回覆結束後可修改。"
     },
     "modifyPrefill": {
-      "intro": "已載入工作流「{{name}}」（{{count}} 個階段）。請描述要做的修改，傳送後進入引導式調整："
+      "intro": "已載入工作流「{{name}}」（{{count}} 個階段）。請描述要做的修改，傳送後進入引導式調整：",
+      "builtinIntro": "以內建工作流「{{name}}」（{{count}} 個階段）建立副本。請輸入新名稱和要修改的內容，原工作流不會變更："
+    },
+    "repair": {
+      "stop": "停止修正",
+      "errorsTitle": "以下問題尚未解決：",
+      "inProgress": "編譯未通過，正在自動修正（第 {{attempt}}/{{max}} 輪）…",
+      "recompiling": "修正完成，正在重新編譯…",
+      "exhausted": "已自動修正 {{attempt}} 輪仍未通過，請回到對話逐項確認後再編譯。",
+      "handedBack": "還有問題需要你來確認，回到對話回答後即可編譯。",
+      "busy": "對話還在回覆中，等回覆結束後再編譯。",
+      "unavailable": "修正請求沒有送出，請確認對話可用後重新編譯。",
+      "turnCancelled": "自動修正被中斷，可重新編譯。",
+      "unconfirmed": "無法確認這一輪修正的完整回覆。請在對話中確認草稿，再重新編譯。",
+      "turnFailed": "自動修正這一輪執行失敗，可重新編譯。",
+      "noChange": "這一輪修正沒有產生可用的調整，請在對話裡說明要改什麼。",
+      "compileFailed": "重新編譯失敗，可重試。",
+      "aborted": "已停止自動修正。",
+      "invalidDelta": "模型這一輪輸出的 Spec 增量格式有誤，沒有應用。請重新編譯再試。"
+    },
+    "history": {
+      "title": "工作流程產生記錄",
+      "allProjects": "所有專案",
+      "clearFilters": "清除篩選",
+      "kind": "記錄類型",
+      "allKinds": "所有類型",
+      "search": "搜尋標題或描述",
+      "loading": "正在載入產生記錄…",
+      "failed": "無法載入產生記錄。",
+      "partial": "部分記錄無法讀取。",
+      "empty": "沒有符合條件的產生或試跑記錄。",
+      "newest": "返回最新記錄",
+      "noRun": "尚未執行",
+      "lastActivity": "最近活動：{{time}}"
+    },
+    "itemsPrefill": {
+      "intro": "請根據以下素材產生工作流：",
+      "title": "從 {{count}} 項素材產生工作流",
+      "kind": {
+        "role": "角色",
+        "skill": "skill",
+        "command": "command",
+        "agent": "agent"
+      },
+      "scope": {
+        "built-in": "內建",
+        "global": "全域",
+        "project": "專案"
+      }
+    },
+    "session": {
+      "badge": "產生",
+      "projectHistory": "本專案產生記錄",
+      "searchHistory": "搜尋產生記錄",
+      "trialBadge": "試執行"
+    },
+    "chat": {
+      "draftUpdating": "正在產生草稿…",
+      "draftUpdated": "檢視草稿內容"
     }
+  },
+  "plugin": {
+    "importSkill": "匯入 Skill",
+    "importRole": "匯入為角色",
+    "skillConfirm": "將 Skill 與支援檔案複製到相同範圍的 Skill 庫，不安裝外掛。在 Skill 清單中選擇要同步的 Agent；外掛專用工具仍由原宿主提供。",
+    "roleConfirm": "建立使用者角色，只匯入職責內容，不複製外掛的工具權限或設定。",
+    "skillImported": "已匯入，可在 Skill 清單選擇同步目標。",
+    "forget": "移除來源",
+    "forgetConfirm": "僅移除此補充來源，不會刪除資料夾或檔案。",
+    "unavailable": "來源已失效，請重新選擇資料夾或移除來源。",
+    "unsupportedBundle": "仍可讀取定義，但不支援匯入此 Skill 套件。",
+    "manualEngine": "使用 CodeBuddy 引擎；選取資料夾不代表已安裝。",
+    "desktopBundled": "WorkBuddy · 桌面版內建",
+    "desktopRegistry": "WorkBuddy · 桌面版已登錄（不代表已啟用）",
+    "manualSource": "WorkBuddy · 手動來源",
+    "codeBuddyCli": "CodeBuddy Code（CLI）",
+    "hostSource": "主程式來源",
+    "selectDirectory": "從資料夾匯入",
+    "replaceDirectory": "更換資料夾",
+    "directoryHint": "可選擇 WorkBuddy 安裝資料夾、含有 SKILL.md 的資料夾，或已解壓縮的專家套件。只加入素材清單，不會安裝外掛。",
+    "assetCount": "{{count}} 項功能",
+    "showRemaining": "展開其餘 {{count}} 項",
+    "collapse": "收合",
+    "workBuddyCompatible": "WorkBuddy 程式開發模式可讀取",
+    "roleImported": "已加入使用者角色庫。"
   }
 }

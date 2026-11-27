@@ -104,11 +104,13 @@ vi.mock('@/components/ui/resizable', async () => {
 });
 
 vi.mock('@/components/ui/sheet', () => ({
-  Sheet: () => null,
+  Sheet: ({ open, children }: React.PropsWithChildren<{open: boolean}>) => open ? <div role="dialog">{children}</div> : null,
   SheetContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   SheetTitle: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
+import { fileContentStore } from '@/components/workspace/files/file-content-store';
+import { createEmptyConversationSidebar } from '@/lib/conversation-sidebar-loading';
 import { WorkspaceShell } from '@/components/workspace/WorkspaceShell';
 import { FALLBACK_WORKSPACE_LAYOUT } from '@/components/workspace/workspace-layout';
 import { ConversationWorkspaceStore, createDraftConversationWorkspaceScope } from '@/components/workspace/right-workspace-context';
@@ -143,6 +145,47 @@ afterEach(() => {
 });
 
 describe('WorkspaceShell sidebar width hydration', () => {
+  it('reveals a runless hit in one transient sidebar without reopening a manually collapsed dock', async () => {
+    memorySidebarTest.enabled = true;
+    const container = document.createElement('div'); document.body.append(container);
+    const root = createRoot(container);
+    const toggle = vi.fn();
+    const row = { projectId:'p', taskId:'draft', taskUuid:'instance', title:'No run', autoTitle:true, runMode:'workflow' as const, pinned:false, runs:[], runHistoryStatus:'ready' as const };
+    const vm = {...createEmptyConversationSidebar(), loadStatus:'ready' as const, workspaces:[{projectId:'p', name:'Sample', workspacePath:'/fixture'}], tasksByWorkspace:{p:[row]}, workspaceTaskPages:{p:{status:'ready' as const}}};
+    try {
+      await act(async () => root.render(<WorkspaceShell appName="Gold Band" browserPreferences={browserPreferences} appConfig={{workspaceLayout:FALLBACK_WORKSPACE_LAYOUT, workspaceFiles:{},turnFiles:{}} as never} vm={vm}
+        conversationWorkspaceStore={new ConversationWorkspaceStore()} sidebarCollapsed active={{kind:'conversation-home'}} onToggleSidebar={toggle}
+        workspaceRevealRequest={{projectId:'p',taskId:'draft',taskUuid:'instance',requestId:1,manageOnly:true}}><div /></WorkspaceShell>));
+      expect(container.querySelectorAll('[data-conversation-task-row="workspace"]')).toHaveLength(1);
+      expect(document.activeElement).toBe(container.querySelector('[role="dialog"] [data-task-uuid="instance"]'));
+      expect(toggle).not.toHaveBeenCalled();
+    } finally { await act(async () => root.unmount()); memorySidebarTest.enabled = false; }
+  });
+
+  it('retains the confirmation on delete failure and submits once on retry', async () => {
+    memorySidebarTest.enabled = true;
+    const container = document.createElement('div'); document.body.append(container);
+    const root = createRoot(container);
+    const row = { projectId: 'p1', taskId: 'task-1', taskUuid: 'generation', title: 'Synthetic draft', autoTitle: true, runMode: 'workflow' as const, runs: [], pinned: false, workspaceName: 'Workspace' };
+    const vm = { ...createEmptyConversationSidebar(), loadStatus: 'ready' as const, recentTasks: [row], recentTaskPage: {status:'ready' as const, nextCursor:null} };
+    const failure = new Error('synthetic-delete-rejected');
+    const remove = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined);
+    try {
+      await act(async () => root.render(<WorkspaceShell appName="Gold Band" windowFrameStyle="native-compositor" browserPreferences={browserPreferences}
+        appConfig={{acpSessionTitleRefreshEnabled:false,acpChatEventPageSize:360,acpChatEventWindowPageCount:3,acpChatResourceCacheSessionCount:8,turnFiles:{cardPreviewLimit:3,attachmentCardPreviewLimit:1},workspaceLayout:FALLBACK_WORKSPACE_LAYOUT} as never}
+        vm={vm as never} conversationWorkspaceStore={new ConversationWorkspaceStore()} sidebarCollapsed={false} active={{kind:'conversation-home'}}
+        onSelect={() => {}} onToggleSidebar={() => {}} onNewConversation={() => {}} onSearch={() => {}} onPinTask={() => {}} onUnpinTask={() => {}} onRenameTask={() => {}} onDeleteTask={remove}><div /></WorkspaceShell>));
+      const button = container.querySelector<HTMLButtonElement>('[data-task-id="task-1"] button:has(svg.lucide-trash-2)');
+      expect(button).toBeTruthy();
+      await act(async () => button!.click());
+      const confirm = () => [...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].at(-1)!;
+      await act(async () => confirm().click());
+      expect(document.querySelector('[role="alertdialog"] [role="alert"]')?.textContent).toBe(failure.message);
+      await act(async () => { confirm().click(); confirm().click(); });
+      expect(remove.mock.calls).toEqual([['p1','task-1','generation'], ['p1','task-1','generation']]);
+      expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    } finally { await act(async () => root.unmount()); memorySidebarTest.enabled = false; }
+  });
   it('preserves the memory editor DOM when the sidebar is collapsed', async () => {
     memorySidebarTest.enabled = true;
     const container = document.createElement('div'); document.body.append(container);

@@ -1,3 +1,4 @@
+pub mod claude_plugin;
 pub mod symlink;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -243,6 +244,74 @@ impl SkillManager {
         );
         skills.sort_by(skill_sort_key);
         Ok(skills)
+    }
+
+    /// Resolve only inventory entries in the selected scope; an input ID is never a path.
+    pub(crate) fn read_listed_forge_skills(
+        &self,
+        source: SkillSource,
+        ids: &BTreeSet<&str>,
+    ) -> BTreeMap<String, SkillContent> {
+        let mut found = BTreeMap::new();
+        if ids.is_empty() {
+            return found;
+        }
+        let (base, mut dirs) = match source {
+            SkillSource::Project => (
+                self.paths.project_skills_dir(),
+                configured_agent_skill_read_dirs_at_root(
+                    self.paths.repo_root.as_std_path(),
+                    &self.agents_config,
+                    source,
+                ),
+            ),
+            SkillSource::Global => (
+                GoldBandPaths::global_skills_dir(),
+                configured_agent_skill_read_dirs(&self.agents_config),
+            ),
+            SkillSource::BuiltIn => return found,
+        };
+        dirs.push(AgentSkillReadDir {
+            dir_name: ".gold-band".into(),
+            skills_dir: base,
+        });
+        for dir in dirs {
+            let Ok(root) = dir.skills_dir.canonicalize_utf8() else {
+                continue;
+            };
+            if source == SkillSource::Project
+                && !self
+                    .paths
+                    .repo_root
+                    .canonicalize_utf8()
+                    .is_ok_and(|p| root.starts_with(p))
+            {
+                continue;
+            }
+            let root_key = crate::storage::normalize_workspace_path(&root);
+            let Ok(entries) = root.read_dir_utf8() else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                if !entry.file_type().is_ok_and(|ty| ty.is_dir()) {
+                    continue;
+                }
+                let path = entry.path();
+                let id = skill_id_in_root(&root_key, entry.file_name());
+                if !ids.contains(id.as_str()) {
+                    continue;
+                }
+                let Some(file) = listed_skill_document(&root, path) else {
+                    continue;
+                };
+                if let Ok(content) =
+                    self.read_at_path(&file, entry.file_name(), source, &dir.dir_name)
+                {
+                    found.insert(id, content);
+                }
+            }
+        }
+        found
     }
 
     pub fn read(&self, name: &str, source: SkillSource) -> Result<SkillContent> {
@@ -1007,12 +1076,46 @@ fn skills_dir_for_source(source: SkillSource, paths: &GoldBandPaths) -> Result<U
     }
 }
 
+/// Stable selector for the exact listed instance, independent of the frontmatter name.
+pub fn forge_skill_asset_id(dir: &Utf8Path) -> String {
+    let root = dir
+        .parent()
+        .map(crate::storage::normalize_workspace_path)
+        .unwrap_or_default();
+    skill_id_in_root(&root, dir.file_name().unwrap_or_default())
+}
+
+fn skill_id_in_root(root: &str, name: &str) -> String {
+    let name = if cfg!(windows) {
+        name.to_ascii_lowercase()
+    } else {
+        name.to_string()
+    };
+    blake3::hash(format!("skill\0{root}\0{name}").as_bytes())
+        .to_hex()
+        .to_string()
+}
+
+fn listed_skill_document(root: &Utf8Path, dir: &Utf8Path) -> Option<Utf8PathBuf> {
+    let dir = dir.canonicalize_utf8().ok()?;
+    let file = dir.join(SKILL_FILE_NAME).canonicalize_utf8().ok()?;
+    (dir.parent() == Some(root) && file.parent() == Some(dir.as_path()) && file.is_file())
+        .then_some(file)
+}
+
 pub(crate) fn scan_skills_dir(
     dir: &Utf8PathBuf,
     source: SkillSource,
     agent_source: &str,
 ) -> Vec<SkillMeta> {
     let mut skills = Vec::new();
+    let code_mode = source == SkillSource::Project && agent_source == ".codebuddy";
+    let verified_root = if code_mode {
+        let Some(project) = dir.parent().and_then(Utf8Path::parent).and_then(|p| p.canonicalize_utf8().ok()) else {return skills;};
+        let expected = project.join(".codebuddy").join(SKILLS_DIR_NAME);
+        if !dir.canonicalize_utf8().is_ok_and(|root| root == expected) {return skills;}
+        Some(expected)
+    } else {None};
     let Ok(entries) = fs::read_dir(dir.as_std_path()) else {
         return skills;
     };
@@ -1028,16 +1131,22 @@ pub(crate) fn scan_skills_dir(
         if !skill_md.exists() {
             continue;
         }
-        let Ok(raw) = fs::read_to_string(&skill_md) else {
-            continue;
-        };
+        let raw = if let Some(root) = &verified_root {
+            let Some(file) = Utf8Path::from_path(&path).and_then(|p| listed_skill_document(root, p)) else { continue; };
+            if !file.metadata().is_ok_and(|m| m.len() <= SKILL_BUNDLE_MAX_FILE_BYTES) {continue;}
+            fs::read_to_string(file)
+        } else {fs::read_to_string(&skill_md)};
+        let Ok(raw) = raw else {continue;};
         let name = path
             .file_name()
             .and_then(|item| item.to_str())
             .unwrap_or("unknown");
         let dir_path = Utf8PathBuf::from_path_buf(path.clone()).unwrap_or_default();
         match parse_skill_md(&raw, name, source, dir_path.as_str(), agent_source) {
-            Ok((meta, _)) => skills.push(meta),
+            Ok((mut meta, _)) => {
+                meta.work_buddy_code_mode_readable = code_mode;
+                skills.push(meta);
+            },
             Err(_) => continue,
         }
     }
@@ -1060,6 +1169,7 @@ pub fn parse_skill_md_public(
                 source,
                 directory_path: dir_path.to_string(),
                 agent_source: agent_source.to_string(),
+                work_buddy_code_mode_readable: false,
                 load_warnings: vec![],
                 synced_agent_types: Vec::new(),
             },
@@ -1100,6 +1210,7 @@ fn parse_skill_md(
             source,
             directory_path: dir_path.to_string(),
             agent_source: agent_source.to_string(),
+            work_buddy_code_mode_readable: false,
             load_warnings,
             synced_agent_types: Vec::new(),
         },
@@ -1491,6 +1602,18 @@ mod tests {
         assert_eq!(results[0].agent_source, ".claude");
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn workspace_skills_label_only_independent_codebuddy_definitions_as_code_mode_readable() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_owned()).unwrap();
+        tmp_skill_dir(temp.path().join(".codebuddy/skills").as_path(), "probe");
+        tmp_skill_dir(temp.path().join(".gold-band/skills").as_path(), "probe");
+        let agents = BTreeMap::from([(agent_id("codebuddy-code"),catalog_agent_default_config("codebuddy-code").unwrap())]);
+        let rows = SkillManager::new(GoldBandPaths::new(root.clone()),agents).list_by_workspace(root.as_str()).unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in rows {assert_eq!(row.work_buddy_code_mode_readable, row.agent_source == ".codebuddy");}
     }
 
     #[test]

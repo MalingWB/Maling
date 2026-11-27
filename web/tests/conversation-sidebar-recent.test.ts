@@ -208,7 +208,9 @@ describe('conversation sidebar recent tasks', () => {
       recentRow({ taskId: 'task-1', taskUuid: 'uuid-1' }),
       recentRow({ projectId: 'b', taskId: 'task-2', taskUuid: 'uuid-2', workspaceName: 'Workspace B' }),
     ]);
-    const next = removeConversationSidebarTask(sidebar, 'a', 'task-1');
+    const stale = removeConversationSidebarTask(sidebar, 'a', 'task-1', 'old-generation');
+    expect(stale.recentTasks).toEqual(sidebar.recentTasks);
+    const next = removeConversationSidebarTask(sidebar, 'a', 'task-1', 'uuid-1');
     expect(next.recentTasks.map((task) => task.taskId)).toEqual(['task-2']);
   });
 

@@ -5,7 +5,7 @@ use crate::dsl::{
 };
 use crate::forge::compiler::{compile, precheck};
 use crate::forge::spec::{
-    ForgeSpec, ForgeStage, ForgeWorkflow, OnFailure, StageOutputKind, StageRole,
+    ForgeQuestion, ForgeSpec, ForgeStage, ForgeWorkflow, OnFailure, StageOutputKind, StageRole,
     MAX_STAGES_PER_WORKFLOW, SPEC_VERSION,
 };
 
@@ -20,7 +20,7 @@ fn stage(role: StageRole) -> ForgeStage {
         role,
         role_definition: None,
         profile_id: None,
-        goal: base_goal(),
+        goal: base_goal().into(),
         artifact: Some("test-result".to_string()),
         output_kind: StageOutputKind::Json,
         schema_hint: Some(serde_json::json!({ "passed": "boolean" })),
@@ -32,11 +32,14 @@ fn stage(role: StageRole) -> ForgeStage {
 
 fn spec_with_stages(stages: Vec<ForgeStage>) -> ForgeSpec {
     ForgeSpec {
+        revision: 0,
         spec_version: SPEC_VERSION.to_string(),
         name: Some("开发测试流程".to_string()),
         intent: "从需求到验收".to_string(),
         source_skills: vec![],
         workflows: vec![ForgeWorkflow {
+            id: String::new(),
+            parallel_groups: vec![],
             name: "开发测试流程".to_string(),
             stages,
         }],
@@ -94,8 +97,11 @@ fn on_failure_new_round_edge() {
     let spec = spec_with_stages(vec![stage(StageRole::Test)]);
     let dsl = &compile(&spec).unwrap()[0].workflow;
     let failure_edges: Vec<_> = dsl.edges.iter().filter(|e| e.on == EdgeOutcome::Failure).collect();
-    // Retry 不产生 failure 边
-    assert!(failure_edges.is_empty());
+    // Retry 是自环失败边：运行时只对“失败边跳到真实节点”的跳转计次与重试，
+    // 没有失败边等价于失败即结束（不会重试）。
+    assert_eq!(failure_edges.len(), 1);
+    assert_eq!((failure_edges[0].from.as_str(), failure_edges[0].to.as_str()), ("stage-1", "stage-1"));
+    assert!(failure_edges[0].session.is_none());
 
     let mut s = stage(StageRole::Test);
     s.on_failure = OnFailure::NewRound;
@@ -104,6 +110,49 @@ fn on_failure_new_round_edge() {
     assert_eq!(failure.len(), 1);
     assert_eq!(failure[0].to, NEW_ROUND_NODE);
     assert_eq!(failure[0].new_round_entry.as_deref(), Some(ENTRY_NODE));
+}
+
+#[test]
+fn on_failure_jump_and_restart_edges() {
+    // 失败后跳回原节点（带失败现场）、从指定阶段重开一轮。
+    let mut dev = stage(StageRole::Dev);
+    dev.id = Some("dev".to_string());
+    dev.on_failure = OnFailure::Retry;
+    let mut test = stage(StageRole::Test);
+    test.id = Some("test".to_string());
+    test.on_failure = OnFailure::Jump {
+        stage: "dev".to_string(),
+        continue_session: true,
+    };
+    let mut accept = stage(StageRole::Accept);
+    accept.id = Some("accept".to_string());
+    accept.on_failure = OnFailure::NewRoundFrom("test".to_string());
+    let dsl = &compile(&spec_with_stages(vec![dev.clone(), test.clone(), accept.clone()]))
+        .unwrap()[0]
+        .workflow;
+
+    let edge = |from: &str, on: EdgeOutcome| {
+        dsl.edges
+            .iter()
+            .find(|edge| edge.from == from && edge.on == on)
+            .unwrap_or_else(|| panic!("no {on:?} edge from {from}"))
+    };
+    let back = edge("test", EdgeOutcome::Failure);
+    assert_eq!((back.from.as_str(), back.to.as_str()), ("test", "dev"));
+    assert_eq!(back.session, Some(crate::domain::SessionMode::Continue));
+    let restart = edge("accept", EdgeOutcome::Failure);
+    assert_eq!(restart.to, NEW_ROUND_NODE);
+    assert_eq!(restart.new_round_entry.as_deref(), Some("test"));
+    assert!(edge("dev", EdgeOutcome::Failure).session.is_none());
+    // 目标阶段不存在时在校验层拦截，不产出悬空边。
+    test.on_failure = OnFailure::Jump {
+        stage: "missing".to_string(),
+        continue_session: false,
+    };
+    let errors =
+        crate::forge::compiler::compile_reporting_all(&spec_with_stages(vec![dev, test, accept]))
+            .unwrap_err();
+    assert_eq!(errors[0].code(), "forge/unknown-failure-target");
 }
 
 #[test]
@@ -182,16 +231,21 @@ fn custom_role_yields_pending_profile() {
 #[test]
 fn split_spec_compiles_multiple_workflows() {
     let spec = ForgeSpec {
+        revision: 0,
         spec_version: SPEC_VERSION.to_string(),
         name: None, // 多工作流时顶层名可缺省
         intent: "两组独立流程".to_string(),
         source_skills: vec![],
         workflows: vec![
             ForgeWorkflow {
+                id: String::new(),
+                parallel_groups: vec![],
                 name: "流程甲".to_string(),
                 stages: vec![stage(StageRole::Dev)],
             },
             ForgeWorkflow {
+                id: String::new(),
+                parallel_groups: vec![],
                 name: "流程乙".to_string(),
                 stages: vec![stage(StageRole::Review)],
             },
@@ -204,9 +258,71 @@ fn split_spec_compiles_multiple_workflows() {
 }
 
 #[test]
+fn node_ids_follow_stage_ids() {
+    // 节点 id = stage id：工作流改名、stage 挪位后同一 stage 的节点 id 不变。
+    let mut renamed = stage(StageRole::Dev);
+    renamed.id = Some("review".to_string());
+    let mut spec = spec_with_stages(vec![renamed]);
+    spec.workflows[0].name = "发布流程".to_string();
+    let inserted = ForgeStage {
+        id: Some("step-1".to_string()),
+        ..stage(StageRole::Plan)
+    };
+    spec.workflows[0].stages.insert(0, inserted);
+    let dsl = &compile(&spec).unwrap()[0].workflow;
+    let ids: Vec<&str> = dsl.nodes.iter().map(|node| node.id()).collect();
+    assert_eq!(ids, ["step-1", "review"]);
+    assert_eq!(dsl.entry, "step-1");
+
+    // 没有 id / id 不可作节点 id 时按位置生成，产物仍合法。
+    let mut unnamed = stage(StageRole::Dev);
+    unnamed.id = Some("阶段/一".to_string());
+    let dsl = &compile(&spec_with_stages(vec![unnamed, stage(StageRole::Test)])).unwrap()[0].workflow;
+    assert_eq!(dsl.nodes[0].id(), "stage-1");
+    assert_eq!(dsl.nodes[1].id(), "stage-2");
+    let success = dsl
+        .edges
+        .iter()
+        .find(|edge| edge.on == EdgeOutcome::Success)
+        .expect("success edge");
+    assert_eq!((success.from.as_str(), success.to.as_str()), ("stage-1", "stage-2"));
+}
+
+#[test]
+fn compile_reporting_all_lists_every_problem() {
+    use crate::forge::compiler::compile_reporting_all;
+    let mut first = stage(StageRole::Dev);
+    first.id = Some("s1".to_string());
+    first.goal = "<输入>a\n<产出>b\n<验收>c".into();
+    let mut second = stage(StageRole::Test);
+    second.id = Some("s2".to_string());
+    second.success_condition = Some("$.not_declared == true".to_string());
+
+    let errors = compile_reporting_all(&spec_with_stages(vec![first, second])).unwrap_err();
+
+    let codes: Vec<&str> = errors.iter().map(|error| error.code()).collect();
+    assert_eq!(
+        codes,
+        ["forge/missing-goal-element", "forge/compile-failed"]
+    );
+    assert!(errors[1].to_string().contains("not declared in output schema"));
+    // compile 仍只回报首个错误。
+    assert_eq!(
+        compile(&spec_with_stages(vec![stage(StageRole::Dev), {
+            let mut broken = stage(StageRole::Test);
+            broken.success_condition = Some("$.not_declared == true".to_string());
+            broken
+        }]))
+        .unwrap_err()
+        .code(),
+        "forge/compile-failed"
+    );
+}
+
+#[test]
 fn unresolved_questions_rejected_before_compile() {
     let mut spec = spec_with_stages(vec![stage(StageRole::Dev)]);
-    spec.open_questions = vec!["未定".to_string()];
+    spec.open_questions = vec![ForgeQuestion::ask("未定")];
     let error = compile(&spec).unwrap_err();
     assert_eq!(error.code(), "forge/unresolved-questions");
 }
@@ -260,7 +376,7 @@ fn natural_prefix_goal_elements_pass_validation() {
         role: StageRole::Dev,
         role_definition: None,
         profile_id: None,
-        goal: "输入：用户提供的文章原文；产出：中文 markdown 要点总结；边界：只提炼要点，不做事实真伪判断；验收：要点覆盖文章全部核心信息。".to_string(),
+        goal: "输入：用户提供的文章原文；产出：中文 markdown 要点总结；边界：只提炼要点，不做事实真伪判断；验收：要点覆盖文章全部核心信息。".into(),
         artifact: Some("要点总结".to_string()),
         output_kind: StageOutputKind::Markdown,
         schema_hint: None,
@@ -329,5 +445,5 @@ fn projection_uses_display_name_for_custom_role() {
         }
     );
     assert_eq!(stage.profile_id.as_deref(), Some(entry.id.as_str()));
-    assert!(stage.role_definition.as_deref().unwrap_or("").contains("代码审查员"));
+    assert_eq!(stage.role_definition, None, "a library reference is not an editable role charter");
 }

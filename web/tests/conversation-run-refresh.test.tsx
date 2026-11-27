@@ -27,7 +27,7 @@ vi.mock('@/api', async (importOriginal) => ({
   getConversationTaskPage: async () => ({
     projectId: 'default', errors: [], tasks: [{
       projectId: 'default', taskId: 'mock-task', taskUuid: 'task-uuid', title: 'Task',
-      runMode: 'workflow', autoTitle: false, runs: [], pinned: false, runHistoryStatus: 'ready',
+      runMode: 'direct', resident: true, autoTitle: false, runs: [], pinned: false, runHistoryStatus: 'ready',
     }],
   }),
   getConversationRecentTaskPage: async () => ({ tasks: [], errors: [] }),
@@ -38,11 +38,13 @@ vi.mock('@/api', async (importOriginal) => ({
   },
 }));
 
-vi.mock('@/components/Shell', () => ({ Shell: ({ children, onConversationPauseRun }: {
+vi.mock('@/components/Shell', () => ({ Shell: ({ children, onConversationPauseRun, onConversationResetWorkspaceTaskPage }: {
+  onConversationResetWorkspaceTaskPage: (project: string) => void;
   children: ReactNode;
   onConversationPauseRun: (projectId: string, taskId: string, runId: string) => Promise<void>;
 }) => <div>
   {children}
+  <button data-testid="collapse-workspace" onClick={() => onConversationResetWorkspaceTaskPage('default')}>Collapse</button>
   <button data-testid="pause" onClick={() => void onConversationPauseRun('default', 'mock-task', 'run-051')}>Pause</button>
 </div> }));
 vi.mock('@/components/acp/ACPChatDialog', () => ({ configureAcpResourceCacheSessionCount: vi.fn() }));
@@ -53,10 +55,12 @@ vi.mock('@/components/settings/useImSettings', () => ({ prefetchImSettings: vi.f
 vi.mock('@/pages/ConversationRunPage', () => ({
   ConversationRunPage: (props: {
     run: ConversationRunVm;
+    taskTitle: string; resident?: {pinned: boolean};
     onNodeRetry: (node: ConversationRunVm['workflowGraph']['nodes'][number]) => Promise<void>;
     onExecutionPlanSaved: () => Promise<void>;
     onSelectSession: (leaf: ConversationSessionLeafVm) => void;
   }) => <div>
+    <output data-testid="task-header">{props.taskTitle} / {String(props.resident?.pinned)}</output>
     <output data-testid="run-status">{props.run.runStatus}</output>
     <output data-testid="run-id">{props.run.runId}</output>
     <output data-testid="task-uuid">{props.run.taskUuid}</output>
@@ -160,7 +164,23 @@ afterEach(async () => {
 });
 
 describe('conversation run refresh ordering', () => {
-  it('navigates to the successor after rerunning a completed failed node', async () => {
+  it('keeps the active task header and residency when its workspace page is collapsed', async () => {
+    const header = () => host.querySelector('[data-testid="task-header"]')?.textContent;
+    expect(header()).toBe('Task / true');
+    await click('collapse-workspace');
+    await settle();
+    expect(header()).toBe('Task / true');
+  });
+
+  it('refreshes the open run on a terminal event even outside every loaded sidebar window', async () => {
+    await click('collapse-workspace');
+    await settle();
+    api.getRun.mockResolvedValue(snapshot('completed'));
+    await completedEvent();
+    expect(host.querySelector('[data-testid="run-status"]')?.textContent).toBe('completed');
+  });
+
+  it('navigates to the successor after rerunning a completed failed node' , async () => {
     const source = { ...snapshot('completed'), runId: 'run-terminal', runOutcome: 'failure' };
     source.workflowGraph.nodes[0].retryable = true;
     source.workflowGraph.nodes[0].outcome = 'failure';

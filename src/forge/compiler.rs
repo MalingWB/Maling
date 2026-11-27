@@ -1,9 +1,11 @@
 //! Spec → WorkflowDsl 确定性编译器。
 //!
 //! 编译规则（实施方案 §3.2）全部为纯函数映射，无 LLM 参与：
-//! - stage → worker 节点（作者态 provider/model 置空，executionSlotId 走绑定解耦）；
+//! - stage → worker 节点，节点 id = stage id（作者态 provider/model 置空，
+//!   executionSlotId 走绑定解耦）；
 //! - role → 内置 profile 选型（`custom` 由上层以 goal 创建 User scope profile 后回填）；
-//! - onFailure → 失败边映射（retry 不加边、manual-check 置位、new-round/end 加边）；
+//! - onFailure → 失败边映射（retry 为自环边、manual-check 置位、new-round 及
+//!   带重起点的重开指向 `$new-round`、跳转指向目标阶段、end 指向 `$end`）；
 //! - 末 stage 补 success → `$end`；
 //! - 产物 100% 过 `validate_authoring_workflow`（provider 可空模式），
 //!   不通过即 `forge/compile-failed`（含错误明细，供 spec-repair 反喂）。
@@ -17,6 +19,17 @@ use crate::forge::spec::{
     ForgeError, ForgeSpec, ForgeStage, ForgeWorkflow, OnFailure, StageOutputKind, StageRole,
 };
 
+/// 编译产物的默认重试次数与轮数上限（模板 control，用户可在编辑器调整）。
+const DEFAULT_MAX_ATTEMPTS: u32 = 3;
+const DEFAULT_MAX_ROUNDS: u32 = 2;
+
+fn default_control() -> WorkflowControl {
+    WorkflowControl {
+        max_attempts: Some(DEFAULT_MAX_ATTEMPTS),
+        max_rounds: Some(DEFAULT_MAX_ROUNDS),
+    }
+}
+
 /// custom 角色的铸造草案：显示名 + 职责正文 + 既有 profile id。
 ///
 /// `profile_id` 为 Some 时表示该角色已铸造过（Spec 反投影或上一轮编译
@@ -28,14 +41,18 @@ pub struct PendingProfile {
     /// 所属工作流内的 stage 序号（编译后回写 Spec 存档的 profileId 用）。
     pub stage_index: usize,
     pub name: String,
+    /// 落库用的职责正文：stage 的 roleDefinition，缺省回退 goal。
     pub definition: String,
+    /// stage 显式给出的 roleDefinition。同名的 stage 共用一个角色，职责正文以第一个
+    /// 显式给出的为准（都没有时才用 goal）。
+    pub role_definition: Option<String>,
     pub profile_id: Option<String>,
 }
 
 /// 编译产物：一条工作流 +（custom role 的）profile 铸造草案。
 ///
 /// custom role 的 profile 不在编译器内落库（编译器保持纯函数），
-/// 由调用方（`forge_compile_and_save` 保存链路）铸造/更新 User scope
+/// 由调用方（`App::forge_compile` 保存链路）铸造/更新 User scope
 /// profile 后，用 profile id 替换占位。
 #[derive(Debug, Clone)]
 pub struct CompiledWorkflow {
@@ -58,12 +75,28 @@ fn builtin_profile_id(role: &StageRole) -> Option<String> {
         StageRole::Review => Some("pf-builtin-review".to_string()),
         StageRole::Plan => Some("pf-builtin-plan".to_string()),
         StageRole::Accept => Some("pf-builtin-accept".to_string()),
-        StageRole::Custom { .. } => None,
+        StageRole::Unassigned | StageRole::Custom { .. } => None,
     }
 }
 
-/// stage 标识 → 节点 id：slug 化 + 序号去重。
-fn node_id_for(workflow: &ForgeWorkflow, index: usize) -> String {
+/// stage → 节点 id。
+///
+/// 节点 id 就是 stage id：同一 stage 重编译后节点 id 不变，才能与既有模板的
+/// 节点对齐并保留模型绑定等配置（工作流改名、插入 stage 都不影响）。stage
+/// 没有 id 或 id 不可作节点 id 时（未经存档直接编译的调用方）按位置生成。
+fn node_id_for(workflow: &ForgeWorkflow, index: usize, stage: &ForgeStage) -> String {
+    if let Some(id) = stage
+        .id
+        .as_deref()
+        .filter(|id| crate::forge::spec::stage_id_is_valid(id))
+    {
+        return id.to_string();
+    }
+    generated_node_id_for(workflow, index)
+}
+
+/// 按位置生成节点 id：工作流名 slug 化 + 序号。
+fn generated_node_id_for(workflow: &ForgeWorkflow, index: usize) -> String {
     let slug = workflow.name.trim().to_ascii_lowercase().chars().map(|c| {
         if c.is_ascii_alphanumeric() { c } else { '-' }
     }).collect::<String>().trim_matches('-').to_string();
@@ -72,35 +105,57 @@ fn node_id_for(workflow: &ForgeWorkflow, index: usize) -> String {
 }
 
 /// 编译单条工作流。
-fn compile_one(workflow: &ForgeWorkflow, control: WorkflowControl) -> Result<CompiledWorkflow, ForgeError> {
+///
+/// manual_check 与 json output + success_condition 互斥（DSL 规则）：
+/// on_failure = manual-check 的 stage，其 outputKind 必须为 markdown/none，
+/// 由 output_contract_for 剥离，不在此报错（宽容策略：语义上人工复核
+/// 取代机器验收，剥离优于拒绝）。
+fn compile_one(workflow: &ForgeWorkflow) -> Result<CompiledWorkflow, ForgeError> {
     let id = slug_id(&workflow.name);
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     let mut pending_profiles = Vec::new();
+    workflow.validate_groups()?;
+    let owners: std::collections::HashMap<_, _> = workflow.parallel_groups.iter().flat_map(|g|
+        g.branches.iter().flat_map(move |b| b.stages.iter().map(move |id| (id.as_str(), g)))
+    ).collect();
+    let mut emitted = std::collections::HashSet::new();
+    let mut outer = Vec::new();
 
     for (index, stage) in workflow.stages.iter().enumerate() {
-        let node_id = node_id_for(workflow, index);
-        let profile = Some(match builtin_profile_id(&stage.role) {
-            Some(profile) => profile,
-            None => {
-                let StageRole::Custom { profile_name } = &stage.role else {
-                    unreachable!("builtin_profile_id None implies Custom");
-                };
-                let placeholder = format!("{node_id}-profile");
-                pending_profiles.push(PendingProfile {
-                    node_id: node_id.clone(),
-                    stage_index: index,
-                    name: profile_name.clone(),
-                    definition: stage
-                        .role_definition
-                        .clone()
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or_else(|| stage.goal.clone()),
-                    profile_id: stage.profile_id.clone(),
-                });
-                placeholder
+        let node_id = node_id_for(workflow, index, stage);
+        let group = owners.get(node_id.as_str());
+        if let Some(group) = group {
+            if emitted.insert(group.id.as_str()) {
+                outer.push(group.id.clone());
+                nodes.push(NodeDsl::ParallelGroup(crate::dsl::ParallelGroupNode {
+                    id: group.id.clone(), branches: group.branches.clone(), max_parallel: group.max_parallel,
+                }));
+                edges.extend(failure_edge(&group.id, &group.on_failure));
             }
-        });
+        } else {
+            outer.push(node_id.clone());
+        }
+        let profile = if let StageRole::Custom { profile_name } = &stage.role {
+            let placeholder = format!("{node_id}-profile");
+            let role_definition = stage
+                .role_definition
+                .clone()
+                .filter(|value| !value.trim().is_empty());
+            pending_profiles.push(PendingProfile {
+                node_id: node_id.clone(),
+                stage_index: index,
+                name: profile_name.clone(),
+                definition: role_definition
+                    .clone()
+                    .unwrap_or_else(|| stage.goal.worker_text().unwrap_or_default()),
+                role_definition,
+                profile_id: stage.profile_id.clone(),
+            });
+            Some(placeholder)
+        } else {
+            builtin_profile_id(&stage.role)
+        };
 
         let (output, success_condition, manual_check) = output_contract_for(stage)?;
 
@@ -110,7 +165,7 @@ fn compile_one(workflow: &ForgeWorkflow, control: WorkflowControl) -> Result<Com
             provider: None,
             model: None,
             profile,
-            goal: Some(stage.goal.clone()),
+            goal: stage.goal.worker_text(),
             output,
             success_condition,
             permission_mode: None,
@@ -120,65 +175,26 @@ fn compile_one(workflow: &ForgeWorkflow, control: WorkflowControl) -> Result<Com
             prompt_envelope: Default::default(),
         }));
 
-        // onFailure 边映射
-        match stage.on_failure {
-            OnFailure::Retry => {
-                // 重试由 control.max_attempts 兜住，不加边；
-                // 但 worker 至少需要一条 success 出边，循环结束后统一补。
-            }
-            OnFailure::ManualCheck => {
-                // manual_check 与 output 验证互斥（DSL 校验规则），
-                // 编译器强制剥离 output/success_condition（output_contract_for 已处理）。
-            }
-            OnFailure::NewRound => edges.push(EdgeDsl {
-                from: node_id.clone(),
-                to: NEW_ROUND_NODE.to_string(),
-                on: EdgeOutcome::Failure,
-                session: None,
-                new_round_entry: Some(ENTRY_NODE.to_string()),
-            }),
-            OnFailure::End => edges.push(EdgeDsl {
-                from: node_id.clone(),
-                to: END_NODE.to_string(),
-                on: EdgeOutcome::Failure,
-                session: None,
-                new_round_entry: None,
-            }),
-        }
-
-        // 线性 success 边到下一节点；末节点在循环后补 $end。
-        if index + 1 < workflow.stages.len() {
-            edges.push(EdgeDsl {
-                from: node_id.clone(),
-                to: node_id_for(workflow, index + 1),
-                on: EdgeOutcome::Success,
-                session: None,
-                new_round_entry: None,
-            });
+        // A branch without a retry edge settles on failure; it never routes to the outer end.
+        if group.is_none() || stage.on_failure != OnFailure::End {
+            edges.extend(failure_edge(&node_id, &stage.on_failure));
         }
     }
-
-    // 末节点 success → $end
-    if let Some(last) = nodes.last() {
+    for (index, from) in outer.iter().enumerate() {
         edges.push(EdgeDsl {
-            from: last.id().to_string(),
-            to: END_NODE.to_string(),
-            on: EdgeOutcome::Success,
-            session: None,
-            new_round_entry: None,
+            from: from.clone(), to: outer.get(index + 1).map(String::as_str).unwrap_or(END_NODE).into(),
+            on: EdgeOutcome::Success, session: None, new_round_entry: None,
         });
     }
 
     let dsl = WorkflowDsl {
         version: "0.1".to_string(),
         id,
-        entry: nodes
-            .first()
-            .map(|node| node.id().to_string())
+        entry: outer.first().cloned()
             .ok_or_else(|| ForgeError::EmptyStages {
                 workflow: workflow.name.clone(),
             })?,
-        control,
+        control: default_control(),
         nodes,
         edges,
     };
@@ -188,6 +204,18 @@ fn compile_one(workflow: &ForgeWorkflow, control: WorkflowControl) -> Result<Com
         workflow: dsl,
         pending_profiles,
     })
+}
+
+fn failure_edge(from: &str, policy: &OnFailure) -> Option<EdgeDsl> {
+    let (to, session, new_round_entry) = match policy {
+        OnFailure::ManualCheck => return None,
+        OnFailure::Retry => (from, None, None),
+        OnFailure::End => (END_NODE, None, None),
+        OnFailure::NewRound => (NEW_ROUND_NODE, None, Some(ENTRY_NODE.to_owned())),
+        OnFailure::NewRoundFrom(entry) => (NEW_ROUND_NODE, None, Some(entry.clone())),
+        OnFailure::Jump { stage, continue_session } => (stage.as_str(), continue_session.then_some(crate::domain::SessionMode::Continue), None),
+    };
+    Some(EdgeDsl { from: from.into(), to: to.into(), on: EdgeOutcome::Failure, session, new_round_entry })
 }
 
 /// stage 的 output 契约映射。
@@ -245,63 +273,62 @@ fn slug_id(name: &str) -> String {
 
 /// 编译入口：Spec 全量校验 → 逐工作流编译 → 逐个过 DSL 校验。
 ///
-/// 编译顺序：先 `ForgeSpec::validate`（收敛完整性），再确定性映射，
-/// 最后 `validate_authoring_workflow`（结构合法性）。任何一层失败
-/// 返回结构化错误码，供前端与 spec-repair 消费。
-pub fn compile(spec: &ForgeSpec) -> Result<Vec<CompiledWorkflow>, ForgeError> {
-    spec.validate()?;
-
-    // manual_check 与 json output + success_condition 互斥（DSL 规则）：
-    // on_failure = manual-check 的 stage，其 outputKind 必须为 markdown/none，
-    // 由 output_contract_for 剥离，不在此报错（宽容策略：语义上人工复核
-    // 取代机器验收，剥离优于拒绝）。
-
+/// 编译顺序：先 `ForgeSpec::validate_all`（收敛完整性），再确定性映射，
+/// 最后 `validate_authoring_workflow`（结构合法性）。返回**全部**结构化
+/// 错误（修正轮按清单一次修复）；[`compile`] 是只取首个错误的快捷方式。
+pub fn compile_reporting_all(
+    spec: &ForgeSpec,
+) -> Result<Vec<CompiledWorkflow>, Vec<ForgeError>> {
+    // 两层问题都收集：Spec 层未收敛不阻止逐工作流编译，DSL 层的问题同轮报出。
+    let mut errors = spec.validate_all();
     let mut results = Vec::new();
     for workflow in &spec.workflows {
-        let control = WorkflowControl {
-            max_attempts: Some(3),
-            max_rounds: Some(2),
+        let compiled = match compile_one(workflow) {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                push_unique(&mut errors, error);
+                continue;
+            }
         };
+        // 模板显示名：单工作流 = Spec 顶层名；拆分 = 各工作流名。
         let name = if spec.workflows.len() == 1 {
             spec.name.clone().unwrap_or_else(|| workflow.name.clone())
         } else {
             workflow.name.clone()
         };
-        let compiled = compile_one(workflow, control)?;
-        let compiled = CompiledWorkflow {
-            name,
-            ..compiled
-        };
-        // 产物 100% 过 DSL 校验
-        crate::dsl::validate_authoring_workflow(compiled.workflow.clone()).map_err(|error| {
-            ForgeError::CompileFailed {
-                detail: error.to_string(),
-            }
-        })?;
-        results.push(compiled);
+        match crate::dsl::validate_authoring_workflow(compiled.workflow.clone()) {
+            Ok(_) => results.push(CompiledWorkflow {
+                name,
+                ..compiled
+            }),
+            Err(error) => push_unique(
+                &mut errors,
+                ForgeError::CompileFailed {
+                    detail: format!("workflow `{}`: {error}", workflow.name),
+                },
+            ),
+        }
     }
-    Ok(results)
+    if errors.is_empty() {
+        Ok(results)
+    } else {
+        Err(errors)
+    }
+}
+
+/// 追加错误，同一问题（Spec 层与编译层各报一次）只保留一条。
+fn push_unique(errors: &mut Vec<ForgeError>, error: ForgeError) {
+    if !errors.contains(&error) {
+        errors.push(error);
+    }
+}
+
+/// 编译入口（只回报首个错误）。
+pub fn compile(spec: &ForgeSpec) -> Result<Vec<CompiledWorkflow>, ForgeError> {
+    compile_reporting_all(spec).map_err(|mut errors| errors.swap_remove(0))
 }
 
 /// 校验 Spec 可编译性但不产出（前端"预检"用）。
 pub fn precheck(spec: &ForgeSpec) -> Result<(), ForgeError> {
-    spec.validate()?;
-    for workflow in &spec.workflows {
-        let control = WorkflowControl {
-            max_attempts: Some(3),
-            max_rounds: Some(2),
-        };
-        let compiled = compile_one(workflow, control)?;
-        crate::dsl::validate_authoring_workflow(compiled.workflow).map_err(|error| {
-            ForgeError::CompileFailed {
-                detail: error.to_string(),
-            }
-        })?;
-    }
-    Ok(())
-}
-
-/// 供前端判断：编译器当前只产 new-session 边（无 session=continue）。
-pub fn uses_continue_session() -> bool {
-    false
+    compile(spec).map(|_| ())
 }

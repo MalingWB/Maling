@@ -22,7 +22,7 @@ use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profile
 use super::state_factory::create_node_state;
 use super::{App, ConversationMetadata, RetryCurrentNodeAccepted, RuntimeCandidateRegistration};
 use crate::domain::{NodeType, PauseReason, RunStatus, VERSION};
-use crate::dsl::{WorkflowDsl, validate_workflow_snapshot, workflow_contains_ai_dynamic};
+use crate::dsl::{WorkflowDsl, validate_workflow_snapshot, workflow_requires_branch_workspaces};
 use crate::execution_plan;
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, RunRerunMetadata, RunRerunOrigin, RunRerunSeal,
@@ -498,7 +498,7 @@ fn committed_dynamic_graphs(
                     && node.attempt_id == step.attempt_id,
                 failure("workflow.retry.stale-locator", task_id, source_run_id)
             );
-            if node.node_type != NodeType::AiDynamic {
+            if !node.node_type.owns_branch_graph() {
                 continue;
             }
             let path = app.paths.dynamic_graph_file(
@@ -1477,7 +1477,7 @@ impl App {
                 failure("workflow.retry.workspace-unavailable", task_id, run_id)
             );
             crate::git::GitRepositoryService::default().require_worktree(&worktree.path)?;
-        } else if workflow_contains_ai_dynamic(&validated.raw) {
+        } else if workflow_requires_branch_workspaces(&validated.raw) {
             crate::git::GitRepositoryService::default().require_worktree(&self.paths.repo_root)?;
         }
 

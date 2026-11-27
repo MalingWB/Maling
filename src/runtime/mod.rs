@@ -209,10 +209,50 @@ pub struct TaskState {
     /// 任务来源（工作流铸造）：普通任务缺省为 None，向后兼容。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<TaskOrigin>,
+    /// For generated tasks, keep the unnamed fallback or an explicit ownership
+    /// decision alongside the effective title, including tasks without a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forge_naming: Option<ForgeNaming>,
 }
 
-/// Task 来源标记：Forge 铸造会话与试运行任务不进默认会话列表，
-/// 由铸造历史入口统一管理（见工作流铸造实施方案 §6 C1/G2）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ForgeNaming {
+    Automatic { fallback: Option<String> },
+    Manual,
+}
+
+impl ForgeNaming {
+    pub(crate) fn from_legacy_title(
+        fallback: Option<String>,
+        title_auto_generated: Option<bool>,
+    ) -> Self {
+        if title_auto_generated
+            .unwrap_or_else(|| fallback.as_deref().is_none_or(|s| s.trim().is_empty()))
+        {
+            Self::Automatic { fallback }
+        } else {
+            Self::Manual
+        }
+    }
+
+    pub(crate) fn effective_title(
+        &self,
+        existing: Option<&str>,
+        draft_name: Option<&str>,
+    ) -> Option<String> {
+        match self {
+            Self::Manual => existing.map(str::to_owned),
+            Self::Automatic { fallback } => draft_name
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .or_else(|| fallback.clone()),
+        }
+    }
+}
+
+/// 任务来源：普通、生成和试运行在同一列表管理；生成历史只按项目和来源筛选。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TaskOrigin {
@@ -248,6 +288,20 @@ pub struct RunWorktreeState {
     pub path: Utf8PathBuf,
     pub branch: String,
     pub fork_commit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_owner: Option<BranchWorkspaceOwner>,
+}
+
+/// Reverse locator needed to recover a child directly in its original branch
+/// workspace. The parent graph remains authoritative for ownership and release.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchWorkspaceOwner {
+    pub run_id: String,
+    pub round_id: String,
+    pub group_id: String,
+    pub group_attempt_id: String,
+    pub branch_node_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -688,6 +742,7 @@ impl TaskState {
             description: None,
             uuid: Some(Uuid::new_v4().simple().to_string()),
             origin: None,
+            forge_naming: None,
         }
     }
 }
@@ -1024,6 +1079,7 @@ mod tests {
             path: Utf8PathBuf::from("D:/GoldBand/worktrees/abc123"),
             branch: "gold-band/conversation/abc123".to_string(),
             fork_commit: "0123456789abcdef".to_string(),
+            graph_owner: None,
         });
 
         let serialized = serde_json::to_value(&run).unwrap();

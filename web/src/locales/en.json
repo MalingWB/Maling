@@ -1183,6 +1183,35 @@
       "completion": {
         "repair-exhausted": "Node output still breaks the protocol after {{repairAttempts}} repair attempts. The workflow is paused."
       }
+    },
+    "forge": {
+      "missing-goal": "Stage \"{{stage}}\" has no goal yet",
+      "missing-goal-element": "The goal of stage \"{{stage}}\" is missing: {{element}}",
+      "missing-success-condition": "The JSON output of stage \"{{stage}}\" has no success condition yet",
+      "empty-stages": "Workflow \"{{workflow}}\" has no stages yet",
+      "too-many-stages": "Workflow \"{{workflow}}\" has {{count}} stages, above the limit of {{limit}}",
+      "missing-name": "The workflow has no name yet",
+      "compile-failed": "The workflow structure did not pass validation: {{detail}}",
+      "unresolved-questions": "Some questions still need confirmation in the conversation",
+      "invalid-spec": "The workflow draft is malformed: {{detail}}",
+      "unknown-failure-target": "Stage “{{stage}}” has no failure target named “{{target}}”",
+      "role-id-conflict": "Stages {{stages}} reference different roles for “{{role}}”",
+      "role-definition-conflict": "Stages {{stages}} define “{{role}}” differently",
+      "unavailable-role": "The role “{{role}}” referenced by {{stage}} is no longer available",
+      "readonly-role": "Stage “{{stage}}” uses read-only role “{{role}}”",
+      "target-unavailable": "The original workflow was deleted, replaced, or can no longer be edited here. You can save the draft as a new workflow.",
+      "source-session-unavailable": "The messages in this conversation could not be read. Reopen the source conversation and try again.",
+      "stale-message": "The selected message has changed. Return to the source conversation and select the starting message again.",
+      "revision-conflict": "The draft has changed. Review the latest version before saving.",
+      "duplicate-workflow-name": "A workflow named “{{name}}” already exists. Choose another name."
+    },
+    "workflow-template": {
+      "duplicate-name": "A workflow named “{{name}}” already exists. Choose another name."
+    },
+    "plugin": {
+      "asset-unavailable": "This material changed or cannot be read. Refresh and retry.",
+      "bundle-unreadable": "Cannot import the complete Skill. Check file encoding, count and sizes.",
+      "role-exists": "Role “{{name}}” already exists and was not overwritten."
     }
   },
   "status": {
@@ -1366,6 +1395,7 @@
   },
   "contextManagement": {
     "title": "Context Management",
+    "forgeRoleHint": "Selected roles are reference material for the workflow. Selecting a role does not grant it permission to run.",
     "profileManagement": "Role",
     "profileHint": "Roles are stored as Markdown files and workflow nodes reference them by globally unique ID.",
     "addProfile": "Add Role",
@@ -1522,11 +1552,20 @@
           "multica.not-connected": "Remote source not connected"
         }
       },
-      "forgeAction": "Forge workflow from skills ({{count}})",
+      "forgeLimit": "Select up to {{count}} materials.",
+      "forgeModeUnavailable": "Could not read the project’s run settings. Try again.",
+      "forgeProjectUnavailable": "No project is available. Add or reopen a project, then try again.",
+      "forgeAction": "Generate workflow from selected items ({{count}})",
       "forgeSelect": "Select {{name}}",
       "forgeAnchorTitle": "Choose the anchor project",
-      "forgeAnchorInfo": "The forge session and its trial run attach to the chosen project; the generated workflow templates are available to every project.",
-      "forgeAnchorConfirm": "Start forging"
+      "forgeAnchorInfo": "The generation session and its trial run attach to the chosen project; the generated workflow templates are available to every project.",
+      "forgeAnchorConfirm": "Generate workflow",
+      "plugins": {
+        "tab": "Plugin",
+        "loading": "Loading plugin sources…",
+        "empty": "No plugins or manual sources in this scope.",
+        "noAssets": "No skills, commands, or agents to use as material"
+      }
     },
     "importProfile": "Import Roles",
     "importSettingsDescription": "Batch import from a folder or select role Markdown files directly. Missing names and summaries are filled automatically.",
@@ -1684,12 +1723,27 @@
     "noRunsForFilter": "No runs match this filter",
     "openRoundA11y": "Open {{roundId}} in {{runId}}",
     "sourceTag": {
-      "forged": "Forged",
+      "forged": "Generated",
       "imported": "Imported",
       "manual": "Manual"
     }
   },
   "workflowEditor": {
+    "parallel": {
+      "insert": "Add parallel branches",
+      "fork": "Parallel fork",
+      "join": "Join",
+      "cap": "Concurrent branches",
+      "addStep": "Add step",
+      "addBranch": "Add branch",
+      "afterJoin": "Add step after join",
+      "up": "Move {{id}} up",
+      "down": "Move {{id}} down",
+      "remove": "Remove {{id}}",
+      "invalid": "Check {{id}}: choose concurrency 1–5 and at least two nonempty branches with unique IDs. A group supports up to 64 ordinary steps; steps cannot be shared or require manual review.",
+      "invalidEntry": "Start cannot point directly into a branch.",
+      "invalidEdge": "Cannot connect {{from}} to {{to}}. Branch retries must be bounded and local; a fork or join cannot continue a session."
+    },
     "title": "Workflow Editor",
     "subtitle": "Create nodes and edges on the canvas, then bind each node to an agent.",
     "canvas": "Canvas",
@@ -1716,7 +1770,8 @@
     "profileCatalogLoadFailed": "Role catalog failed to load",
     "profileCatalogRetry": "Reload",
     "selectHint": "Select a node or edge on the canvas to configure it.",
-    "terminalSelectionHint": "End nodes need no configuration and can be removed with the delete action above the canvas.",
+    "startSelectionHint": "Connect Start to the first node to run.",
+    "terminalSelectionHint": "This control does not start a session.",
     "currentSelection": "Current Selection",
     "currentSelectionHelp": "Node and edge configuration appears here first.",
     "workflowSettings": "Workflow Settings",
@@ -1886,6 +1941,7 @@
     "validationTerminalEdgeSource": "End node {{node}} cannot be an edge source.",
     "validationContinueTerminalTarget": "Edge {{index}} continue session cannot target an end node.",
     "nodeLabels": {
+      "start": "Start",
       "plan": "Plan",
       "dev": "Development",
       "review": "Review",
@@ -3150,8 +3206,10 @@
       "remoteBindingTag": "{{source}} · {{title}}",
       "removeRemoteBinding": "Unbind task",
       "remoteAttachmentHint": "Remote task attachment; downloaded and attached automatically on send",
-      "forgeBindingTag": "Forge · {{title}}",
-      "removeForgeBinding": "Unbind forge"
+      "forgeBindingTag": "Generate · {{title}}",
+      "removeForgeBinding": "Remove workflow source",
+      "forgeProjectMismatch": "The workflow source belongs to another project — switch back to it, or remove the source tag in the composer before sending",
+      "forgeRequiresDirect": "Generation sessions use Direct mode — switch to it before sending"
     },
     "branchPicker": {
       "label": "Branch",
@@ -3543,17 +3601,17 @@
   },
   "forge": {
     "entry": {
-      "action": "Forge as workflow",
-      "fromHere": "Forge from here"
+      "action": "Generate workflow",
+      "fromHere": "Generate workflow from here"
     },
     "prefill": {
-      "intro": "Forge a workflow from the source conversation below — add any requirements, then send:"
+      "intro": "Generate a workflow from the source conversation below — add any requirements, then send:"
     },
     "preview": {
-      "title": "Forge preview",
-      "open": "Open forge preview",
-      "loading": "Loading forge draft…",
-      "empty": "No forge draft yet — stages and contracts appear here as the conversation converges.",
+      "title": "Workflow preview",
+      "open": "Open workflow preview",
+      "loading": "Loading workflow draft…",
+      "empty": "As the conversation outlines the process, each stage shows up here.",
       "openQuestions": "Open questions",
       "outputKind": {
         "json": "JSON artifact",
@@ -3565,9 +3623,15 @@
         "retry": "Retry",
         "manual-check": "Manual review",
         "new-round": "New round",
-        "end": "Terminate"
+        "end": "Terminate",
+        "jump": "Go to stage",
+        "new-round-from": "Restart from stage",
+        "jump-detail": "Go to “{{stage}}”",
+        "jump-continue-detail": "Return to “{{stage}}” and continue its session",
+        "new-round-from-detail": "Start next round at “{{stage}}”"
       },
       "role": {
+        "unassigned": "No role",
         "dev": "Development",
         "test": "Testing",
         "review": "Review",
@@ -3575,11 +3639,19 @@
         "accept": "Acceptance"
       },
       "outputKindLabel": "Output",
+      "startGroupTrial": "Try the first parallel group",
+      "trialChanged": "The workflow or its execution bindings changed. No trial started. Review the updated scope before starting again.",
+      "groupTrialScope": "Runs all {{branches}} branches, up to {{cap}} at once, then stops at the join.",
+      "parallelFork": "Fork · {{id}} (up to {{cap}} at once)",
+      "parallelJoin": "Join · {{id}}",
+      "parallelBranch": "{{group}} · branch {{branch}}",
       "onFailureLabel": "On failure",
-      "compile": "Compile to template",
-      "compileHint": "Compile the converged Spec into a workflow template with artifact contracts",
-      "compileBlocked": "Open questions remain; compile after they converge",
-      "startTrial": "Trial first node",
+      "copyName": "New name for “{{name}}”",
+      "saveCopy": "Save as new workflow",
+      "compile": "Save as workflow",
+      "compileHint": "Once every stage is confirmed in the conversation, it can be compiled into a workflow template",
+      "compileBlocked": "Answer the open questions before saving.",
+      "startTrial": "Try the first step",
       "startTrialHint": "Creates a real task from the template and stops after the first node",
       "compiledCount": "Created {{count}} workflow templates",
       "bindingMissing": "No model binding available yet — configure one in Settings before trial runs",
@@ -3588,42 +3660,123 @@
         "output": "Output",
         "boundary": "Boundary",
         "acceptance": "Acceptance"
-      }
-    },
-    "history": {
-      "title": "Forge history",
-      "subtitle": "Forge and trial sessions stay out of the default conversation list; review and clean them up here.",
-      "loading": "Loading forge sessions…",
-      "loadFailed": "Failed to load forge sessions",
-      "empty": "No forge sessions in this project",
-      "sessionBadge": "Forge",
-      "trialBadge": "Trial",
-      "noSpec": "No forge draft yet",
-      "stageCount": "{{count}} stages",
-      "openQuestionCount": "{{count}} open",
-      "openQuestionHint": "Still has unresolved questions; the conversation keeps converging",
-      "cleanupUnfinished": "Clean up unfinished",
-      "cleanupSelected": "Clean up selected ({{count}})",
-      "cleanupConfirmTitle": "Clean up forge sessions",
-      "cleanupConfirmDescription": "This deletes the task directories of {{count}} sessions (conversation history and spec archives included). This cannot be undone.",
-      "cleanupConfirmAction": "Clean up",
-      "selectSession": "Select {{title}}"
-    },
-    "skillPrefill": {
-      "intro": "Forge a workflow from the selected skills below — add any requirements, then send:"
-    },
-    "report": {
-      "title": "What you gained",
-      "before": "Before forging",
-      "beforeFallback": "A natural-language conversation",
-      "after": "After forging",
-      "capabilityStages": "{{count}} stages wired together — what each step does and hands over is written down",
-      "capabilitySchema": "{{count}} outputs carry a format contract the machine checks automatically",
-      "capabilityFailure": "{{count}} failure points handled automatically (retry or hand to a human) — nothing fails silently",
-      "capabilityResume": "Interrupted runs resume from where they stopped — no starting over"
+      },
+      "compiledUpdated": "Updated the existing workflow template",
+      "compiledMixed": "Created {{created}} and updated {{updated}} workflow templates",
+      "loadFailed": "Could not load the workflow draft",
+      "stageOrdinal": "Stage {{index}}",
+      "deltaInvalid": "The Spec delta in the last reply is malformed and was not applied. Ask the agent to output it again.",
+      "untitled": "Untitled workflow",
+      "adoptRecommendation": "Use recommendation",
+      "adoptAll": "Use all recommendations",
+      "adoptSent": "Sent",
+      "adoptUnavailable": "Could not send. Reply in the conversation.",
+      "recommendationLabel": "Recommendation",
+      "adoptMessage": "For “{{question}}”, use this recommendation: {{recommendation}}",
+      "adoptAllMessage": "Use the following recommendations: {{items}}",
+      "adoptAllItem": "{{index}}. {{question}}: {{recommendation}}",
+      "savedCreated": "Created “{{name}}”",
+      "savedUpdated": "Updated “{{name}}”",
+      "viewWorkflow": "View workflow",
+      "keepAdjusting": "Keep editing",
+      "keepAdjustingPrompt": "I’d like to change this workflow:",
+      "staleAfterEdit": "Save your changes to try the new version.",
+      "changedBadge": "Changed this turn",
+      "modifyStage": "Edit this stage",
+      "modifyStagePrompt": "Change step {{index}}, “{{name}}”:",
+      "technicalDetails": "Technical details",
+      "roleDefinition": "Role responsibilities",
+      "failureTargetLabel": "Return to stage",
+      "restartTargetLabel": "Start next round at",
+      "failureTargetPlaceholder": "Select a stage",
+      "continueSessionLabel": "Continue previous session",
+      "conversationActiveHint": "Edit after the current reply finishes."
     },
     "modifyPrefill": {
-      "intro": "Workflow \"{{name}}\" loaded ({{count}} stages). Describe the changes you want, then send to start the guided adjustment:"
+      "intro": "Workflow \"{{name}}\" loaded ({{count}} stages). Describe the changes you want, then send to start the guided adjustment:",
+      "builtinIntro": "Create a copy of the built-in workflow “{{name}}” ({{count}} stages). Enter a new name and the changes you want. The original stays unchanged:"
+    },
+    "repair": {
+      "stop": "Stop repair",
+      "errorsTitle": "These issues are still open:",
+      "inProgress": "Compile failed — repairing automatically (round {{attempt}}/{{max}})…",
+      "recompiling": "Repair applied — recompiling…",
+      "exhausted": "Still failing after {{attempt}} repair rounds — confirm the remaining points in the conversation, then compile again.",
+      "handedBack": "Some questions need your answer — reply in the conversation, then compile.",
+      "busy": "The conversation is still replying — compile once the reply ends.",
+      "unavailable": "The repair request was not sent — check that the session is available, then compile again.",
+      "turnCancelled": "The repair was interrupted — you can compile again.",
+      "unconfirmed": "The full reply for this repair could not be confirmed. Check the draft in the conversation, then compile again.",
+      "turnFailed": "The repair round failed to run — you can compile again.",
+      "noChange": "This repair round produced no usable change — say in the conversation what should change.",
+      "compileFailed": "Recompiling failed — you can retry.",
+      "aborted": "Automatic repair stopped.",
+      "invalidDelta": "The Spec delta the model produced this round is malformed and was not applied. Compile again to retry."
+    },
+    "history": {
+      "title": "Workflow generation history",
+      "allProjects": "All projects",
+      "clearFilters": "Clear filters",
+      "kind": "Record type",
+      "allKinds": "All types",
+      "search": "Search titles or descriptions",
+      "loading": "Loading generation history…",
+      "failed": "Could not load generation history.",
+      "partial": "Some records could not be read.",
+      "empty": "No generations or trial runs match.",
+      "newest": "Back to latest",
+      "noRun": "Not run yet",
+      "lastActivity": "Last activity: {{time}}"
+    },
+    "itemsPrefill": {
+      "intro": "Generate a workflow from these items:",
+      "title": "Generate workflow from {{count}} items",
+      "kind": {
+        "role": "role",
+        "skill": "skill",
+        "command": "command",
+        "agent": "agent"
+      },
+      "scope": {
+        "built-in": "Built-in",
+        "global": "Global",
+        "project": "Project"
+      }
+    },
+    "session": {
+      "badge": "Generation",
+      "projectHistory": "Project generation history",
+      "searchHistory": "Search generation history",
+      "trialBadge": "Trial"
+    },
+    "chat": {
+      "draftUpdating": "Generating draft…",
+      "draftUpdated": "View draft contents"
     }
+  },
+  "plugin": {
+    "importSkill": "Import Skill",
+    "importRole": "Import as role",
+    "skillConfirm": "Copy the Skill and its support files to the Skill library in the same scope, without installing the plugin. Select target Agents in the Skill list. Plugin-specific tools still require the original host.",
+    "roleConfirm": "Create a user role from the role instructions only. Plugin permissions and configuration are not copied.",
+    "skillImported": "Imported. Choose sync targets in the Skill list.",
+    "forget": "Forget source",
+    "forgetConfirm": "Remove this supplemental source without deleting its folder or files.",
+    "unavailable": "Source unavailable. Select the directory again or forget this source.",
+    "unsupportedBundle": "The definition is readable, but this Skill bundle cannot be imported.",
+    "manualEngine": "Uses the CodeBuddy engine. A selected directory does not indicate installation.",
+    "desktopBundled": "WorkBuddy · Bundled with desktop app",
+    "desktopRegistry": "WorkBuddy · Registered with desktop app (not necessarily enabled)",
+    "manualSource": "WorkBuddy · Manual source",
+    "codeBuddyCli": "CodeBuddy Code (CLI)",
+    "hostSource": "Host source",
+    "selectDirectory": "Import from folder",
+    "replaceDirectory": "Change folder",
+    "directoryHint": "Choose the WorkBuddy installation folder, a folder with SKILL.md, or an unpacked expert package. This lists its assets; it does not install the plugin.",
+    "assetCount": "Features: {{count}}",
+    "showRemaining": "Show {{count}} more",
+    "collapse": "Show less",
+    "workBuddyCompatible": "Readable in WorkBuddy code development mode",
+    "roleImported": "Added to your role library."
   }
 }

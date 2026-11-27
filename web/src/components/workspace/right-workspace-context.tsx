@@ -452,8 +452,35 @@ export class ConversationWorkspaceStore {
     this.entries.delete(draft.key);
   }
 
-  deleteConversation(projectId: string, taskId: string) {
-    this.discardWhere((stored) => stored.scope.kind === 'conversation' && stored.scope.projectId === projectId && stored.scope.taskId === taskId);
+  /**
+   * 同一会话的 scope 键变化时，把工作区整体带到新 scope。典型场景是 deep link 进入会话页：
+   * task uuid 先未知（占位键）、后由运行数据补齐（真实键）。这是身份细化而不是切换
+   * 会话，已打开的页签与展开状态不能跟着旧键消失。只对 project / task / run 都相同的
+   * 两个会话 scope 生效，方向不限；目标 scope 已有内容时不覆盖。返回是否发生了迁移。
+   */
+  carryOver(previous: ConversationWorkspaceScope, next: ConversationWorkspaceScope) {
+    if (previous.kind !== 'conversation' || next.kind !== 'conversation' || previous.key === next.key) return false;
+    if (
+      previous.projectId !== next.projectId
+      || previous.taskId !== next.taskId
+      || previous.runId !== next.runId
+    ) return false;
+    const source = this.entries.peek(previous.key);
+    if (!source || this.entries.peek(next.key)) return false;
+    this.put(next.key, {
+      scope: next,
+      state: {
+        tabs: source.state.tabs.map((resource) => rebindWorkspaceResourceScope(resource, next.key)),
+        activeTabKey: source.state.activeTabKey,
+      },
+      presentation: { ...source.presentation },
+    });
+    this.entries.delete(previous.key);
+    return true;
+  }
+
+  deleteConversation(projectId: string, taskId: string, taskUuid: string) {
+    this.discardWhere((stored) => stored.scope.kind === 'conversation' && stored.scope.projectId === projectId && stored.scope.taskId === taskId && stored.scope.taskUuid === taskUuid);
   }
 
   deleteProject(projectId: string) {
@@ -603,6 +630,14 @@ function promoteDraftWorkspaceResource(
   return { ...resource, scopeKey };
 }
 
+/// 把页签归到新的 scope 键下（资源自身的键不变，所以组件实例与交互状态得以保留）。
+function rebindWorkspaceResourceScope(resource: RightWorkspaceResource, scopeKey: string): RightWorkspaceResource {
+  if (resource.kind === 'file-browser' && resource.selectedFile) {
+    return { ...resource, scopeKey, selectedFile: { ...resource.selectedFile, scopeKey } };
+  }
+  return { ...resource, scopeKey };
+}
+
 const DEFAULT_SCOPE = createDraftConversationWorkspaceScope('default');
 
 export function RightWorkspaceProvider({
@@ -634,6 +669,20 @@ export function RightWorkspaceProvider({
   const rendererRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceRenderer>());
   const closeResolverRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceCloseResolver>());
   const previousScopeRef = useRef<ConversationWorkspaceScope | null>(scope);
+  // 供离开处理识别“上一次渲染所在的 scope”（渲染阶段的迁移判断另用 previousScopeRef）。
+  const lastRenderedScopeRef = useRef<ConversationWorkspaceScope | null>(scope);
+  // 同一会话的 scope 身份细化（deep link 进入后 task uuid 由占位变为已知等）：在本次
+  // 渲染读取状态之前就把工作区带到新 scope。放在 effect 里会晚一帧——那一帧新 scope 下
+  // 没有页签，已打开的 Tab 会被卸载重建。迁移是幂等的，重复渲染无副作用。
+  if (
+    scope
+    && previousScopeRef.current
+    && previousScopeRef.current !== scope
+    && previousScopeRef.current.key !== scope.key
+  ) {
+    effectiveStore.carryOver(previousScopeRef.current, scope);
+  }
+  previousScopeRef.current = scope;
   const [rendererRevision, renderRenderer] = useReducer((currentRevision) => currentRevision + 1, 0);
   const peekProjectedState = useCallback((targetScope: ConversationWorkspaceScope) => (
     projectWorkspaceTabRoots(
@@ -654,9 +703,11 @@ export function RightWorkspaceProvider({
     if (scope) effectiveStore.touch(scope);
   }, [effectiveStore, scope]);
 
+  // 真正切换到别的会话时才走离开处理；同一会话的身份细化已在渲染阶段把工作区带走，
+  // 此时新旧 scope 键下的状态一致，离开处理不会触发（旧键已无内容）。
   useEffect(() => {
-    const previous = previousScopeRef.current;
-    previousScopeRef.current = scope;
+    const previous = lastRenderedScopeRef.current;
+    lastRenderedScopeRef.current = scope;
     if (!previous || previous.key === scope?.key) return;
     const previousState = effectiveStore.peek(previous);
     const active = previousState.tabs.find((tab) => tab.key === previousState.activeTabKey);

@@ -37,7 +37,7 @@ use gold_band::runtime::{
     TaskState, WorkerRefState, canonical_trace_for_round,
 };
 use gold_band::runtime_error::RuntimeErrorInfo;
-use gold_band::storage::{read_json, write_json};
+use gold_band::storage::{GoldBandPaths, read_json, write_json};
 use gold_band::workflow_model_binding::{
     TaskAuthoringWorkflow, migrate_authoring_workflow, validate_and_inject,
 };
@@ -567,6 +567,9 @@ pub struct ConversationTaskRowVm {
     pub project_id: String,
     pub task_id: String,
     pub task_uuid: Option<String>,
+    /// 生成与试运行仍是默认列表里的任务；历史筛选和类型标记使用同一个来源。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     pub title: String,
     pub auto_title: bool,
     pub run_mode: String,
@@ -1007,9 +1010,13 @@ pub struct ConversationCreateInputVm {
     /// 前端不搬运会话内容。
     #[serde(default)]
     pub forge_source_task_id: Option<String>,
-    /// 工作流铸造（入口 B）：skill 组合引用（与入口 A 互斥）。
+    /// 入口 A 的可见会话分支及可选消息截断点。
     #[serde(default)]
-    pub forge_source_skills: Option<Vec<gold_band::app::forge_service::ForgeSkillRef>>,
+    pub forge_source_session: Option<gold_band::app::forge_service::ForgeSourceSession>,
+    /// 工作流铸造（入口 B/C）：素材清单（skill、plugin command、plugin agent；
+    /// 与入口 A 互斥）。
+    #[serde(default)]
+    pub forge_source_items: Option<Vec<gold_band::app::forge_service::ForgeSourceItem>>,
     /// 对话式修改（方案 §5.9）：既有模板 id,反投影为 Spec 初始基线。
     #[serde(default)]
     pub forge_source_template_id: Option<String>,
@@ -1137,6 +1144,7 @@ pub struct ConversationSearchResultVm {
     pub description: Option<String>,
     pub requirement_preview: String,
     pub match_preview: String,
+    pub origin: Option<String>,
     pub latest_run: Option<ConversationRunSummaryVm>,
     pub run_mode: String,
     pub agent_identity: Option<ConversationAgentIdentityVm>,
@@ -1145,14 +1153,16 @@ pub struct ConversationSearchResultVm {
 
 pub(crate) use gold_band::app::ConversationMetadata;
 
+pub(crate) fn conversation_metadata(app: &App, task_id: &str) -> Option<ConversationMetadata> {
+    read_conversation_metadata(app, task_id)
+}
+
 fn read_conversation_metadata(app: &App, task_id: &str) -> Option<ConversationMetadata> {
-    read_json::<ConversationMetadata>(
-        &app.paths
-            .task_dir(task_id)
-            .join("authoring")
-            .join("conversation.json"),
-    )
-    .ok()
+    read_conversation_metadata_from_paths(&app.paths, task_id)
+}
+
+fn read_conversation_metadata_from_paths(paths: &GoldBandPaths, task_id: &str) -> Option<ConversationMetadata> {
+    read_json(&paths.task_dir(task_id).join("authoring/conversation.json")).ok()
 }
 
 pub(crate) fn conversation_task_last_activity_at(app: &App, task_id: &str) -> Option<String> {
@@ -1394,6 +1404,23 @@ pub(crate) fn conversation_task_activity_from_prompt(
 
 // ── Builder functions (stubs — full implementation in later phases) ──
 
+/// 会话在列表里的标题：任务自己的标题，没有时回落到任务 id。
+///
+/// 生成会话的自动标题只是首条消息的开头，对它没有意义：标题仍是自动生成的时候用
+/// 工作流名代替（随对话里的改名同步变化），草稿还没起名时才退回自动标题。用户手动
+/// 改过名的会话以用户为准。
+pub(crate) fn conversation_task_title(task: &TaskState) -> String {
+    task.title.clone().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| task.id.clone())
+}
+
+fn conversation_title_is_automatic(task: &TaskState, metadata: Option<&ConversationMetadata>) -> bool {
+    match task.forge_naming.as_ref() {
+        Some(gold_band::runtime::ForgeNaming::Automatic { .. }) => true,
+        Some(gold_band::runtime::ForgeNaming::Manual) => false,
+        None => metadata.is_some_and(|metadata| metadata.title_auto_generated),
+    }
+}
+
 fn conversation_task_row_vm_from_task(
     app: &App,
     project_id: &str,
@@ -1409,6 +1436,13 @@ fn conversation_task_row_vm_from_task(
         .map(|metadata| metadata.run_mode.clone())
         .unwrap_or_else(|| "workflow".to_string());
     let run_list = app.run_list(task_id).unwrap_or_default();
+    // Navigation uses root creation sequence; the complete history below uses activity order.
+    let latest_run = run_list
+        .iter()
+        .filter(|run| is_conversation_root_run(run))
+        .filter_map(|run| Some((entity_sequence(&run.id, "run-")?, run)))
+        .max_by_key(|(sequence, run)| (*sequence, run.id.as_str()))
+        .map(|(_, run)| conversation_run_summary_vm(run));
     let mut runs: Vec<ConversationRunSummaryVm> =
         run_list.iter().map(conversation_run_summary_vm).collect();
     runs.sort_by(|left, right| {
@@ -1416,7 +1450,6 @@ fn conversation_task_row_vm_from_task(
             .then_with(|| compare_conversation_timestamps(&right.started_at, &left.started_at))
             .then_with(|| right.run_id.cmp(&left.run_id))
     });
-    let latest_run = runs.first().cloned();
     let last_activity_at = latest_conversation_activity_at(metadata.as_ref());
     let activity = conversation_task_activity(&app.paths.task_dir(task_id), latest_run.as_ref());
     let unread_terminal_result = (run_mode == "direct")
@@ -1428,10 +1461,9 @@ fn conversation_task_row_vm_from_task(
         project_id: project_id.to_string(),
         task_id: task_id.clone(),
         task_uuid: task.uuid.clone(),
-        title: task.title.clone().unwrap_or_else(|| task_id.clone()),
-        auto_title: metadata
-            .as_ref()
-            .is_some_and(|metadata| metadata.title_auto_generated),
+        origin: task.origin.map(|origin| origin.as_str().to_string()),
+        title: conversation_task_title(task),
+        auto_title: conversation_title_is_automatic(task, metadata.as_ref()),
         run_mode,
         workflow_template_id: None,
         agent_identity: metadata
@@ -1464,7 +1496,7 @@ pub fn conversation_task_row_vm(
         .map_err(|error| anyhow::anyhow!("task not found: {task_id}: {error}"))?;
     let unread_terminal_results = unread_terminal_results(app).unwrap_or_default();
     Ok(conversation_task_summary_vm_from_task(
-        app,
+        &app.paths,
         project_id,
         &task,
         pinned,
@@ -1610,16 +1642,31 @@ fn paged_task_ids_by_activity(
     ))
 }
 
-fn latest_conversation_run_summary(app: &App, task_id: &str) -> Option<ConversationRunSummaryVm> {
-    let runs_dir = app.paths.runs_dir(task_id);
-    let (ids, _) = paged_entity_ids(&runs_dir, "run-", "run.json", None, 1).ok()?;
-    ids.first()
-        .and_then(|run_id| read_json::<RunState>(&app.paths.run_file(task_id, run_id)).ok())
-        .map(|run| conversation_run_summary_vm(&run))
+fn is_conversation_root_run(run: &RunState) -> bool {
+    run.worktree
+        .as_ref()
+        .is_none_or(|tree| tree.graph_owner.is_none())
 }
 
-fn conversation_task_summary_vm_from_task(
-    app: &App,
+pub(crate) fn latest_conversation_run_summary(
+    paths: &GoldBandPaths,
+    task_id: &str,
+) -> Option<ConversationRunSummaryVm> {
+    let mut ids = canonical_entity_ids(&paths.runs_dir(task_id), "run-", "run.json").ok()?;
+    ids.sort_unstable();
+    // A late child can belong to an older root. Inspect only the newest run
+    // headers through the first root, without loading the task's run history.
+    for (_, run_id) in ids.into_iter().rev() {
+        let run: RunState = read_json(&paths.run_file(task_id, &run_id)).ok()?;
+        if is_conversation_root_run(&run) {
+            return Some(conversation_run_summary_vm(&run));
+        }
+    }
+    None
+}
+
+pub(crate) fn conversation_task_summary_vm_from_task(
+    paths: &GoldBandPaths,
     project_id: &str,
     task: &TaskState,
     pinned: bool,
@@ -1627,14 +1674,14 @@ fn conversation_task_summary_vm_from_task(
     unread_terminal_result: Option<&ConversationTerminalResultVm>,
 ) -> ConversationTaskRowVm {
     let task_id = &task.id;
-    let metadata = read_conversation_metadata(app, task_id);
+    let metadata = read_conversation_metadata_from_paths(paths, task_id);
     let run_mode = metadata
         .as_ref()
         .map(|metadata| metadata.run_mode.clone())
         .unwrap_or_else(|| "workflow".to_string());
-    let latest_run = latest_conversation_run_summary(app, task_id);
+    let latest_run = latest_conversation_run_summary(paths, task_id);
     let last_activity_at = latest_conversation_activity_at(metadata.as_ref());
-    let activity = conversation_task_activity(&app.paths.task_dir(task_id), latest_run.as_ref());
+    let activity = conversation_task_activity(&paths.task_dir(task_id), latest_run.as_ref());
     let unread_terminal_result = (run_mode == "direct")
         .then(|| unread_terminal_result.cloned())
         .flatten();
@@ -1644,10 +1691,9 @@ fn conversation_task_summary_vm_from_task(
         project_id: project_id.to_string(),
         task_id: task_id.clone(),
         task_uuid: task.uuid.clone(),
-        title: task.title.clone().unwrap_or_else(|| task_id.clone()),
-        auto_title: metadata
-            .as_ref()
-            .is_some_and(|metadata| metadata.title_auto_generated),
+        origin: task.origin.map(|origin| origin.as_str().to_string()),
+        title: conversation_task_title(task),
+        auto_title: conversation_title_is_automatic(task, metadata.as_ref()),
         run_mode,
         workflow_template_id: None,
         agent_identity: metadata
@@ -1676,32 +1722,30 @@ pub fn conversation_task_page_vm(
     limit: usize,
 ) -> anyhow::Result<ConversationTaskPageVm> {
     let tasks_dir = app.paths.tasks_dir();
-    let canonical_task_ids = canonical_entity_ids(&tasks_dir, "task-", "task.json")?
-        .into_iter()
-        .map(|(_, task_id)| task_id)
-        .collect::<Vec<_>>();
-    let activity_by_task = gold_band::storage::sqlite::task_activities_in_task_root(&tasks_dir)
-        .into_iter()
-        .map(|entry| (entry.task_id, entry.updated_at))
-        .collect::<HashMap<_, _>>();
-    let (task_ids, next_cursor) =
-        paged_task_ids_by_activity(canonical_task_ids, &activity_by_task, cursor, limit)?;
+    let (task_ids, next_cursor) = {
+        let canonical_task_ids = canonical_entity_ids(&tasks_dir, "task-", "task.json")?
+            .into_iter()
+            .map(|(_, task_id)| task_id)
+            .collect::<Vec<_>>();
+        let activity_by_task = gold_band::storage::sqlite::task_activities_in_task_root(&tasks_dir)
+            .into_iter()
+            .map(|entry| (entry.task_id, entry.updated_at))
+            .collect::<HashMap<_, _>>();
+        paged_task_ids_by_activity(canonical_task_ids, &activity_by_task, cursor, limit)?
+    };
     let unread_terminal_results = unread_terminal_results(app).unwrap_or_default();
     let mut tasks = Vec::with_capacity(task_ids.len());
     let mut errors = Vec::new();
     for task_id in task_ids {
         match app.task_show(&task_id) {
             Ok(task) => {
-                if is_forge_session_task(&task) {
-                    continue;
-                }
                 let pin_order = state
                     .conversation_pins
                     .iter()
                     .find(|pin| pin.project_id == project_id && pin.task_id == task_id)
                     .map(|pin| pin.order);
                 tasks.push(conversation_task_summary_vm_from_task(
-                    app,
+                    &app.paths,
                     project_id,
                     &task,
                     pin_order.is_some(),
@@ -1770,7 +1814,7 @@ pub fn conversation_pinned_task_page_vm(
                     .entry(pin.project_id.clone())
                     .or_insert_with(|| unread_terminal_results(&source.app).unwrap_or_default());
                 tasks.push(conversation_task_summary_vm_from_task(
-                    &source.app,
+                    &source.app.paths,
                     &pin.project_id,
                     &task,
                     true,
@@ -1916,9 +1960,6 @@ pub fn conversation_recent_task_page_vm(
         let source = &sources[index];
         match source.app.task_show(&key.task_id) {
             Ok(task) => {
-                if is_forge_session_task(&task) {
-                    continue;
-                }
                 if unread_by_source[index].is_none() {
                     unread_by_source[index] = Some(unread_terminal_results(&source.app).ok());
                 }
@@ -1928,7 +1969,7 @@ pub fn conversation_recent_task_page_vm(
                     .and_then(|unread| unread.get(&key.task_id));
                 tasks.push(ConversationRecentTaskRowVm {
                     task: conversation_task_summary_vm_from_task(
-                        &source.app,
+                        &source.app.paths,
                         &source.workspace.project_id,
                         &task,
                         false,
@@ -1999,12 +2040,8 @@ pub fn conversation_run_summary_page_vm(
     })
 }
 
-/// Forge 铸造/试运行会话不进默认列表(侧栏、项目会话页、最近会话页、
-/// 任务页),由铸造历史入口统一管理(工作流铸造实施方案 G2)。
-pub(crate) fn is_forge_session_task(task: &gold_band::runtime::TaskState) -> bool {
-    task.origin.is_some()
-}
-
+/// 侧栏、项目会话页与最近会话页。生成会话和试运行会话（任务带 `origin`）与其他会话是
+/// 同一条任务记录，同样列在这里，由任务行上的 `origin` 区分；删除走会话列表的同一个入口。
 pub fn conversation_sidebar_vm_from_sources(
     state: &StateConfig,
     sources: &[ConversationWorkspaceSource],
@@ -2032,9 +2069,6 @@ pub fn conversation_sidebar_vm_from_sources(
         let unread_terminal_results = unread_terminal_results(&source.app).unwrap_or_default();
         if let Ok(tasks) = source.app.task_list() {
             for task in tasks {
-                if is_forge_session_task(&task) {
-                    continue;
-                }
                 let task_id = &task.id;
                 let project_id = &source.workspace.project_id;
                 let pinned = pinned_set.contains(&(project_id.clone(), task_id.clone()));
@@ -4538,6 +4572,11 @@ pub fn conversation_run_vm(
                 .as_deref()
                 .zip(leaf.outer_attempt_id.as_deref())
                 .and_then(|(outer_node_id, outer_attempt_id)| {
+                    if workflow_snapshot.as_ref().is_some_and(|workflow| workflow.nodes.iter().any(|node| {
+                        matches!(node, gold_band::dsl::NodeDsl::ParallelGroup(group) if group.id == outer_node_id)
+                    })) {
+                        return None; // The round projection includes the authored fork and join.
+                    }
                     dynamic_runtime_graph_vm(
                         app,
                         task_id,
@@ -4953,6 +4992,19 @@ fn auto_config_from_vm(
 
 pub use gold_band::app::PreparedConversationTask;
 
+/// 新建会话的来源标记：任一铸造入口（源会话 / 素材清单 / 修改存量模板）置位即
+/// 为 `forge`，与 canonical run VM 的 `origin` 取值一致。
+fn conversation_create_origin_label(input: &ConversationCreateInputVm) -> &'static str {
+    let forged = input.forge_source_task_id.is_some()
+        || input.forge_source_items.is_some()
+        || input.forge_source_template_id.is_some();
+    if forged {
+        "forge"
+    } else {
+        ""
+    }
+}
+
 fn conversation_create_command(
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<gold_band::app::CreateConversationTaskCommand> {
@@ -4978,7 +5030,8 @@ fn conversation_create_command(
     command.quotes = input.quotes.clone();
     command.first_prompt_hidden_sections = input.first_prompt_hidden_sections.clone();
     command.forge_source_task_id = input.forge_source_task_id.clone();
-    command.forge_source_skills = input.forge_source_skills.clone();
+    command.forge_source_session = input.forge_source_session.clone();
+    command.forge_source_items = input.forge_source_items.clone();
     command.forge_source_template_id = input.forge_source_template_id.clone();
     Ok(command)
 }
@@ -5021,11 +5074,9 @@ pub fn create_conversation_run_vm(
                 task_uuid: task_uuid.clone(),
                 run_id: run.id.clone(),
                 run_mode: input.run_mode.clone(),
-                origin: input
-                    .forge_source_task_id
-                    .as_ref()
-                    .map(|_| "forge".to_string())
-                    .unwrap_or_default(),
+                // 任一铸造入口（源会话 / 素材清单 / 修改存量模板）创建的会话都是
+                // origin=forge：早期快照就要带上，页面据此自动打开铸造预览。
+                origin: conversation_create_origin_label(input).to_string(),
                 workflow_template_id: input.workflow_template_id.clone(),
                 direct_config: input.direct_config.clone(),
                 agent_identity: input
@@ -5201,7 +5252,8 @@ mod tests {
         ConversationTaskActivityVm, ConversationWorkLocationVm, ConversationWorkspaceSource,
         ConversationWorkspaceVm, PROMPT_CONTENT_PREVIEW_CHARS, PromptActivity,
         attempt_control_mode, attempt_control_projection, auto_config_from_vm,
-        conversation_attempt_lifecycle_vm, conversation_recent_task_page_vm,
+        conversation_attempt_lifecycle_vm, conversation_create_command,
+        conversation_create_origin_label, conversation_recent_task_page_vm,
         conversation_run_summary_page_vm, conversation_run_vm,
         conversation_session_successors_from_state, conversation_sidebar_bootstrap_vm,
         conversation_sidebar_vm_from_sources, conversation_status_from_session,
@@ -7425,11 +7477,59 @@ mod tests {
     }
 
     #[test]
+    fn conversation_create_origin_covers_every_forge_entry() {
+        let app = App::new(temp_repo_root());
+        let mut input = ConversationCreateInputVm {
+            forge_source_task_id: None,
+            forge_source_items: None,
+            forge_source_session: None,
+            forge_source_template_id: None,
+            project_id: app.paths.project_id.clone(),
+            content: "forge this".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: None,
+            auto_config: None,
+            attachment_paths: None,
+            work_location: Default::default(),
+            selected_branch: None,
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+            workflow_authoring: None,
+            first_prompt_hidden_sections: None,
+            role: None,
+            workspace_files: Vec::new(),
+            quotes: Vec::new(),
+        };
+        assert_eq!(conversation_create_origin_label(&input), "");
+        // 入口 A：源会话（截断点只是 A 的附加参数，自身不代表来源）。
+        input.forge_source_task_id = Some("task-source".to_string());
+        input.forge_source_session = Some(serde_json::from_value(serde_json::json!({"runId":"r","roundId":"round","nodeId":"n","attemptId":"a","branchId":"root","after":{"eventId":"m","eventSeq":3}})).unwrap());
+        assert_eq!(conversation_create_origin_label(&input), "forge");
+        let command = conversation_create_command(&input).unwrap();
+        assert_eq!(command.forge_source_task_id.as_deref(), Some("task-source"));
+        assert_eq!(command.forge_source_session, input.forge_source_session);
+        input.forge_source_task_id = None;
+        input.forge_source_session = None;
+        // 入口 B/C：素材清单。
+        input.forge_source_items = Some(Vec::new());
+        assert_eq!(conversation_create_origin_label(&input), "forge");
+        input.forge_source_items = None;
+        // 修改存量模板。
+        input.forge_source_template_id = Some("template-1".to_string());
+        assert_eq!(conversation_create_origin_label(&input), "forge");
+        input.forge_source_template_id = None;
+        assert_eq!(conversation_create_origin_label(&input), "");
+    }
+
+    #[test]
     fn scheduled_auto_snapshot_preserves_agent_and_strategy_identity() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
-            forge_source_skills: None,
+            forge_source_items: None,
+            forge_source_session: None,
             forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run this automatically".to_string(),
@@ -7575,7 +7675,8 @@ mod tests {
         }));
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
-            forge_source_skills: None,
+            forge_source_items: None,
+            forge_source_session: None,
             forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "start a direct conversation".to_string(),
@@ -7625,7 +7726,8 @@ mod tests {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
-            forge_source_skills: None,
+            forge_source_items: None,
+            forge_source_session: None,
             forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run in an isolated worktree".to_string(),
@@ -7656,7 +7758,8 @@ mod tests {
         let app = App::new(temp_repo_root());
         let input_for = |run_mode: ConversationRunMode| ConversationCreateInputVm {
             forge_source_task_id: None,
-            forge_source_skills: None,
+            forge_source_items: None,
+            forge_source_session: None,
             forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "改一下这个函数".to_string(),
@@ -7699,7 +7802,8 @@ mod tests {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
-            forge_source_skills: None,
+            forge_source_items: None,
+            forge_source_session: None,
             forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "run this later".to_string(),
@@ -7737,7 +7841,8 @@ mod tests {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
-            forge_source_skills: None,
+            forge_source_items: None,
+            forge_source_session: None,
             forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "h".to_string(),
@@ -7766,7 +7871,7 @@ mod tests {
         };
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
 
-        let task = update_task_metadata_vm(&app, "project-a", &task_id, "hi", None, true, Some(2))
+        let task = update_task_metadata_vm(&app, "project-a", &task_id, app.task_show(&task_id).unwrap().uuid.as_deref().unwrap(), "hi", None, true, Some(2))
             .unwrap();
 
         assert_eq!(task.project_id, "project-a");
@@ -7787,7 +7892,8 @@ mod tests {
         fs::write(attachment.as_std_path(), "attachment content").unwrap();
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
-            forge_source_skills: None,
+            forge_source_items: None,
+            forge_source_session: None,
             forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: String::new(),
@@ -7838,7 +7944,8 @@ mod tests {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
-            forge_source_skills: None,
+            forge_source_items: None,
+            forge_source_session: None,
             forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "远程任务正文".to_string(),
@@ -7898,7 +8005,8 @@ mod tests {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
             forge_source_task_id: None,
-            forge_source_skills: None,
+            forge_source_items: None,
+            forge_source_session: None,
             forge_source_template_id: None,
             project_id: app.paths.project_id.clone(),
             content: "task must roll back".to_string(),
@@ -7975,20 +8083,62 @@ mod tests {
     }
 
     #[test]
-    fn forge_sessions_stay_out_of_default_lists() {
+    fn forge_sessions_are_listed_with_every_other_conversation() {
         let repo = temp_repo_root();
         let app = App::new(repo.clone());
         write_sidebar_task_fixture(&app, "task-001", "Normal", "run-a", "2026-06-15T00:00:00Z");
-        // Forge 铸造与试运行会话:默认列表不可见(方案 G2)。
-        write_sidebar_task_fixture(&app, "task-002", "Forge", "run-b", "2026-06-15T00:01:00Z");
+        // 生成会话与试运行会话：和其他会话是同一条任务记录，列在同一批列表里，靠 origin 区分。
+        write_sidebar_task_fixture(
+            &app,
+            "task-002",
+            "从素材生成工作流",
+            "run-b",
+            "2026-06-15T00:01:00Z",
+        );
         write_sidebar_task_fixture(&app, "task-003", "Trial", "run-c", "2026-06-15T00:02:00Z");
-        for task_id in ["task-002", "task-003"] {
+        for (task_id, origin) in [("task-002", "forge"), ("task-003", "forge-trial")] {
             let task_file = app.paths.task_file(task_id);
             let mut with_origin: serde_json::Value =
                 gold_band::storage::read_json(&task_file).unwrap();
-            with_origin["origin"] = json!("forge-trial");
+            with_origin["origin"] = json!(origin);
             gold_band::storage::write_json(&task_file, &with_origin).unwrap();
         }
+        // Explicitly model an automatically titled conversation, not a hand-named fixture.
+        let metadata_file = app.paths.task_dir("task-002").join("authoring/conversation.json");
+        let mut metadata: serde_json::Value = gold_band::storage::read_json(&metadata_file).unwrap();
+        metadata["titleAutoGenerated"] = json!(true);
+        gold_band::storage::write_json(&metadata_file, &metadata).unwrap();
+        // 生成会话已经有草稿：列表里的标题是工作流名，而不是创建会话时带入的标题。
+        app.save_forge_spec(
+            "task-002",
+            &gold_band::forge::ForgeSpec {
+                revision: 0,
+                spec_version: gold_band::forge::SPEC_VERSION.to_string(),
+                name: Some("发布闸门".to_string()),
+                intent: "发布前检查".to_string(),
+                source_skills: vec![],
+                workflows: vec![gold_band::forge::ForgeWorkflow {
+                    id: String::new(),
+                    parallel_groups: vec![],
+                    name: "发布闸门".to_string(),
+                    stages: vec![gold_band::forge::ForgeStage {
+                        id: Some("s1".to_string()),
+                        role: gold_band::forge::StageRole::Dev,
+                        goal: "<输入>需求\n<产出>代码\n<边界>不做部署\n<验收>测试通过".into(),
+                        role_definition: None,
+                        profile_id: None,
+                        artifact: None,
+                        output_kind: gold_band::forge::StageOutputKind::None,
+                        schema_hint: None,
+                        success_condition: None,
+                        on_failure: gold_band::forge::OnFailure::End,
+                        manual_check: false,
+                    }],
+                }],
+                open_questions: vec![],
+            },
+        )
+        .unwrap();
 
         let mut state = gold_band::config::StateConfig::default();
         state
@@ -8007,25 +8157,54 @@ mod tests {
             },
             app: app.clone_for_background(),
         }];
+        let sorted = |ids: Vec<&str>| {
+            let mut ids = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+            ids.sort();
+            ids
+        };
+        let list_ids = || {
+            let sidebar = conversation_sidebar_vm_from_sources(&state, &sources);
+            let sidebar_ids = sorted(
+                sidebar.tasks_by_workspace["workspace-a"]
+                    .iter()
+                    .map(|task| task.task_id.as_str())
+                    .collect(),
+            );
+            let page = conversation_task_page_vm(&app, &state, "workspace-a", None, 10).unwrap();
+            let page_ids = sorted(page.tasks.iter().map(|t| t.task_id.as_str()).collect());
+            let recent = conversation_recent_task_page_vm(&sources, None, 10);
+            let recent_ids = sorted(
+                recent
+                    .tasks
+                    .iter()
+                    .map(|row| row.task.task_id.as_str())
+                    .collect(),
+            );
+            (sidebar_ids, page_ids, recent_ids, sidebar)
+        };
 
-        let sidebar = conversation_sidebar_vm_from_sources(&state, &sources);
-        let sidebar_ids: Vec<&str> = sidebar.tasks_by_workspace["workspace-a"]
+        let (sidebar_ids, page_ids, recent_ids, sidebar) = list_ids();
+        let every = vec!["task-001".to_string(), "task-002".to_string(), "task-003".to_string()];
+        assert_eq!(sidebar_ids, every);
+        assert_eq!(page_ids, every);
+        assert_eq!(recent_ids, every);
+        let forge_row = sidebar.tasks_by_workspace["workspace-a"]
             .iter()
-            .map(|task| task.task_id.as_str())
-            .collect();
-        assert_eq!(sidebar_ids, vec!["task-001"]);
+            .find(|task| task.task_id == "task-002")
+            .unwrap();
+        assert_eq!(forge_row.origin.as_deref(), Some("forge"));
+        assert_eq!(forge_row.title, "发布闸门");
 
-        let page = conversation_task_page_vm(&app, &state, "workspace-a", None, 10).unwrap();
-        let page_ids: Vec<&str> = page.tasks.iter().map(|t| t.task_id.as_str()).collect();
-        assert_eq!(page_ids, vec!["task-001"]);
+        // 删除走会话列表的同一个入口（任务目录进回收站 + 索引删除）：一条记录只删一次，
+        // 三个列表同时消失，其他会话不受影响。
+        std::fs::remove_dir_all(app.paths.task_dir("task-002").as_std_path()).unwrap();
+        gold_band::storage::sqlite::delete_task(&app.paths.task_dir("task-002"));
 
-        let recent = conversation_recent_task_page_vm(&sources, None, 10);
-        let recent_ids: Vec<&str> = recent
-            .tasks
-            .iter()
-            .map(|row| row.task.task_id.as_str())
-            .collect();
-        assert_eq!(recent_ids, vec!["task-001"]);
+        let (sidebar_ids, page_ids, recent_ids, _sidebar) = list_ids();
+        let remaining = vec!["task-001".to_string(), "task-003".to_string()];
+        assert_eq!(sidebar_ids, remaining);
+        assert_eq!(page_ids, remaining);
+        assert_eq!(recent_ids, remaining);
     }
 
     #[test]
@@ -8138,6 +8317,71 @@ mod tests {
         assert_eq!(next.tasks[1].task.title, "A1");
         assert!(next.errors.is_empty());
         assert!(next.next_cursor.is_none(), "the merged list is exhausted");
+    }
+
+    #[test]
+    fn task_row_selects_latest_top_level_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Utf8Path::from_path(temp.path()).unwrap();
+        let paths = gold_band::storage::StoragePathConfig {
+            app_key: "task-row-test",
+            config_dir_name: ".task-row-test",
+            home_env_var: "GOLD_BAND_TASK_ROW_FIXTURE_HOME",
+        };
+        assert!(std::env::var_os(paths.home_env_var).is_none());
+        assert!(
+            gold_band::storage::GoldBandPaths::new_with_path_config(repo, paths)
+                .user_gold_band_root
+                .starts_with(repo)
+        );
+        let app = App::with_config_and_path_config(repo.to_owned(), Default::default(), paths);
+        let project = &app.paths.project_id;
+        let task = "task-001";
+        let timestamp = "2026-08-01T00:00:00Z";
+        write_sidebar_task_fixture(&app, task, "Trial", "run-001", timestamp);
+        write_sidebar_conversation_metadata_fixture(&app, task, "workflow", timestamp);
+        let mut trial = app.task_show(task).unwrap();
+        trial.origin = Some(gold_band::runtime::TaskOrigin::ForgeTrial);
+        gold_band::storage::write_json(&app.paths.task_file(task), &trial).unwrap();
+        let root: gold_band::runtime::RunState =
+            gold_band::storage::read_json(&app.paths.run_file(task, "run-001")).unwrap();
+        let add_run = |id: &str, parent: Option<&str>| {
+            let mut run = root.clone();
+            run.id = id.to_owned();
+            run.worktree = Some(gold_band::runtime::RunWorktreeState {
+                path: repo.join(id),
+                branch: id.to_owned(),
+                fork_commit: "abc".to_owned(),
+                graph_owner: parent.map(|parent| gold_band::runtime::BranchWorkspaceOwner {
+                    run_id: parent.to_owned(),
+                    round_id: "round-001".to_owned(),
+                    group_id: "parallel".to_owned(),
+                    group_attempt_id: "attempt-001".to_owned(),
+                    branch_node_id: id.to_owned(),
+                }),
+            });
+            gold_band::storage::write_json(&app.paths.run_file(task, id), &run).unwrap();
+        };
+        let default_run = || {
+            let row = conversation_task_row_vm(&app, project, task, false, None).unwrap();
+            assert!(row.runs.is_empty());
+            assert_eq!(row.run_history_status, "not-loaded");
+            row.latest_run.unwrap().run_id
+        };
+
+        add_run("run-002", Some("run-001"));
+        add_run("run-003", Some("run-001"));
+        assert_eq!(default_run(), "run-001");
+        add_run("run-004", None);
+        assert_eq!(default_run(), "run-004");
+        // A late child of the first workflow must not hide the newer workflow.
+        add_run("run-005", Some("run-001"));
+        assert_eq!(default_run(), "run-004");
+        let history = conversation_run_summary_page_vm(&app, project, task, None, 5).unwrap();
+        assert_eq!(
+            history.runs.iter().map(|r| r.run_id.as_str()).collect::<Vec<_>>(),
+            ["run-005", "run-004", "run-003", "run-002", "run-001"]
+        );
     }
 
     #[test]
@@ -10088,11 +10332,14 @@ pub fn update_task_metadata_vm(
     app: &App,
     project_id: &str,
     task_id: &str,
+    task_uuid: &str,
     title: &str,
     description: Option<&str>,
     pinned: bool,
     pin_order: Option<usize>,
 ) -> anyhow::Result<ConversationTaskRowVm> {
-    app.update_task_metadata(task_id, title, description)?;
-    conversation_task_row_vm(app, project_id, task_id, pinned, pin_order)
+    app.update_task_metadata(task_id, task_uuid, title, description)?;
+    let row = conversation_task_row_vm(app, project_id, task_id, pinned, pin_order)?;
+    anyhow::ensure!(row.task_uuid.as_deref() == Some(task_uuid), gold_band::app::ConversationTaskNotFound);
+    Ok(row)
 }

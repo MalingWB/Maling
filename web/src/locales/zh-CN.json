@@ -1183,6 +1183,35 @@
       "completion": {
         "repair-exhausted": "节点输出经 {{repairAttempts}} 次修复仍不符合协议，工作流已暂停。"
       }
+    },
+    "forge": {
+      "missing-goal": "阶段「{{stage}}」还没有目标",
+      "missing-goal-element": "阶段「{{stage}}」的目标缺少「{{element}}」",
+      "missing-success-condition": "阶段「{{stage}}」的 JSON 产物还没有成功条件",
+      "empty-stages": "工作流「{{workflow}}」还没有阶段",
+      "too-many-stages": "工作流「{{workflow}}」有 {{count}} 个阶段，超过上限 {{limit}}",
+      "missing-name": "工作流还没有名称",
+      "compile-failed": "工作流结构未通过检查：{{detail}}",
+      "unresolved-questions": "还有问题待对话确认",
+      "invalid-spec": "生成草稿格式有误：{{detail}}",
+      "unknown-failure-target": "阶段「{{stage}}」的失败目标「{{target}}」不存在",
+      "role-id-conflict": "阶段 {{stages}} 为「{{role}}」引用了不同角色",
+      "role-definition-conflict": "阶段 {{stages}} 对「{{role}}」的职责定义不一致",
+      "unavailable-role": "{{stage}}引用的角色「{{role}}」已不可用",
+      "readonly-role": "阶段「{{stage}}」引用的角色「{{role}}」为只读",
+      "target-unavailable": "原工作流已删除、被替换或无法继续修改。可以将草稿另存为新工作流。",
+      "source-session-unavailable": "无法读取所选会话的消息。请重新打开源会话后重试。",
+      "stale-message": "所选消息已更改。请回到源会话，重新选择起始消息。",
+      "revision-conflict": "草稿已更新。请核对最新内容后再保存。",
+      "duplicate-workflow-name": "已有名为「{{name}}」的工作流，请换一个名称"
+    },
+    "workflow-template": {
+      "duplicate-name": "已有名为「{{name}}」的工作流，请换一个名称"
+    },
+    "plugin": {
+      "asset-unavailable": "该素材已变更或无法读取，请刷新后重试。",
+      "bundle-unreadable": "无法完整导入此 Skill，请检查文件编码、数量和大小。",
+      "role-exists": "角色「{{name}}」已存在，未覆盖。"
     }
   },
   "status": {
@@ -1366,6 +1395,7 @@
   },
   "contextManagement": {
     "title": "上下文管理",
+    "forgeRoleHint": "勾选的角色只作为生成工作流的参考素材，不授予执行权限。",
     "profileManagement": "角色管理",
     "profileHint": "角色以 Markdown 文件存储，工作流节点通过全局唯一 ID 引用。",
     "addProfile": "新增角色",
@@ -1522,11 +1552,20 @@
           "multica.not-connected": "未连接远程来源"
         }
       },
-      "forgeAction": "从 skill 生成工作流（{{count}}）",
+      "forgeLimit": "最多可选择 {{count}} 项素材。",
+      "forgeModeUnavailable": "无法读取项目的运行设置。请重试。",
+      "forgeProjectUnavailable": "没有可用的挂靠项目。请先添加或重新打开项目，再重试。",
+      "forgeAction": "从所选素材生成工作流（{{count}}）",
       "forgeSelect": "选择 {{name}}",
       "forgeAnchorTitle": "选择挂靠项目",
-      "forgeAnchorInfo": "铸造会话与试运行将挂靠所选项目；生成的工作流模板全项目通用。",
-      "forgeAnchorConfirm": "开始铸造"
+      "forgeAnchorInfo": "生成会话与试运行将挂靠所选项目；生成的工作流模板全项目通用。",
+      "forgeAnchorConfirm": "开始生成",
+      "plugins": {
+        "tab": "Plugin",
+        "loading": "正在读取插件来源…",
+        "empty": "此范围没有插件或手动来源。",
+        "noAssets": "没有可作为素材的 skill、command 或 agent"
+      }
     },
     "importProfile": "导入角色",
     "importSettingsDescription": "从文件夹批量导入，或直接选择角色 Markdown 文件导入，缺失的名称和摘要会自动兜底。",
@@ -1684,12 +1723,27 @@
     "noRunsForFilter": "没有符合筛选条件的 Run",
     "openRoundA11y": "查看 {{runId}} 的 {{roundId}}",
     "sourceTag": {
-      "forged": "铸造",
+      "forged": "生成",
       "imported": "导入",
       "manual": "手动"
     }
   },
   "workflowEditor": {
+    "parallel": {
+      "insert": "添加并行分支",
+      "fork": "并行分叉",
+      "join": "汇合",
+      "cap": "同时运行的分支数",
+      "addStep": "添加步骤",
+      "addBranch": "添加分支",
+      "afterJoin": "在汇合后添加步骤",
+      "up": "上移 {{id}}",
+      "down": "下移 {{id}}",
+      "remove": "删除 {{id}}",
+      "invalid": "检查 {{id}}：并发数必须为 1–5，至少有两个非空且标识唯一的分支。每组最多 64 个普通步骤，不能复用步骤或启用人工复核。",
+      "invalidEntry": "开始不能直接指向分支中的步骤。",
+      "invalidEdge": "无法连接 {{from}} 和 {{to}}：分支只能在本分支内有限重试，分叉和汇合不能延续会话。"
+    },
     "title": "工作流编辑器",
     "subtitle": "通过画布创建节点和边，并为每个节点绑定 Agent。",
     "canvas": "画布",
@@ -1716,7 +1770,8 @@
     "profileCatalogLoadFailed": "角色目录加载失败",
     "profileCatalogRetry": "重新加载",
     "selectHint": "选择画布中的节点或边进行配置。",
-    "terminalSelectionHint": "终点节点无需配置，可通过画布上方的删除操作移除。",
+    "startSelectionHint": "将开始连到第一个要执行的节点。",
+    "terminalSelectionHint": "此控制节点不会创建会话。",
     "currentSelection": "当前选择",
     "currentSelectionHelp": "节点和边的配置优先显示在这里。",
     "workflowSettings": "工作流设置",
@@ -1886,6 +1941,7 @@
     "validationTerminalEdgeSource": "终止节点 {{node}} 不能作为边的来源。",
     "validationContinueTerminalTarget": "第 {{index}} 条边的 continue session 不能指向终止节点。",
     "nodeLabels": {
+      "start": "开始",
       "plan": "方案",
       "dev": "开发",
       "review": "审查",
@@ -3150,8 +3206,10 @@
       "remoteBindingTag": "{{source}} · {{title}}",
       "removeRemoteBinding": "解除任务绑定",
       "remoteAttachmentHint": "远程任务附件，发送时自动下载并附加",
-      "forgeBindingTag": "铸造 · {{title}}",
-      "removeForgeBinding": "解除铸造绑定"
+      "forgeBindingTag": "生成 · {{title}}",
+      "removeForgeBinding": "解除生成绑定",
+      "forgeProjectMismatch": "生成来源属于其他项目，请切换回该项目，或移除输入框中的生成标记后再发送",
+      "forgeRequiresDirect": "生成会话需要使用 Direct 模式，请切换后再发送"
     },
     "branchPicker": {
       "label": "分支",
@@ -3543,17 +3601,17 @@
   },
   "forge": {
     "entry": {
-      "action": "铸造为工作流",
-      "fromHere": "从此处铸造"
+      "action": "生成工作流",
+      "fromHere": "从此处生成工作流"
     },
     "prefill": {
-      "intro": "基于以下源会话铸造工作流，可补充要求后发送："
+      "intro": "基于以下源会话生成工作流，可补充要求后发送："
     },
     "preview": {
-      "title": "铸造预览",
-      "open": "打开铸造预览",
-      "loading": "正在读取铸造草稿…",
-      "empty": "尚未产出铸造草稿——对话收敛后此处展示阶段与契约。",
+      "title": "工作流预览",
+      "open": "打开工作流预览",
+      "loading": "正在读取生成草稿…",
+      "empty": "对话开始梳理流程后，这里会同步显示各个阶段。",
       "openQuestions": "待澄清",
       "outputKind": {
         "json": "JSON 产物",
@@ -3565,9 +3623,15 @@
         "retry": "自动重试",
         "manual-check": "人工复核",
         "new-round": "开启新一轮",
-        "end": "终止"
+        "end": "终止",
+        "jump": "跳转到阶段",
+        "new-round-from": "从指定阶段重开",
+        "jump-detail": "跳转到「{{stage}}」",
+        "jump-continue-detail": "返回「{{stage}}」并继续会话",
+        "new-round-from-detail": "从「{{stage}}」开始新一轮"
       },
       "role": {
+        "unassigned": "无角色",
         "dev": "开发",
         "test": "测试",
         "review": "审查",
@@ -3575,11 +3639,19 @@
         "accept": "验收"
       },
       "outputKindLabel": "产物形态",
+      "startGroupTrial": "试运行首个并行组",
+      "trialChanged": "工作流或执行绑定已更新，尚未开始试运行。请重新确认后再试运行。",
+      "groupTrialScope": "将试运行全部 {{branches}} 个分支，最多同时运行 {{cap}} 个；汇合后停止。",
+      "parallelFork": "并行 · {{id}}（最多 {{cap}} 支）",
+      "parallelJoin": "汇合 · {{id}}",
+      "parallelBranch": "{{group}} · 分支 {{branch}}",
       "onFailureLabel": "失败策略",
-      "compile": "编译为模板",
-      "compileHint": "Spec 收敛后编译为带产物契约的工作流模板",
-      "compileBlocked": "仍有待澄清项,收敛后可编译",
-      "startTrial": "试运行首节点",
+      "copyName": "“{{name}}”的新名称",
+      "saveCopy": "另存为新工作流",
+      "compile": "保存为工作流",
+      "compileHint": "各阶段在对话中确认完毕后，即可编译为工作流模板",
+      "compileBlocked": "回答待澄清的问题后即可保存。",
+      "startTrial": "试运行第一步",
       "startTrialHint": "以模板创建真实任务,跑通首个节点即停",
       "compiledCount": "已创建 {{count}} 个工作流模板",
       "bindingMissing": "尚未配置可用的模型绑定,试运行前请先在设置中完成绑定",
@@ -3588,42 +3660,123 @@
         "output": "产出",
         "boundary": "边界",
         "acceptance": "验收"
-      }
-    },
-    "history": {
-      "title": "铸造历史",
-      "subtitle": "铸造与试运行会话不进入默认会话列表,在此统一查看和清理。",
-      "loading": "正在读取铸造会话…",
-      "loadFailed": "铸造会话读取失败",
-      "empty": "当前项目没有铸造会话",
-      "sessionBadge": "铸造",
-      "trialBadge": "试运行",
-      "noSpec": "尚未产出铸造草稿",
-      "stageCount": "{{count}} 个阶段",
-      "openQuestionCount": "{{count}} 项待澄清",
-      "openQuestionHint": "仍有未收敛项,会话继续拷打后收敛",
-      "cleanupUnfinished": "清理未完成铸造",
-      "cleanupSelected": "清理所选（{{count}}）",
-      "cleanupConfirmTitle": "确认清理铸造会话",
-      "cleanupConfirmDescription": "将删除 {{count}} 个会话的任务目录（含对话记录与铸造草稿存档）,此操作无法撤销。",
-      "cleanupConfirmAction": "清理",
-      "selectSession": "选择 {{title}}"
-    },
-    "skillPrefill": {
-      "intro": "基于以下选中的 skill 铸造工作流，可补充要求后发送："
-    },
-    "report": {
-      "title": "升级对照",
-      "before": "铸造前",
-      "beforeFallback": "一段自然语言对话",
-      "after": "铸造后",
-      "capabilityStages": "{{count}} 个阶段自动衔接,每步做什么、交什么都已写清",
-      "capabilitySchema": "{{count}} 项产物带格式约定,机器自动核对是否合格",
-      "capabilityFailure": "{{count}} 处失败自动处理（重试或转入人工确认）,不会悄悄烂掉",
-      "capabilityResume": "中途断了可以从断点继续,不用从头再来"
+      },
+      "compiledUpdated": "已更新原工作流模板",
+      "compiledMixed": "已创建 {{created}} 个、更新 {{updated}} 个工作流模板",
+      "loadFailed": "生成草稿读取失败",
+      "stageOrdinal": "第 {{index}} 个阶段",
+      "deltaInvalid": "上一轮回复里的 Spec 增量格式有误，没有应用。可以让它重新输出。",
+      "untitled": "未命名工作流",
+      "adoptRecommendation": "采用推荐",
+      "adoptAll": "全部采用",
+      "adoptSent": "已发送",
+      "adoptUnavailable": "未能发送，请在对话中回复。",
+      "recommendationLabel": "推荐",
+      "adoptMessage": "关于「{{question}}」，我采用推荐：{{recommendation}}",
+      "adoptAllMessage": "采用以下推荐：{{items}}",
+      "adoptAllItem": "{{index}}. {{question}}：{{recommendation}}",
+      "savedCreated": "已创建「{{name}}」",
+      "savedUpdated": "已更新「{{name}}」",
+      "viewWorkflow": "查看工作流",
+      "keepAdjusting": "继续调整",
+      "keepAdjustingPrompt": "我想调整这个工作流：",
+      "staleAfterEdit": "草稿已修改，保存后可试运行新版。",
+      "changedBadge": "本轮修改",
+      "modifyStage": "修改此阶段",
+      "modifyStagePrompt": "我想修改第 {{index}} 步「{{name}}」：",
+      "technicalDetails": "技术细节",
+      "roleDefinition": "角色职责",
+      "failureTargetLabel": "返回阶段",
+      "restartTargetLabel": "新一轮起点",
+      "failureTargetPlaceholder": "选择阶段",
+      "continueSessionLabel": "沿用上次会话",
+      "conversationActiveHint": "本轮回复结束后可修改。"
     },
     "modifyPrefill": {
-      "intro": "已加载工作流「{{name}}」（{{count}} 个阶段）。请描述要做的修改，发送后进入引导式调整："
+      "intro": "已加载工作流「{{name}}」（{{count}} 个阶段）。请描述要做的修改，发送后进入引导式调整：",
+      "builtinIntro": "基于内置工作流「{{name}}」（{{count}} 个阶段）创建副本。请写下新名称和要修改的内容，原工作流保持不变："
+    },
+    "repair": {
+      "stop": "停止修正",
+      "errorsTitle": "以下问题尚未解决：",
+      "inProgress": "编译未通过，正在自动修正（第 {{attempt}}/{{max}} 轮）…",
+      "recompiling": "修正完成，正在重新编译…",
+      "exhausted": "已自动修正 {{attempt}} 轮仍未通过，请回到对话逐项确认后再编译。",
+      "handedBack": "还有问题需要你来确认，回到对话回答后即可编译。",
+      "busy": "对话还在回复中，等回复结束后再编译。",
+      "unavailable": "修正请求没有发出去，请确认会话可用后重新编译。",
+      "turnCancelled": "自动修正被中断，可重新编译。",
+      "unconfirmed": "无法确认本轮修正的完整回复。请在对话中确认草稿后重新编译。",
+      "turnFailed": "自动修正这一轮执行失败，可重新编译。",
+      "noChange": "这一轮修正没有产生可用的调整，请在对话里说明要改什么。",
+      "compileFailed": "重新编译失败，可重试。",
+      "aborted": "已停止自动修正。",
+      "invalidDelta": "模型这一轮输出的 Spec 增量格式有误，没有应用。请重新编译再试。"
+    },
+    "history": {
+      "title": "工作流生成历史",
+      "allProjects": "所有项目",
+      "clearFilters": "清除筛选",
+      "kind": "记录类型",
+      "allKinds": "所有类型",
+      "search": "搜索标题或描述",
+      "loading": "正在加载生成历史…",
+      "failed": "无法加载生成历史。",
+      "partial": "部分记录无法读取。",
+      "empty": "没有符合条件的生成或试跑记录。",
+      "newest": "返回最新记录",
+      "noRun": "尚未运行",
+      "lastActivity": "最近活动：{{time}}"
+    },
+    "itemsPrefill": {
+      "intro": "请根据以下素材生成工作流：",
+      "title": "从 {{count}} 项素材生成工作流",
+      "kind": {
+        "role": "角色",
+        "skill": "skill",
+        "command": "command",
+        "agent": "agent"
+      },
+      "scope": {
+        "built-in": "内置",
+        "global": "全局",
+        "project": "项目"
+      }
+    },
+    "session": {
+      "badge": "生成",
+      "projectHistory": "本项目生成历史",
+      "searchHistory": "搜索生成历史",
+      "trialBadge": "试运行"
+    },
+    "chat": {
+      "draftUpdating": "正在生成草稿…",
+      "draftUpdated": "查看草稿内容"
     }
+  },
+  "plugin": {
+    "importSkill": "导入 Skill",
+    "importRole": "导入为角色",
+    "skillConfirm": "将 Skill 及其支撑文件复制到同作用域的 Skill 库，不安装插件。需要其他 Agent 使用时，请在 Skill 列表选择同步目标；插件专属工具仍由原宿主提供。",
+    "roleConfirm": "创建用户角色，只导入职责正文，不复制插件的工具权限或配置。",
+    "skillImported": "已导入，可在 Skill 列表选择同步目标。",
+    "forget": "移除来源",
+    "forgetConfirm": "仅移除此补充来源，不删除目录或文件。",
+    "unavailable": "来源已失效，请重新选择目录或移除来源。",
+    "unsupportedBundle": "仍可读取定义，但不支持导入此 Skill 包。",
+    "manualEngine": "使用 CodeBuddy 引擎；所选目录不代表已安装。",
+    "desktopBundled": "WorkBuddy · 桌面版内置",
+    "desktopRegistry": "WorkBuddy · 桌面版已登记（不表示已启用）",
+    "manualSource": "WorkBuddy · 手动来源",
+    "codeBuddyCli": "CodeBuddy Code（CLI）",
+    "hostSource": "宿主来源",
+    "selectDirectory": "从目录导入",
+    "replaceDirectory": "更换目录",
+    "directoryHint": "可选 WorkBuddy 安装目录、含 SKILL.md 的目录或已解压的专家包。只加入素材列表，不安装插件。",
+    "assetCount": "{{count}} 项功能",
+    "showRemaining": "展开其余 {{count}} 项",
+    "collapse": "收起",
+    "workBuddyCompatible": "WorkBuddy 代码开发模式可读",
+    "roleImported": "已添加到用户角色库。"
   }
 }

@@ -2148,6 +2148,206 @@ fn read_event_from_file_at_locator(
 
 pub mod composer_history;
 
+pub(crate) enum VisibleExchange {
+    Window {
+        events: Vec<AcpUiEvent>,
+        truncated: bool,
+    },
+    StaleMessage,
+    Unavailable,
+}
+
+const EXCHANGE_READ_BYTES: u64 = 512 * 1024;
+const EXCHANGE_CHECKPOINT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Reading an exchange is not index maintenance: never rebuild an unbounded transcript.
+fn bounded_exchange_index_unlocked(path: &Utf8Path) -> Result<Option<TimelineMaterializedIndex>> {
+    let checkpoint = timeline_index_path(path);
+    let len = std::fs::metadata(path)?.len();
+    let current = checkpoint
+        .metadata()
+        .ok()
+        .filter(|meta| meta.len() <= EXCHANGE_CHECKPOINT_BYTES)
+        .and_then(|_| crate::storage::read_json::<TimelineMaterializedIndex>(&checkpoint).ok());
+    Ok(match current {
+        Some(mut index)
+            if index.format_version == TIMELINE_INDEX_FORMAT_VERSION
+                && index.covered_offset <= len
+                && len - index.covered_offset <= EXCHANGE_READ_BYTES
+                && timeline_prefix_fingerprint(path, index.covered_offset)?
+                    == index.covered_prefix_fingerprint =>
+        {
+            replay_index_tail_unlocked(path, &mut index, usize::MAX)?;
+            Some(index)
+        }
+        _ if len <= EXCHANGE_READ_BYTES => Some(rebuild_index_unlocked(path)?.0),
+        _ => None,
+    })
+}
+
+/// A terminal may arrive after a newer prompt. Only return a *complete* reply owned by
+/// the latest root prompt, using one locked, bounded index snapshot. Never parse a suffix.
+pub(crate) fn finished_prompt_reply(path: &Utf8Path, prompt_id: &str) -> Result<Option<String>> {
+    with_jsonl_file_lock(path, || {
+        let Some(index) = bounded_exchange_index_unlocked(path)? else {
+            return Ok(None);
+        };
+        let root = super::branches::ROOT_BRANCH_ID;
+        let Some((anchor_id, anchor)) = index
+            .item_locators
+            .iter()
+            .filter(|(_, loc)| {
+                loc.branch_id == root && loc.gold_band_prompt && loc.kind == "userTextDelta"
+            })
+            .max_by_key(|(_, loc)| loc.started_seq)
+        else {
+            return Ok(None);
+        };
+        if anchor.prompt_id.as_deref() != Some(prompt_id)
+            || anchor.line_length > EXCHANGE_READ_BYTES
+        {
+            return Ok(None);
+        }
+        let mut file = File::open(path)?;
+        let event = read_event_from_file_at_locator(&mut file, anchor)?;
+        if event.id != *anchor_id
+            || event.seq != anchor.seq
+            || timeline_prompt_id(&event).as_deref() != Some(prompt_id)
+        {
+            return Ok(None);
+        }
+        let mut bytes = anchor.line_length;
+        let mut reply = Vec::new();
+        for (id, loc) in &index.item_locators {
+            if loc.branch_id != root
+                || loc.kind != "textDelta"
+                || loc.ended_seq <= anchor.started_seq
+            {
+                continue;
+            }
+            if loc.started_seq <= anchor.started_seq
+                || loc.line_length > EXCHANGE_READ_BYTES - bytes
+            {
+                return Ok(None);
+            }
+            bytes += loc.line_length;
+            reply.push((id, loc));
+        }
+        reply.sort_unstable_by_key(|(_, loc)| (loc.started_seq, loc.seq));
+        let mut text = String::new();
+        for (id, loc) in reply {
+            let event = read_event_from_file_at_locator(&mut file, loc)?;
+            if event.id != *id
+                || event.seq != loc.seq
+                || event.kind != "textDelta"
+                || super::branches::event_branch_id(&event) != root
+            {
+                return Ok(None);
+            }
+            if let Some(chunk) = event.content {
+                text.push_str(&chunk);
+            }
+        }
+        Ok(Some(text))
+    })
+}
+
+/// Read only settled message bodies from a bounded window of the selected visual branch.
+/// Tool/activity payloads are never opened. The cursor is checked against the same index
+/// snapshot used to select messages, not a timestamp or another branch's sequence.
+pub(crate) fn visible_exchange_window(
+    path: &Utf8Path,
+    branch: &str,
+    after: Option<(&str, u64)>,
+) -> Result<VisibleExchange> {
+    const BLOCK_LIMIT: usize = 64;
+    with_jsonl_file_lock(path, || {
+        let Some(index) = bounded_exchange_index_unlocked(path)? else {
+            return Ok(if after.is_none() {
+                VisibleExchange::Window { events: Vec::new(), truncated: true }
+            } else { VisibleExchange::Unavailable });
+        };
+        let after_position = if let Some((id, seq)) = after {
+            let Some(loc) = index.item_locators.get(id).filter(|loc| {
+                loc.ended_seq == seq
+                    && loc.branch_id == branch
+                    && !loc.hidden_from_chat
+                    && loc.kind == "textDelta"
+            }) else {
+                return Ok(VisibleExchange::StaleMessage);
+            };
+            Some(loc.started_seq)
+        } else {
+            None
+        };
+        let mut file = File::open(path)?;
+        let mut bytes_left = EXCHANGE_READ_BYTES;
+        let mut events = Vec::new();
+        let mut clipped = false;
+        for (i, block) in index.semantic_blocks.iter().rev().enumerate() {
+            if after_position.is_some_and(|pos| block.oldest_seq <= pos) {
+                break;
+            }
+            if i == BLOCK_LIMIT {
+                clipped = true;
+                break;
+            }
+            if block.activity {
+                continue;
+            }
+            for id in block.item_ids.iter().rev() {
+                let Some(loc) = index.item_locators.get(id) else {
+                    continue;
+                };
+                if loc.hidden_from_chat
+                    || loc.branch_id != branch
+                    || loc.retry_prompt
+                    || !matches!(loc.kind.as_str(), "textDelta" | "userTextDelta")
+                    || matches!(
+                        loc.status.as_deref(),
+                        Some(
+                            "streaming"
+                                | "running"
+                                | "in-progress"
+                                | "in_progress"
+                                | "pending"
+                                | "failed"
+                                | "cancelled"
+                        )
+                    )
+                {
+                    continue;
+                }
+                if loc.line_length > bytes_left {
+                    clipped = true;
+                    continue;
+                }
+                bytes_left -= loc.line_length;
+                let event = read_event_from_file_at_locator(&mut file, loc)?;
+                ensure!(
+                    event.id == *id && event.kind == loc.kind && event.seq == loc.seq,
+                    "forge/stale-message"
+                );
+                if super::branches::event_branch_id(&event) == branch
+                    && !event
+                        .raw
+                        .as_ref()
+                        .and_then(|raw| raw.get("hiddenFromChat"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                {
+                    events.push(event);
+                }
+            }
+        }
+        events.reverse();
+        Ok(VisibleExchange::Window {
+            events,
+            truncated: clipped,
+        })
+    })
+}
+
 pub fn read_indexed_timeline_page(
     path: &Utf8Path,
     before_seq: Option<u64>,

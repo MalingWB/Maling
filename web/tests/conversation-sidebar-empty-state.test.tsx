@@ -101,7 +101,7 @@ describe('ConversationSidebar workspace empty state', () => {
     const loaded = loadedWorkspace([task('task-only')]);
     expect(await renderedText(loaded)).not.toContain(EMPTY_TEXT);
 
-    const removed = removeConversationSidebarTask(loaded, 'project-a', 'task-only');
+    const removed = removeConversationSidebarTask(loaded, 'project-a', 'task-only', task('task-only').taskUuid!);
     expect(await renderedText(removed)).toContain(EMPTY_TEXT);
   });
 

@@ -26,7 +26,7 @@ vi.mock('@/components/prompt-kit/markdown', () => ({
   Markdown: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
-import { ACPChatDialog, createAcpEventWindowCacheKey } from '@/components/acp/ACPChatDialog';
+import { ACPChatDialog, createAcpEventWindowCacheKey, type AcpChatDialogHandle } from '@/components/acp/ACPChatDialog';
 import { useAcpComposerDraft, type AcpComposerDraft } from '@/lib/acp-composer-draft';
 import { getRuntimeApi } from '@/api/client';
 import i18n from '@/i18n';
@@ -239,6 +239,7 @@ function readySessionHistory(): Pick<AcpSessionVm, 'events' | 'eventPage'> {
 }
 
 async function renderPausedDialog(options: {
+  dialogRef?: React.RefObject<AcpChatDialogHandle | null>;
   initialDraft?: AcpComposerDraft;
   onSubmitManualCheck?: (outcome: 'success' | 'failure') => Promise<void>;
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
@@ -282,6 +283,7 @@ async function renderPausedDialog(options: {
     root.render(
       <TestProviders>
         <ACPChatDialog
+          ref={options.dialogRef}
           session={nextSession}
           projectId={`project-${id}`}
           taskId={`task-${id}`}
@@ -467,6 +469,22 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.body.replaceChildren();
+});
+
+describe('ACP programmatic repair admission', () => {
+  it.each([['repair-id', 'accepted'], ['other-turn', 'unconfirmed'], [null, 'unconfirmed']] as const)(
+    'sends the reserved prompt ID and checks the returned admission %s', async (turnId, expected) => {
+      const dialogRef = React.createRef<AcpChatDialogHandle>();
+      const { root } = await renderPausedDialog({ dialogRef, isOrchestrated: false });
+      try {
+        apiMocks.submitConversationPrompt.mockResolvedValue({ kind: 'acp-session-started', turnId });
+        await act(async () => {
+          expect(await dialogRef.current!.submitPrompt({ displayText: 'repair', quotes: [] }, 'repair-id')).toBe(expected);
+        });
+        expect(apiMocks.submitConversationPrompt.mock.lastCall?.[7]).toBe('repair-id');
+      } finally { await unmount(root); }
+    },
+  );
 });
 
 describe('ACP runtime continue submission', () => {

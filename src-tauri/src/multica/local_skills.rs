@@ -626,6 +626,7 @@ mod tests {
             source: SkillSource::Global,
             directory_path: dir_path.into(),
             agent_source: agent_source.into(),
+            work_buddy_code_mode_readable: false,
             load_warnings: vec![],
             synced_agent_types: Vec::new(),
         }

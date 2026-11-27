@@ -4,6 +4,7 @@ import {
   findConversationTask,
 } from '@/lib/conversation-task-state';
 import type { ConversationSidebarVm, ConversationTaskRowVm } from '@/types';
+import { createEmptyConversationSidebar } from '@/lib/conversation-sidebar-loading';
 
 function task(
   projectId: string,
@@ -26,6 +27,7 @@ function task(
 
 function sidebar(tasks: ConversationTaskRowVm[]): ConversationSidebarVm {
   return {
+    ...createEmptyConversationSidebar(),
     workspaces: [
       { projectId: 'project-a', workspacePath: '/a', name: 'A' },
       { projectId: 'project-b', workspacePath: '/b', name: 'B' },
@@ -47,6 +49,24 @@ describe('conversation task canonical state', () => {
 
     expect(findConversationTask(state, 'project-a', 'task-1')?.title).toBe('Title A');
     expect(findConversationTask(state, 'project-b', 'task-1')?.title).toBe('Title B');
+  });
+
+  it.each(['forge', 'forge-trial'])('lists %s sessions with every other conversation', (origin) => {
+    // 生成会话与试运行会话就是一条普通会话记录：创建成功后立即并入工作空间与近期会话，
+    // 任务行带着 origin 供列表打标；删除走会话列表的同一个入口。
+    const state = {
+      ...sidebar([task('project-a', 'task-1', 'Title A')]),
+      recentTasks: [],
+      recentTaskPage: { status: 'ready' } as ConversationSidebarVm['recentTaskPage'],
+    };
+    const created = task('project-a', 'task-002', '发布闸门', { origin, runHistoryStatus: 'not-loaded' });
+
+    const next = applyConversationTaskSnapshot(state, created);
+
+    expect(next.tasksByWorkspace['project-a'].map((candidate) => candidate.taskId))
+      .toEqual(['task-002', 'task-1']);
+    expect(next.recentTasks.map((candidate) => candidate.taskId)).toEqual(['task-002']);
+    expect(findConversationTask(next, 'project-a', 'task-002')?.origin).toBe(origin);
   });
 
   it('applies one authoritative snapshot to workspace and pinned projections', () => {

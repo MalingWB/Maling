@@ -21,7 +21,11 @@ import {
   type Viewport,
 } from '@xyflow/react';
 import { useTranslation } from 'react-i18next';
+import { ParallelGroupInspector } from './ParallelGroupInspector';
+import { availableId, createAuthoringWorkerNode, editParallelGroup, hasParallelShape, insertParallelGroup, invalidParallelGroups, parallelEdgeAllowed, parallelMembers, WORKFLOW_PARALLEL_DEFAULT } from '@/lib/workflow-parallel';
+export { createAuthoringWorkerNode } from '@/lib/workflow-parallel';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { looksLikeJsonSchema } from '@/lib/output-schema';
 import { agentDiagnosticShortReason } from '@/lib/agent-diagnostic';
 import type { AgentRegistryVm, DynamicAgentRefDsl, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkerModelBinding, WorkflowAiDynamicDynamicAgentStrategyDsl, WorkflowAiDynamicFixedAgentStrategyDsl, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowModelBindings, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
 import {
@@ -32,6 +36,7 @@ import {
   NODE_HEIGHT,
   TERMINAL_NODE_HEIGHT,
   collectAuthoringNodes,
+  authoringParallelTopology,
   entryAnchoredViewport,
   newRoundEntryNodeId,
   terminalNodeWidth,
@@ -114,8 +119,10 @@ type EditorNodeData = {
   targetPosition?: Position;
   sourcePosition?: Position;
   iconKey?: string;
-  entryCandidate?: boolean;
-  entryLabel?: string;
+  start?: boolean;
+  structural?: boolean;
+  join?: boolean;
+  member?: boolean;
   selected?: boolean;
   supportsFailureOutcome?: boolean;
   successLabel?: string;
@@ -125,7 +132,9 @@ type EditorNodeData = {
   onQuickAdd?: (outcome: EdgeOutcome) => void;
   onDelete?: () => void;
 };
-type WorkflowEdgeData = { outcome: WorkflowEdgeDsl['on']; route?: WorkflowLayoutRoute };
+type WorkflowEdgeData = { route?: WorkflowLayoutRoute };
+// A layout link for DSL.entry, never an outcome edge or a session transition.
+const ENTRY_LINK_ID = 'editor-entry-link';
 export type WorkflowValidationIssue = { message: string; fieldKey?: string; nodeId?: string; nodeIds?: string[]; edgeIndex?: number };
 export type WorkflowValidationResult = {
   valid: boolean;
@@ -268,21 +277,8 @@ export function workerAgentSelectionPatch(provider: string): Partial<WorkflowWor
   };
 }
 
-export function nodeSupportsFailureOutcome(node: WorkflowNodeDsl | undefined): boolean {
-  return node?.type === 'worker' && Boolean(node.manual_check || node.output || node.success_condition);
-}
-
-export function createAuthoringWorkerNode(
-  workflow: WorkflowDsl,
-  baseId: string,
-  createSlotId: () => string = () => crypto.randomUUID(),
-): WorkflowWorkerNodeDsl {
-  return {
-    type: 'worker',
-    id: uniqueNodeId(workflow, baseId),
-    executionSlotId: createSlotId(),
-    goal: null,
-  };
+export function nodeSupportsFailureOutcome(node: WorkflowNodeDsl | undefined, branchMember = false): boolean {
+  return node?.type === 'parallel-group' || (node?.type === 'worker' && (branchMember || Boolean(node.manual_check || node.output || node.success_condition)));
 }
 
 export function upsertWorkerModelBinding(
@@ -306,7 +302,7 @@ export function upsertWorkerModelBinding(
 }
 
 export function removeTerminalFromWorkflow(workflow: WorkflowDsl, terminalId: string): WorkflowDsl {
-  if (terminalId !== END_NODE && terminalId !== NEW_ROUND_NODE) return workflow;
+  if (terminalId !== NEW_ROUND_NODE) return workflow;
   return { ...workflow, edges: workflow.edges.filter((edge) => edge.to !== terminalId) };
 }
 
@@ -360,7 +356,7 @@ function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
       : { top: WORKFLOW_NODE_SINGLE_OUTCOME_TOP };
     return (
       <div data-theme-role="workflow-node" className="flex size-full items-center justify-center rounded-full border border-dashed border-border/80 bg-muted/20 px-3 text-xs tracking-wide text-muted-foreground">
-        <Handle type="target" position={data.targetPosition ?? Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" style={terminalHandleStyle} />
+        <Handle type={data.start ? "source" : "target"} position={data.start ? data.sourcePosition! : data.targetPosition!} className="!size-2 !border-2 !border-card !bg-muted-foreground" style={terminalHandleStyle} />
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="min-w-0 truncate">{data.label}</span>
@@ -375,7 +371,7 @@ function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
   const failureHandleStyle = vertical ? { left: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure } : { top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure };
   return (
       <div data-theme-role="workflow-node" data-selected={data.selected} className="relative flex size-full flex-col items-center justify-center gap-1 border border-border bg-card px-3 py-2">
-      <NodeToolbar isVisible={data.selected} position={Position.Bottom} offset={10} className="flex items-center gap-1 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
+      <NodeToolbar isVisible={data.selected && !data.structural && !data.member} position={Position.Bottom} offset={10} className="flex items-center gap-1 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button type="button" variant="ghost" size="sm" className="nodrag nopan h-7 gap-1 px-2 text-xs" onClick={() => data.onQuickAdd?.('success')}>
@@ -405,16 +401,11 @@ function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
           <TooltipContent>{data.deleteLabel}</TooltipContent>
         </Tooltip>
       </NodeToolbar>
-      {data.entryCandidate ? (
-        <Badge variant="outline" className="pointer-events-none absolute -left-1 -top-2 z-10 h-5 rounded-full bg-background px-1.5 text-[10px] font-medium">
-          {data.entryLabel}
-        </Badge>
-      ) : null}
       {/* Shares the primary source handle height so success chains stay on one row (workflowTargetHandleRatio). */}
-      <Handle type="target" position={data.targetPosition ?? Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" style={successHandleStyle} />
+      <Handle type="target" isConnectableEnd={!data.join} position={data.targetPosition ?? Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" style={successHandleStyle} />
       <Tooltip>
         <TooltipTrigger asChild>
-          <Handle id="success" type="source" position={data.sourcePosition ?? Position.Right} className="workflow-handle-success !size-2.5 !border-2 !border-card !bg-emerald-500" style={successHandleStyle} />
+          <Handle id="success" type="source" isConnectableStart={!data.member && (!data.structural || data.join)} position={data.sourcePosition ?? Position.Right} className="workflow-handle-success !size-2.5 !border-2 !border-card !bg-emerald-500" style={successHandleStyle} />
         </TooltipTrigger>
         <TooltipContent>{data.successLabel}</TooltipContent>
       </Tooltip>
@@ -473,7 +464,7 @@ interface WorkflowEditorProps {
 export function WorkflowEditor({ className, value, modelBindings: modelBindingsValue, agentRegistry, profileCatalog, onOpenProfileManagement, onSave, onChange, onModelBindingsChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, validateModelBindings = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0, focusNodeId = null, initialSessionDraft, onSessionDraftChange, sessionSnapshotRef, draftScope, onLayoutChange, focusInspectorRequest = 0, restoreRequestId = 0 }: WorkflowEditorProps) {
   const measuredWorkflowEditorRef = useWebviewMeasuredContainer<HTMLDivElement>('workflow-editor');
   const { t } = useTranslation();
-  const initialWorkflow = useMemo(() => normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(value)), [value]);
+  const initialWorkflow = useMemo(() => normalizeWorkflowSchemas(value), [value]);
   const restoredWorkflow = initialSessionDraft?.workflow ?? initialWorkflow;
   const [workflow, setWorkflow] = useState<WorkflowDsl>(restoredWorkflow);
   const [modelBindings, setModelBindings] = useState<WorkflowModelBindings>(() => normalizeWorkflowModelBindings(initialSessionDraft?.modelBindings ?? modelBindingsValue));
@@ -557,6 +548,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const handledInspectorRequestRef = useRef(0);
   const handledRestoreRequestRef = useRef(0);
   const externalChangeTimerRef = useRef<number | null>(null);
+  const jsonHistoryRecorded = useRef(false);
   const historyRef = useRef<WorkflowEditorHistory>({ past: [], future: [] });
   const viewportRef = useRef<Viewport>(initialSessionDraft?.viewport ?? { x: 0, y: 0, zoom: 1 });
   const hasStableViewportRef = useRef(Boolean(initialSessionDraft?.viewport));
@@ -624,6 +616,11 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     () => createAuthoringGraph(workflow, visibleTerminalIds, t, layoutDirection),
     [visibleTerminalSignature, workflowTopologySignature, layoutDirection, t],
   );
+  const joinOwner = selectedTerminalId ? authoringGraph.parallel.groupByJoin.get(selectedTerminalId) : null;
+  const selectedGroup = selectedNode?.type === 'parallel-group' ? selectedNode : workflow.nodes.find(n => n.type === 'parallel-group' && n.id === joinOwner);
+  const selectedMember = selectedNodeId ? authoringGraph.parallel.members.get(selectedNodeId) : undefined;
+  const forkSource = selectedTerminalId === authoringGraph.startId ? null : selectedGroup?.id ?? (selectedNode?.type === 'worker' && !selectedMember ? selectedNode.id : undefined);
+  const forkEdges = workflow.edges.filter(e => e.from === forkSource && e.on === 'success');
   const layoutState = useWorkflowLayout(authoringGraph.spec);
   const graphLayout = layoutState.layout;
   const handleCanvasQuickAdd = useCallback((nodeId: string, outcome: EdgeOutcome) => canvasActionsRef.current.quickAdd(nodeId, outcome), []);
@@ -668,7 +665,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   useEffect(() => {
     if (!restoreRequestId || handledRestoreRequestRef.current === restoreRequestId) return;
     handledRestoreRequestRef.current = restoreRequestId;
-    const nextWorkflow = normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(value));
+    const nextWorkflow = normalizeWorkflowSchemas(value);
     setWorkflow(nextWorkflow);
     setJsonDraft(JSON.stringify(nextWorkflow, null, 2));
     setJsonError(null);
@@ -680,6 +677,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     setVisibleTerminalIds(new Set());
     setTerminalMenu(null);
     setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(nextWorkflow));
+    jsonHistoryRecorded.current = false;
     historyRef.current = { past: [], future: [] };
     setHistoryRevision((revision) => revision + 1);
   }, [clearCanvasSelection, modelBindingsValue, restoreRequestId, value]);
@@ -711,6 +709,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     setVisibleTerminalIds(new Set());
     setTerminalMenu(null);
     setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(initialWorkflow));
+    jsonHistoryRecorded.current = false;
     historyRef.current = { past: [], future: [] };
     setHistoryRevision((revision) => revision + 1);
   }, [clearCanvasSelection, initialWorkflow]);
@@ -730,6 +729,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     setTab('canvas');
     setSelectedNodeId(focusNodeId);
     setSelectedEdgeId(null);
+    setSelectedTerminalId(null);
     setPendingFocusNodeId(focusNodeId);
   }, [focusNodeId, workflow.nodes]);
 
@@ -763,13 +763,12 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   }, []);
 
   const applyWorkflowWithoutHistory = useCallback((next: WorkflowDsl) => {
-    const normalizedNext = normalizeWorkflowEntryFromTopology(next);
     setFieldErrors({});
     setInvalidNodeIds(new Set());
     setJsonError(null);
-    setWorkflow(normalizedNext);
-    queueExternalChange(normalizedNext);
-    return normalizedNext;
+    setWorkflow(next);
+    queueExternalChange(next);
+    return next;
   }, [queueExternalChange]);
 
   const syncWorkflow = useCallback((next: WorkflowDsl) => {
@@ -783,21 +782,23 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     const result = undoWorkflowHistory(historyRef.current, workflowRef.current);
     if (!result) return;
     historyRef.current = result.history;
+    if (tab === 'json') { setJsonDraft(JSON.stringify(result.workflow, null, 2)); jsonHistoryRecorded.current = false; }
     applyWorkflowWithoutHistory(result.workflow);
     clearCanvasSelection();
     setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(result.workflow));
     setHistoryRevision((revision) => revision + 1);
-  }, [applyWorkflowWithoutHistory, clearCanvasSelection]);
+  }, [applyWorkflowWithoutHistory, clearCanvasSelection, tab]);
 
   const redoWorkflow = useCallback(() => {
     const result = redoWorkflowHistory(historyRef.current, workflowRef.current);
     if (!result) return;
     historyRef.current = result.history;
+    if (tab === 'json') { setJsonDraft(JSON.stringify(result.workflow, null, 2)); jsonHistoryRecorded.current = false; }
     applyWorkflowWithoutHistory(result.workflow);
     clearCanvasSelection();
     setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(result.workflow));
     setHistoryRevision((revision) => revision + 1);
-  }, [applyWorkflowWithoutHistory, clearCanvasSelection]);
+  }, [applyWorkflowWithoutHistory, clearCanvasSelection, tab]);
 
   const syncModelBindings = (next: WorkflowModelBindings) => {
     setModelBindings(next);
@@ -837,16 +838,42 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     setPendingValidation(null);
   };
 
+  const selectDefinitionNode = (id: string) => {
+    setSelectedNodeId(id);
+    setSelectedEdgeId(null);
+    setSelectedTerminalId(null);
+  };
+
+  const addFork = () => {
+    if (forkSource === undefined) return;
+    const result = insertParallelGroup(workflow, forkSource);
+    if (!result) return;
+    syncWorkflow(result.workflow);
+    selectDefinitionNode(result.group.id);
+    setPendingFocusNodeId(result.group.id);
+  };
+
   const handleConnect = (connection: Connection) => {
     if (!connection.source || !connection.target) return;
+    const { parallel } = authoringGraph;
+    if (connection.target === authoringGraph.startId || parallel.groupByJoin.has(connection.target) || parallel.joinByGroup.has(connection.source)) return;
+    if (connection.source === authoringGraph.startId) {
+      if (!parallel.members.has(connection.target) && workflow.entry !== connection.target && workflow.nodes.some(node => node.id === connection.target)) {
+        syncWorkflow({ ...workflow, entry: connection.target });
+        clearCanvasSelection();
+      }
+      return;
+    }
     if (connection.source === END_NODE || connection.source === NEW_ROUND_NODE) return;
-    const sourceNode = workflow.nodes.find((node) => node.id === connection.source);
-    if (connection.sourceHandle === 'failure' && !nodeSupportsFailureOutcome(sourceNode)) return;
+    const from = parallel.groupByJoin.get(connection.source) ?? connection.source;
+    const sourceNode = workflow.nodes.find((node) => node.id === from);
+    if (connection.sourceHandle === 'failure' && !nodeSupportsFailureOutcome(sourceNode, parallel.members.has(from))) return;
     const edge: WorkflowEdgeDsl = {
-      from: connection.source,
+      from,
       to: connection.target,
       on: connection.target === NEW_ROUND_NODE || connection.sourceHandle === 'failure' ? 'failure' : 'success',
     };
+    if (!parallelEdgeAllowed(workflow, edge, parallel.members) || workflow.edges.some(e => e.from === from && e.on === edge.on)) return;
     const next = { ...workflow, edges: [...workflow.edges, edge] };
     syncWorkflow(next);
     setSelectedEdgeId(edgeId(edge, next.edges.length - 1));
@@ -873,15 +900,11 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   };
 
   const handleSave = async () => {
-    let workflowToSave = workflow;
+    const workflowToSave = activeWorkflowEditorDefinition({workflow, tab, jsonDraft});
+    if (!workflowToSave) { setJsonError(t('workflowEditor.outputSchemaInvalid')); return; }
     if (tab === 'json') {
-      const parsed = parseWorkflowJson(jsonDraft);
-      if (!parsed) {
-        setJsonError(t('workflowEditor.outputSchemaInvalid'));
-        return;
-      }
-      workflowToSave = normalizeWorkflowJsonForAuthoring(parsed, workflow);
       setWorkflow(workflowToSave);
+      clearCanvasSelection();
       setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(workflowToSave));
       queueExternalChange(workflowToSave);
     }
@@ -919,6 +942,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     syncWorkflow(next);
     setSelectedNodeId(id);
     setSelectedEdgeId(null);
+    setSelectedTerminalId(null);
     setPendingFocusNodeId(id);
   };
 
@@ -944,13 +968,21 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
 
   const deleteNodeById = useCallback((nodeId: string) => {
     const currentWorkflow = workflowRef.current;
-    const nodes = currentWorkflow.nodes.filter((node) => node.id !== nodeId);
+    const member = parallelMembers(currentWorkflow.nodes).get(nodeId);
+    if (member) {
+      const next = editParallelGroup(currentWorkflow, member.group, { kind: 'remove-step', branch: member.branch.id, step: nodeId });
+      if (next !== currentWorkflow) { syncWorkflow(next); clearCanvasSelection(); }
+      return;
+    }
+    const target = currentWorkflow.nodes.find(n => n.id === nodeId);
+    const removed = new Set([nodeId, ...(target?.type === 'parallel-group' ? target.branches.flatMap(b => b.stages) : [])]);
+    const nodes = currentWorkflow.nodes.filter((node) => !removed.has(node.id));
     const next = {
       ...currentWorkflow,
-      entry: currentWorkflow.entry === nodeId ? nodes[0]?.id ?? '' : currentWorkflow.entry,
+      entry: currentWorkflow.entry === nodeId ? '' : currentWorkflow.entry,
       nodes,
       edges: currentWorkflow.edges
-        .filter((edge) => edge.from !== nodeId && edge.to !== nodeId)
+        .filter((edge) => !removed.has(edge.from) && !removed.has(edge.to))
         .map((edge) => {
           if (edge.new_round_entry !== nodeId) return edge;
           const updated = { ...edge };
@@ -983,7 +1015,11 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     const node = createAuthoringWorkerNode(currentWorkflow, `node-${currentWorkflow.nodes.length + 1}`);
     const id = node.id;
     const edge: WorkflowEdgeDsl = { from: sourceId, to: id, on: outcome };
-    const next = { ...currentWorkflow, nodes: [...currentWorkflow.nodes, node], edges: [...currentWorkflow.edges, edge] };
+    const previous = currentWorkflow.edges.filter(e => e.from === sourceId && e.on === outcome);
+    if (previous.length > 1 || previous[0]?.session === 'continue') return;
+    const continuation: WorkflowEdgeDsl[] = previous.length ? [{ ...previous[0], from: id, on: 'success' }] : [];
+    if (previous.length && outcome === 'failure') return;
+    const next = { ...currentWorkflow, nodes: [...currentWorkflow.nodes, node], edges: [...currentWorkflow.edges.filter(e => e !== previous[0]), edge, ...continuation] };
     syncWorkflow(next);
     setSelectedNodeId(id);
     setSelectedEdgeId(null);
@@ -993,7 +1029,8 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
 
   const updateNode = (nodeId: string, patch: Partial<WorkflowNodeDsl>) => {
     const nextId = patch.id && patch.id !== nodeId ? sanitizeNodeId(patch.id, workflow, nodeId) : null;
-    const nodes = workflow.nodes.map((node) => node.id === nodeId ? { ...node, ...patch, id: nextId ?? node.id } as WorkflowNodeDsl : node);
+    const nodes = workflow.nodes.map((node) => node.id === nodeId ? { ...node, ...patch, id: nextId ?? node.id } as WorkflowNodeDsl
+      : nextId && node.type === 'parallel-group' ? {...node, branches: node.branches.map(b => ({...b, stages:b.stages.map(s => s === nodeId ? nextId : s)}))} : node);
     const updatedNode = nodes.find((node) => node.id === (nextId ?? nodeId));
     const renamedEdges = nextId ? workflow.edges.map((edge) => ({
       ...edge,
@@ -1001,7 +1038,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
       to: edge.to === nodeId ? nextId : edge.to,
       new_round_entry: edge.new_round_entry === nodeId ? nextId : edge.new_round_entry,
     })) : workflow.edges;
-    const edges = nodeSupportsFailureOutcome(updatedNode)
+    const edges = nodeSupportsFailureOutcome(updatedNode, authoringGraph.parallel.members.has(nodeId))
       ? renamedEdges
       : renamedEdges.filter((edge) => edge.from !== (nextId ?? nodeId) || edge.on !== 'failure');
     const next = {
@@ -1018,8 +1055,9 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const updateEdge = (index: number, patch: Partial<WorkflowEdgeDsl>) => {
     const currentEdge = workflow.edges[index];
     if (!currentEdge) return;
-    if (patch.on === 'failure' && !nodeSupportsFailureOutcome(workflow.nodes.find((node) => node.id === currentEdge.from))) return;
+    if (patch.on === 'failure' && !nodeSupportsFailureOutcome(workflow.nodes.find((node) => node.id === currentEdge.from), authoringGraph.parallel.members.has(currentEdge.from))) return;
     const updatedEdge = { ...currentEdge, ...patch };
+    if (!parallelEdgeAllowed(workflow, updatedEdge)) return;
     const draftValue = (patch.new_round_entry ?? currentEdge.new_round_entry)?.trim();
     if (draftValue) {
       setNewRoundEntryDrafts((current) => ({ ...current, [index]: draftValue }));
@@ -1056,9 +1094,11 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
 
   const deleteSelectedCanvasElement = useCallback(() => {
     if (selectedNodeId) deleteNodeById(selectedNodeId);
-    else if (selectedTerminalId) deleteTerminalById(selectedTerminalId);
+    else if (selectedTerminalId === NEW_ROUND_NODE) deleteTerminalById(selectedTerminalId);
     else if (selectedEdgeIndex >= 0) deleteSelectedEdge();
   }, [deleteNodeById, deleteSelectedEdge, deleteTerminalById, selectedEdgeIndex, selectedNodeId, selectedTerminalId]);
+
+  const canDeleteSelection = Boolean((selectedNodeId && (!selectedMember || selectedMember.branch.stages.length > 1)) || selectedTerminalId === NEW_ROUND_NODE || selectedEdgeIndex >= 0);
 
   canvasActionsRef.current = { quickAdd: quickAddSuccessor, deleteNode: deleteNodeById };
 
@@ -1086,21 +1126,25 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const handleEditorTabChange = useCallback((nextTab: EditorTab) => {
     if (nextTab === tab) return;
     if (nextTab === 'json') {
+      jsonHistoryRecorded.current = false;
       setJsonDraft(JSON.stringify(workflowRef.current, null, 2));
       setJsonError(null);
       setTab('json');
       return;
     }
-    const parsed = parseWorkflowJson(jsonDraft);
-    if (!parsed) {
-      setJsonError(t('workflowEditor.outputSchemaInvalid'));
-      return;
+    if (jsonDraft !== JSON.stringify(workflowRef.current, null, 2)) {
+      const parsed = parseWorkflowJson(jsonDraft);
+      if (!parsed) {
+        setJsonError(t('workflowEditor.outputSchemaInvalid'));
+        return;
+      }
+      const nextWorkflow = normalizeWorkflowJsonForAuthoring(parsed, workflowRef.current);
+      if (JSON.stringify(nextWorkflow) !== JSON.stringify(workflowRef.current)) syncWorkflow(nextWorkflow);
+      clearCanvasSelection();
+      setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(nextWorkflow));
     }
-    const nextWorkflow = normalizeWorkflowJsonForAuthoring(parsed, workflowRef.current);
-    syncWorkflow(nextWorkflow);
-    setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(nextWorkflow));
     setTab('canvas');
-  }, [jsonDraft, syncWorkflow, t, tab]);
+  }, [clearCanvasSelection, jsonDraft, syncWorkflow, t, tab]);
 
   const handleFlowInit = useCallback((instance: ReactFlowInstance<Node<EditorNodeData>, Edge>) => {
     setFlowInstance(instance);
@@ -1168,15 +1212,13 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
         return;
       }
       if (event.key !== 'Delete' && event.key !== 'Backspace') return;
-      if (!selectedNodeId && !selectedTerminalId && selectedEdgeIndex < 0) return;
+      if (!canDeleteSelection) return;
       event.preventDefault();
-      if (selectedNodeId) deleteNodeById(selectedNodeId);
-      else if (selectedTerminalId) deleteTerminalById(selectedTerminalId);
-      else deleteSelectedEdge();
+      deleteSelectedCanvasElement();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [deleteNodeById, deleteSelectedEdge, deleteTerminalById, redoWorkflow, selectedEdgeIndex, selectedNodeId, selectedTerminalId, undoWorkflow]);
+  }, [canDeleteSelection, deleteSelectedCanvasElement, redoWorkflow, undoWorkflow]);
 
   const canUndo = historyRevision >= 0 && historyRef.current.past.length > 0;
   const canRedo = historyRevision >= 0 && historyRef.current.future.length > 0;
@@ -1211,7 +1253,6 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
           <div ref={canvasRef} className="relative size-full min-h-0">
             {terminalMenu ? (
               <div className="absolute z-30 w-44 overflow-hidden rounded-xl border bg-popover p-1 text-sm text-popover-foreground shadow-lg" style={{ left: terminalMenu.x, top: terminalMenu.y }}>
-                <button type="button" className="flex min-h-9 w-full items-center rounded-md px-3 py-2 text-left hover:bg-accent hover:text-accent-foreground" onClick={() => showTerminalTarget(END_NODE)}>{t('workflowEditor.addEndTarget')}</button>
                 <button type="button" className="flex min-h-9 w-full items-center rounded-md px-3 py-2 text-left hover:bg-accent hover:text-accent-foreground" onClick={() => showTerminalTarget(NEW_ROUND_NODE)}>{t('workflowEditor.addNewRoundTarget')}</button>
               </div>
             ) : null}
@@ -1230,11 +1271,19 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
               onInit={handleFlowInit}
               onMoveEnd={handleMoveEnd}
               onNodeClick={(_, node) => {
-                setSelectedNodeId(node.data.terminal ? null : node.id);
-                setSelectedTerminalId(node.data.terminal ? node.id : null);
+                const projected = node.data.terminal || authoringGraph.parallel.groupByJoin.has(node.id);
+                setSelectedNodeId(projected ? null : node.id);
+                setSelectedTerminalId(projected ? node.id : null);
                 setSelectedEdgeId(null);
               }}
-              onEdgeClick={(_, edge) => { setSelectedEdgeId(edge.id); setSelectedNodeId(null); setSelectedTerminalId(null); }}
+              onEdgeClick={(_, edge) => {
+                const branchLink = authoringGraph.parallel.links.find(link => link.id === edge.id);
+                if (branchLink) { selectDefinitionNode(branchLink.groupId); return; }
+                const entryLink = edge.id === ENTRY_LINK_ID;
+                setSelectedEdgeId(entryLink ? null : edge.id);
+                setSelectedNodeId(null);
+                setSelectedTerminalId(entryLink ? authoringGraph.startId : null);
+              }}
               nodesDraggable={false}
               nodesConnectable
               connectOnClick
@@ -1265,11 +1314,11 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
                   <DropdownMenuContent align="start" sideOffset={8}>
                     <DropdownMenuItem onClick={addWorkerNode}><Plus className="size-4" />{t('workflowEditor.addWorkerNode')}</DropdownMenuItem>
                     {allowAiDynamic ? <DropdownMenuItem onClick={addAiDynamicNode}><Sparkles className="size-4" />{t('workflowEditor.addAiDynamicNode')}</DropdownMenuItem> : null}
-                    <DropdownMenuItem onClick={() => showTerminalTarget(END_NODE)}><Check className="size-4" />{t('workflowEditor.endTarget')}</DropdownMenuItem>
                     <DropdownMenuItem onClick={() => showTerminalTarget(NEW_ROUND_NODE)}><Redo2 className="size-4" />{t('workflowEditor.newRoundTarget')}</DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
-                <Button size="sm" variant="ghost" className="h-8 rounded-full px-2.5 text-xs font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:hover:bg-transparent" disabled={!selectedNodeId && !selectedTerminalId && selectedEdgeIndex < 0} onClick={deleteSelectedCanvasElement}><Trash2 className="size-3.5" />{t(selectedEdgeIndex >= 0 ? 'workflowEditor.deleteEdge' : 'workflowEditor.deleteNode')}</Button>
+                {forkSource !== undefined ? <Button type="button" size="sm" variant="outline" disabled={forkEdges.length > 1 || forkEdges[0]?.session === 'continue'} onClick={addFork}>{t('workflowEditor.parallel.insert')}</Button> : null}
+                <Button size="sm" variant="ghost" className="h-8 rounded-full px-2.5 text-xs font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:hover:bg-transparent" disabled={!canDeleteSelection} onClick={deleteSelectedCanvasElement}><Trash2 className="size-3.5" />{t(selectedEdgeIndex >= 0 ? 'workflowEditor.deleteEdge' : 'workflowEditor.deleteNode')}</Button>
               </Panel>
               <GraphControls
                 disabled={!flowInstance}
@@ -1294,6 +1343,13 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
                 const parsed = parseWorkflowJson(nextDraft);
                 if (!parsed) return;
                 const nextWorkflow = normalizeWorkflowJsonForAuthoring(parsed, workflowRef.current);
+                // The JSON surface publishes live valid snapshots. Record the pre-edit state
+                // once rather than recording every keystroke or the final state again on apply.
+                if (!jsonHistoryRecorded.current && JSON.stringify(nextWorkflow) !== JSON.stringify(workflowRef.current)) {
+                  historyRef.current = recordWorkflowHistory(historyRef.current, workflowRef.current);
+                  setHistoryRevision(revision => revision + 1);
+                  jsonHistoryRecorded.current = true;
+                }
                 setWorkflow(nextWorkflow);
                 setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(nextWorkflow));
                 queueExternalChange(nextWorkflow);
@@ -1346,7 +1402,14 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
             <section className="space-y-3" aria-labelledby="workflow-current-selection-title">
               <div className="space-y-1"><h3 id="workflow-current-selection-title" className="text-sm font-semibold">{t('workflowEditor.currentSelection')}</h3><p className="text-xs text-muted-foreground">{t('workflowEditor.currentSelectionHelp')}</p></div>
               {!agents.length ? <EmptyState>{t('workflowEditor.noAgents')}</EmptyState> : null}
-              {selectedNode ? (
+              {selectedGroup?.type === 'parallel-group' ? <>
+                <ParallelGroupInspector group={selectedGroup} edges={workflow.edges} onEdit={action => {
+                  const next = editParallelGroup(workflow, selectedGroup, action);
+                  if (next !== workflow) syncWorkflow(next);
+                }} onSelect={selectDefinitionNode} />
+                <Button type="button" size="sm" variant="outline" onClick={() => quickAddSuccessor(selectedGroup.id, 'success')}>{t('workflowEditor.parallel.afterJoin')}</Button>
+              </> : null}
+              {selectedNode && selectedNode.type !== 'parallel-group' ? (
                 <BufferedNodeInspector
                   key={selectedNode.id}
                   node={selectedNode}
@@ -1366,10 +1429,10 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
                 />
               ) : null}
               {selectedEdge ? <EdgeInspector edge={selectedEdge} index={selectedEdgeIndex} workflow={workflow} fieldErrors={fieldErrors} onUpdate={updateEdge} t={t} /> : null}
-              {selectedTerminalId ? <EmptyState>{t('workflowEditor.terminalSelectionHint')}</EmptyState> : null}
+              {selectedTerminalId && !joinOwner ? <EmptyState>{t(selectedTerminalId === authoringGraph.startId ? 'workflowEditor.startSelectionHint' : 'workflowEditor.terminalSelectionHint')}</EmptyState> : null}
               {!selectedNode && !selectedEdge && !selectedTerminalId ? <EmptyState>{t('workflowEditor.selectHint')}</EmptyState> : null}
             </section>
-            {!selectedNode ? <BufferedWorkflowControlInspector control={workflow.control} fieldErrors={fieldErrors} onUpdate={updateWorkflowControl} t={t} /> : null}
+            {!selectedNode || selectedGroup ? <BufferedWorkflowControlInspector control={workflow.control} fieldErrors={fieldErrors} onUpdate={updateWorkflowControl} t={t} /> : null}
           </div>
         </ScrollArea>
       </CardContent>
@@ -1552,6 +1615,7 @@ export function WorkflowNodeInspector(props: Parameters<typeof NodeInspector>[0]
 }
 
 function NodeInspector(props: { node: WorkflowNodeDsl; binding: WorkerModelBinding | null; modelBindings: WorkflowModelBindings; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onBindingUpdate: (executionSlotId: string, patch: Partial<WorkerModelBinding>) => void; onBindingSync: (executionSlotId: string, overwriteConfigured: boolean) => void; workflowControl: ReactNode; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
+  if (props.node.type === 'parallel-group') return null; // Membership edits commit the whole group, not buffered worker patches.
   if (props.node.type === 'ai-dynamic') {
     return <>{props.workflowControl}<AiDynamicNodeInspector {...props} node={props.node} /></>;
   }
@@ -1841,7 +1905,7 @@ function WorkerNodeInspector({ node, binding, modelBindings, agents, profiles, w
           <SelectContent>
             <SelectItem value="none">{t('workflowEditor.resultModeNone')}</SelectItem>
             <SelectItem value="ai">{t('workflowEditor.outputValidation')}</SelectItem>
-            <SelectItem value="manual">{t('workflowEditor.manualCheck')}</SelectItem>
+            <SelectItem value="manual" disabled={parallelMembers(workflow.nodes).has(node.id)}>{t('workflowEditor.manualCheck')}</SelectItem>
           </SelectContent>
         </Select>
         {validationEnabled ? <p className="text-xs leading-5 text-muted-foreground">{t('workflowEditor.outputValidationDescription')}</p> : null}
@@ -2912,10 +2976,14 @@ function InspectorCollapsible({ title, meta, children }: { title: string; meta?:
 
 function EdgeInspector({ edge, index, workflow, fieldErrors, onUpdate, t }: { edge: WorkflowEdgeDsl; index: number; workflow: WorkflowDsl; fieldErrors: Record<string, string[]>; onUpdate: (index: number, patch: Partial<WorkflowEdgeDsl>) => void; t: (key: string) => string }) {
   const errorsFor = (field: string) => fieldErrors[`edge:${index}:${field}`] ?? [];
-  const targetOptions = edge.on === 'success' ? [END_NODE] : [END_NODE, NEW_ROUND_NODE];
-  const newRoundEntryOptions = [ENTRY_NODE, ...workflow.nodes.map((node) => node.id)];
-  const sourceSupportsFailureOutcome = nodeSupportsFailureOutcome(workflow.nodes.find((node) => node.id === edge.from));
-  const outcomeOptions: EdgeOutcome[] = sourceSupportsFailureOutcome || edge.on === 'failure' ? ['success', 'failure'] : ['success'];
+  const members = parallelMembers(workflow.nodes);
+  const member = members.get(edge.from);
+  const targetOptions = member ? [] : edge.on === 'success' ? [END_NODE] : [END_NODE, NEW_ROUND_NODE];
+  const outerIds = workflow.nodes.map(n => n.id).filter(id => !members.has(id));
+  const targets = member ? member.branch.stages.slice(0, member.index + 1) : outerIds;
+  const newRoundEntryOptions = [ENTRY_NODE, ...outerIds];
+  const sourceSupportsFailureOutcome = nodeSupportsFailureOutcome(workflow.nodes.find((node) => node.id === edge.from), !!member);
+  const outcomeOptions: EdgeOutcome[] = member ? ['failure'] : sourceSupportsFailureOutcome || edge.on === 'failure' ? ['success', 'failure'] : ['success'];
   return (
     <InspectorCollapsible title={t('workflowEditor.edgeConfig')}>
       <Field label={t('workflowEditor.edgeOutcome')} required errors={errorsFor('on')}>
@@ -2928,7 +2996,7 @@ function EdgeInspector({ edge, index, workflow, fieldErrors, onUpdate, t }: { ed
         <Select value={edge.to} onValueChange={(to) => onUpdate(index, { to })}>
           <SelectTrigger className={errorClass(errorsFor('to'))}><SelectValue /></SelectTrigger>
           <SelectContent>
-            {workflow.nodes.map((node) => <SelectItem value={node.id} key={node.id}>{node.id}</SelectItem>)}
+            {targets.map(id => <SelectItem value={id} key={id}>{id}</SelectItem>)}
             {targetOptions.map((target) => <SelectItem value={target} key={target}>{target}</SelectItem>)}
           </SelectContent>
         </Select>
@@ -2952,7 +3020,7 @@ function EdgeInspector({ edge, index, workflow, fieldErrors, onUpdate, t }: { ed
           <SelectTrigger className={errorClass(errorsFor('session'))}><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="new">new</SelectItem>
-            <SelectItem value="continue">continue</SelectItem>
+            <SelectItem value="continue" disabled={!parallelEdgeAllowed(workflow, {...edge, session: 'continue'}, members)}>continue</SelectItem>
           </SelectContent>
         </Select>
       </Field>
@@ -3035,9 +3103,11 @@ function WorkflowRoutedEdge({ sourceX, sourceY, sourcePosition, targetX, targetY
 export function deriveWorkflowEntryCandidateIds(workflow: Pick<WorkflowDsl, 'nodes' | 'edges'>): string[] {
   const nodeIds = new Set(workflow.nodes.map((node) => node.id).filter(Boolean));
   const nodeOrder = workflowSuccessTopologyOrder({ ...workflow, entry: '' });
-  const incomingNodeIds = new Set<string>();
+  const incomingNodeIds = new Set(parallelMembers(workflow.nodes).keys());
   workflow.edges.forEach((edge) => {
     if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) return;
+    // A retry in place only re-enters the node it leaves; it never makes that node someone's successor.
+    if (edge.on === 'failure' && edge.from === edge.to) return;
     if (edge.on !== 'success' && isBackwardEdge(edge.from, edge.to, nodeOrder)) return;
     incomingNodeIds.add(edge.to);
   });
@@ -3049,7 +3119,7 @@ export function deriveWorkflowEntryCandidateIds(workflow: Pick<WorkflowDsl, 'nod
 export function authoringWorkflowGraphSignature(workflow: Pick<WorkflowDsl, 'entry' | 'nodes' | 'edges'>): string {
   return JSON.stringify({
     entry: workflow.entry,
-    nodes: workflow.nodes.map((node) => [node.id, node.type, nodeSupportsFailureOutcome(node)]),
+    nodes: workflow.nodes.map((node) => [node.id, node.type, nodeSupportsFailureOutcome(node), ...(node.type === 'parallel-group' ? [node.branches] : [])]),
     edges: workflow.edges.map((edge) => [edge.from, edge.to, edge.on]),
   });
 }
@@ -3066,6 +3136,7 @@ export function authoringWorkflowNodeAgentIds(
       const agentId = node.executionSlotId ? bindingBySlot.get(node.executionSlotId) : undefined;
       return agentId ? [[node.id, agentId]] : [];
     }
+    if (node.type !== 'ai-dynamic') return [];
     const agentId = node.agentStrategy.mode === 'fixed'
       ? node.agentStrategy.provider
       : node.agentStrategy.bootstrapProvider;
@@ -3077,18 +3148,14 @@ function stringSetSignature(values: Set<string>): string {
   return Array.from(values).sort().join('\u0000');
 }
 
-function normalizeWorkflowEntryFromTopology(workflow: WorkflowDsl): WorkflowDsl {
-  const entryCandidateIds = deriveWorkflowEntryCandidateIds(workflow);
-  const entry = entryCandidateIds.length === 1 ? entryCandidateIds[0] : '';
-  return workflow.entry === entry ? workflow : { ...workflow, entry };
-}
-
 type AuthoringTranslate = (key: string, options?: Record<string, unknown>) => string;
 
 /** Layout-independent authoring graph: visible items, display labels and the layout input. */
 export type AuthoringGraph = {
   items: Array<{ id: string; terminal: boolean }>;
-  entryCandidateIds: Set<string>;
+  startId: string;
+  parallel: ReturnType<typeof authoringParallelTopology>;
+  entryLink: WorkflowLayoutSpec['edges'][number] | null;
   nodeLabels: Map<string, string>;
   edgeLabels: Map<string, string>;
   spec: WorkflowLayoutSpec;
@@ -3097,11 +3164,14 @@ export type AuthoringGraph = {
 export function createAuthoringGraph(workflow: WorkflowDsl, visibleTerminalIds: ReadonlySet<string> = new Set(), t: AuthoringTranslate = (key) => key, direction: WorkflowLayoutDirection = 'RIGHT'): AuthoringGraph {
   const collectedNodes = collectAuthoringNodes(workflow);
   const collectedIds = new Set(collectedNodes.map((node) => node.id));
-  const nodeOrder = workflowSuccessTopologyOrder(workflow);
+  // DSL IDs belong to the user, including a worker literally named '$start'.
+  const startId = uniqueNodeId(workflow, '$start');
+  const parallel = authoringParallelTopology(workflow, startId);
   const items = [
-    ...collectedNodes.filter((node) => !node.terminal).sort((left, right) => nodeOrder.get(left.id)! - nodeOrder.get(right.id)!),
+    { id: startId, terminal: true },
+    ...parallel.items,
     ...collectedNodes.filter((node) => node.terminal),
-    ...Array.from(visibleTerminalIds).filter((id) => !collectedIds.has(id)).map((id) => ({ id, terminal: true })),
+    ...(visibleTerminalIds.has(NEW_ROUND_NODE) && !collectedIds.has(NEW_ROUND_NODE) ? [{ id: NEW_ROUND_NODE, terminal: true }] : []),
   ];
   const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
   // `new_round_entry` lives on each edge: a single restart node is named on the
@@ -3112,7 +3182,8 @@ export function createAuthoringGraph(workflow: WorkflowDsl, visibleTerminalIds: 
     item.id,
     item.id === NEW_ROUND_NODE && uniqueNewRoundEntry
       ? t('workflowEditor.nodeLabels.newRoundFrom', { node: uniqueNewRoundEntry })
-      : workflowNodeLabel(item.id, nodeById.get(item.id)?.type, t),
+      : parallel.groupByJoin.has(item.id) ? t('workflowEditor.parallel.join')
+      : item.id === startId ? t('workflowEditor.nodeLabels.start') : workflowNodeLabel(item.id, nodeById.get(item.id)?.type, t),
   ]));
   const edgeLabels = new Map(workflow.edges.map((edge, index) => [
     edgeId(edge, index),
@@ -3120,10 +3191,13 @@ export function createAuthoringGraph(workflow: WorkflowDsl, visibleTerminalIds: 
       ? t('workflowEditor.edgeLabels.newRoundFrom', { outcome: workflowEdgeLabel(edge.on, t), node: newRoundEntryNodeId(workflow, edge) })
       : workflowEdgeLabel(edge.on, t),
   ]));
-  const entryCandidateIds = new Set(deriveWorkflowEntryCandidateIds(workflow));
+  const entryLink = nodeById.has(workflow.entry)
+    ? { id: ENTRY_LINK_ID, from: startId, to: workflow.entry, outcome: 'other' as const } : null;
   return {
     items,
-    entryCandidateIds,
+    startId,
+    parallel,
+    entryLink,
     nodeLabels,
     edgeLabels,
     spec: {
@@ -3132,16 +3206,15 @@ export function createAuthoringGraph(workflow: WorkflowDsl, visibleTerminalIds: 
         id: item.id,
         width: item.terminal ? terminalNodeWidth(nodeLabels.get(item.id)!) : NODE_WIDTH,
         height: item.terminal ? TERMINAL_NODE_HEIGHT : NODE_HEIGHT,
-        sourceHandles: item.terminal ? 'none' : nodeSupportsFailureOutcome(nodeById.get(item.id)) ? 'split' : 'single',
+        sourceHandles: item.id === startId || parallel.joinByGroup.has(item.id) ? 'single' : item.terminal ? 'none' : parallel.groupByJoin.has(item.id) || nodeSupportsFailureOutcome(nodeById.get(item.id), parallel.members.has(item.id)) ? 'split' : 'single',
         // Pinned under the entry so a restart loop is visible in the initial viewport.
         pinBelow: item.id === NEW_ROUND_NODE && workflow.entry ? workflow.entry : null,
       })),
-      edges: workflow.edges.map((edge, index) => ({
-        id: edgeId(edge, index),
-        from: edge.from,
-        to: edge.to,
-        outcome: edge.on === 'failure' ? 'failure' : 'success',
-      })),
+      edges: [
+        ...(entryLink ? [entryLink] : []),
+        ...parallel.links,
+        ...workflow.edges.map((edge, index) => ({ id: edgeId(edge, index), from: parallel.joinByGroup.get(edge.from) ?? edge.from, to: edge.to, outcome: edge.on as EdgeOutcome })),
+      ],
       groups: [],
     },
   };
@@ -3150,7 +3223,7 @@ export function createAuthoringGraph(workflow: WorkflowDsl, visibleTerminalIds: 
 export function authoringWorkflowTopologySignature(workflow: Pick<WorkflowDsl, 'entry' | 'nodes' | 'edges'>): string {
   return JSON.stringify({
     entry: workflow.entry,
-    nodes: workflow.nodes.map((node) => [node.id, node.type, nodeSupportsFailureOutcome(node)]),
+    nodes: workflow.nodes.map((node) => [node.id, node.type, nodeSupportsFailureOutcome(node), ...(node.type === 'parallel-group' ? [node.branches] : [])]),
     edges: workflow.edges.map((edge) => [edge.from, edge.to, edge.on, edge.new_round_entry ?? null]),
   });
 }
@@ -3179,8 +3252,9 @@ export function createAuthoringFlowProjection(
     const node = nodeById.get(item.id);
     const invalid = !item.terminal && invalidNodeIds.has(item.id);
     const iconKey = node ? nodeIconKeys.get(node.id) : undefined;
-    const supportsFailureOutcome = nodeSupportsFailureOutcome(node);
-    const selected = item.terminal ? item.id === selectedTerminalId : item.id === selectedNodeId;
+    const joinGroup = graph.parallel.groupByJoin.get(item.id);
+    const supportsFailureOutcome = !!joinGroup || (node?.type !== 'parallel-group' && nodeSupportsFailureOutcome(node, graph.parallel.members.has(item.id)));
+    const selected = item.terminal || !!joinGroup ? item.id === selectedTerminalId : item.id === selectedNodeId;
     const targetPosition = spec.pinBelow ? handlePositions.source : handlePositions.target;
     return {
       id: item.id,
@@ -3192,13 +3266,15 @@ export function createAuthoringFlowProjection(
       targetPosition,
       data: {
         label: graph.nodeLabels.get(item.id) ?? item.id,
-        kind: item.terminal ? 'terminal' : node?.type ?? 'node',
+        kind: joinGroup ?? (node?.type === 'parallel-group' ? node.id : item.terminal ? 'terminal' : node?.type ?? 'node'),
+        join: !!joinGroup,
+        structural: !!joinGroup || node?.type === 'parallel-group',
+        member: graph.parallel.members.has(item.id),
         terminal: item.terminal,
         targetPosition,
         sourcePosition: handlePositions.source,
         iconKey,
-        entryCandidate: !item.terminal && graph.entryCandidateIds.has(item.id),
-        entryLabel: t('workflowEditor.entryBadge'),
+        start: item.id === graph.startId,
         selected,
         supportsFailureOutcome,
         successLabel: t('workflowEditor.edgeLabels.success'),
@@ -3222,10 +3298,10 @@ export function createAuthoringFlowProjection(
     const route = layout?.edges.get(id);
     const color = authoringEdgeColor(edge.on);
     const sourceNode = nodeById.get(edge.from);
-    const sourceHandle = edge.on === 'failure' && !nodeSupportsFailureOutcome(sourceNode) ? 'success' : edge.on;
+    const sourceHandle = edge.on === 'failure' && !nodeSupportsFailureOutcome(sourceNode, graph.parallel.members.has(edge.from)) ? 'success' : edge.on;
     return {
       id,
-      source: edge.from,
+      source: graph.parallel.joinByGroup.get(edge.from) ?? edge.from,
       target: edge.to,
       sourceHandle,
       label: graph.edgeLabels.get(id),
@@ -3235,11 +3311,18 @@ export function createAuthoringFlowProjection(
       style: { stroke: color, strokeWidth: edge.on === 'success' ? 2.2 : 2, strokeDasharray: '3 17' },
       className: cn('workflow-edge-flow', edge.on !== 'success' && 'workflow-edge-branch', id === selectedEdgeId && 'workflow-edge-selected'),
       selected: id === selectedEdgeId,
-      data: { outcome: edge.on, route },
+      data: { route },
       zIndex: 0,
     };
   });
 
+  for (const {id, from, to} of [...graph.parallel.links, ...(graph.entryLink ? [graph.entryLink] : [])]) {
+    const color = 'var(--muted-foreground)';
+    edges.push({ id, source: from, target: to, sourceHandle: id === ENTRY_LINK_ID ? undefined : 'success', type: 'workflowRouted', selectable: false,
+      focusable: false, deletable: false, reconnectable: false, data: { route: layout?.edges.get(id) },
+      markerEnd: { type: MarkerType.ArrowClosed, color }, style: { stroke: color },
+    });
+  }
   return { nodes, edges };
 }
 
@@ -3250,6 +3333,7 @@ function edgeColor(edge: WorkflowEdgeDsl) {
 function workflowNodeLabel(id: string, nodeType: WorkflowNodeDsl['type'] | undefined, t: (key: string) => string) {
   if (id === END_NODE) return t('workflowEditor.nodeLabels.end');
   if (id === NEW_ROUND_NODE) return t('workflowEditor.nodeLabels.newRound');
+  if (nodeType === 'parallel-group') return t('workflowEditor.parallel.fork');
   if (nodeType === 'ai-dynamic' && /^ai-dynamic(?:-\d+)?$/.test(id)) return t('workflowEditor.nodeLabels.aiDynamic');
   return id;
 }
@@ -3268,7 +3352,8 @@ export function parseWorkflowJson(json?: string | null): WorkflowDsl | null {
   if (!json) return null;
   try {
     const value = JSON.parse(json) as WorkflowDsl;
-    return value?.version && Array.isArray(value.nodes) ? value : null;
+    return value?.version && typeof value.id === 'string' && Array.isArray(value.nodes) && value.nodes.every(n => n && typeof n.id === 'string' &&
+      (n.type === 'worker' || n.type === 'ai-dynamic' || (n.type === 'parallel-group' && hasParallelShape(n)))) ? value : null;
   } catch {
     return null;
   }
@@ -3297,28 +3382,23 @@ export function normalizeWorkflowExecutionSlots(
   };
 }
 
+/** Read the active editing surface at submission time, not the last published valid draft. */
+export function activeWorkflowEditorDefinition(draft: Pick<WorkflowEditorSessionDraft, 'tab' | 'workflow' | 'jsonDraft'>): WorkflowDsl | null {
+  if (draft.tab !== 'json') return draft.workflow;
+  const parsed = parseWorkflowJson(draft.jsonDraft);
+  return parsed ? normalizeWorkflowJsonForAuthoring(parsed, draft.workflow) : null;
+}
+
 export function normalizeWorkflowJsonForAuthoring(
   nextWorkflow: WorkflowDsl,
   previousWorkflow: WorkflowDsl,
   createSlotId: () => string = () => crypto.randomUUID(),
 ): WorkflowDsl {
-  return normalizeWorkflowEntryFromTopology(
-    normalizeWorkflowExecutionSlots(
-      normalizeWorkflowSchemas(nextWorkflow),
-      previousWorkflow,
-      createSlotId,
-    ),
-  );
+  return normalizeWorkflowExecutionSlots(normalizeWorkflowSchemas(nextWorkflow), previousWorkflow, createSlotId);
 }
 
 function uniqueNodeId(workflow: WorkflowDsl, base: string) {
-  let candidate = base;
-  let index = 1;
-  while (workflow.nodes.some((node) => node.id === candidate)) {
-    index += 1;
-    candidate = `${base}-${index}`;
-  }
-  return candidate;
+  return availableId(workflow.nodes.map(n => n.id), base);
 }
 
 function sanitizeNodeId(value: string, workflow: WorkflowDsl, currentId?: string) {
@@ -3371,6 +3451,7 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
   return {
     ...workflow,
     control,
+    entry: typeof workflow.entry === 'string' ? workflow.entry : '',
     edges: normalizeWorkflowEdges(workflow.edges ?? []),
     nodes: workflow.nodes.map((node) => {
       if (node.type === 'ai-dynamic') {
@@ -3413,6 +3494,7 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
           allowedWorkflows: node.allowedWorkflows ?? [],
         };
       }
+      if (node.type === 'parallel-group') return { ...node, maxParallel: node.maxParallel === undefined ? WORKFLOW_PARALLEL_DEFAULT : node.maxParallel };
       const normalizedNode = { ...(node as WorkflowWorkerNodeDsl & { primary_artifact?: unknown }) };
       delete normalizedNode.primary_artifact;
       if (!normalizedNode.output?.schema) return normalizedNode;
@@ -3532,7 +3614,6 @@ export function validateWorkflowForSave(
   const nodeIds = new Set(workflow.nodes.map((node) => node.id).filter(Boolean));
   const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
   const entryCandidateIds = deriveWorkflowEntryCandidateIds(sanitizedWorkflow);
-  sanitizedWorkflow.entry = entryCandidateIds.length === 1 ? entryCandidateIds[0] : '';
   const outgoingEdgeCounts = workflow.edges.reduce<Record<string, number>>((counts, edge) => {
     if (edge.from.trim()) {
       counts[edge.from] = (counts[edge.from] ?? 0) + 1;
@@ -3565,6 +3646,9 @@ export function validateWorkflowForSave(
   const nodeField = (node: WorkflowNodeDsl, field: string) => `node:${node.id}:${field}`;
   const edgeField = (index: number, field: string) => `edge:${index}:${field}`;
   const controlField = (field: string) => `control:${field}`;
+  const members = parallelMembers(sanitizedWorkflow.nodes);
+  for (const id of invalidParallelGroups(sanitizedWorkflow.nodes)) addIssue(t('workflowEditor.parallel.invalid', {id}), nodeField(nodeById.get(id)!, 'branches'), id);
+  if (members.has(workflow.entry)) addIssue(t('workflowEditor.parallel.invalidEntry'), undefined, workflow.entry);
   if (!workflow.id.trim()) addIssue(t('workflowEditor.validationWorkflowIdRequired'));
   else if (validateTemplateDuplicateId && duplicateConflictTemplates.length > 0) {
     addIssue(
@@ -3576,10 +3660,27 @@ export function validateWorkflowForSave(
     );
   }
   if (!workflow.nodes.length) addIssue(t('workflowEditor.validationNodesRequired'));
+  else if (!workflow.entry?.trim()) addIssue(t('workflowEditor.validationEntryRequired'));
+  else if (!nodeIds.has(workflow.entry)) addIssue(t('workflowEditor.validationEntryMissingTarget', { node: workflow.entry }));
   else if (entryCandidateIds.length === 0) {
     addIssue(t('workflowEditor.validationEntryCandidateMissing'));
   } else if (entryCandidateIds.length > 1) {
     addIssue(t('workflowEditor.validationEntryCandidateMultiple', { entries: entryCandidateIds.join(', ') }), undefined, undefined, undefined, entryCandidateIds);
+  } else if (workflow.entry !== entryCandidateIds[0]) {
+    // A declared entry inside the chain is valid if its retry / new-round paths
+    // can reach the head. Never silently move Start when saving such workflows.
+    const successors = new Map<string, string[]>();
+    for (const edge of workflow.edges) {
+      const target = edge.to === NEW_ROUND_NODE ? newRoundEntryNodeId(workflow, edge) : edge.to;
+      if (!nodeIds.has(target)) continue;
+      if (!successors.has(edge.from)) successors.set(edge.from, []);
+      successors.get(edge.from)!.push(target);
+    }
+    const seen = new Set([workflow.entry]);
+    for (const id of seen) for (const next of successors.get(id) ?? []) seen.add(next);
+    for (const id of nodeIds) {
+      if (!seen.has(members.get(id)?.group.id ?? id)) addIssue(t('errors.workflow.unreachable-node', { nodeId: id }), undefined, id);
+    }
   }
   if (!workflow.edges.some((edge) => edge.to === END_NODE)) addIssue(t('workflowEditor.validationEndNodeRequired'));
   if (sanitizedWorkflow.control.max_attempts != null && sanitizedWorkflow.control.max_attempts <= 0) {
@@ -3594,10 +3695,11 @@ export function validateWorkflowForSave(
     if (!node.id.trim()) addIssue(t('workflowEditor.validationNodeIdRequired', { node: nodeLabel }), nodeField(node, 'id'), node.id);
     if ([END_NODE, ENTRY_NODE, NEW_ROUND_NODE].includes(node.id)) addIssue(t('workflowEditor.validationReservedNodeId', { node: nodeLabel }), nodeField(node, 'id'), node.id);
     if ((nodeIdCounts[node.id] ?? 0) > 1) addIssue(t('workflowEditor.validationDuplicateNodeId', { node: nodeLabel }), nodeField(node, 'id'), node.id);
-    if ((outgoingEdgeCounts[node.id] ?? 0) === 0) {
+    if (!members.has(node.id) && (outgoingEdgeCounts[node.id] ?? 0) === 0) {
       addIssue(t('workflowEditor.validationDanglingNode', { node: nodeLabel }), nodeField(node, 'id'), node.id);
     }
 
+    if (node.type === 'parallel-group') return;
     if (node.type === 'ai-dynamic') {
       validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, profiles, profileCatalogReady, agentIds, agentById, nodeField, addIssue, t);
       return;
@@ -3664,12 +3766,13 @@ export function validateWorkflowForSave(
   });
 
   workflow.edges.forEach((edge, index) => {
+    if (!parallelEdgeAllowed(sanitizedWorkflow, edge, members)) addIssue(t('workflowEditor.parallel.invalidEdge', {from:edge.from, to:edge.to}), edgeField(index, 'to'), edge.from, index);
     if (!edge.from.trim()) addIssue(t('workflowEditor.validationEdgeSourceRequired', { index: index + 1 }), edgeField(index, 'from'), undefined, index);
     else if (!nodeIds.has(edge.from)) addIssue(t('workflowEditor.validationEdgeSourceMissing', { node: edge.from }), edgeField(index, 'from'), edge.from, index);
     if (!edge.to.trim()) addIssue(t('workflowEditor.validationEdgeTargetRequired', { index: index + 1 }), edgeField(index, 'to'), undefined, index);
     else if (![END_NODE, NEW_ROUND_NODE].includes(edge.to) && !nodeIds.has(edge.to)) addIssue(t('workflowEditor.validationEdgeTargetMissing', { node: edge.to }), edgeField(index, 'to'), edge.to, index);
     if (!['success', 'failure'].includes(edge.on)) addIssue(t('workflowEditor.validationEdgeOutcomeRequired', { index: index + 1 }), edgeField(index, 'on'), undefined, index);
-    else if (edge.on === 'failure' && !nodeSupportsFailureOutcome(nodeById.get(edge.from))) {
+    else if (edge.on === 'failure' && !nodeSupportsFailureOutcome(nodeById.get(edge.from), members.has(edge.from))) {
       addIssue(t('workflowEditor.validationFailureOutcomeRequiresResultDecision', { node: edge.from }), edgeField(index, 'on'), edge.from, index);
     }
     else if (edge.on === 'success' && edge.to === NEW_ROUND_NODE) {
@@ -3866,11 +3969,6 @@ function parseJsonPath(path: string): PathSegment[] {
   if (key) segments.push({ type: 'key', key });
   if (!segments.length) throw new Error('empty path');
   return segments;
-}
-
-function looksLikeJsonSchema(schema: unknown) {
-  if (!isRecord(schema)) return false;
-  return ['type', 'properties', 'required', 'additionalProperties', 'items'].some((key) => key in schema);
 }
 
 function schemaContainsPath(schema: unknown, path: PathSegment[]) {

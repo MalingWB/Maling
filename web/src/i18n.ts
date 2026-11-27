@@ -1,5 +1,6 @@
 import i18n, { type TFunction } from "i18next";
 import { initReactI18next } from "react-i18next";
+import { forgeCommandErrorText } from "./lib/forge-errors";
 import type { AppErrorVm, DesktopLanguage, WorkflowErrorVm } from "./types";
 import {
   DESKTOP_LANGUAGE_OPTIONS,
@@ -44,6 +45,8 @@ export function displayNodeType(t: TFunction, value?: string | null) {
 
 export function displayAppError(t: TFunction, error: unknown) {
   if (isAppError(error)) {
+    const forgeMessage = forgeCommandErrorText(t, error);
+    if (forgeMessage !== null) return forgeMessage;
     if (error.code === "conversation.validation-failed" && Array.isArray(error.params.codes)) {
       return error.params.codes
         .filter((code): code is string => typeof code === "string")

@@ -434,13 +434,16 @@ pub struct GitCommandRunner;
 
 impl GitCommandRunner {
     pub fn run(&self, cwd: &Utf8Path, args: &[&str]) -> Result<GitCommandOutput> {
+        self.run_raw(cwd, args).map(GitCommandOutput::from)
+    }
+
+    fn run_raw(&self, cwd: &Utf8Path, args: &[&str]) -> Result<Output> {
         diagnostics::command_output(args, || {
             let mut command =
                 git_background_command().ok_or_else(|| anyhow!("Git executable was not found"))?;
             command.arg("-C").arg(cwd.as_str()).args(args);
             Ok(command)
         })
-        .map(GitCommandOutput::from)
         .with_context(|| format!("failed to execute Git in `{cwd}`"))
     }
 
@@ -455,7 +458,30 @@ pub struct GitRepositoryService {
     runner: GitCommandRunner,
 }
 
+pub(crate) struct GitCheckoutHead {
+    pub commit: String,
+    pub reference: String,
+}
+
+impl GitCheckoutHead {
+    pub(crate) fn is_ref_identity(reference: &str) -> bool {
+        reference == "HEAD" || reference.strip_prefix("refs/").is_some_and(|name| !name.is_empty())
+    }
+}
+
 impl GitRepositoryService {
+    /// HEAD's commit and its fully qualified symbolic ref, or the literal HEAD
+    /// for a detached checkout. Do not trim or lossily decode ref identities.
+    pub(crate) fn checkout_head(&self, cwd: &Utf8Path) -> Result<GitCheckoutHead> {
+        let output = self.runner.run_raw(cwd, &["rev-parse", "HEAD", "--symbolic-full-name", "HEAD"])?;
+        ensure!(output.status.success(), "git rev-parse HEAD failed: {}", String::from_utf8_lossy(&output.stderr));
+        let mut lines = std::str::from_utf8(&output.stdout)?.lines();
+        let commit = lines.next().context("Git returned no HEAD commit")?;
+        let reference = lines.next().context("Git returned no HEAD ref identity")?;
+        ensure!(GitCheckoutHead::is_ref_identity(reference) && lines.next().is_none(), "invalid Git HEAD ref identity");
+        Ok(GitCheckoutHead { commit: commit.into(), reference: reference.into() })
+    }
+
     pub fn initialize(&self, cwd: &Utf8Path) -> Result<GitCapability> {
         if let Err(capability) = supported_git_version() {
             return Ok(capability);
@@ -740,6 +766,62 @@ impl GitWorkspaceManager {
             "Git worktree validation completed"
         );
         validation_result
+    }
+
+    /// Compose in declaration order without changing a checkout. A conflict (or
+    /// Git without merge-tree --write-tree support) leaves the target untouched.
+    pub(crate) fn compose_branch_checkpoints(
+        &self,
+        cwd: &Utf8Path,
+        base: &str,
+        commits: &[String],
+    ) -> Result<String> {
+        let identity = GitSourceControlService::default().repository_identity(cwd)?;
+        GitCoordinationService.with_runtime_write(&identity.common_dir, None, "parallel-compose", || {
+            let mut result = base.to_string();
+            for commit in commits {
+                ensure!(self.runner.run(cwd, &["merge-base", "--is-ancestor", base, commit])?.success, "parallel.branch-fork-mismatch");
+                if commit == base || commit == &result { continue; }
+                if result == base { result = commit.clone(); continue; }
+                let tree = self.runner.run(cwd, &["merge-tree", "--write-tree", &result, commit])?;
+                if !tree.success {
+                    return Err(runtime_error(manual_runtime_error_info(RuntimeErrorDomain::Workspace,
+                        if tree.exit_code == Some(1) { "parallel.merge-conflict" } else { "parallel.merge-unavailable" },
+                        details(&tree), serde_json::json!({"left":result,"right":commit,"exitCode":tree.exit_code,"workspace":cwd}))));
+                }
+                let merged = self.runner.run(cwd, &["-c", &format!("user.name={CHECKPOINT_AUTHOR_NAME}"), "-c", &format!("user.email={CHECKPOINT_AUTHOR_EMAIL}"), "commit-tree", tree.stdout.trim(), "-p", &result, "-p", commit, "-m", "Gold Band parallel group integration"])?;
+                ensure!(merged.success, "parallel.commit-failed: {}", details(&merged));
+                result = merged.stdout;
+            }
+            Ok(result)
+        })
+    }
+
+    pub(crate) fn integrate_checkpoint(
+        &self,
+        cwd: &Utf8Path,
+        expected_ref: Option<&str>,
+        base: &str,
+        target: &str,
+    ) -> Result<()> {
+        let identity = GitSourceControlService::default().repository_identity(cwd)?;
+        GitCoordinationService.with_runtime_write(&identity.common_dir, Some(&identity.workspace_path), "parallel-integrate", || {
+            let checkout = self.repository.checkout_head(cwd)?;
+            let changed = || runtime_error(manual_runtime_error_info(RuntimeErrorDomain::Workspace,
+                "parallel.target-changed", "parallel integration target changed", serde_json::json!({
+                    "workspace":cwd, "fork":base, "head":checkout.commit, "target":target,
+                    "expectedRef":expected_ref, "actualRef":checkout.reference
+                })));
+            // Refuse even on replay: another branch can contain the exact same commit.
+            if expected_ref != Some(checkout.reference.as_str()) { return Err(changed()); }
+            let head = &checkout.commit;
+            if target == base || head == target || self.runner.run(cwd, &["merge-base", "--is-ancestor", target, head])?.success { return Ok(()); }
+            if head != base || !self.repository.is_clean(cwd)? { return Err(changed()); }
+            self.ensure_no_in_progress_operation(cwd)?;
+            let update = self.runner.run(cwd, &["merge", "--ff-only", "--no-autostash", target])?;
+            ensure!(update.success, "parallel.integration-blocked: {}", details(&update));
+            Ok(())
+        })
     }
 
     pub fn checkpoint(

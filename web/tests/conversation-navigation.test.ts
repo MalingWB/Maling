@@ -424,7 +424,7 @@ describe('conversation sidebar navigation wiring', () => {
   it('invalidates the active run request before deleting its task from disk', () => {
     const source = readAppSource();
     const deletion = source.match(/onConversationDeleteTask: [\s\S]*?onConversationPinTask: /)?.[0] ?? '';
-    const deleteRequest = deletion.indexOf('deleteConversationTask(projectId, taskId)');
+    const deleteRequest = deletion.indexOf('deleteConversationTask(projectId, taskId, taskUuid)');
     const requestInvalidation = deletion.indexOf('conversationNavigationRequestRef.current += 1;');
 
     expect(deleteRequest).toBeGreaterThanOrEqual(0);

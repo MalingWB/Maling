@@ -129,6 +129,7 @@ fn write_fixture(app: &App, completed: bool, current_attempt: &str) {
     write_json(
         &app.paths.task_file(TASK),
         &TaskState {
+            forge_naming: None,
             version: VERSION.to_string(),
             id: TASK.to_string(),
             title: None,

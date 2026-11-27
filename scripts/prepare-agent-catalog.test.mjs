@@ -28,6 +28,15 @@ function officialPolicy(extra = {}) {
   };
 }
 
+test('names the CodeBuddy CLI integration independently of WorkBuddy Desktop', () => {
+  const { agents } = buildAgentCatalog(registryFixture(), 'fixed', officialPolicy());
+  const cli = agents.find(({ id }) => id === 'codebuddy-code');
+  assert.equal(cli.label, 'CodeBuddy Code');
+  assert.equal(cli.localLaunch.command, 'codebuddy');
+  assert.deepEqual(cli.compatibleAgentDirs, []);
+  assert.equal(agents.some(({ id }) => id === 'workbuddy'), false);
+});
+
 test('local pins override both executable version and metadata without changing registry', () => {
   const registry = registryFixture();
   const before = structuredClone(registry);

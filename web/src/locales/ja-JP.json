@@ -1183,6 +1183,35 @@
       "completion": {
         "repair-exhausted": "ノードの出力は {{repairAttempts}} 回修復してもプロトコルに適合しないため、ワークフローを一時停止しました。"
       }
+    },
+    "forge": {
+      "missing-goal": "ステージ「{{stage}}」に目標がありません",
+      "missing-goal-element": "ステージ「{{stage}}」の目標に「{{element}}」がありません",
+      "missing-success-condition": "ステージ「{{stage}}」の JSON 成果物に成功条件がありません",
+      "empty-stages": "ワークフロー「{{workflow}}」にステージがありません",
+      "too-many-stages": "ワークフロー「{{workflow}}」は {{count}} ステージあり、上限 {{limit}} を超えています",
+      "missing-name": "ワークフローに名前がありません",
+      "compile-failed": "ワークフロー構造が検証を通りませんでした：{{detail}}",
+      "unresolved-questions": "対話で確認が必要な質問があります",
+      "invalid-spec": "生成草稿の形式が正しくありません：{{detail}}",
+      "unknown-failure-target": "「{{stage}}」の失敗時の移動先「{{target}}」がありません",
+      "role-id-conflict": "{{stages}} で「{{role}}」の参照先が異なります",
+      "role-definition-conflict": "{{stages}} で「{{role}}」の定義が異なります",
+      "unavailable-role": "{{stage}} が参照するロール「{{role}}」は利用できません",
+      "readonly-role": "「{{stage}}」の「{{role}}」は読み取り専用です",
+      "target-unavailable": "元のワークフローは削除または置換されたか、ここでは編集できなくなりました。下書きを新しいワークフローとして保存できます。",
+      "source-session-unavailable": "選択した会話のメッセージを読み取れません。元の会話を開き直して、もう一度お試しください。",
+      "stale-message": "選択したメッセージが変更されました。元の会話に戻り、開始位置のメッセージを選び直してください。",
+      "revision-conflict": "下書きが更新されました。最新の内容を確認してから保存してください。",
+      "duplicate-workflow-name": "「{{name}}」は使用中です。別の名前を選んでください。"
+    },
+    "workflow-template": {
+      "duplicate-name": "「{{name}}」は使用中です。別の名前を選んでください。"
+    },
+    "plugin": {
+      "asset-unavailable": "素材が変更されたか読み取れません。更新して再試行してください。",
+      "bundle-unreadable": "Skill を完全に取り込めません。文字コード、ファイル数とサイズを確認してください。",
+      "role-exists": "「{{name}}」は既に存在するため上書きしませんでした。"
     }
   },
   "status": {
@@ -1366,6 +1395,7 @@
   },
   "contextManagement": {
     "title": "コンテキスト管理",
+    "forgeRoleHint": "選択した役割はワークフロー生成の参考資料です。実行権限は付与されません。",
     "profileManagement": "役割",
     "profileHint": "ロールは Markdown ファイルとして保存され、ワークフロー ノードはグローバルに一意の ID によってロールを参照します。",
     "addProfile": "役割の追加",
@@ -1522,11 +1552,20 @@
         "title": "リモートから SKILL を同期",
         "workspace": "ワークスペース"
       },
-      "forgeAction": "skill からワークフロー生成（{{count}}）",
+      "forgeLimit": "素材は {{count}} 件まで選択できます。",
+      "forgeModeUnavailable": "プロジェクトの実行設定を読み取れませんでした。もう一度お試しください。",
+      "forgeProjectUnavailable": "利用可能なプロジェクトがありません。プロジェクトを追加するか開き直してから、もう一度お試しください。",
+      "forgeAction": "選択した素材からワークフロー生成（{{count}}）",
       "forgeSelect": "{{name}} を選択",
       "forgeAnchorTitle": "紐付けプロジェクトを選択",
-      "forgeAnchorInfo": "鋳造セッションと試実行は選択したプロジェクトに紐付けられます。生成されるワークフローテンプレートは全プロジェクトで利用できます。",
-      "forgeAnchorConfirm": "鋳造を開始"
+      "forgeAnchorInfo": "生成セッションと試実行は選択したプロジェクトに紐付けられます。生成されるワークフローテンプレートは全プロジェクトで利用できます。",
+      "forgeAnchorConfirm": "生成を開始",
+      "plugins": {
+        "tab": "Plugin",
+        "loading": "プラグインの提供元を読み込み中…",
+        "empty": "このスコープにはプラグインも手動で選択した提供元もありません。",
+        "noAssets": "素材にできる skill・command・agent がありません"
+      }
     },
     "importProfile": "役割のインポート",
     "importSettingsDescription": "フォルダーからバッチインポートするか、ロール Markdown ファイルを直接選択してインポートします。不足している名前と概要は自動的に入力されます。",
@@ -1684,12 +1723,27 @@
     "noRunsForFilter": "このフィルターに一致する Run はありません",
     "openRoundA11y": "{{runId}} で {{roundId}} を開く",
     "sourceTag": {
-      "forged": "鋳造",
+      "forged": "生成",
       "imported": "取り込み",
       "manual": "手動"
     }
   },
   "workflowEditor": {
+    "parallel": {
+      "insert": "並列分岐を追加",
+      "fork": "並列分岐",
+      "join": "合流",
+      "cap": "同時に実行する分岐数",
+      "addStep": "ステップを追加",
+      "addBranch": "分岐を追加",
+      "afterJoin": "合流後にステップを追加",
+      "up": "{{id}} を上へ移動",
+      "down": "{{id}} を下へ移動",
+      "remove": "{{id}} を削除",
+      "invalid": "{{id}} を確認してください。同時実行数は 1～5、空でない分岐が 2 つ以上必要で、識別子は重複できません。通常のステップは最大 64 個までで、共有や手動確認はできません。",
+      "invalidEntry": "開始から分岐内のステップに直接接続することはできません。",
+      "invalidEdge": "{{from}} から {{to}} には接続できません。再試行は同じ分岐内で回数を制限してください。分岐や合流ではセッションを継続できません。"
+    },
     "title": "ワークフローエディター",
     "subtitle": "キャンバスでノードとエッジを作成し、各ノードに Agent を割り当てます。",
     "canvas": "キャンバス",
@@ -1716,7 +1770,8 @@
     "profileCatalogLoadFailed": "ロール一覧を読み込めませんでした",
     "profileCatalogRetry": "リロード",
     "selectHint": "キャンバス上のノードまたはエッジを選択して構成します。",
-    "terminalSelectionHint": "終点ノードに設定はありません。キャンバス上方の削除で取り除けます。",
+    "startSelectionHint": "開始を最初に実行するノードに接続してください。",
+    "terminalSelectionHint": "この制御ノードはセッションを開始しません。",
     "currentSelection": "現在の選択内容",
     "currentSelectionHelp": "ここでは、ノードとエッジの構成が最初に表示されます。",
     "workflowSettings": "ワークフロー設定",
@@ -1886,6 +1941,7 @@
     "validationTerminalEdgeSource": "終了ノード {{node}} を辺の起点にはできません。",
     "validationContinueTerminalTarget": "第 {{index}} 辺の continue session は終了ノードを指せません。",
     "nodeLabels": {
+      "start": "開始",
       "plan": "プラン",
       "dev": "開発",
       "review": "レビュー",
@@ -3150,8 +3206,10 @@
       "removeRemoteBinding": "タスクのバインド解除",
       "remoteAttachmentHint": "リモートタスクの添付ファイル。送信時に自動でダウンロードして添付されます",
       "remoteBindingTag": "{{source}} · {{title}}",
-      "forgeBindingTag": "鋳造 · {{title}}",
-      "removeForgeBinding": "鋳造のバインドを解除"
+      "forgeBindingTag": "生成 · {{title}}",
+      "removeForgeBinding": "生成のバインドを解除",
+      "forgeProjectMismatch": "生成元は別のプロジェクトに属しています。そのプロジェクトに切り替えるか、入力欄の生成タグを外してから送信してください",
+      "forgeRequiresDirect": "生成セッションは Direct モードで実行します。切り替えてから送信してください"
     },
     "branchPicker": {
       "label": "ブランチ",
@@ -3543,17 +3601,17 @@
   },
   "forge": {
     "entry": {
-      "action": "ワークフローとして鋳造",
-      "fromHere": "ここから鋳造"
+      "action": "ワークフローを生成",
+      "fromHere": "ここからワークフローを生成"
     },
     "prefill": {
-      "intro": "以下のソース会話からワークフローを鋳造します。要求を追記してから送信してください："
+      "intro": "以下のソース会話からワークフローを生成します。要求を追記してから送信してください："
     },
     "preview": {
-      "title": "鋳造プレビュー",
-      "open": "鋳造プレビューを開く",
-      "loading": "鋳造草稿を読み込み中…",
-      "empty": "鋳造草稿はまだありません。対話が収束するとステージと契約がここに表示されます。",
+      "title": "ワークフロープレビュー",
+      "open": "プレビューを開く",
+      "loading": "生成草稿を読み込み中…",
+      "empty": "対話で流れが整理されると、各ステージがここに表示されます。",
       "openQuestions": "未確定項目",
       "outputKind": {
         "json": "JSON 成果物",
@@ -3565,9 +3623,15 @@
         "retry": "自動リトライ",
         "manual-check": "手動レビュー",
         "new-round": "新ラウンド開始",
-        "end": "終了"
+        "end": "終了",
+        "jump": "ステージに移動",
+        "new-round-from": "指定ステージから再開",
+        "jump-detail": "「{{stage}}」に移動",
+        "jump-continue-detail": "「{{stage}}」に戻りセッションを続行",
+        "new-round-from-detail": "「{{stage}}」から次のラウンドを開始"
       },
       "role": {
+        "unassigned": "ロールなし",
         "dev": "開発",
         "test": "テスト",
         "review": "レビュー",
@@ -3575,11 +3639,19 @@
         "accept": "受入"
       },
       "outputKindLabel": "成果物",
+      "startGroupTrial": "最初の並列グループを試行",
+      "trialChanged": "ワークフローまたは実行設定が変更されました。試行は開始していません。更新された範囲を確認してから開始してください。",
+      "groupTrialScope": "全 {{branches}} 分岐を同時に最大 {{cap}} 分岐まで試行し、合流後に停止します。",
+      "parallelFork": "並列 · {{id}}（同時に最大 {{cap}} 分岐）",
+      "parallelJoin": "合流 · {{id}}",
+      "parallelBranch": "{{group}} · 分岐 {{branch}}",
       "onFailureLabel": "失敗時の方針",
-      "compile": "テンプレートへコンパイル",
-      "compileHint": "収束した Spec を産物契約付きワークフローテンプレートにコンパイル",
-      "compileBlocked": "未確定項目が残っています。収束後にコンパイルできます",
-      "startTrial": "第 1 ノードを試実行",
+      "copyName": "「{{name}}」の新しい名前",
+      "saveCopy": "新しいワークフローとして保存",
+      "compile": "ワークフローとして保存",
+      "compileHint": "各ステージが対話で確認できたら、ワークフローテンプレートにコンパイルできます",
+      "compileBlocked": "質問に回答すると保存できます。",
+      "startTrial": "最初のステップを試す",
       "startTrialHint": "テンプレートから実際のタスクを作成し、第 1 ノード完了で停止",
       "compiledCount": "ワークフローテンプレートを {{count}} 件作成しました",
       "bindingMissing": "利用可能なモデルバインドがまだありません。試実行前に設定でバインドしてください",
@@ -3588,42 +3660,123 @@
         "output": "成果物",
         "boundary": "境界",
         "acceptance": "受け入れ"
-      }
-    },
-    "history": {
-      "title": "鋳造履歴",
-      "subtitle": "鋳造・試実行セッションは既定の会話一覧に出ません。ここで確認と整理を行います。",
-      "loading": "鋳造セッションを読み込み中…",
-      "loadFailed": "鋳造セッションの読み込みに失敗しました",
-      "empty": "このプロジェクトに鋳造セッションはありません",
-      "sessionBadge": "鋳造",
-      "trialBadge": "試実行",
-      "noSpec": "鋳造草稿はまだありません",
-      "stageCount": "{{count}} ステージ",
-      "openQuestionCount": "未確定 {{count}} 件",
-      "openQuestionHint": "未収束の項目が残っています。対話で引き続き収束させます",
-      "cleanupUnfinished": "未完了を整理",
-      "cleanupSelected": "選択を整理（{{count}}）",
-      "cleanupConfirmTitle": "鋳造セッションを整理",
-      "cleanupConfirmDescription": "{{count}} 件のセッションのタスクディレクトリ（対話記録と鋳造草稿を含む）を削除します。元に戻せません。",
-      "cleanupConfirmAction": "整理",
-      "selectSession": "{{title}} を選択"
-    },
-    "skillPrefill": {
-      "intro": "以下の選択した skill からワークフローを鋳造します。要求を追記してから送信してください："
-    },
-    "report": {
-      "title": "アップグレード対照",
-      "before": "鋳造前",
-      "beforeFallback": "自然言語の対話",
-      "after": "鋳造後",
-      "capabilityStages": "{{count}} ステージが自動接続——各步が何をして何を渡すか明記済み",
-      "capabilitySchema": "{{count}} つの成果物に形式契約があり,機械が合格を自動確認",
-      "capabilityFailure": "{{count}} カ所の失敗を自動処理（リトライまたは人への確認）——黙って腐りません",
-      "capabilityResume": "中断してもブレークポイントから再開——やり直し不要"
+      },
+      "compiledUpdated": "既存のワークフローテンプレートを更新しました",
+      "compiledMixed": "{{created}} 件を作成し、{{updated}} 件のワークフローテンプレートを更新しました",
+      "loadFailed": "生成草稿を読み込めませんでした",
+      "stageOrdinal": "第 {{index}} ステージ",
+      "deltaInvalid": "直前の返信の Spec 増分は形式が正しくなく、適用されませんでした。出力し直すよう伝えてください。",
+      "untitled": "無題のワークフロー",
+      "adoptRecommendation": "推奨案を採用",
+      "adoptAll": "すべて採用",
+      "adoptSent": "送信済み",
+      "adoptUnavailable": "送信できません。会話で回答してください。",
+      "recommendationLabel": "推奨案",
+      "adoptMessage": "「{{question}}」について、推奨案「{{recommendation}}」を採用します。",
+      "adoptAllMessage": "次の推奨案を採用します：{{items}}",
+      "adoptAllItem": "{{index}}. {{question}}：{{recommendation}}",
+      "savedCreated": "「{{name}}」を作成しました",
+      "savedUpdated": "「{{name}}」を更新しました",
+      "viewWorkflow": "ワークフローを表示",
+      "keepAdjusting": "調整を続ける",
+      "keepAdjustingPrompt": "このワークフローを変更したいです：",
+      "staleAfterEdit": "変更を保存すると新版を試せます。",
+      "changedBadge": "今回の変更",
+      "modifyStage": "このステージを変更",
+      "modifyStagePrompt": "ステップ {{index}}「{{name}}」を変更：",
+      "technicalDetails": "技術詳細",
+      "roleDefinition": "役割の責務",
+      "failureTargetLabel": "戻り先",
+      "restartTargetLabel": "次のラウンドの起点",
+      "failureTargetPlaceholder": "ステージを選択",
+      "continueSessionLabel": "前回のセッションを続行",
+      "conversationActiveHint": "返信完了後に変更できます。"
     },
     "modifyPrefill": {
-      "intro": "ワークフロー「{{name}}」（{{count}} ステージ）を読み込みました。変更内容を記述して送信するとガイド調整が始まります："
+      "intro": "ワークフロー「{{name}}」（{{count}} ステージ）を読み込みました。変更内容を記述して送信するとガイド調整が始まります：",
+      "builtinIntro": "組み込みワークフロー「{{name}}」（{{count}} ステージ）のコピーを作成します。新しい名前と変更内容を入力してください。元のワークフローは変更されません。"
+    },
+    "repair": {
+      "stop": "修正を停止",
+      "errorsTitle": "未解決の問題：",
+      "inProgress": "コンパイル未通過のため自動修正中（第 {{attempt}}/{{max}} ラウンド）…",
+      "recompiling": "修正済み — 再コンパイル中…",
+      "exhausted": "{{attempt}} ラウンド自動修正しても通りませんでした。対話で残りの項目を確認してから再コンパイルしてください。",
+      "handedBack": "あなたの確認が必要な質問があります。対話で回答してからコンパイルしてください。",
+      "busy": "対話が応答中です。応答が終わってからコンパイルしてください。",
+      "unavailable": "修正リクエストを送信できませんでした。セッションが利用可能か確認して再コンパイルしてください。",
+      "turnCancelled": "自動修正が中断されました。再コンパイルできます。",
+      "unconfirmed": "今回の修正の返信全体を確認できませんでした。会話で下書きを確認し、もう一度コンパイルしてください。",
+      "turnFailed": "自動修正ラウンドの実行に失敗しました。再コンパイルできます。",
+      "noChange": "この修正ラウンドで有効な変更はありませんでした。対話で変更内容を伝えてください。",
+      "compileFailed": "再コンパイルに失敗しました。再試行できます。",
+      "aborted": "自動修正を停止しました。",
+      "invalidDelta": "モデルがこのラウンド出力した Spec 増分の形式が正しくなく、適用されませんでした。もう一度コンパイルしてください。"
+    },
+    "history": {
+      "title": "ワークフロー生成履歴",
+      "allProjects": "すべてのプロジェクト",
+      "clearFilters": "絞り込みを解除",
+      "kind": "履歴の種類",
+      "allKinds": "すべての種類",
+      "search": "タイトルまたは説明を検索",
+      "loading": "生成履歴を読み込み中…",
+      "failed": "生成履歴を読み込めませんでした。",
+      "partial": "一部の履歴を読み込めませんでした。",
+      "empty": "条件に一致する生成や試行の履歴はありません。",
+      "newest": "最新の履歴に戻る",
+      "noRun": "未実行",
+      "lastActivity": "最終更新：{{time}}"
+    },
+    "itemsPrefill": {
+      "intro": "以下の素材からワークフローを生成してください：",
+      "title": "{{count}} 件の素材からワークフローを生成",
+      "kind": {
+        "role": "役割",
+        "skill": "skill",
+        "command": "command",
+        "agent": "agent"
+      },
+      "scope": {
+        "built-in": "内蔵",
+        "global": "グローバル",
+        "project": "プロジェクト"
+      }
+    },
+    "session": {
+      "badge": "生成",
+      "projectHistory": "プロジェクトの生成履歴",
+      "searchHistory": "生成履歴を検索",
+      "trialBadge": "試行"
+    },
+    "chat": {
+      "draftUpdating": "下書きを生成中…",
+      "draftUpdated": "下書きの内容を表示"
     }
+  },
+  "plugin": {
+    "importSkill": "Skill を取り込む",
+    "importRole": "役割として取り込む",
+    "skillConfirm": "Skill と補助ファイルを同じ範囲の Skill ライブラリへコピーします。プラグインはインストールされません。同期先 Agent は Skill 一覧で選択してください。専用ツールには元のホストが必要です。",
+    "roleConfirm": "役割の指示だけを取り込みます。プラグインの権限や設定はコピーされません。",
+    "skillImported": "取り込みました。Skill 一覧で同期先を選択できます。",
+    "forget": "提供元を解除",
+    "forgetConfirm": "追加した提供元のみを解除します。フォルダーやファイルは削除されません。",
+    "unavailable": "提供元を利用できません。フォルダーを再選択するか、提供元を解除してください。",
+    "unsupportedBundle": "定義は読み取れますが、この Skill パッケージはインポートできません。",
+    "manualEngine": "CodeBuddy エンジンを使用。選択したフォルダーはインストール済みであることを示しません。",
+    "desktopBundled": "WorkBuddy · デスクトップ版に同梱",
+    "desktopRegistry": "WorkBuddy · デスクトップ版に登録済み（有効とは限りません）",
+    "manualSource": "WorkBuddy · 手動で選択",
+    "codeBuddyCli": "CodeBuddy Code（CLI）",
+    "hostSource": "ホストの提供元",
+    "selectDirectory": "フォルダーから読み込む",
+    "replaceDirectory": "フォルダーを変更",
+    "directoryHint": "WorkBuddy のインストール先、SKILL.md を含むフォルダー、または展開済みのエキスパートパッケージを選んでください。素材の一覧に追加するだけで、プラグインはインストールされません。",
+    "assetCount": "機能 {{count}} 件",
+    "showRemaining": "残り {{count}} 件を表示",
+    "collapse": "折りたたむ",
+    "workBuddyCompatible": "WorkBuddy のコード開発モードで読み取り可能",
+    "roleImported": "役割ライブラリに追加しました。"
   }
 }

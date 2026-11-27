@@ -56,7 +56,7 @@ const overrides = {
     localCommand: 'gemini',
   },
   'codebuddy-code': {
-    label: 'WorkBuddy', iconKey: 'codebuddy-code', primaryAgentDir: '.codebuddy', compatibleAgentDirs: [],
+    label: 'CodeBuddy Code', iconKey: 'codebuddy-code', primaryAgentDir: '.codebuddy', compatibleAgentDirs: [],
     localCommand: 'codebuddy',
   },
   goose: {

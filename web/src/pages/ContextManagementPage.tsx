@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { TFunction } from 'i18next';
 import { ArrowLeft, ChevronsUpDown, CircleHelp, CloudDownload, Edit, Eye, FolderOpen, Library, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
@@ -15,11 +16,13 @@ import { displayAppError } from '../i18n';
 import { agentDiagnosticShortReason } from '@/lib/agent-diagnostic';
 import type {
   AppErrorVm, ImportedProfileRecord, ImportProfilesResult, ProfileFieldFallback, ProfileInput, ProfileListVm, ProfileScope, ProfileVm,
-  McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, AgentRegistryVm, ToolInfo, ForgeSkillRefVm,
+  McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, AgentRegistryVm, ToolInfo, ForgeSourceItemVm, ConversationWorkspaceVm,
 } from '../types';
 import { AgentIdentityLabel } from '@/components/AgentIdentityLabel';
-import { EntitySection } from '@/components/EntitySection';
+import { AssetCardGrid, EntitySection } from '@/components/EntitySection';
+import { RefreshSingleFlight } from '@/lib/refresh-single-flight';
 import { McpServerCard } from '@/components/McpServerCard';
+import { PluginForgeAssets } from '@/components/PluginForgeAssets';
 import { RemoteSkillSyncDialog } from '@/components/RemoteSkillSyncDialog';
 import { EmptyState, Page, PageContent, PageHeader } from '@/components/PageScaffold';
 import { SkillAgentOverflow } from '@/components/SkillAgentOverflow';
@@ -56,20 +59,22 @@ import {
   type SkillSheetMode,
 } from '@/lib/skill-sheet-form';
 import { skillStorageHint } from '@/lib/skill-storage-hint';
+import { forgeItemKey, MAX_FORGE_ITEMS, profileForgeItem, pruneForgeItems, skillForgeItem } from '@/lib/forge-items';
 import { readRememberedSkillProjectWorkspace, rememberSkillProjectWorkspace } from '@/lib/skill-workspace-memory';
 import { initialProfileImportState, profileImportReducer } from '@/lib/profile-import-state';
 
 type ProfileSheetMode = 'view' | 'create' | 'edit';
 type ContextTab = 'profiles' | 'mcp' | 'skills';
 type ProfileListTab = 'built-in' | 'custom';
+/// SKILL 区的三个页签：全局 / 项目 / 已安装的 Claude Code plugin。
+type SkillTab = 'global' | 'project' | 'plugins';
 
 interface ContextManagementPageProps {
   initialTab?: 'profiles' | 'mcp' | 'skills';
   agentRegistry: AgentRegistryVm | null;
   onAgentRegistryChange: (registry: AgentRegistryVm) => void;
-  /// 工作流铸造入口 B（方案 §5.1）：勾选 skill 组合生成工作流。App 层编排
-  /// 摘要预填与项目挂靠切换;缺省（只读态）隐藏勾选。
-  onForgeSkills?: (skills: ForgeSkillRefVm[], anchorProjectId: string) => void;
+  /// Return true only once the anchored draft or direct run has accepted the materials.
+  onForgeItems?: (items: ForgeSourceItemVm[], anchorProjectId: string) => Promise<boolean>;
 }
 
 function EntityRefreshButton({ label, loading, onRefresh }: { label: string; loading: boolean; onRefresh: () => void }) {
@@ -85,7 +90,7 @@ function EntityRefreshButton({ label, loading, onRefresh }: { label: string; loa
   );
 }
 
-export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, onForgeSkills, initialTab = 'profiles' }: ContextManagementPageProps) {
+export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, onForgeItems, initialTab = 'profiles' }: ContextManagementPageProps) {
   const readOnly = useReadOnlyExperience();
   const measuredProfileListRef = useWebviewMeasuredContainer<HTMLDivElement>('profile-list');
   const { t } = useTranslation();
@@ -167,18 +172,41 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
   const [skillEditWsPath, setSkillEditWsPath] = useState<string | null>(null);
   const [mcpDiagnosingAgent, setMcpDiagnosingAgent] = useState<string | null>(null);
 
-  const [skillTab, setSkillTab] = useState<'global' | 'project'>('global');
+  const [skillTab, setSkillTab] = useState<SkillTab>('global');
   const [skillQuery, setSkillQuery] = useState('');
-  // 入口 B:勾选的 skill(key `${source}:${name}`)与挂靠对话框状态。
-  const [selectedForgeSkills, setSelectedForgeSkills] = useState<Set<string>>(new Set());
-  const [forgeAnchorOpen, setForgeAnchorOpen] = useState<ForgeSkillRefVm[] | null>(null);
+  const [selectedForgeItems, setSelectedForgeItems] = useState<Map<string, ForgeSourceItemVm>>(() => new Map());
+  const [forgeAnchorOpen, setForgeAnchorOpen] = useState(false);
+  const [forgeBusy, setForgeBusy] = useState(false);
+  const [forgeError, setForgeError] = useState<string | null>(null);
+  const forgePending = useRef(false);
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const [pluginRefreshToken, setPluginRefreshToken] = useState(0);
+  const [pluginsLoading, setPluginsLoading] = useState(false);
   const [forgeAnchorChoice, setForgeAnchorChoice] = useState<string>('');
   const [skillAgentFilter, setSkillAgentFilter] = useState<string>('all');
   // 远程来源 SKILL 同步弹窗（仅全局 Tab 展示入口；拉取目标恒为全局库）。
   const [remoteSyncOpen, setRemoteSyncOpen] = useState(false);
-  const [selectedWorkspace, setSelectedWorkspace] = useState<string>('');
-  const [workspaces, setWorkspaces] = useState<Array<{ projectId: string; workspacePath: string; name: string }>>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [workspaces, setWorkspaces] = useState<ConversationWorkspaceVm[]>([]);
   const needsSkillContext = activeTab === 'skills' || skillSheetMode === 'create';
+  const project = workspaces.find(w => w.projectId === selectedProjectId);
+  const selectedWorkspace = project?.workspacePath ?? '';
+  const currentProjectId = useRef(selectedProjectId);
+  const reads = useRef(new RefreshSingleFlight());
+  const [profileImportVersion, markProfileImported] = useReducer(n => n + 1, 0);
+  const [skillImportVersion, markGlobalSkillImported] = useReducer(n => n + 1, 0);
+  const profileLoadedVersion = useRef(-1);
+  const globalLoadedVersion = useRef(-1);
+  const [projectImportVersion, markProjectSkillImported] = useReducer(n => n + 1, 0);
+  function changeWorkspace(id: string | null) {
+    if (id === currentProjectId.current) return;
+    currentProjectId.current = id;
+    setSelectedProjectId(id); setProjectSkills([]); setSkillQuery(''); setSkillError(null);
+    setSelectedForgeItems(prev => pruneForgeItems(prev, item => item.source === 'project', []));
+    setForgeAnchorOpen(false); setForgeAnchorChoice('');
+    setSkillDeleteTarget(null); setSkillSheetMode(null);
+  }
 
   useEffect(() => {
     if (skillError) {
@@ -217,41 +245,104 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
     return items;
   }, [configuredAgents, projectSkills, skillAgentFilter, skillList, skillQuery, skillTab, selectedWorkspace]);
 
-  // 入口 B:把勾选 key 还原为 skill 引用列表(按当前过滤域内元数据匹配)。
-  const collectSelectedForgeSkills = (): ForgeSkillRefVm[] => {
-    const pool = skillTab === 'global' ? (skillList?.global ?? []) : projectSkills;
-    return pool
-      .filter((skill) => selectedForgeSkills.has(`${skill.source}:${skill.name}`))
-      .map((skill) => ({ name: skill.name, source: skill.source, directoryPath: skill.directoryPath }));
+  const latestSelection = useRef(selectedForgeItems);
+  latestSelection.current = selectedForgeItems;
+  const toggleForgeItem = (item: ForgeSourceItemVm) => {
+    if (forgePending.current) return;
+    const key = forgeItemKey(item);
+    if (!selectedForgeItems.has(key) && selectedForgeItems.size >= MAX_FORGE_ITEMS) {
+      setForgeError(t('contextManagement.skills.forgeLimit', { count: MAX_FORGE_ITEMS }));
+      return;
+    }
+    setForgeError(null);
+    setSelectedForgeItems(prev => {
+      const next = new Map(prev);
+      if (next.has(key)) next.delete(key);
+      else if (next.size < MAX_FORGE_ITEMS) next.set(key, item);
+      return next;
+    });
+  };
+  async function loadWorkspaces() {
+    const next = await reads.current.run('forge-workspaces', getConversationWorkspaces);
+    if (mounted.current) {
+      setWorkspaces(next);
+      if (!next.some(w => w.projectId === currentProjectId.current)) {
+        const remembered = readRememberedSkillProjectWorkspace(next);
+        changeWorkspace(next.find(w => w.workspacePath === remembered)?.projectId ?? null);
+      }
+    }
+    return next;
+  }
+  async function generateMaterials(chosenProjectId?: string) {
+    if (!onForgeItems || forgePending.current || selectedForgeItems.size === 0) return;
+    const projectOwner = currentProjectId.current;
+    const selected = [...selectedForgeItems.values()];
+    const projectBound = selected.some(i => i.source === 'project');
+    forgePending.current = true; setForgeBusy(true); setForgeError(null);
+    try {
+      const available = await loadWorkspaces();
+      if (!mounted.current) return;
+      const fixedAnchor = projectBound || chosenProjectId !== undefined;
+      const target = fixedAnchor
+        ? available.find(w => w.projectId === (projectBound ? projectOwner : chosenProjectId))
+        : available.length === 1 ? available[0] : undefined;
+      if (!available.length || (fixedAnchor && !target) || (projectBound && projectOwner !== currentProjectId.current)) {
+        setForgeAnchorOpen(false); setForgeError(t('contextManagement.skills.forgeProjectUnavailable')); return;
+      }
+      if (latestSelection.current !== selectedForgeItems) return;
+      if (!target) {
+        const remembered = readRememberedSkillProjectWorkspace(available);
+        setForgeAnchorChoice(available.find(w => w.workspacePath === remembered)?.projectId ?? '');
+        setForgeAnchorOpen(true); return;
+      }
+      setForgeAnchorOpen(false);
+      if (chosenProjectId) rememberSkillProjectWorkspace(target.workspacePath);
+      if (await onForgeItems(selected, target.projectId)) setSelectedForgeItems(new Map());
+    } catch (err) { setForgeAnchorOpen(false); setForgeError(displayAppError(t, err)); }
+    finally { forgePending.current = false; setForgeBusy(false); }
+  }
+  const forgeAction = !readOnly && onForgeItems && (
+    <Button variant="outline" size="sm" disabled={forgeBusy || selectedForgeItems.size === 0} onClick={() => void generateMaterials()}>
+      {forgeBusy && <Loader2 className="size-4 animate-spin" />}{t('contextManagement.skills.forgeAction', { count: selectedForgeItems.size })}
+    </Button>
+  );
+  const profileSelection = (profile: ProfileVm) => {
+    if (readOnly || !onForgeItems) return null;
+    const item = profileForgeItem(profile);
+    return <Checkbox className="mt-1 shrink-0" disabled={forgeBusy} checked={selectedForgeItems.has(forgeItemKey(item))}
+      aria-label={t('contextManagement.skills.forgeSelect', { name: profile.name })} onCheckedChange={() => toggleForgeItem(item)} />;
   };
 
   // 选择 workspace 时加载该项目 SKILL
   const loadProjectSkills = async (wsPath: string) => {
-    if (!wsPath) { setProjectSkills([]); return; }
+    const owner = selectedProjectId;
+    if (currentProjectId.current !== owner) return;
+    if (!wsPath || !owner) { setProjectSkills([]); return; }
     setSkillLoading(true);
-    try { setProjectSkills(await listProjectSkills(wsPath)); } catch { setProjectSkills([]); }
-    finally { setSkillLoading(false); }
+    try {
+      const next = await reads.current.run(`project-skills:${owner}:${wsPath}`, () => listProjectSkills(wsPath), true);
+      if (currentProjectId.current === owner) {
+        setProjectSkills(next);
+        setSelectedForgeItems(prev => prev.size ? pruneForgeItems(prev, item => item.catalog === 'skill' && item.source === 'project', next.map(skillForgeItem)) : prev);
+      }
+    } catch (err) { if (currentProjectId.current === owner) setSkillError(displayAppError(t, err)); }
+    finally { if (currentProjectId.current === owner) setSkillLoading(false); }
   };
 
   useEffect(() => {
-    setSelectedWorkspace((current) => {
-      if (current && workspaces.some((workspace) => workspace.workspacePath === current)) {
-        return current;
-      }
-      return readRememberedSkillProjectWorkspace(workspaces);
-    });
-  }, [workspaces]);
-
-  useEffect(() => {
-    if (skillTab !== 'project') {
-      return;
-    }
+    if (activeTab !== 'skills' || skillTab !== 'project') return;
     if (!selectedWorkspace) {
       setProjectSkills([]);
       return;
     }
     void loadProjectSkills(selectedWorkspace);
-  }, [selectedWorkspace, skillTab]);
+  }, [selectedProjectId, selectedWorkspace, skillTab, activeTab, projectImportVersion]);
+
+  function applySkillInventory(next: SkillListVm) {
+    setSkillList(next);
+    // The write APIs return the app inventory, not the selected project's inventory.
+    setSelectedForgeItems(prev => prev.size ? pruneForgeItems(prev, item => item.catalog === 'skill' && item.source !== 'project', next.global.map(skillForgeItem)) : prev);
+  }
 
   const handleSkillSyncToggle = async (skill: SkillMetaVm, agentType: string) => {
     const pendingKey = `${skill.source}:${skill.directoryPath}:${agentType}`;
@@ -274,7 +365,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
         skill.directoryPath,
         [...nextTargets],
       );
-      setSkillList(next);
+      applySkillInventory(next);
       if (skillTab === 'project' && selectedWorkspace) {
         await loadProjectSkills(selectedWorkspace);
       }
@@ -287,14 +378,17 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
 
   useEffect(() => {
     if (!needsSkillContext) return;
-    getConversationWorkspaces().then(setWorkspaces).catch(() => setWorkspaces([]));
+    void loadWorkspaces().catch(err => { if (mounted.current) setSkillError(displayAppError(t, err)); });
   }, [needsSkillContext]);
 
   const refresh = async () => {
     setLoading(true);
     setError(null);
     try {
-      setVm(await getProfiles());
+      const next = await reads.current.run('profiles', getProfiles, true);
+      setVm(next);
+      setSelectedForgeItems(prev => prev.size ? pruneForgeItems(prev, item => item.catalog === 'profile', next.profiles.map(profileForgeItem)) : prev);
+      profileLoadedVersion.current = profileImportVersion;
     } catch (err) {
       setError(displayAppError(t, err));
     } finally {
@@ -321,24 +415,21 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
     setSkillLoading(true);
     setSkillError(null);
     try {
-      setSkillList(await listSkills());
-      if (skillTab === 'project' && selectedWorkspace) {
-        void loadProjectSkills(selectedWorkspace);
-      }
+      const next = await reads.current.run('global-skills', listSkills, true);
+      applySkillInventory(next);
+      globalLoadedVersion.current = skillImportVersion;
     } catch (err) { setSkillError(displayAppError(t, err)); }
     finally { setSkillLoading(false); }
   };
 
-  useEffect(() => { void refresh(); }, [readOnly ? t : null]);
   useEffect(() => {
-    if (readOnly && skillList) void refreshSkills();
-  }, [readOnly ? t : null]);
+    if (activeTab === 'profiles' && (readOnly || profileLoadedVersion.current !== profileImportVersion)) void refresh();
+  }, [activeTab, profileImportVersion, readOnly ? t : null]);
   useEffect(() => { if (activeTab === 'mcp' && mcpServers.length === 0) void refreshMcp(); }, [activeTab]);
   useEffect(() => {
     if (activeTab !== 'skills') return;
-    if (!skillList) { void refreshSkills(); return; }
-    if (skillTab === 'project' && selectedWorkspace) { void loadProjectSkills(selectedWorkspace); }
-  }, [activeTab]);
+    if (skillTab === 'global' && (readOnly || globalLoadedVersion.current !== skillImportVersion)) void refreshSkills();
+  }, [activeTab, skillTab, skillImportVersion, readOnly ? t : null]);
 
   const handleMcpSave = async () => {
     setMcpSaving(true); setMcpError(null);
@@ -562,6 +653,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
           ]}
           actions={
             <>
+              {forgeAction}
               <EntityRefreshButton label={t('common.refresh')} loading={loading} onRefresh={() => void refresh()} />
               {!readOnly && <>
                 <Button variant="outline" disabled={loading || profileImport.importing} onClick={() => dispatchProfileImport({ type: 'open-settings' })}>
@@ -584,8 +676,9 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
               </div>
             </>
           }
-          error={error}
+          error={forgeError ?? error}
         >
+          {!readOnly && onForgeItems && <p className="px-4 pt-3 text-xs text-muted-foreground">{t('contextManagement.forgeRoleHint')}</p>}
           {loading && !vm ? <EmptyState>{t('common.loading')}</EmptyState> : null}
           {vm && profileListTab === 'built-in' ? (
             <div ref={measuredProfileListRef} className="@container/profile-list">
@@ -594,6 +687,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
                   <BuiltInProfileCard
                     key={`${profile.scope}:${profile.id}`}
                     profile={profile}
+                    selection={profileSelection(profile)}
                     onView={() => openSheet('view', profile)}
                     onEdit={() => openSheet('edit', profile)}
                   />
@@ -608,6 +702,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
                   <CustomProfileCard
                     key={`${profile.scope}:${profile.id}`}
                     profile={profile}
+                    selection={profileSelection(profile)}
                     onView={() => openSheet('view', profile)}
                     onEdit={() => openSheet('edit', profile)}
                     onDelete={() => openDeleteDialog(profile)}
@@ -874,56 +969,45 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
             tabs={[
               { value: 'global', label: t('contextManagement.skills.globalTab', '全局') },
               { value: 'project', label: t('contextManagement.skills.projectTab', '项目') },
+              { value: 'plugins', label: t('contextManagement.skills.plugins.tab', 'Plugin') },
             ]}
-            tabAccessory={skillTab === 'project' && workspaces.length > 0 ? (
-                <Select value={selectedWorkspace} onValueChange={(v) => { setSelectedWorkspace(v); rememberSkillProjectWorkspace(v); setSkillQuery(''); }}>
-                  <SelectTrigger className="h-8 w-44 text-xs">
+            tabAccessory={skillTab !== 'global' && workspaces.length > 0 ? (
+                <Select disabled={forgeBusy} value={selectedProjectId ?? (skillTab === 'plugins' ? 'global' : '')} onValueChange={(v) => {
+                  const option = workspaces.find(w => w.projectId === v); changeWorkspace(option?.projectId ?? null); rememberSkillProjectWorkspace(option?.workspacePath ?? '');
+                }}>
+                  <SelectTrigger aria-label={t('contextManagement.scope')} className="h-8 w-44 max-w-full text-xs">
                     <SelectValue placeholder={t('contextManagement.skills.selectProject', '选择项目...')} />
                   </SelectTrigger>
                   <SelectContent>
+                    {skillTab === 'plugins' && <SelectItem value="global">{t('forge.itemsPrefill.scope.global')}</SelectItem>}
                     {workspaces.map((w) => (
-                      <SelectItem key={w.projectId} value={w.workspacePath}>{w.name}</SelectItem>
+                      <SelectItem key={w.projectId} value={w.projectId}>{w.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
             ) : null}
             actions={(
               <>
-                <EntityRefreshButton label={t('common.refresh')} loading={skillLoading} onRefresh={() => void refreshSkills()} />
+                <EntityRefreshButton
+                  label={t('common.refresh')}
+                  loading={skillTab === 'plugins' ? pluginsLoading : skillLoading}
+                  onRefresh={() => {
+                    if (skillTab === 'plugins') { setPluginRefreshToken((token) => token + 1); return; }
+                    if (skillTab === 'project') { void loadProjectSkills(selectedWorkspace); return; }
+                    void refreshSkills();
+                  }}
+                />
                 {skillTab === 'global' && !readOnly && (
                   <Button variant="outline" size="sm" onClick={() => setRemoteSyncOpen(true)}>
                     <CloudDownload className="size-4" />
                     {t('contextManagement.skills.remoteSync.action')}
                   </Button>
                 )}
-                {!readOnly && onForgeSkills ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={selectedForgeSkills.size === 0}
-                    onClick={() => {
-                      const selected = collectSelectedForgeSkills();
-                      if (selected.length === 0) return;
-                      // 全部为项目级 skill → 直接挂靠当前所选项目(方案 §5.2);
-                      // 含全局/内置 → 弹项目选择对话框,记忆偏好。
-                      const allProject = selected.every((skill) => skill.source === 'project');
-                      const current = workspaces.find((w) => w.workspacePath === selectedWorkspace);
-                      if (allProject && current) {
-                        onForgeSkills(selected, current.projectId);
-                        setSelectedForgeSkills(new Set());
-                        return;
-                      }
-                      setForgeAnchorChoice(readRememberedSkillProjectWorkspace(workspaces.map((w) => ({ workspacePath: w.workspacePath }))));
-                      setForgeAnchorOpen(selected);
-                    }}
-                  >
-                    {t('contextManagement.skills.forgeAction', { count: selectedForgeSkills.size })}
-                  </Button>
-                ) : null}
-                {!readOnly && <Button size="sm" onClick={() => { setSkillEditTarget(null); setSkillSheetContent(null); setSkillEditWsPath(null); setSkillSheetMode('create'); }}><Plus className="size-4" />{t('contextManagement.skills.createSkill', '创建')}</Button>}
+                {forgeAction}
+                {skillTab !== 'plugins' && !readOnly && <Button size="sm" onClick={() => { setSkillEditTarget(null); setSkillSheetContent(null); setSkillEditWsPath(null); setSkillSheetMode('create'); }}><Plus className="size-4" />{t('contextManagement.skills.createSkill', '创建')}</Button>}
               </>
             )}
-            toolbar={(skillTab === 'global' || selectedWorkspace) ? (
+            toolbar={skillTab !== 'plugins' && (skillTab === 'global' || selectedWorkspace) ? (
               <>
                 <div className="relative min-w-[160px]">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -944,43 +1028,64 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
                 ) : null}
               </>
             ) : undefined}
-            error={skillError}
+            error={forgeError ?? skillError}
           >
+            {skillTab === 'plugins' ? (
+              <PluginForgeAssets
+                projectId={project?.projectId ?? null} projectName={project?.name ?? null} catalog={agentRegistry?.catalog}
+                canGenerate={!!onForgeItems} readOnly={readOnly}
+                onImported={({kind, projectId}) => {
+                  if (kind === 'agent') markProfileImported();
+                  else if (projectId === null) markGlobalSkillImported();
+                  else if (currentProjectId.current === projectId) markProjectSkillImported();
+                }}
+                refreshToken={pluginRefreshToken}
+                isItemSelected={(item) => selectedForgeItems.has(forgeItemKey(item))}
+                onToggleItem={toggleForgeItem}
+                onItemsListed={items => {
+                  if (currentProjectId.current !== selectedProjectId) return;
+                  setSelectedForgeItems(prev => pruneForgeItems(prev, item => item.catalog === 'plugin' && (item.source !== 'project' || !!selectedProjectId), items));
+                }}
+                onLoadingChange={setPluginsLoading}
+              />
+            ) : (
+            <>
             {skillLoading && !skillList ? <div className="p-5"><EmptyState>{t('common.loading')}</EmptyState></div> : null}
             {skillTab === 'project' && !selectedWorkspace ? <div className="p-5"><EmptyState>{t('contextManagement.skills.selectProjectEmpty', '选择项目以查看项目级 SKILL')}</EmptyState></div> : null}
             {skillTab === 'global' && skillList && skillList.global.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState></div> : null}
             {skillTab === 'project' && selectedWorkspace && !skillLoading && projectSkills.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState></div> : null}
             {skillList && filteredSkills && filteredSkills.length === 0 && (skillQuery || skillAgentFilter !== 'all') ? <div className="p-5"><EmptyState>{t('common.noResults', '无匹配结果')}</EmptyState></div> : null}
-            <div className={readOnly ? 'grid grid-cols-[repeat(auto-fit,minmax(min(100%,20rem),1fr))] gap-3 p-4' : 'grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3'}>
+            <AssetCardGrid>
               {filteredSkills && filteredSkills.map((skill) => {
                 const sourceAgents = skillSourceAgents(skill, configuredAgents);
+                const primarySources = agentRegistry?.catalog.filter(entry => (skill.source === 'project' ? entry.projectPrimaryAgentDir ?? entry.primaryAgentDir : entry.primaryAgentDir) === skill.agentSource);
+                const host = primarySources?.length === 1 ? primarySources[0] : undefined;
                 const syncAgents = selectableSyncAgents(skill, configuredAgents);
                 const syncedAgentTypes = new Set(skill.syncedAgentTypes);
-                const forgeKey = `${skill.source}:${skill.name}`;
+                const forgeItem = skillForgeItem(skill);
                 return (
-                  <Card key={forgeKey + ':' + skill.directoryPath} className="group flex h-44 gap-0 overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm">
-                    <div className="h-28 shrink-0 px-4 py-3">
+                  <Card key={skill.source + ':' + skill.directoryPath} className="group flex min-h-44 gap-0 overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm">
+                    <div className="min-h-28 shrink-0 px-4 py-3">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            {!readOnly && onForgeSkills ? (
+                            {!readOnly && onForgeItems ? (
                               <Checkbox
-                                checked={selectedForgeSkills.has(forgeKey)}
-                                onCheckedChange={() => {
-                                  setSelectedForgeSkills((prev) => {
-                                    const next = new Set(prev);
-                                    if (next.has(forgeKey)) next.delete(forgeKey);
-                                    else next.add(forgeKey);
-                                    return next;
-                                  });
-                                }}
+                                disabled={forgeBusy}
+                                checked={selectedForgeItems.has(forgeItemKey(forgeItem))}
+                                onCheckedChange={() => toggleForgeItem(forgeItem)}
                                 aria-label={t('contextManagement.skills.forgeSelect', { name: skill.name })}
                                 className="shrink-0"
                               />
                             ) : null}
                             <span className="truncate text-sm font-semibold">{skill.name}</span>
-                            <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal text-muted-foreground">{skill.agentSource || '.maling'}</Badge>
                           </div>
+                          <div className="mt-1.5 flex min-w-0 items-center gap-2 text-xs">
+                            {host ? <AgentIdentityLabel iconKey={host.iconKey} name={host.agentType === 'codebuddy-code' ? t('plugin.codeBuddyCli') : host.label} />
+                              : skill.agentSource === '.maling' ? <AgentIdentityLabel iconKey="gold-band" name="MALING" />
+                              : <span className="truncate text-muted-foreground">{skill.agentSource}</span>}
+                          </div>
+                          {skill.workBuddyCodeModeReadable && <p className="mt-1 text-ui-caption text-muted-foreground">{t('plugin.workBuddyCompatible')}</p>}
                           <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{skill.description || <span className="italic text-muted-foreground/50">{t('contextManagement.skills.noDescription', '无描述')}</span>}</p>
                         </div>
                         <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal">{skill.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</Badge>
@@ -1033,7 +1138,9 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
                   </Card>
                 );
               })}
-            </div>
+            </AssetCardGrid>
+            </>
+            )}
           </EntitySection>
         </PageContent>
       )}
@@ -1044,9 +1151,9 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
         onFinished={() => void refreshSkills()}
       />
 
-      {/* 入口 B 项目挂靠对话框(方案 §5.2):含全局/内置 skill 时选择铸造会话
+      {/* 入口 B/C 项目挂靠对话框(方案 §5.2):含用户级素材时选择铸造会话
           挂靠项目;模板库是用户级全局,挂靠只影响会话与试运行归属。 */}
-      <Dialog open={forgeAnchorOpen !== null} onOpenChange={(open) => { if (!open) setForgeAnchorOpen(null); }}>
+      <Dialog open={forgeAnchorOpen} onOpenChange={setForgeAnchorOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>{t('contextManagement.skills.forgeAnchorTitle')}</DialogTitle>
@@ -1058,23 +1165,16 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
             </SelectTrigger>
             <SelectContent>
               {workspaces.map((w) => (
-                <SelectItem key={w.projectId} value={w.workspacePath}>{w.name}</SelectItem>
+                <SelectItem key={w.projectId} value={w.projectId}>{w.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setForgeAnchorOpen(null)}>{t('common.cancel')}</Button>
+            <Button variant="outline" size="sm" onClick={() => setForgeAnchorOpen(false)}>{t('common.cancel')}</Button>
             <Button
               size="sm"
-              disabled={!workspaces.some((w) => w.workspacePath === forgeAnchorChoice)}
-              onClick={() => {
-                const target = workspaces.find((w) => w.workspacePath === forgeAnchorChoice);
-                if (!target || !forgeAnchorOpen) return;
-                rememberSkillProjectWorkspace(target.workspacePath);
-                onForgeSkills?.(forgeAnchorOpen, target.projectId);
-                setSelectedForgeSkills(new Set());
-                setForgeAnchorOpen(null);
-              }}
+              disabled={forgeBusy || !selectedForgeItems.size || !workspaces.some(w => w.projectId === forgeAnchorChoice)}
+              onClick={() => void generateMaterials(forgeAnchorChoice)}
             >
               {t('contextManagement.skills.forgeAnchorConfirm')}
             </Button>
@@ -1099,7 +1199,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
                 setSkillDeleting(true);
                 deleteSkill(skillDeleteTarget.name, skillDeleteTarget.source, wsPath, skillDeleteTarget.directoryPath)
                   .then(async (next) => {
-                    setSkillList(next);
+                    applySkillInventory(next);
                     if (skillTab === 'project' && selectedWorkspace) {
                       await loadProjectSkills(selectedWorkspace);
                     }
@@ -1229,10 +1329,10 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange, on
         createSource={skillTab === 'global' ? 'global' : (selectedWorkspace ? `project:${selectedWorkspace}` : 'project')}
         workspaces={workspaces}
         configuredAgents={configuredAgents}
-        skillTab={skillTab}
+        skillTab={skillTab === 'plugins' ? 'global' : skillTab}
         selectedWorkspace={selectedWorkspace}
         onOpenChange={(open) => { if (!open) setSkillSheetMode(null); }}
-        onSaved={(next) => setSkillList(next)}
+        onSaved={applySkillInventory}
         onReloadProjectSkills={loadProjectSkills}
         onError={setSkillError}
       />
@@ -1437,14 +1537,15 @@ function SkillSheet({
   );
 }
 
-function BuiltInProfileCard({ profile, onView, onEdit }: { profile: ProfileVm; onView: () => void; onEdit: () => void }) {
+function BuiltInProfileCard({ profile, selection, onView, onEdit }: { profile: ProfileVm; selection: ReactNode; onView: () => void; onEdit: () => void }) {
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   return (
     <Card className="h-full min-h-52 gap-0 bg-card/45 py-0">
       <CardHeader className="px-4 py-4 pb-3">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
+          {selection}
+          <div className="min-w-0 flex-1">
             <CardTitle className="truncate text-base">{profile.name}</CardTitle>
             <CardDescription className="mt-1 truncate font-mono text-xs">{profile.id}</CardDescription>
           </div>
@@ -1462,14 +1563,15 @@ function BuiltInProfileCard({ profile, onView, onEdit }: { profile: ProfileVm; o
   );
 }
 
-function CustomProfileCard({ profile, onView, onEdit, onDelete }: { profile: ProfileVm; onView: () => void; onEdit: () => void; onDelete: () => void }) {
+function CustomProfileCard({ profile, selection, onView, onEdit, onDelete }: { profile: ProfileVm; selection: ReactNode; onView: () => void; onEdit: () => void; onDelete: () => void }) {
   const readOnly = useReadOnlyExperience();
   const { t } = useTranslation();
   return (
     <Card className="h-full min-h-52 gap-0 bg-card/50 py-0">
       <CardHeader className="px-4 py-4 pb-3">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
+          {selection}
+          <div className="min-w-0 flex-1">
             <CardTitle className="truncate text-base">{profile.name}</CardTitle>
             <CardDescription className="mt-1 truncate font-mono text-xs">{profile.id}</CardDescription>
           </div>

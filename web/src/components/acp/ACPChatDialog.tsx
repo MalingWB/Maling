@@ -1,3 +1,4 @@
+import { createAcpPromptId } from "@/lib/acp-event-normalization";
 import { AcpActivityImageStrip, AcpImageStrip, useAcpToolImageReadiness } from './AcpImageStrip';
 import { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
 export { MessageAttachmentPreviewButton } from './MessageAttachmentPreviewButton';
@@ -10,10 +11,12 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
+  useImperativeHandle,
   useMemo,
   useReducer,
   useRef,
   useState,
+  type Ref,
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -41,6 +44,7 @@ import { BrandLoadingState } from "@/components/BrandLoadingState";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ResidentPinToggle, type ResidentPinToggleProps } from "@/components/conversation/ResidentPin";
+import { ForgeConversationAction } from '@/components/conversation/ForgeConversationAction';
 import {
   Collapsible,
   CollapsibleContent,
@@ -84,6 +88,7 @@ import {
 } from "@/components/conversation/ConversationViewport";
 import { InterventionLayer } from "@/components/conversation/InterventionLayer";
 import { MulticaUpstreamPullIntervention } from "@/components/conversation/MulticaUpstreamPullCard";
+import { MarkdownJsonFenceCollapsedContext } from "./forge-markdown-context";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { MarkdownLocalImageProvider } from '@/components/prompt-kit/markdown-local-images';
 import { compactionSummaryEventId, hasCompactionSummary } from '@/lib/acp-compaction-summary';
@@ -384,7 +389,7 @@ export interface AcpDirectSessionHeaderProps {
   };
   /** 普通直接会话:铸造为工作流入口 A(方案 §5,G3:Forge 会话不显示)。 */
   forgeWorkflow?: {
-    onOpen: () => void;
+    onOpen: (session?: import('@/types').ForgeSourceSessionVm) => void;
   };
 }
 
@@ -411,7 +416,18 @@ interface PendingPromptDraft {
   draft: AcpComposerDraft;
 }
 
+/** 程序化提交的结果：已接受；会话回复中（未排队，调用方稍后再试）；未能发出。 */
+export type AcpPromptSubmitResult = "accepted" | "busy" | "unavailable" | "unconfirmed";
+
+/** 页面级入口向对话程序化提交一条消息（铸造预览的自动修正轮）。 */
+export interface AcpChatDialogHandle {
+  submitPrompt: (submission: ConversationPromptInput, promptId?: string) => Promise<AcpPromptSubmitResult>;
+  /** 把一段文字带进输入框并聚焦，不发送：输入框已有内容时另起一行接在后面。 */
+  prefillPrompt: (text: string) => void;
+}
+
 interface ACPChatDialogProps {
+  ref?: Ref<AcpChatDialogHandle>;
   session?: AcpSessionVm | null;
   agentRegistry?: AgentRegistryVm | null;
   sessionEstablished?: boolean;
@@ -459,7 +475,7 @@ interface ACPChatDialogProps {
   managedWorktreeBranch?: string | null;
   /** Direct 会话入口 A 变体(§5.1):消息操作区"从此处铸造",入参为该消息
    *  时间戳(后端据此截断其后上下文)。 */
-  onForgeFromHere?: (timestamp: string) => void;
+  onForgeFromHere?: (session: import('@/types').ForgeSourceSessionVm) => void;
 }
 
 type AcpCanvasMode = "chat" | "raw";
@@ -1481,6 +1497,7 @@ export function ACPChatDialog(
     managedWorktreeBranch,
     roleSelectionEnabled = false,
     onForgeFromHere,
+    ref,
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
@@ -1571,6 +1588,9 @@ export function ACPChatDialog(
   });
   const sessionIdentity = eventWindowKey;
   const composerDraft = useAcpComposerDraft(eventWindowKey);
+  // 对话栏的命令式入口在挂载时固定，经 ref 读到当前的输入框控制器。
+  const composerDraftRef = useRef(composerDraft);
+  composerDraftRef.current = composerDraft;
   const setComposerWorkspaceFiles = composerDraft.setWorkspaceFiles;
   const workspaceFiles = composerDraft.draft.workspaceFiles;
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -6012,6 +6032,7 @@ export function ACPChatDialog(
     submission: ConversationPromptInput,
     draftSnapshot?: AcpComposerDraft,
     target: "conversation" | "runtime-continue" = "conversation",
+    requestedPromptId?: string,
   ) => {
     const { displayText: draftContent, quotes: submittedQuotes, role: submittedRole } = submission;
     if (!composerState.canSubmitContent || composerState.stopInProgress) return false;
@@ -6086,7 +6107,7 @@ export function ACPChatDialog(
     );
     const optimisticEvent = optimisticUserEvent(
       draftContent,
-      undefined,
+      requestedPromptId,
       submittedQuotes,
       latestCanonicalTimelinePosition(loadedEventWindowRef.current.events),
       optimisticAttachments,
@@ -6140,6 +6161,7 @@ export function ACPChatDialog(
       optimisticEvent.timestamp,
     );
     let submissionAccepted = false;
+    let confirmedId: string | null = null;
     try {
       const result = target === "runtime-continue"
         ? await continueConversationRuntime(
@@ -6176,6 +6198,7 @@ export function ACPChatDialog(
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
       const authoritativeAdmission = acceptedPromptAdmission();
+      confirmedId = result.turnId ?? promptIdFromEvent(authoritativeAdmission);
       if (target === "runtime-continue" && result.kind === "runtime-continue-started") {
         submissionAccepted = true;
         setActiveTurnStartedAt(optimisticEvent.timestamp);
@@ -6219,14 +6242,14 @@ export function ACPChatDialog(
       if (admittedBeforeRecovery) {
         submissionAccepted = true;
         setActiveTurnStartedAt(admittedBeforeRecovery.timestamp);
-        return true;
+        return requestedPromptId && promptIdFromEvent(admittedBeforeRecovery) !== requestedPromptId ? "unconfirmed" : true;
       }
       await refreshSessionAfterConfigUnavailable(error);
       const admittedAfterRecovery = acceptedPromptAdmission();
       if (admittedAfterRecovery) {
         submissionAccepted = true;
         setActiveTurnStartedAt(admittedAfterRecovery.timestamp);
-        return true;
+        return requestedPromptId && promptIdFromEvent(admittedAfterRecovery) !== requestedPromptId ? "unconfirmed" : true;
       }
       const message = displayAppError(t, error);
       if (target === "runtime-continue") {
@@ -6263,8 +6286,29 @@ export function ACPChatDialog(
       setSending(false);
       setPromptCommandPending(false);
     }
+    if (submissionAccepted && requestedPromptId && confirmedId !== requestedPromptId) return "unconfirmed";
     return submissionAccepted;
   };
+
+  // 程序化提交只走直接提交：会话回复中不排队（调用方按返回值决定稍后再试还是停止），
+  // 也不经过 composer 草稿——消息正文由调用方给全。
+  const externalSubmitRef = useRef({ composerState, submitPrompt });
+  externalSubmitRef.current = { composerState, submitPrompt };
+  useImperativeHandle(ref, () => ({
+    submitPrompt: async (submission, promptId) => {
+      const latest = externalSubmitRef.current;
+      if (latest.composerState.submitTarget === "queue-prompt") return "busy";
+      if (latest.composerState.stopInProgress || latest.composerState.submitTarget !== "acp-prompt") {
+        return "unavailable";
+      }
+      const accepted = await latest.submitPrompt(submission, undefined, "conversation", promptId);
+      return accepted === "unconfirmed" ? accepted : accepted ? "accepted" : "unavailable";
+    },
+    prefillPrompt: (text) => {
+      composerDraftRef.current.setContent((current) => current.trim() ? `${current}\n${text}` : text);
+      requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    },
+  }), []);
 
   const applyQueueLifecycle = (lifecycle?: ConversationAttemptLifecycleVm | null) => {
     if (!lifecycle) return;
@@ -7078,6 +7122,7 @@ export function ACPChatDialog(
     );
 
   return (
+    <MarkdownJsonFenceCollapsedContext.Provider value={Boolean(directSessionHeader?.forgePreview)}>
     <MarkdownLocalImageProvider scopeKey={eventWindowKey} root={markdownImageRoot}>
     <TurnFileCardPreviewLimitContext.Provider value={turnFileCardPreviewLimit}>
     <TurnAttachmentCardPreviewLimitContext.Provider value={turnAttachmentCardPreviewLimit}>
@@ -7477,6 +7522,7 @@ export function ACPChatDialog(
     </TurnAttachmentCardPreviewLimitContext.Provider>
     </TurnFileCardPreviewLimitContext.Provider>
     </MarkdownLocalImageProvider>
+    </MarkdownJsonFenceCollapsedContext.Provider>
   );
 }
 
@@ -8023,6 +8069,7 @@ export function ACPSessionHeader({
   onToggleRaw: () => void;
   onOpenSystemPrompt: () => void;
 }) {
+  const forgeSourceSession = useContext(AcpBranchLocatorContext) ?? undefined;
   const { t } = useTranslation();
   const [sessionIdTooltip, dispatchSessionIdTooltip] = useReducer(
     reduceAcpSessionIdTooltipState,
@@ -8155,38 +8202,8 @@ export function ACPSessionHeader({
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {directSessionHeader?.resident ? <ResidentPinToggle {...directSessionHeader.resident} /> : null}
-          {directSessionHeader?.forgePreview ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="size-5.5"
-                  aria-label={t("forge.preview.open")}
-                  onClick={directSessionHeader.forgePreview.onOpen}
-                >
-                  <Hammer className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{t("forge.preview.open")}</TooltipContent>
-            </Tooltip>
-          ) : null}
-          {directSessionHeader?.forgeWorkflow ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="size-5.5"
-                  aria-label={t("forge.entry.action")}
-                  onClick={directSessionHeader.forgeWorkflow.onOpen}
-                >
-                  <Hammer className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{t("forge.entry.action")}</TooltipContent>
-            </Tooltip>
-          ) : null}
+          {directSessionHeader?.forgePreview && <ForgeConversationAction preview onClick={directSessionHeader.forgePreview.onOpen} />}
+          {directSessionHeader?.forgeWorkflow && <ForgeConversationAction onClick={() => directSessionHeader.forgeWorkflow?.onOpen(forgeSourceSession)} />}
           {showSystemPromptAction ? (
             <Button
               size="sm"
@@ -8595,7 +8612,7 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   streamingMarkdownItemKey?: string | null;
   messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
-  onForgeFromHere?: (timestamp: string) => void;
+  onForgeFromHere?: (session: import('@/types').ForgeSourceSessionVm) => void;
   nested?: boolean;
 }) {
   const branchLocator = useContext(AcpBranchLocatorContext);
@@ -9642,7 +9659,7 @@ const MessageBubble = memo(function MessageBubble({
 }: {
   event: AcpTimelineEvent;
   streamingMarkdownItemKey?: string | null;
-  onForgeFromHere?: (timestamp: string) => void;
+  onForgeFromHere?: (session: import('@/types').ForgeSourceSessionVm) => void;
   messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
   nested?: boolean;
@@ -9785,7 +9802,7 @@ const MessageBubble = memo(function MessageBubble({
           <AgentMessageCopyAction
             markdown={messageText}
             timestamp={event.timestamp}
-            onForgeFromHere={onForgeFromHere && event.timestamp ? () => onForgeFromHere(event.timestamp!) : undefined}
+            onForgeFromHere={onForgeFromHere && branchLocator && !event.optimistic && !streamingDraft ? () => onForgeFromHere({ ...branchLocator, after: { eventId: event.id, eventSeq: event.endedSeq ?? event.seq } }) : undefined}
           />
         ) : null}
         {runtimeControlParts.display ? (
@@ -13034,9 +13051,6 @@ type MessageAttachmentLocator = {
   outerAttemptId?: string | null;
 };
 
-export function createAcpPromptId() {
-  return `acp-prompt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
 
 export function optimisticUserEvent(
   content: string,

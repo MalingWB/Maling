@@ -106,7 +106,7 @@ function session(branchId: string, withPermission = false): AcpSessionVm {
   };
 }
 
-async function renderDialog(acpSession: AcpSessionVm, readOnly: boolean) {
+async function renderDialog(acpSession: AcpSessionVm, readOnly: boolean, forge?: React.ComponentProps<typeof ACPChatDialog>['onForgeFromHere']) {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -122,6 +122,8 @@ async function renderDialog(acpSession: AcpSessionVm, readOnly: boolean) {
           nodeId="node-1"
           attemptId="attempt-1"
           branchId={acpSession.branchId}
+          directSessionHeader={forge ? { title: 'Forge source', forgeWorkflow: { onOpen: (s) => s && forge(s) } } : undefined}
+          onForgeFromHere={forge}
           readOnly={readOnly}
           showSystemPromptAction={false}
           showRawFramesAction={false}
@@ -140,6 +142,22 @@ afterEach(() => {
 });
 
 describe('read-only Agent conversation boundary', () => {
+  it('identifies the rendered Forge source branch and the exact settled message for from-here', async () => {
+    const selected = session('agent-fake');
+    selected.events = [{ id: 'answer', seq: 4, endedSeq: 8, timestamp: 'same-time', kind: 'textDelta', content: 'Visible proposal', status: 'completed' }];
+    const forge = vi.fn();
+    const { container, root } = await renderDialog(selected, true, forge);
+    try {
+      const header = container.querySelector<HTMLButtonElement>('button[aria-label="生成工作流"]');
+      const fromHere = container.querySelector<HTMLButtonElement>('[data-agent-message-forge]');
+      expect(header?.textContent).toContain('生成工作流');
+      expect(fromHere).not.toBeNull();
+      await act(async () => { header!.click(); fromHere!.click(); });
+      const scope = { runId: 'run-1', roundId: 'round-1', nodeId: 'node-1', attemptId: 'attempt-1', branchId: 'agent-fake' };
+      expect(forge).toHaveBeenNthCalledWith(1, expect.objectContaining(scope));
+      expect(forge).toHaveBeenNthCalledWith(2, expect.objectContaining({ ...scope, after: { eventId: 'answer', eventSeq: 8 } }));
+    } finally { await act(async () => root.unmount()); }
+  });
   it.each(['running', 'cancelled', 'completed'])('shows unknown Agent status without a summary while parent is %s', async (status) => {
     const rootSession = session('root');
     rootSession.status = status;

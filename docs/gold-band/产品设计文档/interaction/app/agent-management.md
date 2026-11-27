@@ -52,7 +52,7 @@ Agent Cards
 ## 4. 新增 Agent
 新增按钮使用带搜索框的 shadcn/ui `Command + Popover` 选择器，列表来自构建期打包且适用于当前 OS／CPU 的精选 ACP Agent Catalog。当前发布条目为：
 - Claude：`claude-acp`
-- WorkBuddy：`codebuddy-code`
+- CodeBuddy Code（CLI）：`codebuddy-code`。本机通过 `codebuddy --acp` 启动；WorkBuddy 桌面客户端不是该执行项或第二个同步目标。
 - Codex：`codex-acp`
 - Pi：`pi-acp`
 - DeepSeek Harness：`deepseek-harness`
@@ -182,7 +182,7 @@ Agent Cards
 - 诊断失败对客展示结构化错误码，不把内部 `Display` 直接作为原因。常见码为 `acp.adapter-exited`、`acp.adapter-start-failed`、`acp.doctor-timeout`、`acp.session-request-failed`。诊断 snapshot 为 `error { code, params, raw }`；ACP JSON-RPC 失败时保留 `raw`（如 `{ message: "Authentication required" }`）。Agent 管理横幅、工作流 / 会话 / 运行模式选择器都展示同一条 compact 原因：优先 raw 首行（ACP `message` / 有界 stderr 首行 / `osError`，上限 120 字），没有 raw 时才回退本地化主句。问号 Popover 展示完整 raw。选择器不得展开完整 stderr，也不得把 `acp.session-request-failed` 显示成没有具体原因的「请重试」。故障 stderr 不写入默认 INFO，也不为 npx 增加特判
 - doctor 与正式 ACP 连接共用 adapter stderr 字节流诊断：Windows 本地代码页或任意非法 UTF-8 输出不得中止 stderr 消费，详细日志必须保留 lossy 可读文本与有界原始字节前缀，并携带具体 Agent id、adapter command 和可获得的进程退出状态。常规日志不得直接展开 stderr 正文。对客诊断结果不依赖“记录详细日志”开关即可拿到已分类的有界故障 stderr；详细日志仍按原规则保留完整诊断字节。稳定噪声（`npm warn Unknown user config`、adapter `[session/query]`）即使详细日志也不逐行写入，只在连接关闭时保留有界摘要；`npm error` / `ENOSPC` 等故障行仍进入详细日志。doctor standalone 连接的关闭因果链与退出状态默认不写 `INFO`。
 - 周期 Agent doctor、命令目录刷新、adapter stderr 行与非 UTF-8 摘要属于高频且可自动复现的诊断过程，只写 `DEBUG`，默认 `INFO` 的 `runtime.log` 不重复记录每分钟诊断结果。doctor 返回 unavailable 是可展示的业务诊断结果，不升级为 `WARN`；只有调度锁、持久化、线程启动、命令目录刷新或传输读取等基础设施实际失败才写 `WARN`，并携带稳定 Agent id。手动诊断的 UI 结果继续来自 canonical diagnostic snapshot，不能依赖日志级别。
-- 当前发布版固定参考 Claude、WorkBuddy、Codex、Pi、DeepSeek Harness、ZCode、Qoder、Kimi Code、Cursor、Gemini、Goose、Qwen Code、OpenCode、Amp 十四类精选 Agent，同时允许任意合法自定义 ACP Agent；WorkBuddy 复用 `codebuddy-code` 稳定 ID 与图标；Qoder 在 Windows aarch64 不进入新增入口；ZCode 来源标识为社区适配，全局目录 `.zcode`、项目目录 `.agents`
+- 当前目录固定参考 Claude、CodeBuddy Code、Codex、Pi、DeepSeek Harness、ZCode、Qoder、Kimi Code、Cursor、Gemini、Goose、Qwen Code、OpenCode、Amp 十四类精选 Agent，同时允许任意合法自定义 ACP Agent；CodeBuddy Code CLI 保留 `codebuddy-code` 的稳定 ID、启动配置与图标，WorkBuddy 仅作为有归属证据的素材来源显示；Qoder 在 Windows aarch64 不进入新增入口；ZCode 来源标识为社区适配，全局目录 `.zcode`、项目目录 `.agents`
 - 单个 Agent 每轮诊断从取得执行资格起共享 3 分钟截止时间，覆盖 adapter 启动后的初始化、会话创建、命令发现和诊断会话清理；周期失败重试沿用同一截止时间，预算耗尽后不再启动重试。超时以 `acp.doctor-timeout` 和当前阶段记录原因，回收进程树并保留有界失败日志；进程回收复用既有平台机制，Unix 的 2 秒终止宽限不计入协议等待预算。正常业务会话的请求期限不随 Doctor 改变
 - 所有诊断入口和命令目录刷新按稳定 Agent ID 互斥，不再持有跨 Agent 的全局运行锁；同一 Agent 在全局与 workspace 命令目录刷新之间仍不能重叠，因为它们共享该 Agent 的 doctor 目录。全应用最多同时运行 4 个诊断 adapter，批量诊断最多使用 4 个 worker；等待同一 Agent 的请求不提前占用 adapter 名额，运行集合随 guard 释放删除，不持久化
 - 周期诊断每完成一项并可靠写入后，立即发布该 Agent 的 registry 投影，不等待其他 Agent 完成；前端按配置及诊断时间局部合并，不重读全局 registry。只有命令目录内容变化并成功落盘后才发布含 Agent ID、project ID 的 commands 更新事件；同一挂载范围合并请求，批次结束不再全局广播。落盘失败不得提前推进内存目录，否则相同内容的重试会被错误跳过。手动诊断与目录扫描使用 blocking 执行器；保存提交、配置版本校验和按版本合并沿用既有机制。批次末尾清理失效诊断进入短时提交锁。性能预算和验收见 [0.15.1 性能修复](performance-0.15.1.md)。

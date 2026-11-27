@@ -1183,6 +1183,35 @@
       "completion": {
         "repair-exhausted": "La salida del nodo sigue sin cumplir el protocolo tras {{repairAttempts}} intentos de corrección. El flujo de trabajo está en pausa."
       }
+    },
+    "forge": {
+      "missing-goal": "La etapa \"{{stage}}\" aún no tiene objetivo",
+      "missing-goal-element": "Al objetivo de la etapa \"{{stage}}\" le falta: {{element}}",
+      "missing-success-condition": "La salida JSON de la etapa \"{{stage}}\" aún no tiene condición de éxito",
+      "empty-stages": "El workflow \"{{workflow}}\" aún no tiene etapas",
+      "too-many-stages": "El workflow \"{{workflow}}\" tiene {{count}} etapas, por encima del límite de {{limit}}",
+      "missing-name": "El workflow aún no tiene nombre",
+      "compile-failed": "La estructura del workflow no pasó la validación: {{detail}}",
+      "unresolved-questions": "Aún hay preguntas por confirmar en la conversa",
+      "invalid-spec": "El borrador de generación tiene un formato no válido: {{detail}}",
+      "unknown-failure-target": "No existe el destino de fallo «{{target}}» en «{{stage}}»",
+      "role-id-conflict": "Las etapas {{stages}} hacen referencia a roles distintos para «{{role}}»",
+      "role-definition-conflict": "Las etapas {{stages}} definen «{{role}}» de forma distinta",
+      "unavailable-role": "El rol «{{role}}» de {{stage}} ya no está disponible",
+      "readonly-role": "El rol «{{role}}» de la etapa «{{stage}}» es de solo lectura",
+      "target-unavailable": "El flujo original se eliminó, se sustituyó o ya no se puede editar aquí. Puedes guardar el borrador como un flujo nuevo.",
+      "source-session-unavailable": "No se pudieron leer los mensajes de la conversación seleccionada. Vuelve a abrir la conversación de origen e inténtalo de nuevo.",
+      "stale-message": "El mensaje seleccionado ha cambiado. Vuelve a la conversación de origen y selecciona de nuevo el mensaje inicial.",
+      "revision-conflict": "El borrador ha cambiado. Revisa la versión actual antes de guardar.",
+      "duplicate-workflow-name": "Ya existe un workflow llamado «{{name}}». Elige otro nombre."
+    },
+    "workflow-template": {
+      "duplicate-name": "Ya existe un workflow llamado «{{name}}». Elige otro nombre."
+    },
+    "plugin": {
+      "asset-unavailable": "El recurso cambió o no se puede leer. Actualiza e inténtalo de nuevo.",
+      "bundle-unreadable": "No se pudo importar la Skill completa. Comprueba la codificación, la cantidad y el tamaño de los archivos.",
+      "role-exists": "El rol «{{name}}» ya existe y no se sobrescribió."
     }
   },
   "status": {
@@ -1366,6 +1395,7 @@
   },
   "contextManagement": {
     "title": "Gestión de contexto",
+    "forgeRoleHint": "Los roles seleccionados sirven de referencia para generar el flujo de trabajo. Seleccionar un rol no concede permisos de ejecución.",
     "profileManagement": "Rol",
     "profileHint": "Los roles se almacenan como archivos Markdown y los nodos del flujo de trabajo los referencian por ID global único.",
     "addProfile": "Agregar rol",
@@ -1522,11 +1552,20 @@
         "title": "Sincronizar SKILL desde el remoto",
         "workspace": "Espacio de trabajo"
       },
-      "forgeAction": "Forjar workflow desde skills ({{count}})",
+      "forgeLimit": "Selecciona hasta {{count}} materiales.",
+      "forgeModeUnavailable": "No se pudo leer la configuración de ejecución del proyecto. Inténtalo de nuevo.",
+      "forgeProjectUnavailable": "No hay ningún proyecto disponible. Añade o vuelve a abrir un proyecto e inténtalo de nuevo.",
+      "forgeAction": "Generar workflow desde los elementos seleccionados ({{count}})",
       "forgeSelect": "Seleccionar {{name}}",
       "forgeAnchorTitle": "Elige el proyecto ancla",
-      "forgeAnchorInfo": "La sesión de forja y su prueba se anclan al proyecto elegido; las plantillas generadas quedan disponibles para todos los proyectos.",
-      "forgeAnchorConfirm": "Empezar a forjar"
+      "forgeAnchorInfo": "La sesión de generación y su prueba se anclan al proyecto elegido; las plantillas generadas quedan disponibles para todos los proyectos.",
+      "forgeAnchorConfirm": "Empezar a generaciónr",
+      "plugins": {
+        "tab": "Plugin",
+        "loading": "Cargando fuentes de plugins…",
+        "empty": "No hay plugins ni fuentes manuales en este ámbito.",
+        "noAssets": "No hay skills, commands ni agents para usar como material"
+      }
     },
     "importProfile": "Importar roles",
     "importSettingsDescription": "Importa en lote desde una carpeta o selecciona archivos Markdown de roles directamente. Los nombres y resúmenes faltantes se completan automáticamente.",
@@ -1684,12 +1723,27 @@
     "noRunsForFilter": "Ningún Run coincide con este filtro",
     "openRoundA11y": "Abrir {{roundId}} en {{runId}}",
     "sourceTag": {
-      "forged": "Forjado",
+      "forged": "Generacióndo",
       "imported": "Importado",
       "manual": "Manual"
     }
   },
   "workflowEditor": {
+    "parallel": {
+      "insert": "Añadir ramas paralelas",
+      "fork": "Bifurcación paralela",
+      "join": "Unión",
+      "cap": "Ramas simultáneas",
+      "addStep": "Añadir paso",
+      "addBranch": "Añadir rama",
+      "afterJoin": "Añadir paso después de la unión",
+      "up": "Subir {{id}}",
+      "down": "Bajar {{id}}",
+      "remove": "Eliminar {{id}}",
+      "invalid": "Revisa {{id}}: elige entre 1 y 5 ramas simultáneas y define al menos dos ramas no vacías con identificadores únicos. Cada grupo admite hasta 64 pasos normales, sin compartir pasos ni usar revisión manual.",
+      "invalidEntry": "El inicio no puede apuntar directamente a un paso dentro de una rama.",
+      "invalidEdge": "No se puede conectar {{from}} con {{to}}. Los reintentos deben ser limitados y dentro de la misma rama; las bifurcaciones y uniones no pueden continuar una sesión."
+    },
     "title": "Editor de flujos de trabajo",
     "subtitle": "Cree nodos y aristas en el lienzo y, a continuación, vincule cada nodo a un Agent.",
     "canvas": "Lienzo",
@@ -1716,7 +1770,8 @@
     "profileCatalogLoadFailed": "No se pudo cargar el catálogo de roles",
     "profileCatalogRetry": "Recargar",
     "selectHint": "Selecciona un nodo o una arista en el lienzo para configurarlo.",
-    "terminalSelectionHint": "Los nodos de fin no necesitan configuración y se pueden quitar con la acción de eliminar encima del lienzo.",
+    "startSelectionHint": "Conecta el inicio al primer nodo que se ejecutará.",
+    "terminalSelectionHint": "Este nodo de control no inicia una sesión.",
     "currentSelection": "Selección actual",
     "currentSelectionHelp": "La configuración de nodos y aristas aparece aquí primero.",
     "workflowSettings": "Configuración del flujo de trabajo",
@@ -1886,6 +1941,7 @@
     "validationTerminalEdgeSource": "El nodo final {{node}} no puede ser origen de una arista.",
     "validationContinueTerminalTarget": "La arista {{index}} continue session no puede apuntar a un nodo final.",
     "nodeLabels": {
+      "start": "Inicio",
       "plan": "Plan",
       "dev": "Desarrollo",
       "review": "Revisión",
@@ -3150,8 +3206,10 @@
       "removeRemoteBinding": "Desvincular tarea",
       "remoteAttachmentHint": "Adjunto de la tarea remota; se descarga y adjunta automáticamente al enviar",
       "remoteBindingTag": "{{source}} · {{title}}",
-      "forgeBindingTag": "Forja · {{title}}",
-      "removeForgeBinding": "Desvincular forja"
+      "forgeBindingTag": "Generación · {{title}}",
+      "removeForgeBinding": "Desvincular generación",
+      "forgeProjectMismatch": "El origen de generación pertenece a otro proyecto — vuelve a él o quita la marca de generación del campo de entrada antes de enviar",
+      "forgeRequiresDirect": "Las sesiones de generación usan el modo Direct — cámbialo antes de enviar"
     },
     "branchPicker": {
       "label": "Rama",
@@ -3543,17 +3601,17 @@
   },
   "forge": {
     "entry": {
-      "action": "Forjar como workflow",
-      "fromHere": "Forjar desde aquí"
+      "action": "Generar workflow",
+      "fromHere": "Generar workflow desde aquí"
     },
     "prefill": {
-      "intro": "Forja un workflow a partir de la conversación de origen abajo — añade requisitos y envía:"
+      "intro": "Generación un workflow a partir de la conversación de origen abajo — añade requisitos y envía:"
     },
     "preview": {
-      "title": "Vista previa de forja",
-      "open": "Abrir vista previa de forja",
-      "loading": "Cargando borrador de forja…",
-      "empty": "Aún no hay borrador — las etapas y contratos aparecerán aquí cuando la conversación converja.",
+      "title": "Vista previa del workflow",
+      "open": "Abrir vista previa del workflow",
+      "loading": "Cargando borrador de generación…",
+      "empty": "A medida que la conversa define el proceso, cada etapa aparece aquí.",
       "openQuestions": "Preguntas abiertas",
       "outputKind": {
         "json": "Artefacto JSON",
@@ -3565,9 +3623,15 @@
         "retry": "Reintentar",
         "manual-check": "Revisión manual",
         "new-round": "Nueva ronda",
-        "end": "Terminar"
+        "end": "Terminar",
+        "jump": "Ir a la etapa",
+        "new-round-from": "Reiniciar desde la etapa",
+        "jump-detail": "Ir a «{{stage}}»",
+        "jump-continue-detail": "Volver a «{{stage}}» y continuar la sesión",
+        "new-round-from-detail": "Iniciar nueva ronda en «{{stage}}»"
       },
       "role": {
+        "unassigned": "Sin rol",
         "dev": "Desarrollo",
         "test": "Pruebas",
         "review": "Revisión",
@@ -3575,11 +3639,19 @@
         "accept": "Aceptación"
       },
       "outputKindLabel": "Salida",
+      "startGroupTrial": "Probar el primer grupo paralelo",
+      "trialChanged": "El flujo de trabajo o sus asignaciones de ejecución han cambiado. La prueba no se ha iniciado. Revisa el alcance actualizado antes de iniciarla.",
+      "groupTrialScope": "Se ejecutan las {{branches}} ramas, hasta {{cap}} a la vez, y se detiene la prueba en la unión.",
+      "parallelFork": "Paralelo · {{id}} (hasta {{cap}} a la vez)",
+      "parallelJoin": "Unión · {{id}}",
+      "parallelBranch": "{{group}} · rama {{branch}}",
       "onFailureLabel": "Ante fallo",
-      "compile": "Compilar a plantilla",
-      "compileHint": "Compila el Spec convergido en una plantilla de workflow con contratos de artefacto",
-      "compileBlocked": "Quedan preguntas abiertas; compila tras la convergencia",
-      "startTrial": "Probar primera etapa",
+      "copyName": "Nuevo nombre de «{{name}}»",
+      "saveCopy": "Guardar como flujo nuevo",
+      "compile": "Guardar como workflow",
+      "compileHint": "Cuando todas las etapas estén confirmadas en la conversa, se puede compilar en una plantilla de workflow",
+      "compileBlocked": "Responde a las preguntas antes de guardar.",
+      "startTrial": "Probar el primer paso",
       "startTrialHint": "Crea una tarea real desde la plantilla y se detiene tras la primera etapa",
       "compiledCount": "{{count}} plantillas de workflow creadas",
       "bindingMissing": "Aún no hay vinculación de modelos disponible: configura una en Ajustes antes de las pruebas",
@@ -3588,42 +3660,123 @@
         "output": "Salida",
         "boundary": "Límite",
         "acceptance": "Aceptación"
-      }
-    },
-    "history": {
-      "title": "Historial de forja",
-      "subtitle": "Las sesiones de forja y prueba no aparecen en la lista predeterminada; revísalas y límpialas aquí.",
-      "loading": "Cargando sesiones de forja…",
-      "loadFailed": "Error al cargar sesiones de forja",
-      "empty": "No hay sesiones de forja en este proyecto",
-      "sessionBadge": "Forja",
-      "trialBadge": "Prueba",
-      "noSpec": "Aún sin borrador",
-      "stageCount": "{{count}} etapas",
-      "openQuestionCount": "{{count}} abiertas",
-      "openQuestionHint": "Aún hay preguntas sin resolver; la conversación sigue convergiendo",
-      "cleanupUnfinished": "Limpiar inacabadas",
-      "cleanupSelected": "Limpiar seleccionadas ({{count}})",
-      "cleanupConfirmTitle": "Limpiar sesiones de forja",
-      "cleanupConfirmDescription": "Esto elimina los directorios de tareas de {{count}} sesiones (historial y borradores incluidos). No se puede deshacer.",
-      "cleanupConfirmAction": "Limpiar",
-      "selectSession": "Seleccionar {{title}}"
-    },
-    "skillPrefill": {
-      "intro": "Forja un workflow a partir de las skills seleccionadas abajo — añade requisitos y envía:"
-    },
-    "report": {
-      "title": "Lo que ganaste",
-      "before": "Antes de forjar",
-      "beforeFallback": "Una conversación en lenguaje natural",
-      "after": "Después de forjar",
-      "capabilityStages": "{{count}} etapas encadenadas — qué hace y entrega cada paso está por escrito",
-      "capabilitySchema": "{{count}} salidas con contrato de formato que la máquina verifica automáticamente",
-      "capabilityFailure": "{{count}} puntos de fallo gestionados automáticamente (reintentar o humano) — nada falla en silencio",
-      "capabilityResume": "Las ejecuciones interrumpidas retoman desde donde pararon — sin empezar de cero"
+      },
+      "compiledUpdated": "Se actualizó la plantilla de workflow existente",
+      "compiledMixed": "{{created}} plantillas de workflow creadas y {{updated}} actualizadas",
+      "loadFailed": "No se pudo cargar el borrador de generación",
+      "stageOrdinal": "Etapa {{index}}",
+      "deltaInvalid": "El incremento del Spec de la última respuesta tiene un formato no válido y no se aplicó. Pide al agente que lo genere de nuevo.",
+      "untitled": "Workflow sin nombre",
+      "adoptRecommendation": "Usar recomendación",
+      "adoptAll": "Usar todas",
+      "adoptSent": "Enviado",
+      "adoptUnavailable": "No se pudo enviar. Responde en la conversación.",
+      "recommendationLabel": "Recomendación",
+      "adoptMessage": "Para «{{question}}», usa la recomendación: {{recommendation}}",
+      "adoptAllMessage": "Usa estas recomendaciones: {{items}}",
+      "adoptAllItem": "{{index}}. {{question}}: {{recommendation}}",
+      "savedCreated": "Se creó «{{name}}»",
+      "savedUpdated": "Se actualizó «{{name}}»",
+      "viewWorkflow": "Ver workflow",
+      "keepAdjusting": "Seguir editando",
+      "keepAdjustingPrompt": "Quiero modificar este workflow:",
+      "staleAfterEdit": "Guarda los cambios para probar la nueva versión.",
+      "changedBadge": "Cambio de esta ronda",
+      "modifyStage": "Editar esta etapa",
+      "modifyStagePrompt": "Cambiar el paso {{index}}, «{{name}}»:",
+      "technicalDetails": "Detalles técnicos",
+      "roleDefinition": "Responsabilidades",
+      "failureTargetLabel": "Volver a la etapa",
+      "restartTargetLabel": "Iniciar ronda en",
+      "failureTargetPlaceholder": "Seleccionar etapa",
+      "continueSessionLabel": "Continuar sesión anterior",
+      "conversationActiveHint": "Edita cuando termine la respuesta."
     },
     "modifyPrefill": {
-      "intro": "Workflow «{{name}}» cargado ({{count}} etapas). Describe los cambios y envía para iniciar el ajuste guiado:"
+      "intro": "Workflow «{{name}}» cargado ({{count}} etapas). Describe los cambios y envía para iniciar el ajuste guiado:",
+      "builtinIntro": "Crea una copia del workflow integrado «{{name}}» ({{count}} etapas). Indica un nombre nuevo y los cambios deseados. El original no se modificará:"
+    },
+    "repair": {
+      "stop": "Detener corrección",
+      "errorsTitle": "Estos problemas siguen abiertos:",
+      "inProgress": "La compilación falló — corrigiendo automáticamente (ronda {{attempt}}/{{max}})…",
+      "recompiling": "Corrección aplicada — recompilando…",
+      "exhausted": "Sigue fallando tras {{attempt}} rondas de corrección — confirma los puntos pendientes en la conversa y compila de nuevo.",
+      "handedBack": "Algunas preguntas necesitan tu respuesta — responde en la conversa y luego compila.",
+      "busy": "La conversa sigue respondiendo — compila cuando termine la respuesta.",
+      "unavailable": "La solicitud de corrección no se envió — comprueba que la sesión esté disponible y compila de nuevo.",
+      "turnCancelled": "La corrección se interrumpió — puedes compilar de nuevo.",
+      "unconfirmed": "No se pudo confirmar la respuesta completa de esta corrección. Revisa el borrador en la conversación y vuelve a compilar.",
+      "turnFailed": "La ronda de corrección falló al ejecutarse — puedes compilar de nuevo.",
+      "noChange": "Esta ronda de corrección no produjo un cambio utilizable — di en la conversa qué debe cambiar.",
+      "compileFailed": "La recompilación falló — puedes reintentar.",
+      "aborted": "Corrección automática detenida.",
+      "invalidDelta": "El incremento del Spec que generó el modelo en esta ronda tiene un formato no válido y no se aplicó. Vuelve a compilar para reintentar."
+    },
+    "history": {
+      "title": "Historial de generación de flujos de trabajo",
+      "allProjects": "Todos los proyectos",
+      "clearFilters": "Borrar filtros",
+      "kind": "Tipo de registro",
+      "allKinds": "Todos los tipos",
+      "search": "Buscar títulos o descripciones",
+      "loading": "Cargando el historial de generación…",
+      "failed": "No se pudo cargar el historial de generación.",
+      "partial": "No se pudieron leer algunos registros.",
+      "empty": "No hay generaciones ni ejecuciones de prueba que coincidan.",
+      "newest": "Volver a los más recientes",
+      "noRun": "Aún sin ejecutar",
+      "lastActivity": "Última actividad: {{time}}"
+    },
+    "itemsPrefill": {
+      "intro": "Genera un workflow con estos materiales:",
+      "title": "Generar workflow desde {{count}} elementos",
+      "kind": {
+        "role": "rol",
+        "skill": "skill",
+        "command": "command",
+        "agent": "agent"
+      },
+      "scope": {
+        "built-in": "Integrado",
+        "global": "Global",
+        "project": "Proyecto"
+      }
+    },
+    "session": {
+      "badge": "Generación",
+      "projectHistory": "Historial de generación del proyecto",
+      "searchHistory": "Buscar en el historial de generación",
+      "trialBadge": "Prueba"
+    },
+    "chat": {
+      "draftUpdating": "Generando borrador…",
+      "draftUpdated": "Ver contenido del borrador"
     }
+  },
+  "plugin": {
+    "importSkill": "Importar Skill",
+    "importRole": "Importar como rol",
+    "skillConfirm": "Copia la Skill y sus archivos a la biblioteca de Skill del mismo ámbito sin instalar el plugin. Elige los Agents de destino en la lista de Skill. Las herramientas exclusivas requieren el host original.",
+    "roleConfirm": "Crea un rol solo con las instrucciones. No se copian los permisos ni la configuración del plugin.",
+    "skillImported": "Importada. Elige los destinos en la lista de Skill.",
+    "forget": "Quitar fuente",
+    "forgetConfirm": "Quita esta fuente adicional sin eliminar su carpeta ni sus archivos.",
+    "unavailable": "Fuente no disponible. Vuelve a seleccionar la carpeta o quita la fuente.",
+    "unsupportedBundle": "La definición se puede leer, pero este paquete de Skill no se puede importar.",
+    "manualEngine": "Usa el motor de CodeBuddy. Seleccionar una carpeta no indica que esté instalado.",
+    "desktopBundled": "WorkBuddy · Incluido en la aplicación de escritorio",
+    "desktopRegistry": "WorkBuddy · Registrado en la aplicación de escritorio (no necesariamente habilitado)",
+    "manualSource": "WorkBuddy · Fuente manual",
+    "codeBuddyCli": "CodeBuddy Code (CLI)",
+    "hostSource": "Fuente del entorno",
+    "selectDirectory": "Importar desde una carpeta",
+    "replaceDirectory": "Cambiar carpeta",
+    "directoryHint": "Elige la carpeta de instalación de WorkBuddy, una carpeta con SKILL.md o un paquete de expertos descomprimido. Se añaden los recursos a la lista sin instalar el plugin.",
+    "assetCount": "Funciones: {{count}}",
+    "showRemaining": "Mostrar {{count}} más",
+    "collapse": "Mostrar menos",
+    "workBuddyCompatible": "Compatible con el modo de desarrollo de código de WorkBuddy",
+    "roleImported": "Añadido a la biblioteca de roles."
   }
 }

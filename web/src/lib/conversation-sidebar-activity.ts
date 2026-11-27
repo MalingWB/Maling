@@ -23,7 +23,8 @@ export function conversationSidebarRunStateRefreshTarget(
   if (!event.taskUuid) return null;
   const task = findConversationTask(sidebar, event.projectId, event.taskId);
   if (!task) {
-    const pageStatus = sidebar.workspaceTaskPages?.[event.projectId]?.status;
+    const page = sidebar.workspaceTaskPages?.[event.projectId];
+    const pageStatus = page?.status;
     const workspaceLoaded = pageStatus != null && pageStatus !== 'not-loaded';
     return event.projectId === activeProjectId || workspaceLoaded
       ? { kind: 'workspace-tasks', projectId: event.projectId }
@@ -59,6 +60,12 @@ export function conversationTaskActivityFromLifecycle(
         : lifecycle.runtime.phase ?? lifecycle.composer.processingKind,
     stopping: lifecycle.acp.stopping,
   };
+}
+
+/** A prompt turn of this session is still running (sent, not settled yet). Retained background work does not count. */
+export function conversationTurnInFlight(lifecycle: ConversationAttemptLifecycleVm | null | undefined): boolean {
+  if (!lifecycle) return false;
+  return lifecycle.acp.liveTurnActivity !== 'idle' || lifecycle.acp.stopping || lifecycle.runtime.active;
 }
 
 /** A task is active while its prompt turn runs or its retained background is busy. */

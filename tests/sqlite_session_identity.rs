@@ -1,5 +1,5 @@
 use camino::{Utf8Path, Utf8PathBuf};
-use gold_band::storage::sqlite::{AttemptIndexContext, SearchIndex};
+use gold_band::storage::sqlite::{AttemptIndexContext, SEARCH_INDEX_SCHEMA_VERSION, SearchIndex};
 use gold_band::storage::{append_jsonl, write_json};
 use rusqlite::Connection;
 use serde_json::json;
@@ -121,7 +121,8 @@ fn schema_v4_removes_adapter_config_without_losing_tasks() {
     let schema_version: i32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(schema_version, 6);
+    // 迁移总是把索引推进到当前版本（以常量为准，后续升版不需要再改这里）。
+    assert_eq!(schema_version, SEARCH_INDEX_SCHEMA_VERSION);
     let task_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
         .unwrap();
