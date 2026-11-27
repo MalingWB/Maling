@@ -41,6 +41,7 @@ export interface ShellProps {
   onConversationRenameTask: (projectId: string, taskId: string, title: string) => void;
   onConversationDeleteTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
   onConversationSetResident?: (projectId: string, taskId: string, resident: boolean) => Promise<void>;
+  onConversationMarkUnread?: (projectId: string, taskId: string) => Promise<void>;
   onConversationPinTask: (projectId: string, taskId: string) => void;
   onConversationUnpinTask: (projectId: string, taskId: string) => void;
   onConversationNewInWorkspace: (projectId: string) => void;
@@ -66,7 +67,7 @@ export interface ShellProps {
   children: React.ReactNode;
 }
 
-export function Shell({ onConversationRevealHandled: propsRevealHandled, onConversationRetryReveal: propsRetryReveal, uiMode, active, conversationPage, conversationSidebar, showRemoteTaskManagement, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, browserPreferences, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onOpenPersonalAnalytics, onOpenReleaseNotes, titleBarUpdateAction, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationSetResident, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, onConversationRetrySidebar, onConversationRequestWorkspaceTasks, onConversationRequestPinnedTasks, onConversationRequestRecentTasks, onConversationResetWorkspaceTaskPage, onConversationResetRecentTaskPage, onConversationRequestTaskRuns, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, workLocation, conversationWorkspaceStore, children }: ShellProps) {
+export function Shell({ onConversationRevealHandled: propsRevealHandled, onConversationRetryReveal: propsRetryReveal, uiMode, active, conversationPage, conversationSidebar, showRemoteTaskManagement, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, browserPreferences, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onOpenPersonalAnalytics, onOpenReleaseNotes, titleBarUpdateAction, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationSetResident, onConversationMarkUnread, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, onConversationRetrySidebar, onConversationRequestWorkspaceTasks, onConversationRequestPinnedTasks, onConversationRequestRecentTasks, onConversationResetWorkspaceTaskPage, onConversationResetRecentTaskPage, onConversationRequestTaskRuns, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, workLocation, conversationWorkspaceStore, children }: ShellProps) {
   useThemeWallpaperSurface();
   if (uiMode === 'conversation') {
     return (
@@ -90,6 +91,7 @@ export function Shell({ onConversationRevealHandled: propsRevealHandled, onConve
         onSearch={onConversationSearch}
         onPauseRun={onConversationPauseRun}
         onSetResident={onConversationSetResident}
+        onMarkUnread={onConversationMarkUnread}
         onPinTask={onConversationPinTask}
         onUnpinTask={onConversationUnpinTask}
         onRenameTask={onConversationRenameTask}

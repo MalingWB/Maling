@@ -263,6 +263,21 @@ export function applyConversationSidebarTerminalResultUpdate(
   );
 }
 
+/** Restores the explicit "mark unread" result on every sidebar list at once. */
+export function applyConversationSidebarTaskUnread(
+  sidebar: ConversationSidebarVm,
+  projectId: string,
+  taskId: string,
+  unreadTerminalResult: ConversationTerminalResultVm,
+): ConversationSidebarVm {
+  return applyConversationSidebarTaskTerminalResult(
+    sidebar,
+    projectId,
+    taskId,
+    () => unreadTerminalResult,
+  );
+}
+
 export function applyConversationSidebarTerminalResultAcknowledgement(
   sidebar: ConversationSidebarVm,
   projectId: string,

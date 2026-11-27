@@ -1590,3 +1590,16 @@ P3：折叠箭头恢复为 `open && 'rotate-180'`（与任务列表一致）；�
 - L2：草稿箱满（20/20）时保存按钮禁用并在 Tooltip 说明"删除旧草稿后可继续保存"（七语言 `acp.composerDrafts.saveFull`），复用既有 disabled-span Tooltip 模式，`data-composer-draft-save-full` 测试锚点固化。
 - 过度设计评审：不新增存储结构；相对引用与 timeline 约定对齐，resolver 是单一消费端 chokepoint；存量绝对引用按原样消费是 resolver 的一个分支而非迁移层。
 - 性能影响评审：相对引用由已计算的 digest 拼接，无额外 I/O；消费端解析为字符串 join；测试夹具发现 `App::new(root)` 的 project id 由路径哈希派生（测试专用派生，生产 project_id 由工作区注册表稳定持有），迁移验收因此直接对 project 数据目录整体搬迁验证。
+
+## 38. 2026-11-26：Direct 会话右键“标为未读”
+
+状态：已实现并完成定向回归与浏览器验证。
+
+- 需求：用户查看 Direct 会话后可能稍后继续对话，需要主动恢复未读提醒，避免遗忘。设计复用既有终局未查看模型，不引入新的提醒类型。
+- 数据与接口：`conversation_attention` 新增 `mark_terminal_result_unread`，只清除最新终局结果的 `seenTerminalEventId`；task 不存在或没有最新结果时返回特定结果，由命令层映射为 `task.not-found` / `conversation.unread-unavailable`。attention 投影扩展为 `ConversationTaskAttention { unreadTerminalResult, hasTerminalResult }`，一次文件读取同时服务未读圆点与菜单可用性。
+- 行投影：`ConversationTaskRowVm.canMarkUnread` 仅在 Direct、存在 Agent identity 且存在最新终局结果时为真；前端仍只在当前未读为空时显示菜单项，因此“已读且可恢复”和“当前已未读”互斥。
+- 前端状态：标为未读成功后用既有 `applyConversationSidebarTaskTerminalResult` 投影到 pinned/workspace/recent 三个列表，不重建行、不改变排序与活动时间。新增内存抑制表（`conversationUnreadSuppressionKey`）阻止会话保持打开时的自动已读立刻清掉显式标记；用户重新进入会话、收到更新的终局结果或删除 task 时清除，确认响应按事件匹配丢弃迟到结果。
+- 前端入口：`ConversationSidebar` 该行右键菜单只对 Direct 行生效，常驻项在前、标为未读项在后；只读体验或请求在途时禁用并显示加载态。Shell/WorkspaceShell/App 新增 `onConversationMarkUnread` 透传，browser mock 增加一条 Direct 预览会话与对应 mock 命令用于无后端预览验证。
+- 验收：`conversation_attention` 10 项、`direct_task_row_exposes_mark_unread_only_with_a_restorable_terminal_result` 1 项通过；`web/tests/api/desktop.test.ts`、`conversation-terminal-result.test.ts`、`conversation-navigation.test.ts`、`conversation-sidebar-mark-unread.test.tsx`、`conversation-sidebar-residency.test.tsx` 共 70 项通过；`npx tsc -p web/tsconfig.build.json --noEmit` 通过；浏览器预览验证右键菜单两项、点击后圆点恢复。
+- 过度设计评审：未新增持久字段、通知类型或状态机；抑制表是单个有界 transient UI 竞态护栏。未复用名称反查或旁路状态，`canMarkUnread` 由后端投影而非前端推断。
+- 性能影响评审：每页 attention 读取次数不变；菜单项是行内布尔渲染，无额外请求、无列表重排、无额外持久 I/O。

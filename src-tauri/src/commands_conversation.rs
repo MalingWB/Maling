@@ -24,7 +24,8 @@ use crate::commands::{
     validate_runtime_workspace_for_command,
 };
 use crate::conversation_attention::{
-    ConversationTerminalResultAcknowledgementVm, acknowledge_terminal_result, remove_task_attention,
+    ConversationTerminalResultAcknowledgementVm, ConversationTerminalResultVm,
+    acknowledge_terminal_result, mark_terminal_result_unread, remove_task_attention,
 };
 use crate::conversation_workspace::{
     app_for_workspace, project_id_for_workspace, project_ids_match, remove_workspace_from_state,
@@ -515,6 +516,43 @@ pub fn acknowledge_conversation_terminal_result(
         .conversation_attention_write_guard()
         .map_err(command_error)?;
     acknowledge_terminal_result(&app, &input.task_id, &input.event_id).map_err(command_error)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkConversationTaskUnreadInput {
+    project_id: String,
+    task_id: String,
+}
+
+/// Explicit "mark unread": clears the acknowledgement token of the latest
+/// Direct terminal result so the existing unread projection (sidebar dot,
+/// notifications) reports it again.
+#[tauri::command]
+pub fn mark_conversation_task_unread(
+    state: State<'_, DesktopState>,
+    input: MarkConversationTaskUnreadInput,
+) -> CommandResult<ConversationTerminalResultVm> {
+    let MarkConversationTaskUnreadInput { project_id, task_id } = input;
+    let app = resolve_command_app(&state, Some(&project_id))?;
+    let not_found = || {
+        CommandErrorVm::new(
+            "task.not-found",
+            serde_json::json!({ "projectId": &project_id, "taskId": &task_id }),
+        )
+    };
+    app.task_show(&task_id).map_err(|_| not_found())?;
+    let _write_guard = state
+        .conversation_attention_write_guard()
+        .map_err(command_error)?;
+    mark_terminal_result_unread(&app, &task_id)
+        .map_err(command_error)?
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                "conversation.unread-unavailable",
+                serde_json::json!({ "projectId": &project_id, "taskId": &task_id }),
+            )
+        })
 }
 
 #[tauri::command]

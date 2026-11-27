@@ -1033,6 +1033,7 @@
     },
     "conversation": {
       "task-not-found": "找不到该会话。",
+      "unread-unavailable": "这条会话没有可标为未读的 AI 回复。",
       "session-superseded": "此会话已由 {{nodeId}} / {{attemptId}} 接续，请前往该 attempt 继续。",
       "task-running": "该会话仍在运行，请先停止后再删除。",
       "task-delete-failed": "删除会话失败：{{message}}",
@@ -3139,6 +3140,7 @@
       },
       "keepResident": "常驻会话",
       "releaseResident": "解除常驻",
+      "markUnread": "标为未读",
       "keepResidentHint": "Agent 有定时任务等需要长时间运行的工作时，请开启常驻，避免会话空闲后被回收",
       "releaseResidentHint": "已常驻，空闲时不会被回收。点击解除常驻",
       "resident": "常驻会话"

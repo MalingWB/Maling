@@ -5,6 +5,8 @@ import {
   conversationPageForSession,
   conversationPageForRun,
   conversationPageForIntervention,
+  conversationUnreadSuppressionKey,
+  isConversationUnreadSuppressed,
   conversationPageMatchesRun,
   conversationPageTargetsTask,
   conversationWorkLocation,
@@ -524,5 +526,43 @@ describe('conversation sidebar navigation wiring', () => {
     );
     expect(dialogSource).toContain('subscribeConversationAttemptEvents(branchLocator');
     expect(dialogSource).not.toContain('subscribeConversationEvents((event) =>');
+  });
+});
+
+describe('explicit unread suppression', () => {
+  it('suppresses only the exact terminal event of the exact task', () => {
+    const suppressions = new Map([[conversationUnreadSuppressionKey('project-1', 'task-1'), 'event-1']]);
+
+    expect(isConversationUnreadSuppressed(suppressions, {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      eventId: 'event-1',
+    })).toBe(true);
+    expect(isConversationUnreadSuppressed(suppressions, {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      eventId: 'event-2',
+    })).toBe(false);
+    expect(isConversationUnreadSuppressed(suppressions, {
+      projectId: 'project-1',
+      taskId: 'task-2',
+      eventId: 'event-1',
+    })).toBe(false);
+    expect(isConversationUnreadSuppressed(suppressions, {
+      projectId: 'project-2',
+      taskId: 'task-1',
+      eventId: 'event-1',
+    })).toBe(false);
+  });
+
+  it('keeps suppression transient: the ack effect and ACP listener clear it at their own boundaries', () => {
+    const source = readAppSource();
+
+    // The automatic acknowledgement must not undo an explicit mark while the
+    // conversation stays open in the foreground.
+    expect(source).toContain('isConversationUnreadSuppressed(conversationUnreadSuppressionsRef.current, acknowledgementTarget)');
+    // Re-entering the conversation or a newer terminal result ends the episode.
+    expect(source).toContain('conversationUnreadSuppressionsRef.current.delete(');
+    expect(source).toContain('conversationUnreadSuppressionKey(projectId, taskId)');
   });
 });

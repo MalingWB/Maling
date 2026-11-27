@@ -31,6 +31,15 @@ pub struct ConversationTerminalResultAcknowledgementVm {
     pub unread_terminal_result: Option<ConversationTerminalResultVm>,
 }
 
+/// Per-task attention projection loaded once per page: `unread_terminal_result`
+/// drives the sidebar dot, `has_terminal_result` tells the row whether the
+/// explicit "mark unread" affordance has anything to restore.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConversationTaskAttention {
+    pub unread_terminal_result: Option<ConversationTerminalResultVm>,
+    pub has_terminal_result: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationTerminalResultRecord {
     pub changed: bool,
@@ -69,6 +78,13 @@ impl ConversationTaskAttentionState {
             .filter(|result| self.seen_terminal_event_id.as_deref() != Some(&result.event_id))
             .cloned()
     }
+
+    fn attention(&self) -> ConversationTaskAttention {
+        ConversationTaskAttention {
+            unread_terminal_result: self.unread_terminal_result(),
+            has_terminal_result: self.latest_terminal_result.is_some(),
+        }
+    }
 }
 
 impl ConversationAttentionState {
@@ -78,14 +94,10 @@ impl ConversationAttentionState {
             .and_then(ConversationTaskAttentionState::unread_terminal_result)
     }
 
-    fn unread_terminal_results(&self) -> HashMap<String, ConversationTerminalResultVm> {
+    fn attention(&self) -> HashMap<String, ConversationTaskAttention> {
         self.tasks
             .iter()
-            .filter_map(|(task_id, state)| {
-                state
-                    .unread_terminal_result()
-                    .map(|result| (task_id.clone(), result))
-            })
+            .map(|(task_id, state)| (task_id.clone(), state.attention()))
             .collect()
     }
 }
@@ -102,8 +114,8 @@ fn save_state(app: &App, state: &ConversationAttentionState) -> Result<()> {
     write_json(&app.paths.conversation_attention_file(), state)
 }
 
-pub fn unread_terminal_results(app: &App) -> Result<HashMap<String, ConversationTerminalResultVm>> {
-    Ok(load_state(app)?.unread_terminal_results())
+pub fn attention_projections(app: &App) -> Result<HashMap<String, ConversationTaskAttention>> {
+    Ok(load_state(app)?.attention())
 }
 
 pub fn unread_terminal_result(
@@ -225,6 +237,32 @@ pub fn acknowledge_terminal_result(
         acknowledged: matches_latest,
         unread_terminal_result: state.unread_terminal_result(task_id),
     })
+}
+
+/// Explicitly reverts the read state of the latest terminal result. Reusing the
+/// single `seen_terminal_event_id` fact keeps the sidebar dot, notifications and
+/// automatic acknowledgement on one canonical unread model.
+pub fn mark_terminal_result_unread(
+    app: &App,
+    task_id: &str,
+) -> Result<Option<ConversationTerminalResultVm>> {
+    let mut state = load_state(app)?;
+    let Some(task) = state.tasks.get_mut(task_id) else {
+        return Ok(None);
+    };
+    let Some(latest) = task.latest_terminal_result.clone() else {
+        return Ok(None);
+    };
+    // Already unread means the marker is idempotent; skip the write so repeated
+    // calls never touch the file.
+    let changed = task.seen_terminal_event_id.take().is_some();
+    if !changed {
+        return Ok(Some(latest));
+    }
+    state.version = CONVERSATION_ATTENTION_VERSION;
+    save_state(app, &state)?;
+    tracing::debug!(project_id = %app.paths.project_id, task_id, "conversation attention marked unread");
+    Ok(Some(latest))
 }
 
 pub fn remove_task_attention(app: &App, task_id: &str) -> Result<bool> {
@@ -495,15 +533,103 @@ mod tests {
         )
         .unwrap();
 
-        let unread = unread_terminal_results(&app).unwrap();
+        let unread = attention_projections(&app).unwrap();
         assert_eq!(unread.len(), 2);
-        assert_eq!(unread["task-001"].event_id, "event-001");
-        assert_eq!(unread["task-002"].event_id, "event-002");
+        assert_eq!(
+            unread["task-001"].unread_terminal_result.as_ref().unwrap().event_id,
+            "event-001"
+        );
+        assert_eq!(
+            unread["task-002"].unread_terminal_result.as_ref().unwrap().event_id,
+            "event-002"
+        );
 
         assert!(remove_task_attention(&app, "task-001").unwrap());
         assert!(!remove_task_attention(&app, "task-001").unwrap());
-        let unread = unread_terminal_results(&app).unwrap();
+        let unread = attention_projections(&app).unwrap();
         assert!(!unread.contains_key("task-001"));
-        assert_eq!(unread["task-002"].event_id, "event-002");
+        assert_eq!(
+            unread["task-002"].unread_terminal_result.as_ref().unwrap().event_id,
+            "event-002"
+        );
+    }
+
+    #[test]
+    fn marking_an_acknowledged_result_unread_restores_it_without_a_new_record() {
+        let (_root, app) = app();
+        record_terminal_result(
+            &app,
+            "task-001",
+            result("event-001", ConversationTerminalResultKind::Completed),
+        )
+        .unwrap();
+        assert!(
+            acknowledge_terminal_result(&app, "task-001", "event-001")
+                .unwrap()
+                .acknowledged
+        );
+        assert!(unread_terminal_result(&app, "task-001").unwrap().is_none());
+
+        let marked = mark_terminal_result_unread(&app, "task-001").unwrap().unwrap();
+        assert_eq!(marked.event_id, "event-001");
+        assert_eq!(
+            unread_terminal_result(&app, "task-001").unwrap().unwrap().kind,
+            ConversationTerminalResultKind::Completed
+        );
+
+        // Idempotent: marking an already-unread result returns the same event and
+        // leaves the acknowledgement token untouched.
+        assert_eq!(
+            mark_terminal_result_unread(&app, "task-001")
+                .unwrap()
+                .unwrap()
+                .event_id,
+            "event-001"
+        );
+    }
+
+    #[test]
+    fn marking_unread_requires_an_existing_terminal_result_and_never_revives_older_events() {
+        let (_root, app) = app();
+        assert!(mark_terminal_result_unread(&app, "task-001").unwrap().is_none());
+
+        record_terminal_result(
+            &app,
+            "task-001",
+            result("event-001", ConversationTerminalResultKind::Completed),
+        )
+        .unwrap();
+        record_terminal_result(
+            &app,
+            "task-001",
+            result("event-002", ConversationTerminalResultKind::Failed),
+        )
+        .unwrap();
+        acknowledge_terminal_result(&app, "task-001", "event-002").unwrap();
+        let marked = mark_terminal_result_unread(&app, "task-001").unwrap().unwrap();
+        assert_eq!(marked.event_id, "event-002");
+        assert_eq!(marked.kind, ConversationTerminalResultKind::Failed);
+        assert_eq!(
+            unread_terminal_result(&app, "task-001").unwrap().unwrap().event_id,
+            "event-002"
+        );
+    }
+
+    #[test]
+    fn attention_projection_reports_terminal_result_presence_for_read_and_unread_tasks() {
+        let (_root, app) = app();
+        record_terminal_result(
+            &app,
+            "task-001",
+            result("event-001", ConversationTerminalResultKind::Completed),
+        )
+        .unwrap();
+        acknowledge_terminal_result(&app, "task-001", "event-001").unwrap();
+
+        let attention = attention_projections(&app).unwrap();
+        let read = &attention["task-001"];
+        assert!(read.has_terminal_result);
+        assert!(read.unread_terminal_result.is_none());
+        assert!(!attention.contains_key("task-002"));
     }
 }

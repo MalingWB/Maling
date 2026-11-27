@@ -650,6 +650,7 @@ export interface RuntimeApi {
   getConversationRecentTaskPage(cursor?: string | null, limit?: number): Promise<ConversationRecentTaskPageVm>;
   getConversationRunSummaryPage(projectId: string, taskId: string, cursor?: string | null, limit?: number): Promise<ConversationRunSummaryPageVm>;
   acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string): Promise<import('../types').ConversationTerminalResultAcknowledgementVm>;
+  markConversationTaskUnread(projectId: string, taskId: string): Promise<import('../types').ConversationTerminalResultVm>;
   listScheduledTasks(projectId?: string | null): Promise<import('../types').ScheduledTaskVm[]>;
   setScheduledTaskEnabled(projectId: string | null | undefined, scheduledTaskId: string, enabled: boolean): Promise<import('../types').ScheduledTaskVm>;
   createScheduledTask(input: import('../types').CreateScheduledTaskInput): Promise<import('../types').ScheduledTaskVm>;

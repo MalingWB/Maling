@@ -32,6 +32,7 @@ import {
   importDesktopWallpaper,
   pauseRun,
   pinConversation,
+  markConversationTaskUnread,
   setConversationResident,
   rerunConversationTask,
   retryCurrentNode,
@@ -100,6 +101,7 @@ import {
   applyConversationSidebarTaskActivity,
   applyConversationSidebarTerminalResultAcknowledgement,
   applyConversationSidebarTerminalResultUpdate,
+  applyConversationSidebarTaskUnread,
   conversationSidebarRunStateRefreshTarget,
   conversationTaskActivityFromLifecycle,
   conversationTaskActivityFromUpdate,
@@ -216,7 +218,9 @@ import {
   conversationPageTargetsTask,
   conversationWorkLocation as presentedSessionWorkLocation,
   conversationTerminalResultAcknowledgementTarget,
+  conversationUnreadSuppressionKey,
   findConversationLeafForPage,
+  isConversationUnreadSuppressed,
   isConversationRunNavigationLoading,
   resolveConversationHomeWorkspaceId,
   shouldCommitConversationNavigation,
@@ -479,7 +483,7 @@ function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
 }
 
 /** Shell callbacks App keeps identity-stable across renders. */
-type ShellCommands = Required<Pick<ShellProps, 'onSelect' | 'onSelectConversation' | 'onToggleSidebar' | 'onOpenPersonalAnalytics' | 'onOpenReleaseNotes' | 'onChooseWorkspace' | 'onConversationNew' | 'onConversationSearch' | 'onConversationRetrySidebar' | 'onConversationRequestWorkspaceTasks' | 'onConversationRequestPinnedTasks' | 'onConversationRequestRecentTasks' | 'onConversationResetWorkspaceTaskPage' | 'onConversationResetRecentTaskPage' | 'onConversationRequestTaskRuns' | 'onConversationPauseRun' | 'onConversationRenameTask' | 'onConversationDeleteTask' | 'onConversationSetResident' | 'onConversationPinTask' | 'onConversationUnpinTask' | 'onConversationNewInWorkspace' | 'onConversationAddWorkspace' | 'onConversationRemoveWorkspace'>>;
+type ShellCommands = Required<Pick<ShellProps, 'onSelect' | 'onSelectConversation' | 'onToggleSidebar' | 'onOpenPersonalAnalytics' | 'onOpenReleaseNotes' | 'onChooseWorkspace' | 'onConversationNew' | 'onConversationSearch' | 'onConversationRetrySidebar' | 'onConversationRequestWorkspaceTasks' | 'onConversationRequestPinnedTasks' | 'onConversationRequestRecentTasks' | 'onConversationResetWorkspaceTaskPage' | 'onConversationResetRecentTaskPage' | 'onConversationRequestTaskRuns' | 'onConversationPauseRun' | 'onConversationRenameTask' | 'onConversationDeleteTask' | 'onConversationSetResident' | 'onConversationMarkUnread' | 'onConversationPinTask' | 'onConversationUnpinTask' | 'onConversationNewInWorkspace' | 'onConversationAddWorkspace' | 'onConversationRemoveWorkspace'>>;
 
 function commandErrorCode(error: unknown) {
   return typeof error === 'object' && error !== null && typeof (error as { code?: unknown }).code === 'string'
@@ -522,6 +526,7 @@ export function App() {
   const conversationRunStateRefreshRef = useRef<Parameters<typeof subscribeConversationRunStateUpdates>[0] | null>(null);
   const conversationAcpSessionRefreshRef = useRef<Parameters<typeof subscribeConversationEvents>[0] | null>(null);
   const conversationTerminalAcknowledgementsInFlightRef = useRef(new Set<string>());
+  const conversationUnreadSuppressionsRef = useRef(new Map<string, string>());
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunModesByWorkspace, setConversationRunModesByWorkspace] = useState<ConversationRunModesByWorkspace>({});
   const conversationRunModesRef = useRef<ConversationRunModesByWorkspace>({});
@@ -966,6 +971,27 @@ export function App() {
     try { applyConversationTask(await setConversationResident(projectId, taskId, resident)); }
     catch (err) { setError(displayAppError(t, err)); }
   }, [applyConversationTask, t]);
+
+  const handleConversationMarkUnread = useCallback(async (projectId: string, taskId: string) => {
+    setError(null);
+    try {
+      const unread = await markConversationTaskUnread(projectId, taskId);
+      // Register the suppression before projecting the row: the acknowledgement
+      // effect must not immediately undo the mark while this conversation is
+      // open, foreground and scrolled to the bottom.
+      conversationUnreadSuppressionsRef.current.set(
+        conversationUnreadSuppressionKey(projectId, taskId),
+        unread.eventId,
+      );
+      setConversationSidebar((current) => {
+        const next = applyConversationSidebarTaskUnread(current, projectId, taskId, unread);
+        conversationSidebarRef.current = next;
+        return next;
+      });
+    } catch (err) {
+      setError(displayAppError(t, err));
+    }
+  }, [t]);
 
   const applyConversationTaskActivity = useCallback((
     projectId: string,
@@ -1436,6 +1462,11 @@ export function App() {
     let dispose: (() => void) | undefined;
     void subscribeConversationTerminalResultUpdates((event) => {
       if (!active) return;
+      // A newer result supersedes the explicitly marked episode for this task;
+      // the new result follows the ordinary automatic-read rules.
+      conversationUnreadSuppressionsRef.current.delete(
+        conversationUnreadSuppressionKey(event.projectId, event.taskId),
+      );
       setConversationSidebar((current) => {
         const next = applyConversationSidebarTerminalResultUpdate(current, event);
         if (next !== current) conversationSidebarRef.current = next;
@@ -1460,6 +1491,7 @@ export function App() {
       { foreground: notificationForeground, atBottom: conversationReadViewport?.key === conversationReadKey && conversationReadViewport.atBottom },
     );
     if (!acknowledgementTarget) return;
+    if (isConversationUnreadSuppressed(conversationUnreadSuppressionsRef.current, acknowledgementTarget)) return;
     const acknowledgementKey = `${acknowledgementTarget.projectId}:${acknowledgementTarget.taskId}:${acknowledgementTarget.eventId}`;
     if (conversationTerminalAcknowledgementsInFlightRef.current.has(acknowledgementKey)) return;
     conversationTerminalAcknowledgementsInFlightRef.current.add(acknowledgementKey);
@@ -1469,6 +1501,9 @@ export function App() {
       acknowledgementTarget.eventId,
     ).then((acknowledgement) => {
       setConversationSidebar((current) => {
+        // A mark issued while this acknowledgement was in flight wins locally;
+        // the backend mark is serialized after the ack by the attention lock.
+        if (isConversationUnreadSuppressed(conversationUnreadSuppressionsRef.current, acknowledgementTarget)) return current;
         const next = applyConversationSidebarTerminalResultAcknowledgement(
           current,
           acknowledgementTarget.projectId,
@@ -2597,6 +2632,13 @@ export function App() {
   }, []);
 
   function onSelectConversation(page: ConversationPage) {
+    // Explicitly entering a conversation is the user's read intent, so it ends
+    // any "mark unread" suppression for that task.
+    if (page.kind === 'conversation-run') {
+      conversationUnreadSuppressionsRef.current.delete(
+        conversationUnreadSuppressionKey(page.projectId, page.taskId),
+      );
+    }
     cancelConversationSidebarReveal(page.kind === 'conversation-run' ? page : undefined);
     setWorkspacePickerOpen(false);
     setUiMode('conversation');
@@ -2801,6 +2843,7 @@ export function App() {
     },
     onConversationDeleteTask: (projectId, taskId, taskUuid) => {
       cancelConversationSidebarReveal();
+      conversationUnreadSuppressionsRef.current.delete(conversationUnreadSuppressionKey(projectId, taskId));
       const deletionTarget = { projectId, taskId, taskUuid };
       invalidateConversationSidebarLoad(`workspace:${projectId}`);
       invalidateConversationSidebarLoad(`runs:${projectId}:${taskUuid ?? taskId}`);
@@ -2849,6 +2892,7 @@ export function App() {
         });
     },
     onConversationSetResident: handleConversationSetResident,
+    onConversationMarkUnread: handleConversationMarkUnread,
     onConversationPinTask: (projectId, taskId) => {
       invalidateConversationSidebarLoad('pinned');
       invalidateConversationSidebarLoad('bootstrap');
@@ -2974,6 +3018,7 @@ export function App() {
       onConversationRenameTask={shellCommands.onConversationRenameTask}
       onConversationDeleteTask={shellCommands.onConversationDeleteTask}
       onConversationSetResident={shellCommands.onConversationSetResident}
+      onConversationMarkUnread={shellCommands.onConversationMarkUnread}
       onConversationPinTask={shellCommands.onConversationPinTask}
       onConversationUnpinTask={shellCommands.onConversationUnpinTask}
       onConversationNewInWorkspace={shellCommands.onConversationNewInWorkspace}

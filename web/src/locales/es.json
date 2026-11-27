@@ -1033,6 +1033,7 @@
     },
     "conversation": {
       "task-not-found": "No se pudo encontrar esta conversación.",
+      "unread-unavailable": "Esta conversación no tiene una respuesta de la IA para marcar como no leída.",
       "session-superseded": "Esta sesión fue continuada por {{nodeId}} / {{attemptId}}. Continúa en ese attempt.",
       "task-running": "Esta conversación aún se está ejecutando. Deténgala antes de eliminarla.",
       "task-delete-failed": "No se pudo eliminar la conversación: {{message}}",
@@ -3144,6 +3145,7 @@
       },
       "keepResident": "Mantener la sesión activa",
       "releaseResident": "Permitir el cierre de la sesión",
+      "markUnread": "Marcar como no leída",
       "keepResidentHint": "Active la permanencia cuando el Agent tenga tareas programadas u otros trabajos de larga duración, para que la sesión no se cierre al quedar inactiva",
       "releaseResidentHint": "La sesión es permanente y no se cerrará por inactividad. Haga clic para permitir el cierre",
       "resident": "Sesión mantenida activa"

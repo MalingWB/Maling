@@ -4,6 +4,7 @@ import type {
   ConversationRunVm,
   ConversationSidebarVm,
   ConversationSessionLeafVm,
+  ConversationTaskRowVm,
   ConversationSessionTargetVm,
   ConversationSessionTreeVm,
   InterventionNavigateEventVm,
@@ -198,6 +199,24 @@ export function shouldSurfaceConversationNavigationError(
     && requested.kind === 'conversation-run'
     && currentPage.kind === 'conversation-run'
     && conversationRunLocatorResolvesTo(requested, currentPage);
+}
+
+/**
+ * A user explicitly marked this terminal result unread while viewing it; the
+ * automatic acknowledgement must not undo that within the same viewing episode.
+ * Suppressions are transient (one event per task) and cleared when the user
+ * explicitly re-enters the conversation or a newer result arrives.
+ */
+export function conversationUnreadSuppressionKey(projectId: string, taskId: string) {
+  return `${projectId}:${taskId}`;
+}
+
+export function isConversationUnreadSuppressed(
+  suppressions: ReadonlyMap<string, string>,
+  target: Pick<ConversationTaskRowVm, 'projectId' | 'taskId'> & { eventId: string },
+) {
+  return suppressions.get(conversationUnreadSuppressionKey(target.projectId, target.taskId))
+    === target.eventId;
 }
 
 export function conversationTerminalResultAcknowledgementTarget(

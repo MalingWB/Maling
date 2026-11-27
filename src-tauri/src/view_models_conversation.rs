@@ -42,7 +42,9 @@ use gold_band::workflow_model_binding::{
     TaskAuthoringWorkflow, migrate_authoring_workflow, validate_and_inject,
 };
 
-use crate::conversation_attention::{ConversationTerminalResultVm, unread_terminal_results};
+use crate::conversation_attention::{
+    ConversationTerminalResultVm, ConversationTaskAttention, attention_projections,
+};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -575,6 +577,9 @@ pub struct ConversationTaskRowVm {
     pub last_activity_at: Option<String>,
     pub activity: Option<ConversationTaskActivityVm>,
     pub unread_terminal_result: Option<ConversationTerminalResultVm>,
+    /// Explicit "mark unread" affordance: a Direct conversation with an agent
+    /// identity and an existing terminal result to restore.
+    pub can_mark_unread: bool,
     pub latest_run: Option<ConversationRunSummaryVm>,
     pub runs: Vec<ConversationRunSummaryVm>,
     pub run_history_status: String,
@@ -1387,7 +1392,7 @@ fn conversation_task_row_vm_from_task(
     task: &TaskState,
     pinned: bool,
     pin_order: Option<usize>,
-    unread_terminal_result: Option<&ConversationTerminalResultVm>,
+    attention: Option<&ConversationTaskAttention>,
 ) -> ConversationTaskRowVm {
     let task_id = &task.id;
     let metadata = read_conversation_metadata(app, task_id);
@@ -1406,9 +1411,16 @@ fn conversation_task_row_vm_from_task(
     let latest_run = runs.first().cloned();
     let last_activity_at = latest_conversation_activity_at(metadata.as_ref());
     let activity = conversation_task_activity(&app.paths.task_dir(task_id), latest_run.as_ref());
-    let unread_terminal_result = (run_mode == "direct")
-        .then(|| unread_terminal_result.cloned())
+    let agent_identity = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.agent_identity.clone());
+    let is_direct = run_mode == "direct";
+    let unread_terminal_result = is_direct
+        .then(|| attention.and_then(|attention| attention.unread_terminal_result.clone()))
         .flatten();
+    let can_mark_unread = is_direct
+        && agent_identity.is_some()
+        && attention.is_some_and(|attention| attention.has_terminal_result);
 
     ConversationTaskRowVm {
         resident: run_mode == "direct" && metadata.as_ref().is_some_and(|m| m.resident),
@@ -1421,12 +1433,11 @@ fn conversation_task_row_vm_from_task(
             .is_some_and(|metadata| metadata.title_auto_generated),
         run_mode,
         workflow_template_id: None,
-        agent_identity: metadata
-            .as_ref()
-            .and_then(|metadata| metadata.agent_identity.clone()),
+        agent_identity,
         last_activity_at,
         activity,
         unread_terminal_result,
+        can_mark_unread,
         latest_run,
         runs,
         run_history_status: "ready".to_string(),
@@ -1449,14 +1460,14 @@ pub fn conversation_task_row_vm(
     let task = app
         .task_show(task_id)
         .map_err(|error| anyhow::anyhow!("task not found: {task_id}: {error}"))?;
-    let unread_terminal_results = unread_terminal_results(app).unwrap_or_default();
+    let attention = attention_projections(app).unwrap_or_default();
     Ok(conversation_task_summary_vm_from_task(
         app,
         project_id,
         &task,
         pinned,
         pin_order,
-        unread_terminal_results.get(task_id),
+        attention.get(task_id),
     ))
 }
 
@@ -1611,7 +1622,7 @@ fn conversation_task_summary_vm_from_task(
     task: &TaskState,
     pinned: bool,
     pin_order: Option<usize>,
-    unread_terminal_result: Option<&ConversationTerminalResultVm>,
+    attention: Option<&ConversationTaskAttention>,
 ) -> ConversationTaskRowVm {
     let task_id = &task.id;
     let metadata = read_conversation_metadata(app, task_id);
@@ -1622,9 +1633,16 @@ fn conversation_task_summary_vm_from_task(
     let latest_run = latest_conversation_run_summary(app, task_id);
     let last_activity_at = latest_conversation_activity_at(metadata.as_ref());
     let activity = conversation_task_activity(&app.paths.task_dir(task_id), latest_run.as_ref());
-    let unread_terminal_result = (run_mode == "direct")
-        .then(|| unread_terminal_result.cloned())
+    let agent_identity = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.agent_identity.clone());
+    let is_direct = run_mode == "direct";
+    let unread_terminal_result = is_direct
+        .then(|| attention.and_then(|attention| attention.unread_terminal_result.clone()))
         .flatten();
+    let can_mark_unread = is_direct
+        && agent_identity.is_some()
+        && attention.is_some_and(|attention| attention.has_terminal_result);
 
     ConversationTaskRowVm {
         resident: run_mode == "direct" && metadata.as_ref().is_some_and(|m| m.resident),
@@ -1637,12 +1655,11 @@ fn conversation_task_summary_vm_from_task(
             .is_some_and(|metadata| metadata.title_auto_generated),
         run_mode,
         workflow_template_id: None,
-        agent_identity: metadata
-            .as_ref()
-            .and_then(|metadata| metadata.agent_identity.clone()),
+        agent_identity,
         last_activity_at,
         activity,
         unread_terminal_result,
+        can_mark_unread,
         latest_run,
         runs: Vec::new(),
         run_history_status: "not-loaded".to_string(),
@@ -1673,7 +1690,7 @@ pub fn conversation_task_page_vm(
         .collect::<HashMap<_, _>>();
     let (task_ids, next_cursor) =
         paged_task_ids_by_activity(canonical_task_ids, &activity_by_task, cursor, limit)?;
-    let unread_terminal_results = unread_terminal_results(app).unwrap_or_default();
+    let attention = attention_projections(app).unwrap_or_default();
     let mut tasks = Vec::with_capacity(task_ids.len());
     let mut errors = Vec::new();
     for task_id in task_ids {
@@ -1690,7 +1707,7 @@ pub fn conversation_task_page_vm(
                     &task,
                     pin_order.is_some(),
                     pin_order,
-                    unread_terminal_results.get(&task_id),
+                    attention.get(&task_id),
                 ));
             }
             Err(_) => errors.push(ConversationListItemErrorVm {
@@ -1736,7 +1753,7 @@ pub fn conversation_pinned_task_page_vm(
     let has_more = page_pins.len() > limit;
     let mut tasks = Vec::new();
     let mut errors = Vec::new();
-    let mut unread_by_project = HashMap::new();
+    let mut attention_by_project = HashMap::new();
     for pin in page_pins.iter().take(limit) {
         let Some(source) = sources
             .iter()
@@ -1750,16 +1767,16 @@ pub fn conversation_pinned_task_page_vm(
         };
         match source.app.task_show(&pin.task_id) {
             Ok(task) => {
-                let unread = unread_by_project
+                let attention = attention_by_project
                     .entry(pin.project_id.clone())
-                    .or_insert_with(|| unread_terminal_results(&source.app).unwrap_or_default());
+                    .or_insert_with(|| attention_projections(&source.app).unwrap_or_default());
                 tasks.push(conversation_task_summary_vm_from_task(
                     &source.app,
                     &pin.project_id,
                     &task,
                     true,
                     Some(pin.order),
-                    unread.get(&pin.task_id),
+                    attention.get(&pin.task_id),
                 ));
             }
             Err(_) => errors.push(ConversationListItemErrorVm {
@@ -1894,19 +1911,19 @@ pub fn conversation_recent_task_page_vm(
     let mut tasks = Vec::with_capacity(page.len());
     // Outer `Some` marks an attempt; a failed read stays `Some(None)` so a
     // broken source is not re-queried once per row of the page.
-    let mut unread_by_source: Vec<Option<Option<HashMap<String, ConversationTerminalResultVm>>>> =
+    let mut attention_by_source: Vec<Option<Option<HashMap<String, ConversationTaskAttention>>>> =
         (0..sources.len()).map(|_| None).collect();
     for (index, key) in page {
         let source = &sources[index];
         match source.app.task_show(&key.task_id) {
             Ok(task) => {
-                if unread_by_source[index].is_none() {
-                    unread_by_source[index] = Some(unread_terminal_results(&source.app).ok());
+                if attention_by_source[index].is_none() {
+                    attention_by_source[index] = Some(attention_projections(&source.app).ok());
                 }
-                let unread = unread_by_source[index]
+                let attention = attention_by_source[index]
                     .as_ref()
-                    .and_then(|unread| unread.as_ref())
-                    .and_then(|unread| unread.get(&key.task_id));
+                    .and_then(|attention| attention.as_ref())
+                    .and_then(|attention| attention.get(&key.task_id));
                 tasks.push(ConversationRecentTaskRowVm {
                     task: conversation_task_summary_vm_from_task(
                         &source.app,
@@ -1914,7 +1931,7 @@ pub fn conversation_recent_task_page_vm(
                         &task,
                         false,
                         None,
-                        unread,
+                        attention,
                     ),
                     workspace_name: source.workspace.name.clone(),
                 });
@@ -2004,7 +2021,7 @@ pub fn conversation_sidebar_vm_from_sources(
     }
 
     for source in sources {
-        let unread_terminal_results = unread_terminal_results(&source.app).unwrap_or_default();
+        let attention = attention_projections(&source.app).unwrap_or_default();
         if let Ok(tasks) = source.app.task_list() {
             for task in tasks {
                 let task_id = &task.id;
@@ -2022,7 +2039,7 @@ pub fn conversation_sidebar_vm_from_sources(
                     &task,
                     pinned,
                     pin_order,
-                    unread_terminal_results.get(task_id),
+                    attention.get(task_id),
                 );
 
                 if pinned {
@@ -8433,6 +8450,92 @@ mod tests {
     }
 
     #[test]
+    fn direct_task_row_exposes_mark_unread_only_with_a_restorable_terminal_result() {
+        use crate::conversation_attention::{
+            ConversationTerminalResultKind, ConversationTerminalResultVm,
+            acknowledge_terminal_result, mark_terminal_result_unread, record_terminal_result,
+        };
+
+        let repo = short_temp_repo_root();
+        let app = App::new(repo);
+        let identity = json!({
+            "agentType": "claude-acp",
+            "displayName": "Claude",
+            "iconKey": "claude"
+        });
+        for task_id in ["task-identity", "task-no-identity"] {
+            write_sidebar_task_fixture(
+                &app,
+                task_id,
+                "Direct conversation",
+                "run-001",
+                "2026-08-18T10:00:00Z",
+            );
+        }
+        write_direct_conversation_metadata_fixture_with_identity(
+            &app,
+            "task-identity",
+            "2026-08-18T10:00:00Z",
+            Some(identity),
+        );
+        write_direct_conversation_metadata_fixture_with_identity(
+            &app,
+            "task-no-identity",
+            "2026-08-18T10:00:00Z",
+            None,
+        );
+        write_sidebar_task_fixture(
+            &app,
+            "task-auto",
+            "Auto conversation",
+            "run-001",
+            "2026-08-18T10:00:00Z",
+        );
+
+        let result = ConversationTerminalResultVm {
+            event_id: "prompt-done".to_string(),
+            run_id: "run-001".to_string(),
+            kind: ConversationTerminalResultKind::Completed,
+            occurred_at: "2026-08-18T10:05:00Z".to_string(),
+        };
+        record_terminal_result(&app, "task-identity", result.clone()).unwrap();
+        record_terminal_result(&app, "task-no-identity", result.clone()).unwrap();
+        record_terminal_result(&app, "task-auto", result).unwrap();
+
+        // Nothing has been read yet: the dot already carries the unread state.
+        let row = conversation_task_row_vm(&app, "project-001", "task-identity", true, None).unwrap();
+        assert!(row.can_mark_unread);
+        assert!(row.unread_terminal_result.is_some());
+
+        // Acknowledging restores nothing to show but keeps the affordance: the
+        // latest terminal result still exists for the user to mark unread.
+        acknowledge_terminal_result(&app, "task-identity", "prompt-done").unwrap();
+        let row = conversation_task_row_vm(&app, "project-001", "task-identity", true, None).unwrap();
+        assert!(row.can_mark_unread);
+        assert!(row.unread_terminal_result.is_none());
+
+        let restored = mark_terminal_result_unread(&app, "task-identity")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.event_id, "prompt-done");
+        let row = conversation_task_row_vm(&app, "project-001", "task-identity", true, None).unwrap();
+        assert!(row.unread_terminal_result.is_some());
+
+        // A Direct task without an agent identity has no conversation to return to.
+        acknowledge_terminal_result(&app, "task-no-identity", "prompt-done").unwrap();
+        let row =
+            conversation_task_row_vm(&app, "project-001", "task-no-identity", true, None).unwrap();
+        assert!(!row.can_mark_unread);
+        assert!(row.unread_terminal_result.is_none());
+
+        // Non-Direct rows never expose the affordance or an unread dot.
+        acknowledge_terminal_result(&app, "task-auto", "prompt-done").unwrap();
+        let row = conversation_task_row_vm(&app, "project-001", "task-auto", true, None).unwrap();
+        assert!(!row.can_mark_unread);
+        assert!(row.unread_terminal_result.is_none());
+    }
+
+    #[test]
     fn conversation_search_target_summary_is_lightweight_and_preserves_identity() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
@@ -9396,6 +9499,33 @@ mod tests {
                 "includeOptionalEntry": null,
                 "directConfig": null,
                 "agentIdentity": null,
+                "titleAutoGenerated": false,
+                "initialAttachmentNames": null,
+                "createdAt": last_activity_at,
+                "lastActivityAt": last_activity_at
+            }),
+        )
+        .unwrap();
+    }
+
+    fn write_direct_conversation_metadata_fixture_with_identity(
+        app: &App,
+        task_id: &str,
+        last_activity_at: &str,
+        agent_identity: Option<serde_json::Value>,
+    ) {
+        let authoring_dir = app.paths.task_dir(task_id).join("authoring");
+        std::fs::create_dir_all(authoring_dir.as_std_path()).unwrap();
+        gold_band::storage::write_json(
+            &authoring_dir.join("conversation.json"),
+            &json!({
+                "version": "1",
+                "source": "conversation-ui",
+                "runMode": "direct",
+                "workflowTemplateId": null,
+                "includeOptionalEntry": null,
+                "directConfig": null,
+                "agentIdentity": agent_identity,
                 "titleAutoGenerated": false,
                 "initialAttachmentNames": null,
                 "createdAt": last_activity_at,

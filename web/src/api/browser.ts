@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAttemptLifecycleVm, ConversationAutoConfigVm, ConversationComposerDraftBoxVm, ConversationQueuedPromptDraftVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationTurnIndexEntryVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, McpServerVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, PromptQueueSettingsVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAttemptLifecycleVm, ConversationAutoConfigVm, ConversationComposerDraftBoxVm, ConversationQueuedPromptDraftVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationTerminalResultVm, ConversationTurnIndexEntryVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, ImChannelKind, ImChannelSnapshotVm, ImNotificationPreferencesVm, ImSettingsVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, McpServerVm, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, PromptQueueSettingsVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { AcpSessionUpdatedEventVm, ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm, ImChannelCapabilitiesVm } from '../types';
@@ -30,6 +30,40 @@ function imageActionBlob(input: ImageActionInput): Blob {
 
 const browserConversationRuns = new Map<string, ConversationRunVm>();
 const browserConversationTasks = new Map<string, ConversationTaskRowVm>();
+/// Latest terminal result per task; kept after acknowledgement so the preview
+/// can exercise the explicit "mark unread" path.
+const browserConversationTerminalResults = new Map<string, ConversationTerminalResultVm>();
+const browserMockDirectTaskId = 'mock-direct-mark-unread';
+browserConversationTasks.set(browserMockDirectTaskId, {
+  projectId: 'default',
+  taskId: browserMockDirectTaskId,
+  title: '未读标记预览',
+  autoTitle: true,
+  runMode: 'direct',
+  agentIdentity: browserAgentIdentity('claude-acp'),
+  lastActivityAt: '2026-05-02T16:09:00Z',
+  latestRun: {
+    runId: 'mock-direct-run',
+    status: 'completed',
+    outcome: 'success',
+    startedAt: '2026-05-02T16:08:00Z',
+    updatedAt: '2026-05-02T16:09:00Z',
+    resumable: false,
+  },
+  runs: [],
+  runHistoryStatus: 'ready',
+  runsNextCursor: null,
+  unreadTerminalResult: null,
+  canMarkUnread: true,
+  pinned: false,
+  pinnedOrder: null,
+});
+browserConversationTerminalResults.set(browserMockDirectTaskId, {
+  eventId: 'mock-direct-turn-finished',
+  runId: 'mock-direct-run',
+  kind: 'completed',
+  occurredAt: '2026-05-02T16:09:00Z',
+});
 const browserConversationRunModes = new Map<string, ConversationRunModeVm>();
 const browserScheduledTasks: ScheduledTaskVm[] = [];
 const browserScheduledTaskDefinitions = new Map<string, ScheduledTaskEditVm>();
@@ -3434,6 +3468,18 @@ export const browserApi: RuntimeApi = {
       return Promise.resolve({ acknowledged: true, unreadTerminalResult: null });
     }
     return Promise.resolve({ acknowledged: false, unreadTerminalResult: current });
+  },
+  markConversationTaskUnread(projectId, taskId) {
+    const task = browserConversationTasks.get(taskId);
+    if (!task || task.projectId !== projectId) {
+      return Promise.reject({ code: 'task.not-found', params: { projectId, taskId } });
+    }
+    const latest = browserConversationTerminalResults.get(taskId);
+    if (!latest) {
+      return Promise.reject({ code: 'conversation.unread-unavailable', params: { projectId, taskId } });
+    }
+    browserConversationTasks.set(taskId, { ...task, unreadTerminalResult: { ...latest } });
+    return Promise.resolve({ ...latest });
   },
   listScheduledTasks(projectId) {
     return Promise.resolve(browserScheduledTasks

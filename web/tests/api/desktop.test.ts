@@ -342,6 +342,17 @@ describe('desktopApi', () => {
     });
   });
 
+  it('marks a Direct conversation unread through a scoped command input', async () => {
+    await desktopApi.markConversationTaskUnread('project-1', 'task-1');
+
+    expect(invokeCommand).toHaveBeenCalledWith('mark_conversation_task_unread', {
+      input: {
+        projectId: 'project-1',
+        taskId: 'task-1',
+      },
+    });
+  });
+
   it('loads workspace options without requesting the full conversation sidebar', async () => {
     await desktopApi.getConversationWorkspaces();
 

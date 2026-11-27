@@ -1033,6 +1033,7 @@
     },
     "conversation": {
       "task-not-found": "This conversation could not be found.",
+      "unread-unavailable": "This conversation has no AI reply to mark as unread.",
       "session-superseded": "This session was continued by {{nodeId}} / {{attemptId}}. Continue in that attempt.",
       "task-running": "This conversation is still running. Stop it before deleting.",
       "task-delete-failed": "Failed to delete conversation: {{message}}",
@@ -3144,6 +3145,7 @@
       },
       "keepResident": "Keep session running",
       "releaseResident": "Allow session eviction",
+      "markUnread": "Mark as unread",
       "keepResidentHint": "Keep this session running when the Agent has scheduled tasks or other long-running work, so it is not closed while idle",
       "releaseResidentHint": "Session is kept running and will not be closed while idle. Click to allow eviction",
       "resident": "Kept running"

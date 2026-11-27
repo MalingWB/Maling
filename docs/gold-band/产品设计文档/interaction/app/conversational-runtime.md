@@ -1,5 +1,15 @@
 # 会话式运行时
 
+## 2026-11-26：Direct 会话标为未读
+
+- Direct 会话行右键菜单在常驻开关之下提供“标为未读”，仅当该行当前已读且存在可恢复的最新终局结果时出现；已有未读圆点、没有终局结果或缺少 Agent identity 时不显示该项目，因此菜单项本身就是可用性说明。
+- 标为未读不新增持久字段，只清除该 task 的 `seenTerminalEventId`，复用既有未读投影：侧栏提醒点、通知合并、已读确认、排序与后台回复规则全部保持单一事实源。最新终局结果保留，因此重复标为未读是幂等的。
+- 侧栏行由后端一次性 attention 投影给出 `canMarkUnread`（Direct + Agent identity + 存在最新终局结果），前端不根据 `unreadTerminalResult` 猜测是否有可恢复结果；整页仍只读一次 attention 文件，不按行追加读取。
+- 用户主动标为未读后，当前仍打开该会话的自动已读不能立即把它清掉：前端维护仅内存的短暂抑制表（project+task → eventId），已读请求在抑制期间跳过，已发出的确认响应也按事件匹配丢弃。抑制在用户重新进入该会话、该 task 产生更新的终局结果或 task 删除时清除，不跨重启持久化。
+- 失败时后端只返回错误码：会话不存在返回 `task.not-found`，没有可恢复终局结果返回 `conversation.unread-unavailable`；前端按错误码本地化，不新增对客文案分支。
+- 过度设计评审：现有 `latestTerminalResult` + `seenTerminalEventId` 已能表达“已读/未读”，未新增 flag、事件或第二套状态机；抑制表是单个有界 UI 竞态护栏，不写入磁盘，也不参与通知。
+- 性能评审：每页 attention 投影次数不变，`hasTerminalResult` 与未读结果在同一次文件读取中投影；菜单项在既有 memo 行内按布尔值渲染，不触发额外请求或列表重排。
+
 ## 2026-10-13：交互归属修正、后台停止结算与取消语义
 
 - 前端停止路由按"停止对象归属"判定，不按展示状态：无前台 turn 归属（后端 acpActive / runtimeActive 为 false，且本地没有发送中、等待乐观提示或等待响应的新 prompt）且存在 backgroundControl 时走 Direct 后台停止路径；`canStop` 只控制按钮可用性。会话级提问/权限挂起造成的 interaction-waiting 不得把停止推入前台路径。

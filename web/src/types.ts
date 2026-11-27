@@ -2848,6 +2848,8 @@ export interface ConversationTaskRowVm {
   lastActivityAt?: string | null;
   activity?: ConversationTaskActivityVm | null;
   unreadTerminalResult?: ConversationTerminalResultVm | null;
+  /** Direct conversation with an agent identity and a terminal result to mark unread again. */
+  canMarkUnread?: boolean;
   latestRun?: ConversationRunSummaryVm | null;
   runs: ConversationRunSummaryVm[];
   runHistoryStatus: ConversationLoadStatus;

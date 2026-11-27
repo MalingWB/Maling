@@ -261,3 +261,10 @@ Windows debug 测试进程树（包含测试宿主与模拟适配器，排除采
 - RED：`background_stop_settles_a_pending_session_interaction` 追加断言（accepted 停止后 active_tool_count=1）、`direct_turn_end_settles_foreground_tools_without_terminal_updates`（end_turn 后 active_tool_count=1），均按根因失败。GREEN：两者转绿；新增状态级测试 `owning_boundaries_settle_only_their_own_running_tools`（归属隔离 + 迟终态不重开窗口）。
 - 验证：acp 模块 630+ 通过、全量 lib 1624 通过，失败集合与既有基线一致（path_files/embedded_catalog/quotes/managed_operation 为既有失败）；clippy 触达文件无警告；gold-band-desktop cargo check 通过。未验证：真实 Claude 定时唤醒场景手工重跑。
 - 自评审：仅内存 map 值类型加一个归属枚举与两个结算调用，无新增状态机/持久字段/轮询；结算是 O(工具数) 一次 retain，无锁持有跨 IO。环境备注：E 盘满导致编译失败，清理 target/debug/incremental（12G 再生缓存）恢复。
+
+## 2026-11-26：标为未读（复用终局未查看模型）
+
+- 侧边栏 Direct 行右键菜单在常驻开关下方新增“标为未读”，只在该行当前已读且后端投影 `canMarkUnread`（Direct + Agent identity + 最新终局结果存在）时显示。实现只清除 `seenTerminalEventId`，不新增持久字段，也不产生新的终局事件。
+- 命令 `mark_conversation_task_unread` 复用会话 attention 写锁并校验 task 存在；失败只返回 `task.not-found` 与 `conversation.unread-unavailable` 错误码，由前端本地化。返回值为恢复的最新 `ConversationTerminalResultVm`，前端按既有 terminal-result 投影更新 pinned/workspace/recent。
+- 前端短暂抑制表（project+task → eventId）阻止当前打开会话的自动已读在显式标记后立刻生效；重新进入会话、收到更新的终局结果或 task 删除时清除，确认响应按事件匹配丢弃。
+- 验证：attention 10 项、Direct 行投影 1 项、前端 5 个测试文件 70 项通过；`tsc -p web/tsconfig.build.json --noEmit` 通过；浏览器预览右键菜单与圆点恢复已验证。

@@ -1033,6 +1033,7 @@
     },
     "conversation": {
       "task-not-found": "この会話は見つかりませんでした。",
+      "unread-unavailable": "この会話には未読にできる AI の返信がありません。",
       "session-superseded": "このセッションは {{nodeId}} / {{attemptId}} に引き継がれました。その attempt で続行してください。",
       "task-running": "この会話はまだ続いています。削除する前に停止してください。",
       "task-delete-failed": "会話を削除できませんでした: {{message}}",
@@ -3144,6 +3145,7 @@
       },
       "keepResident": "セッションを常駐",
       "releaseResident": "常駐を解除",
+      "markUnread": "未読にする",
       "keepResidentHint": "Agent に定時タスクなど長時間実行する作業がある場合は常駐を有効にし、アイドル時にセッションが回収されないようにしてください",
       "releaseResidentHint": "常駐中のため、アイドル時に回収されません。クリックして常駐を解除します",
       "resident": "常駐セッション"

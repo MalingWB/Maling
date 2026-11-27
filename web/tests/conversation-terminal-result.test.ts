@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { conversationSidebarTerminalResultDotClass } from '@/components/conversation/ConversationSidebar';
 import { conversationTerminalResultAcknowledgementTarget } from '@/lib/conversation-navigation';
 import {
+  applyConversationSidebarTaskUnread,
   applyConversationSidebarTerminalResultAcknowledgement,
   applyConversationSidebarTerminalResultUpdate,
 } from '@/lib/conversation-sidebar-activity';
@@ -73,6 +74,34 @@ describe('Direct unread terminal result', () => {
 
     expect(next.pinnedTasks[0]?.unreadTerminalResult).toEqual(result);
     expect(next.tasksByWorkspace['project-001']?.[0]?.unreadTerminalResult).toEqual(result);
+  });
+
+  it('restores an explicit unread mark across pinned, workspace, and recent rows without reordering', () => {
+    const other = { ...task(null), taskId: 'task-002', taskUuid: 'task-uuid-002', pinned: false, pinnedOrder: null, lastActivityAt: '2026-08-18T10:01:00Z' };
+    const target = { ...task(null), pinned: false, pinnedOrder: null, lastActivityAt: '2026-08-18T10:00:00Z' };
+    const pinnedTarget = task(null);
+    const pinnedOther = { ...other, pinned: true, pinnedOrder: 1 };
+    const current: ConversationSidebarVm = {
+      ...sidebar(null),
+      pinnedTasks: [pinnedTarget, pinnedOther],
+      tasksByWorkspace: { 'project-001': [other, target] },
+      recentTasks: [
+        { ...other, workspaceName: 'Project' },
+        { ...target, workspaceName: 'Project' },
+      ],
+    };
+    const result = terminalResult('event-001', 'failed');
+
+    const next = applyConversationSidebarTaskUnread(current, 'project-001', 'task-001', result);
+
+    expect(next.pinnedTasks[0]?.unreadTerminalResult).toEqual(result);
+    expect(next.tasksByWorkspace['project-001']?.map((row) => row.taskId)).toEqual(['task-002', 'task-001']);
+    expect(next.tasksByWorkspace['project-001']?.[1]?.unreadTerminalResult).toEqual(result);
+    expect(next.tasksByWorkspace['project-001']?.[1]?.lastActivityAt).toBe('2026-08-18T10:00:00Z');
+    expect(next.recentTasks?.map((row) => row.taskId)).toEqual(['task-002', 'task-001']);
+    expect(next.recentTasks?.[1]?.unreadTerminalResult).toEqual(result);
+    // Unchanged rows keep their identity so memoized rows do not re-render.
+    expect(next.pinnedTasks[1]).toBe(current.pinnedTasks[1]);
   });
 
   it('advances activity time and moves the row to the front when a background reply carries task activity', () => {

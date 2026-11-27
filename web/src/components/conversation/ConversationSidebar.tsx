@@ -1,5 +1,5 @@
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from "../ui/context-menu";
-import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Settings, BookOpen, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, MessageSquareDot, Search, Bot, Library, Route, AlarmClock, Globe, Settings, BookOpen, ChevronDown, Ellipsis, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStableCallbacks } from '@/hooks/use-stable-callbacks';
@@ -85,6 +85,7 @@ interface ConversationSidebarProps {
   onNewConversation: () => void;
   onSearch: () => void;
   onSetResident?: (projectId: string, taskId: string, resident: boolean) => Promise<void>;
+  onMarkUnread?: (projectId: string, taskId: string) => Promise<void>;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
@@ -117,6 +118,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   onNewConversation,
   onSearch,
   onSetResident,
+  onMarkUnread,
   onPinTask,
   onUnpinTask,
   onRenameTask,
@@ -428,6 +430,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     pin: (task) => onPinTask(task.projectId, task.taskId),
     unpin: (task) => onUnpinTask(task.projectId, task.taskId),
     setResident: async (task, resident) => { await onSetResident?.(task.projectId, task.taskId, resident); },
+    markUnread: async (task) => { await onMarkUnread?.(task.projectId, task.taskId); },
     rename: (task, title) => onRenameTask(task.projectId, task.taskId, title),
     remove: (task) => onDeleteTask(task.projectId, task.taskId, task.taskUuid),
     pauseRun: (task, runId) => onPauseRun?.(task.projectId, task.taskId, runId),
@@ -604,6 +607,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                               scope="pinned"
                               commands={rowCommands}
                               residencyEditable={Boolean(onSetResident)}
+                              markUnreadEditable={Boolean(onMarkUnread)}
                               t={t}
                             />
                           ))}
@@ -764,6 +768,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                         scope="workspace"
                         commands={rowCommands}
                         residencyEditable={Boolean(onSetResident)}
+                        markUnreadEditable={Boolean(onMarkUnread)}
                         t={t}
                       />
                     ))}
@@ -837,6 +842,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     scope="recent"
                     commands={rowCommands}
                     residencyEditable={Boolean(onSetResident)}
+                    markUnreadEditable={Boolean(onMarkUnread)}
                     t={t}
                   />
                 ))}
@@ -1039,6 +1045,7 @@ interface TaskRowCommands {
   pin: (task: ConversationTaskRowVm) => void;
   unpin: (task: ConversationTaskRowVm) => void;
   setResident: (task: ConversationTaskRowVm, resident: boolean) => Promise<void>;
+  markUnread: (task: ConversationTaskRowVm) => Promise<void>;
   rename: (task: ConversationTaskRowVm, title: string) => void;
   remove: (task: ConversationTaskRowVm) => void;
   pauseRun: (task: ConversationTaskRowVm, runId: string) => void | Promise<void>;
@@ -1054,6 +1061,7 @@ const TaskRow = memo(function TaskRow({
   expanded,
   commands,
   residencyEditable,
+  markUnreadEditable,
   t,
 }: {
   task: ConversationTaskRowVm;
@@ -1066,6 +1074,7 @@ const TaskRow = memo(function TaskRow({
   expanded: boolean;
   commands: TaskRowCommands;
   residencyEditable: boolean;
+  markUnreadEditable: boolean;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const onSelect = () => commands.select(scope, task);
@@ -1077,11 +1086,13 @@ const TaskRow = memo(function TaskRow({
   const onPin = scope === 'pinned' ? undefined : () => commands.pin(task);
   const onUnpin = () => commands.unpin(task);
   const onSetResident = residencyEditable ? (resident: boolean) => commands.setResident(task, resident) : undefined;
+  const onMarkUnread = markUnreadEditable ? () => commands.markUnread(task) : undefined;
   const onRename = (title: string) => commands.rename(task, title);
   const onDelete = () => commands.remove(task);
   const onPauseRun = (runId: string) => commands.pauseRun(task, runId);
   const [editing, setEditing] = useState(false);
   const [residencyPending, setResidencyPending] = useState(false);
+  const [markUnreadPending, setMarkUnreadPending] = useState(false);
   const readOnly = useReadOnlyExperience();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [openRunMenuId, setOpenRunMenuId] = useState<string | null>(null);
@@ -1290,18 +1301,37 @@ const TaskRow = memo(function TaskRow({
     </div>
   );
 
+  // "标为未读" only exists while the latest terminal result is already read:
+  // with no result there is nothing to restore, and an unread row already
+  // carries its dot.
+  const markUnreadAvailable = Boolean(onMarkUnread) && task.canMarkUnread === true && unreadTerminalResult === null;
+  const hasRowContextMenu = task.runMode === "direct" && (onSetResident !== undefined || markUnreadAvailable);
+
   return (
     <>
     <div className={cn(expanded && hasRuns && 'space-y-1')}>
-      {task.runMode === "direct" && onSetResident ? (
+      {hasRowContextMenu ? (
         <ContextMenu><ContextMenuTrigger asChild>{taskRow}</ContextMenuTrigger>
-          <ContextMenuContent><ContextMenuItem disabled={readOnly || residencyPending} onSelect={() => {
-            setResidencyPending(true);
-            void onSetResident(!task.resident).finally(() => setResidencyPending(false));
-          }}>
-            {residencyPending ? <Loader2 className="size-4 animate-spin" /> : task.resident ? <PinOff className="size-4" /> : <Pin className="size-4" />}
-            {t(task.resident ? "conversation.sidebar.releaseResident" : "conversation.sidebar.keepResident")}
-          </ContextMenuItem></ContextMenuContent>
+          <ContextMenuContent>
+            {onSetResident ? (
+              <ContextMenuItem disabled={readOnly || residencyPending} onSelect={() => {
+                setResidencyPending(true);
+                void onSetResident(!task.resident).finally(() => setResidencyPending(false));
+              }}>
+                {residencyPending ? <Loader2 className="size-4 animate-spin" /> : task.resident ? <PinOff className="size-4" /> : <Pin className="size-4" />}
+                {t(task.resident ? "conversation.sidebar.releaseResident" : "conversation.sidebar.keepResident")}
+              </ContextMenuItem>
+            ) : null}
+            {markUnreadAvailable ? (
+              <ContextMenuItem disabled={readOnly || markUnreadPending} onSelect={() => {
+                setMarkUnreadPending(true);
+                void onMarkUnread?.().finally(() => setMarkUnreadPending(false));
+              }}>
+                {markUnreadPending ? <Loader2 className="size-4 animate-spin" /> : <MessageSquareDot className="size-4" />}
+                {t("conversation.sidebar.markUnread")}
+              </ContextMenuItem>
+            ) : null}
+          </ContextMenuContent>
         </ContextMenu>
       ) : taskRow}
       {expanded && hasRuns ? (

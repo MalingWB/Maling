@@ -850,6 +850,10 @@ export function acknowledgeConversationTerminalResult(projectId: string, taskId:
   return getRuntimeApi().acknowledgeConversationTerminalResult(projectId, taskId, eventId);
 }
 
+export function markConversationTaskUnread(projectId: string, taskId: string) {
+  return getRuntimeApi().markConversationTaskUnread(projectId, taskId);
+}
+
 export function setAcpSessionConfigOption(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, optionId: string, optionValue: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().setAcpSessionConfigOption(projectId, taskId, runId, roundId, nodeId, attemptId, optionId, optionValue, outerNodeId, outerAttemptId);
 }
